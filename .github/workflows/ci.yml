@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - master
+      - main
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  macos:
+    name: macOS build and tests
+    runs-on: macos-26
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: brew install xcodegen swiftlint
+
+      - name: Generate Xcode project
+        run: xcodegen generate --spec Examples/RDPClient/project.yml
+
+      - name: Lint Swift sources
+        run: swiftlint lint --strict
+
+      - name: Run RDPKit tests
+        run: swift test
+
+      - name: Build RDPClient app
+        run: |
+          xcodebuild \
+            -project Examples/RDPClient/RDPKitExamples.xcodeproj \
+            -scheme RDPClient \
+            -destination 'platform=macOS' \
+            -derivedDataPath DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: Build first-frame capture tool
+        run: |
+          xcodebuild \
+            -project Examples/RDPClient/RDPKitExamples.xcodeproj \
+            -scheme RDPFirstFrameCapture \
+            -destination 'platform=macOS' \
+            -derivedDataPath DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: Build preflight tool
+        run: |
+          xcodebuild \
+            -project Examples/RDPClient/RDPKitExamples.xcodeproj \
+            -scheme RDPPreflight \
+            -destination 'platform=macOS' \
+            -derivedDataPath DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            build

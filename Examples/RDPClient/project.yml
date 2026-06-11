@@ -1,0 +1,72 @@
+name: RDPKitExamples
+options:
+  bundleIdPrefix: com.steelbrain
+  deploymentTarget:
+    macOS: "14.0"
+packages:
+  RDPKit:
+    path: ../..
+targets:
+  RDPClient:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources
+    dependencies:
+      - package: RDPKit
+        product: RDPKit
+      - sdk: AVFoundation.framework
+      - sdk: CoreMedia.framework
+    info:
+      path: Generated/Info.plist
+      properties:
+        CFBundleDisplayName: RDP Client
+        CFBundleIdentifier: $(PRODUCT_BUNDLE_IDENTIFIER)
+        CFBundleName: $(PRODUCT_NAME)
+        CFBundlePackageType: APPL
+        CFBundleShortVersionString: "0.1"
+        CFBundleVersion: "1"
+        LSMinimumSystemVersion: "14.0"
+        NSHumanReadableCopyright: Copyright © 2026 Steelbrain.
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.steelbrain.rdpclient
+        PRODUCT_NAME: RDP Client
+        SWIFT_VERSION: "6.0"
+        SWIFT_TREAT_WARNINGS_AS_ERRORS: YES
+        GCC_TREAT_WARNINGS_AS_ERRORS: YES
+        MACOSX_DEPLOYMENT_TARGET: "14.0"
+        ENABLE_HARDENED_RUNTIME: YES
+        CODE_SIGN_STYLE: Automatic
+  RDPFirstFrameCapture:
+    type: tool
+    platform: macOS
+    sources:
+      - path: ../RDPFirstFrameCapture
+    dependencies:
+      - package: RDPKit
+        product: RDPKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.steelbrain.rdpfirstframecapture
+        PRODUCT_NAME: RDPFirstFrameCapture
+        SWIFT_VERSION: "6.0"
+        SWIFT_TREAT_WARNINGS_AS_ERRORS: YES
+        GCC_TREAT_WARNINGS_AS_ERRORS: YES
+        MACOSX_DEPLOYMENT_TARGET: "14.0"
+  RDPPreflight:
+    type: tool
+    platform: macOS
+    sources:
+      - path: ../RDPPreflight
+    dependencies:
+      - package: RDPKit
+        product: RDPKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.steelbrain.rdppreflight
+        PRODUCT_NAME: RDPPreflight
+        SWIFT_VERSION: "6.0"
+        SWIFT_TREAT_WARNINGS_AS_ERRORS: YES
+        GCC_TREAT_WARNINGS_AS_ERRORS: YES
+        MACOSX_DEPLOYMENT_TARGET: "14.0"

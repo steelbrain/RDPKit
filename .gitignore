@@ -1,0 +1,32 @@
+.DS_Store
+
+# Rust
+/target/
+**/*.rs.bk
+
+# Swift and Xcode
+/.build/
+**/.build/
+/.swiftpm/
+**/.swiftpm/
+/DerivedData/
+/*.xcodeproj/
+/Examples/RDPClient/*.xcodeproj/
+/Examples/RDPClient/Generated/
+*.xcuserdata/
+*.xcuserstate
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.rdp
+*.p12
+*.pem
+*.key
+*.crt
+
+# Logs and captures
+*.log
+/captures/
+/artifacts/
