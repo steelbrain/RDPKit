@@ -79,6 +79,10 @@ let report = client.run(
         let metadata = RDPFrameMetadata(frame)
         print("\(metadata.codecName) \(metadata.width)x\(metadata.height)")
     },
+    onCertificate: { certificate in
+        print("certificate trusted: \(certificate.trusted)")
+        print("certificate sha256: \(certificate.sha256 ?? "unavailable")")
+    },
     onWireReceive: { sample in
         metricsStore.recordWireReceive(sample)
         if let mbps = metricsStore.metrics.rollingWireMegabitsPerSecond {
@@ -91,8 +95,9 @@ print(report.status)
 ```
 
 `RDPPreflightClient` exposes callbacks for graphics frames, input readiness,
-display control, clipboard messages, audio samples, wire bandwidth samples, and
-cancellation. The macOS example app builds a full viewer on top of those hooks.
+display control, clipboard messages, audio samples, TLS certificate inspection,
+wire bandwidth samples, and cancellation. The macOS example app builds a full
+viewer on top of those hooks.
 
 ## Features
 
@@ -115,7 +120,8 @@ cancellation. The macOS example app builds a full viewer on top of those hooks.
 - CredSSP negotiation reporting and credential-aware Client Info PDUs
 - MCS connect, channel join, static virtual channels, and dynamic virtual
   channels
-- Certificate SHA-256 reporting and configurable certificate warning visibility
+- Certificate SHA-256 reporting, early TLS certificate callbacks, and
+  configurable certificate warning visibility
 
 ### Input And Display
 

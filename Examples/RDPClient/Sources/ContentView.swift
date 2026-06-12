@@ -177,6 +177,7 @@ struct RemoteSessionDiagnosticsSnapshot: Equatable {
     var renderMetrics = RDPRenderMetrics()
     var framePacing = RDPFramePacingState()
     var sessionEndReason: RDPSessionEndReason?
+    var serverCertificateInfo: RDPServerCertificateInfo?
     var viewerPixelSize: RDPViewerPixelSize?
     var requestedDesktopSize = "unknown"
     var inputReady = false
@@ -515,7 +516,7 @@ struct RemoteSessionDiagnosticsWindowContent: View {
         if let message = snapshot.certificateTrustMessage {
             return message
         }
-        guard let trusted = snapshot.report?.certificateTrusted else {
+        guard let trusted = snapshot.report?.certificateTrusted ?? snapshot.serverCertificateInfo?.trusted else {
             return "not available"
         }
         return trusted ? "trusted" : "unrecognized"

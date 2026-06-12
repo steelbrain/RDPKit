@@ -50,6 +50,38 @@ import Testing
     #expect(report.error == nil)
 }
 
+@Test func preflightCallsCertificateHandlerAfterTLSHandshake() throws {
+    let server = try MockKRDPServer.start()
+    defer { server.stop() }
+
+    let capture = RDPTestCertificateCapture()
+    let report = RDPPreflightClient().run(
+        configuration: RDPConnectionConfiguration(
+            host: "127.0.0.1",
+            port: server.port,
+            credentials: RDPCredentials(username: "aneesi", password: "secret"),
+            timeoutSeconds: 5,
+            hideCertificateWarnings: false,
+            graphicsFrameCaptureLimit: 1,
+            desktopWidth: 1280,
+            desktopHeight: 720,
+            clipboardEnabled: false
+        ),
+        onCertificate: { certificate in
+            capture.record(certificate)
+        }
+    )
+
+    let certificate = try #require(capture.certificate)
+    #expect(report.status == "success")
+    #expect(certificate.trusted == report.certificateTrusted)
+    #expect(certificate.sha256 == report.certificateSHA256)
+    #expect(certificate.warnings == report.warnings)
+    #expect(certificate.trusted == false)
+    #expect(certificate.sha256?.isEmpty == false)
+    #expect(certificate.warnings.first?.code == "unrecognized-certificate")
+}
+
 @Test func livePreflightTimesOutWhenGraphicsPipelineStallsBeforeFirstFrame() throws {
     let server = try MockKRDPServer.start(graphicsBehavior: .stallAfterCapsConfirm)
     defer { server.stop() }
@@ -194,6 +226,23 @@ import Testing
     #expect(observed.frames == report.rdpGraphicsFrames)
     #expect(report.rdpGraphicsFirstFrame?.codecName == "avc420")
     #expect(report.error == nil)
+}
+
+private final class RDPTestCertificateCapture: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedCertificate: RDPServerCertificateInfo?
+
+    var certificate: RDPServerCertificateInfo? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedCertificate
+    }
+
+    func record(_ certificate: RDPServerCertificateInfo) {
+        lock.lock()
+        storedCertificate = certificate
+        lock.unlock()
+    }
 }
 
 private final class MockKRDPObservedEvents: @unchecked Sendable {

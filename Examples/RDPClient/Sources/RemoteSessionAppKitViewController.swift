@@ -50,6 +50,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
     private var audioMessage: String?
     private var remoteAudioPlayer = RDPAudioPlayer()
     private var report: RDPPreflightReport?
+    private var serverCertificateInfo: RDPServerCertificateInfo?
     private var previewFrame: RDPFrameMetadata?
     private var previewFrameCount = 0
     private var viewerMetricsSummary: String?
@@ -415,9 +416,6 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
     }
 
     private func certificateNoticeState() -> RDPAppKitNoticeState? {
-        guard let report else {
-            return nil
-        }
         if certificateTrustedByApp {
             return RDPAppKitNoticeState(
                 title: "Certificate",
@@ -427,7 +425,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                 action: .forgetCertificate
             )
         }
-        if let warning = report.warnings.first {
+        if let warning = report?.warnings.first ?? serverCertificateInfo?.warnings.first {
             return RDPAppKitNoticeState(
                 title: warning.code,
                 message: warning.message,
@@ -507,6 +505,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
             renderMetrics: renderMetricsStore.metrics,
             framePacing: framePacing,
             sessionEndReason: sessionEndReason,
+            serverCertificateInfo: serverCertificateInfo,
             viewerPixelSize: viewerPixelSize,
             requestedDesktopSize: requestedDesktopSizeLabel,
             inputReady: inputSession != nil,
@@ -543,6 +542,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
 
         formError = nil
         report = nil
+        serverCertificateInfo = nil
         previewFrame = nil
         previewFrameCount = 0
         viewerMetricsSummary = nil
@@ -777,6 +777,20 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                         controller.render()
                     }
                 },
+                onCertificate: { certificateInfo in
+                    guard Task.isCancelled == false else {
+                        return
+                    }
+                    sink.apply { controller in
+                        controller.serverCertificateInfo = certificateInfo
+                        controller.certificateTrustedByApp = controller.trustedCertificateStore.isTrusted(
+                            host: target.host,
+                            port: target.port,
+                            sha256: certificateInfo.sha256
+                        )
+                        controller.render()
+                    }
+                },
                 onWireReceive: { sample in
                     guard Task.isCancelled == false else {
                         return
@@ -800,6 +814,13 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                 controller.flushPendingFramePresentation()
                 controller.publishRenderMetricsSnapshotIfNeeded(force: true)
                 controller.report = nextReport
+                if let certificateTrusted = nextReport.certificateTrusted {
+                    controller.serverCertificateInfo = RDPServerCertificateInfo(
+                        trusted: certificateTrusted,
+                        sha256: nextReport.certificateSHA256,
+                        warnings: nextReport.warnings
+                    )
+                }
                 controller.sessionEndReason = RDPSessionEndReason(report: nextReport)
                 controller.certificateTrustedByApp = controller.trustedCertificateStore.isTrusted(
                     host: target.host,
@@ -1566,7 +1587,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
     }
 
     private func currentCertificateTrustKey() -> RDPServerCertificateTrustKey? {
-        guard let certificateSHA256 = report?.certificateSHA256,
+        guard let certificateSHA256 = report?.certificateSHA256 ?? serverCertificateInfo?.sha256,
               let target = try? RDPConnectionTarget(host: host, portText: port)
         else {
             return nil

@@ -209,6 +209,20 @@ public struct RDPProbeWarning: Encodable, Equatable, Sendable {
     }
 }
 
+public struct RDPServerCertificateInfo: Encodable, Equatable, Sendable {
+    public var trusted: Bool
+    public var sha256: String?
+    public var warnings: [RDPProbeWarning]
+
+    public init(trusted: Bool, sha256: String?, warnings: [RDPProbeWarning]) {
+        self.trusted = trusted
+        self.sha256 = sha256
+        self.warnings = warnings
+    }
+}
+
+public typealias RDPServerCertificateHandler = @Sendable (RDPServerCertificateInfo) -> Void
+
 public enum RDPVideoCodec: String, Encodable, Equatable, Sendable {
     case h264
     case hevc
@@ -753,6 +767,7 @@ public struct RDPPreflightClient: Sendable {
         onClipboardFileGroupDescriptor: RDPClipboardFileGroupDescriptorHandler? = nil,
         onClipboardFileContents: RDPClipboardFileContentsHandler? = nil,
         onAudioSample: RDPAudioSampleHandler? = nil,
+        onCertificate: RDPServerCertificateHandler? = nil,
         onWireReceive: RDPWireReceiveHandler? = nil,
         cancellation: RDPConnectionCancellation? = nil,
         shouldCancel: RDPCancellationHandler? = nil
@@ -768,6 +783,7 @@ public struct RDPPreflightClient: Sendable {
                 onClipboardFileGroupDescriptor: onClipboardFileGroupDescriptor,
                 onClipboardFileContents: onClipboardFileContents,
                 onAudioSample: onAudioSample,
+                onCertificate: onCertificate,
                 onWireReceive: onWireReceive,
                 cancellation: cancellation,
                 shouldCancel: shouldCancel
@@ -787,6 +803,7 @@ public struct RDPPreflightClient: Sendable {
         onClipboardFileGroupDescriptor: RDPClipboardFileGroupDescriptorHandler? = nil,
         onClipboardFileContents: RDPClipboardFileContentsHandler? = nil,
         onAudioSample: RDPAudioSampleHandler? = nil,
+        onCertificate: RDPServerCertificateHandler? = nil,
         onWireReceive: RDPWireReceiveHandler? = nil,
         cancellation: RDPConnectionCancellation? = nil,
         shouldCancel: RDPCancellationHandler? = nil
@@ -856,6 +873,7 @@ public struct RDPPreflightClient: Sendable {
                     onClipboardFileGroupDescriptor: onClipboardFileGroupDescriptor,
                     onClipboardFileContents: onClipboardFileContents,
                     onAudioSample: onAudioSample,
+                    onCertificate: onCertificate,
                     onWireReceive: onWireReceive,
                     cancellation: cancellation,
                     shouldCancel: shouldCancel
@@ -1809,6 +1827,7 @@ private func performTLSHandshake(
     onClipboardFileGroupDescriptor: RDPClipboardFileGroupDescriptorHandler?,
     onClipboardFileContents: RDPClipboardFileContentsHandler?,
     onAudioSample: RDPAudioSampleHandler?,
+    onCertificate: RDPServerCertificateHandler?,
     onWireReceive: RDPWireReceiveHandler?,
     cancellation: RDPConnectionCancellation?,
     shouldCancel: RDPCancellationHandler?
@@ -1878,6 +1897,7 @@ private func performTLSHandshake(
         host: host,
         hideCertificateWarnings: hideCertificateWarnings
     )
+    onCertificate?(trustResult)
     let mcsConnectionSequence = try mcsConfiguration.map { configuration in
         try performMCSConnectionSequence(
             configuration: configuration,
@@ -3553,7 +3573,7 @@ private func inspectPeerCertificates(
     _ certificates: [NIOSSLCertificate],
     host: String,
     hideCertificateWarnings: Bool
-) throws -> (trusted: Bool, sha256: String?, warnings: [RDPProbeWarning]) {
+) throws -> RDPServerCertificateInfo {
     guard !certificates.isEmpty else {
         throw RDPPreflightError.tls("server did not provide a TLS certificate")
     }
@@ -3578,7 +3598,7 @@ private func inspectPeerCertificates(
     let sha256 = leafCertificateSHA256(from: certificates[0])
 
     guard !trusted else {
-        return (true, sha256, [])
+        return RDPServerCertificateInfo(trusted: true, sha256: sha256, warnings: [])
     }
 
     let detail = trustError.map { CFErrorCopyDescription($0) as String? } ?? nil
@@ -3593,7 +3613,7 @@ private func inspectPeerCertificates(
         RDPProbeWarning(code: "unrecognized-certificate", message: message),
     ]
 
-    return (false, sha256, warnings)
+    return RDPServerCertificateInfo(trusted: false, sha256: sha256, warnings: warnings)
 }
 
 private func leafCertificateSHA256(from certificate: NIOSSLCertificate) -> String? {
