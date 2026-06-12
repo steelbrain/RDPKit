@@ -50,6 +50,63 @@ import Testing
     #expect(report.error == nil)
 }
 
+@Test func livePreflightTimesOutWhenGraphicsPipelineStallsBeforeFirstFrame() throws {
+    let server = try MockKRDPServer.start(graphicsBehavior: .stallAfterCapsConfirm)
+    defer { server.stop() }
+
+    let report = RDPPreflightClient().run(
+        configuration: RDPConnectionConfiguration(
+            host: "127.0.0.1",
+            port: server.port,
+            credentials: RDPCredentials(username: "aneesi", password: "secret"),
+            timeoutSeconds: 1,
+            hideCertificateWarnings: true,
+            graphicsFrameCaptureLimit: nil,
+            desktopWidth: 1280,
+            desktopHeight: 720,
+            clipboardEnabled: false
+        )
+    )
+
+    #expect(report.status == "failure")
+    #expect(report.stage == "rdp-graphics-dynamic-channel")
+    #expect(report.rdpGraphicsResponseType == "rdpgfx-caps-confirm")
+    #expect(report.rdpGraphicsFrames == [])
+    #expect(report.rdpGraphicsFrameAcknowledgeHexes == [])
+    #expect(report.error == "receive failed: RDP Graphics Update timed out after 1 seconds")
+}
+
+@Test func livePreflightTimesOutWhenAcknowledgedGraphicsFrameHasNoImageData() throws {
+    let server = try MockKRDPServer.start(graphicsBehavior: .sendEmptyFrameThenStall)
+    defer { server.stop() }
+
+    let report = RDPPreflightClient().run(
+        configuration: RDPConnectionConfiguration(
+            host: "127.0.0.1",
+            port: server.port,
+            credentials: RDPCredentials(username: "aneesi", password: "secret"),
+            timeoutSeconds: 1,
+            hideCertificateWarnings: true,
+            graphicsFrameCaptureLimit: nil,
+            desktopWidth: 1280,
+            desktopHeight: 720,
+            clipboardEnabled: false
+        )
+    )
+
+    #expect(report.status == "failure")
+    #expect(report.stage == "rdp-graphics-dynamic-channel")
+    #expect(report.rdpGraphicsResponseType == "rdpgfx-caps-confirm")
+    #expect(report.rdpGraphicsUpdateMessages?.map(\.typeName) == [
+        "rdpgfx-create-surface",
+        "rdpgfx-start-frame",
+        "rdpgfx-end-frame",
+    ])
+    #expect(report.rdpGraphicsFrames == [])
+    #expect(report.rdpGraphicsFrameAcknowledgeHexes?.isEmpty == false)
+    #expect(report.error == "receive failed: RDP Graphics Update timed out after 1 seconds")
+}
+
 @Test func preflightTransfersRemoteClipboardFileFromMockKRDPServer() throws {
     let remoteFile = RDPClipboardLocalFile(
         fileName: "notes.txt",

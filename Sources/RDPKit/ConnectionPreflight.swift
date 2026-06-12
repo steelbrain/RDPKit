@@ -3113,19 +3113,23 @@ private func receiveRDPGraphicsUpdateBatch(
     var fragment: RDPDynamicVirtualChannelFragment?
     let targetFrameCount = frameCaptureLimit.map { max(1, $0) }
     let packetLimit = targetFrameCount.map { max(256, 256 * $0) }
-    let packetTimeoutSeconds = targetFrameCount == nil ? nil : timeoutSeconds
 
     var packetsRead = 0
     while packetLimit.map({ packetsRead < $0 }) ?? true {
         try throwIfCancelled(shouldCancel, cancellation: cancellation)
         packetsRead += 1
+        let packetTimeoutSeconds = targetFrameCount != nil || result.firstGraphicsFrame == nil
+            ? timeoutSeconds
+            : nil
         let packet: Data
         do {
             packet = try receiveApplicationTPKT(
                 on: channel,
                 reader: reader,
                 timeoutSeconds: packetTimeoutSeconds,
-                timeoutDescription: "RDP Graphics Update"
+                timeoutDescription: "RDP Graphics Update",
+                cancellation: cancellation,
+                shouldCancel: shouldCancel
             )
         } catch {
             if targetFrameCount != nil,
@@ -3485,14 +3489,19 @@ private func receiveApplicationTPKT(
     on channel: Channel,
     reader: TLSTPKTStreamHandler,
     timeoutSeconds: Int?,
-    timeoutDescription: String
+    timeoutDescription: String,
+    cancellation: RDPConnectionCancellation? = nil,
+    shouldCancel: RDPCancellationHandler? = nil
 ) throws -> Data {
-    try waitForApplicationTPKT(
+    try throwIfCancelled(shouldCancel, cancellation: cancellation)
+    return try waitForApplicationTPKT(
         reader.nextPacket(on: channel),
         on: channel,
         reader: reader,
         timeoutSeconds: timeoutSeconds,
-        timeoutDescription: timeoutDescription
+        timeoutDescription: timeoutDescription,
+        cancellation: cancellation,
+        shouldCancel: shouldCancel
     )
 }
 
@@ -3501,8 +3510,31 @@ private func waitForApplicationTPKT(
     on channel: Channel,
     reader: TLSTPKTStreamHandler,
     timeoutSeconds: Int?,
-    timeoutDescription: String
+    timeoutDescription: String,
+    cancellation: RDPConnectionCancellation? = nil,
+    shouldCancel: RDPCancellationHandler? = nil
 ) throws -> Data {
+    let cancellationRegistration = cancellation?.register {
+        channel.eventLoop.execute {
+            reader.fail(RDPPreflightError.cancelled)
+            channel.close(promise: nil)
+        }
+    }
+    defer {
+        cancellationRegistration?.cancel()
+    }
+
+    if shouldCancel?() == true {
+        channel.eventLoop.execute {
+            reader.fail(RDPPreflightError.cancelled)
+            channel.close(promise: nil)
+        }
+        throw RDPPreflightError.cancelled
+    }
+    if cancellation?.isCancelled == true {
+        throw RDPPreflightError.cancelled
+    }
+
     guard let timeoutSeconds else {
         return try response.wait()
     }

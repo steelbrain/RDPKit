@@ -16,7 +16,10 @@ final class MockKRDPServer {
         self.channel = channel
     }
 
-    static func start(clipboardFiles: [RDPClipboardLocalFile] = []) throws -> MockKRDPServer {
+    static func start(
+        clipboardFiles: [RDPClipboardLocalFile] = [],
+        graphicsBehavior: MockKRDPGraphicsBehavior = .sendFirstFrame
+    ) throws -> MockKRDPServer {
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
         do {
             let tlsContext = try NIOSSLContext(configuration: MockKRDPTLS.configuration())
@@ -25,6 +28,7 @@ final class MockKRDPServer {
                 .childChannelInitializer { channel in
                     channel.pipeline.addHandler(MockKRDPServerHandler(
                         tlsContext: tlsContext,
+                        graphicsBehavior: graphicsBehavior,
                         clipboardFiles: clipboardFiles
                     ))
                 }
@@ -48,6 +52,12 @@ final class MockKRDPServer {
         try? channel.close().wait()
         try? group.syncShutdownGracefully()
     }
+}
+
+enum MockKRDPGraphicsBehavior {
+    case sendFirstFrame
+    case sendEmptyFrameThenStall
+    case stallAfterCapsConfirm
 }
 
 enum MockKRDPServerError: Error {
@@ -99,13 +109,19 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
     }
 
     private let tlsContext: NIOSSLContext
+    private let graphicsBehavior: MockKRDPGraphicsBehavior
     private let clipboardFiles: [RDPClipboardLocalFile]
     private var stage = Stage.x224
     private var received = Data()
     private var didReleaseGraphicsHandshake = false
 
-    init(tlsContext: NIOSSLContext, clipboardFiles: [RDPClipboardLocalFile]) {
+    init(
+        tlsContext: NIOSSLContext,
+        graphicsBehavior: MockKRDPGraphicsBehavior,
+        clipboardFiles: [RDPClipboardLocalFile]
+    ) {
         self.tlsContext = tlsContext
+        self.graphicsBehavior = graphicsBehavior
         self.clipboardFiles = clipboardFiles
     }
 
@@ -230,8 +246,16 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
         case .graphicsCapsAdvertise:
             _ = try MockKRDPFixtures.staticVirtualChannelPayload(from: packet)
             writePacket(MockKRDPFixtures.graphicsCapsConfirm(), context: context)
-            writePacket(MockKRDPFixtures.graphicsFrameUpdate(), context: context)
-            stage = .graphicsFrameAcknowledge
+            switch graphicsBehavior {
+            case .sendFirstFrame:
+                writePacket(MockKRDPFixtures.graphicsFrameUpdate(), context: context)
+                stage = .graphicsFrameAcknowledge
+            case .sendEmptyFrameThenStall:
+                writePacket(MockKRDPFixtures.graphicsEmptyFrameUpdate(), context: context)
+                stage = .graphicsFrameAcknowledge
+            case .stallAfterCapsConfirm:
+                stage = .done
+            }
 
         case .graphicsFrameAcknowledge:
             _ = try MockKRDPFixtures.staticVirtualChannelPayload(from: packet)
@@ -568,6 +592,13 @@ private enum MockKRDPFixtures {
         let messages = createSurfaceMessage()
             + startFrameMessage()
             + wireToSurfaceMessage()
+            + endFrameMessage()
+        return graphicsDynamicPacket(messages)
+    }
+
+    static func graphicsEmptyFrameUpdate() -> Data {
+        let messages = createSurfaceMessage()
+            + startFrameMessage()
             + endFrameMessage()
         return graphicsDynamicPacket(messages)
     }
