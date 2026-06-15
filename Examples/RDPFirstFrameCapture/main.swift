@@ -12,6 +12,7 @@ private struct CaptureArguments {
     var passwordEnv: String?
     var timeoutSeconds: Int = 30
     var frames: Int = 1
+    var graphicsCapabilityProfile: RDPGraphicsCapabilityProfile = .automatic
     var hideCertificateWarnings = false
     var outputPath: String?
 }
@@ -25,6 +26,7 @@ private enum CaptureError: Error, CustomStringConvertible {
     case invalidPort(String)
     case invalidTimeout(String)
     case invalidFrames(String)
+    case invalidGraphicsProfile(String)
     case connectionFailed(String)
     case missingFrames
     case noDecodableFrames(String)
@@ -51,6 +53,8 @@ private enum CaptureError: Error, CustomStringConvertible {
             "invalid --timeout-seconds \(value)"
         case let .invalidFrames(value):
             "invalid --frames \(value)"
+        case let .invalidGraphicsProfile(value):
+            "invalid --graphics-profile \(value)"
         case let .connectionFailed(message):
             message
         case .missingFrames:
@@ -85,6 +89,7 @@ private struct FirstFrameCapture {
             var decodedFrameCount = 0
             var decodeFailureCount = 0
             var lastDecodeError: Error?
+            let cancellation = RDPConnectionCancellation()
             let report = RDPPreflightClient().run(
                 configuration: RDPConnectionConfiguration(
                     host: try requiredHost(arguments),
@@ -93,44 +98,52 @@ private struct FirstFrameCapture {
                     timeoutSeconds: arguments.timeoutSeconds,
                     hideCertificateWarnings: arguments.hideCertificateWarnings,
                     graphicsFrameCaptureLimit: candidateFrameLimit,
-                    clipboardEnabled: false
-                )
-            ) { frame in
-                guard decodedFrameCount < arguments.frames else {
-                    return
-                }
-                do {
-                    try autoreleasepool {
-                        let frameOutputPath = outputPathForFrame(
-                            outputPath,
-                            index: decodedFrameCount,
-                            totalCount: arguments.frames
-                        )
-                        let decodedImage = try decoder.decode(frame)
-                        let image = try RDPH264DecodedFrameImage.cropToDestinationRect(decodedImage, frame: frame)
-                        try writePNG(image, to: frameOutputPath)
-                        decodedFrameCount += 1
-                        print("""
-                        wrote \(frameOutputPath)
-                        frame: \(frame.width)x\(frame.height) \(frame.codecName)/\(frame.videoCodec.displayName) \(frame.videoByteCount) bytes
-                        nal types: \(frame.videoNalUnitTypes.map(String.init).joined(separator: "/"))
-                        """)
+                    clipboardEnabled: false,
+                    graphicsCapabilityProfile: arguments.graphicsCapabilityProfile
+                ),
+                onGraphicsFrame: { frame in
+                    guard decodedFrameCount < arguments.frames else {
+                        return
                     }
-                } catch {
-                    decodeFailureCount += 1
-                    lastDecodeError = error
-                    fputs("""
-                    decode failed: \(frame.width)x\(frame.height) \(frame.codecName)/\(frame.videoCodec.displayName) \(frame.videoByteCount) bytes
-                    \(String(describing: error))
-                    """, stderr)
-                    fputs("\n", stderr)
-                }
-            }
+                    do {
+                        try autoreleasepool {
+                            let frameOutputPath = outputPathForFrame(
+                                outputPath,
+                                index: decodedFrameCount,
+                                totalCount: arguments.frames
+                            )
+                            let decodedImage = try decoder.decode(frame)
+                            let image = try RDPH264DecodedFrameImage.cropToDestinationRect(decodedImage, frame: frame)
+                            try writePNG(image, to: frameOutputPath)
+                            decodedFrameCount += 1
+                            let codecDescription = codecDescription(for: frame)
+                            print("""
+                            wrote \(frameOutputPath)
+                            frame: \(frame.width)x\(frame.height) \(codecDescription) \(frame.payloadByteCount) bytes
+                            nal types: \(frame.videoNalUnitTypes.map(String.init).joined(separator: "/"))
+                            """)
+                            if decodedFrameCount >= arguments.frames {
+                                cancellation.cancel()
+                            }
+                        }
+                    } catch {
+                        decodeFailureCount += 1
+                        lastDecodeError = error
+                        let codecDescription = codecDescription(for: frame)
+                        fputs("""
+                        decode failed: \(frame.width)x\(frame.height) \(codecDescription) \(frame.payloadByteCount) bytes
+                        \(String(describing: error))
+                        """, stderr)
+                        fputs("\n", stderr)
+                    }
+                },
+                cancellation: cancellation
+            )
 
-            guard report.status == "success" else {
-                throw CaptureError.connectionFailed(report.error ?? "RDP preflight failed at \(report.stage)")
-            }
             guard decodedFrameCount > 0 else {
+                guard report.status == "success" else {
+                    throw CaptureError.connectionFailed(report.error ?? "RDP preflight failed at \(report.stage)")
+                }
                 if decodeFailureCount > 0,
                    let lastDecodeError
                 {
@@ -145,11 +158,20 @@ private struct FirstFrameCapture {
                     lastError: lastDecodeError.map { String(describing: $0) }
                 )
             }
+            guard report.status == "success" || cancellation.isCancelled else {
+                throw CaptureError.connectionFailed(report.error ?? "RDP preflight failed at \(report.stage)")
+            }
         } catch {
             fputs("\(String(describing: error))\n", stderr)
             printUsage()
             exit(1)
         }
+    }
+
+    private static func codecDescription(for frame: RDPGraphicsFrameSnapshot) -> String {
+        frame.contentKind == .video
+            ? "\(frame.codecName)/\(frame.videoCodec.displayName)"
+            : frame.codecName
     }
 
     private static func parseArguments(_ values: [String]) throws -> CaptureArguments {
@@ -194,6 +216,13 @@ private struct FirstFrameCapture {
                     throw CaptureError.invalidFrames(values[index])
                 }
                 args.frames = frames
+            case "--graphics-profile":
+                index += 1
+                guard index < values.count else { throw CaptureError.missingValue(value) }
+                guard let profile = RDPGraphicsCapabilityProfile(rawValue: values[index]) else {
+                    throw CaptureError.invalidGraphicsProfile(values[index])
+                }
+                args.graphicsCapabilityProfile = profile
             case "--hide-certificate-warnings":
                 args.hideCertificateWarnings = true
             case "--output":
@@ -297,9 +326,9 @@ private struct FirstFrameCapture {
 
     private static func printUsage() {
         print("""
-        Usage: RDPFirstFrameCapture --host <host> --output <frame.png> [--port 3389] [--username <name>] [--domain <domain>] [--password-env <env>] [--timeout-seconds 30] [--frames 1] [--hide-certificate-warnings]
+        Usage: RDPFirstFrameCapture --host <host> --output <frame.png> [--port 3389] [--username <name>] [--domain <domain>] [--password-env <env>] [--timeout-seconds 30] [--frames 1] [--graphics-profile automatic|avcThinClient|avc420|legacy] [--hide-certificate-warnings]
 
-        Connects to KRdp, captures RDPGFX video frames, decodes them with VideoToolbox, and writes PNGs.
+        Connects to an RDP host, captures RDPGFX frames, decodes them, and writes PNGs.
         """)
     }
 }

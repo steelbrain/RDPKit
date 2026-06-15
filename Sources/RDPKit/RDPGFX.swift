@@ -7,6 +7,10 @@ enum RDPGFXChannel {
 enum RDPGFXCommandID {
     static let wireToSurface1: UInt16 = 0x0001
     static let wireToSurface2: UInt16 = 0x0002
+    static let solidFill: UInt16 = 0x0004
+    static let surfaceToSurface: UInt16 = 0x0005
+    static let surfaceToCache: UInt16 = 0x0006
+    static let cacheToSurface: UInt16 = 0x0007
     static let createSurface: UInt16 = 0x0009
     static let startFrame: UInt16 = 0x000B
     static let endFrame: UInt16 = 0x000C
@@ -57,12 +61,61 @@ enum RDPGFXCodecID {
 enum RDPGFXCapabilityVersion {
     static let version8: UInt32 = 0x0008_0004
     static let version81: UInt32 = 0x0008_0105
+    static let version107: UInt32 = 0x000A_0701
 }
 
 enum RDPGFXCapabilityFlags {
     static let thinClient: UInt32 = 0x0000_0001
     static let smallCache: UInt32 = 0x0000_0002
     static let avc420Enabled: UInt32 = 0x0000_0010
+    static let avcThinClient: UInt32 = 0x0000_0040
+    static let scaledMapDisabled: UInt32 = 0x0000_0080
+    static let defaultVersion8: UInt32 = thinClient | smallCache
+    static let defaultVersion81: UInt32 = thinClient | smallCache | avc420Enabled
+    static let defaultVersion107: UInt32 = smallCache | avcThinClient | scaledMapDisabled
+}
+
+public enum RDPGraphicsCapabilityProfile: String, CaseIterable, Codable, Equatable, Hashable, Sendable {
+    case automatic
+    case avcThinClient
+    case avc420
+    case legacy
+
+    public var displayName: String {
+        switch self {
+        case .automatic:
+            "automatic"
+        case .avcThinClient:
+            "AVC thin client"
+        case .avc420:
+            "AVC420"
+        case .legacy:
+            "legacy bitmap"
+        }
+    }
+
+    var capabilitySets: [RDPGFXCapabilitySet] {
+        switch self {
+        case .automatic:
+            [
+                .version107(flags: RDPGFXCapabilityFlags.defaultVersion107),
+                .version81(flags: RDPGFXCapabilityFlags.defaultVersion81),
+                .version8(flags: RDPGFXCapabilityFlags.defaultVersion8),
+            ]
+        case .avcThinClient:
+            [
+                .version107(flags: RDPGFXCapabilityFlags.defaultVersion107),
+            ]
+        case .avc420:
+            [
+                .version81(flags: RDPGFXCapabilityFlags.defaultVersion81),
+            ]
+        case .legacy:
+            [
+                .version8(flags: RDPGFXCapabilityFlags.defaultVersion8),
+            ]
+        }
+    }
 }
 
 struct RDPGFXHeader: Equatable, Sendable {
@@ -77,6 +130,14 @@ struct RDPGFXHeader: Equatable, Sendable {
             "rdpgfx-wire-to-surface-1"
         case RDPGFXCommandID.wireToSurface2:
             "rdpgfx-wire-to-surface-2"
+        case RDPGFXCommandID.solidFill:
+            "rdpgfx-solid-fill"
+        case RDPGFXCommandID.surfaceToSurface:
+            "rdpgfx-surface-to-surface"
+        case RDPGFXCommandID.surfaceToCache:
+            "rdpgfx-surface-to-cache"
+        case RDPGFXCommandID.cacheToSurface:
+            "rdpgfx-cache-to-surface"
         case RDPGFXCommandID.createSurface:
             "rdpgfx-create-surface"
         case RDPGFXCommandID.startFrame:
@@ -148,6 +209,18 @@ struct RDPGFXCapabilitySet: Equatable, Sendable {
         return RDPGFXCapabilitySet(version: RDPGFXCapabilityVersion.version81, data: data)
     }
 
+    static func version107(flags: UInt32) -> RDPGFXCapabilitySet {
+        var data = Data()
+        data.appendLittleEndianUInt32(flags)
+        return RDPGFXCapabilitySet(version: RDPGFXCapabilityVersion.version107, data: data)
+    }
+
+    static func version8(flags: UInt32) -> RDPGFXCapabilitySet {
+        var data = Data()
+        data.appendLittleEndianUInt32(flags)
+        return RDPGFXCapabilitySet(version: RDPGFXCapabilityVersion.version8, data: data)
+    }
+
     var encoded: Data {
         var bytes = Data()
         bytes.appendLittleEndianUInt32(version)
@@ -186,7 +259,7 @@ struct RDPGFXCapabilitySet: Equatable, Sendable {
 struct RDPGFXCapsAdvertisePDU: Equatable, Sendable {
     var capabilitySets: [RDPGFXCapabilitySet]
 
-    init(capabilitySets: [RDPGFXCapabilitySet] = [.version81(flags: RDPGFXCapabilityFlags.smallCache | RDPGFXCapabilityFlags.avc420Enabled)]) {
+    init(capabilitySets: [RDPGFXCapabilitySet] = RDPGraphicsCapabilityProfile.automatic.capabilitySets) {
         precondition(!capabilitySets.isEmpty)
         precondition(capabilitySets.count <= Int(UInt16.max))
 
@@ -208,6 +281,35 @@ struct RDPGFXCapsAdvertisePDU: Equatable, Sendable {
         data.appendLittleEndianUInt16(UInt16(capabilitySets.count))
         data.append(encodedSets)
         return data
+    }
+
+    static func parseIfPresent(from data: Data) throws -> RDPGFXCapsAdvertisePDU? {
+        let header = try RDPGFXHeader.parse(from: data)
+        guard header.commandID == RDPGFXCommandID.capsAdvertise else {
+            return nil
+        }
+
+        var cursor = ByteCursor(header.payload)
+        let capabilitySetCount = try Int(cursor.readLittleEndianUInt16())
+        var capabilitySets: [RDPGFXCapabilitySet] = []
+        capabilitySets.reserveCapacity(capabilitySetCount)
+        for _ in 0 ..< capabilitySetCount {
+            guard cursor.remaining >= 8 else {
+                throw RDPDecodeError.invalidRDPGFXPDU
+            }
+
+            let version = try cursor.readLittleEndianUInt32()
+            let dataLength = try cursor.readLittleEndianUInt32()
+            guard dataLength <= UInt32(cursor.remaining) else {
+                throw RDPDecodeError.invalidRDPGFXPDU
+            }
+            let data = try cursor.readData(count: Int(dataLength))
+            capabilitySets.append(RDPGFXCapabilitySet(version: version, data: data))
+        }
+        guard cursor.remaining == 0, !capabilitySets.isEmpty else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+        return RDPGFXCapsAdvertisePDU(capabilitySets: capabilitySets)
     }
 }
 
@@ -253,6 +355,42 @@ struct RDPGFXRect16: Encodable, Equatable, Sendable {
             top: cursor.readLittleEndianUInt16(),
             right: cursor.readLittleEndianUInt16(),
             bottom: cursor.readLittleEndianUInt16()
+        )
+    }
+}
+
+struct RDPGFXPoint16: Encodable, Equatable, Sendable {
+    var x: UInt16
+    var y: UInt16
+
+    static func parse(_ cursor: inout ByteCursor) throws -> RDPGFXPoint16 {
+        try RDPGFXPoint16(
+            x: cursor.readLittleEndianUInt16(),
+            y: cursor.readLittleEndianUInt16()
+        )
+    }
+}
+
+struct RDPGFXColor32: Encodable, Equatable, Sendable {
+    var blue: UInt8
+    var green: UInt8
+    var red: UInt8
+    var alpha: UInt8
+
+    var rgbHexString: String {
+        String(format: "#%02x%02x%02x", red, green, blue)
+    }
+
+    var bgraData: Data {
+        Data([blue, green, red, alpha])
+    }
+
+    static func parse(_ cursor: inout ByteCursor) throws -> RDPGFXColor32 {
+        try RDPGFXColor32(
+            blue: cursor.readUInt8(),
+            green: cursor.readUInt8(),
+            red: cursor.readUInt8(),
+            alpha: cursor.readUInt8()
         )
     }
 }
@@ -727,6 +865,97 @@ struct RDPGFXMapSurfaceToOutputPDU: Equatable, Sendable {
     }
 }
 
+struct RDPGFXSolidFillPDU: Equatable, Sendable {
+    var surfaceID: UInt16
+    var fillPixel: RDPGFXColor32
+    var fillRects: [RDPGFXRect16]
+
+    static func parse(from message: RDPGFXHeader) throws -> RDPGFXSolidFillPDU {
+        guard message.commandID == RDPGFXCommandID.solidFill,
+              message.payload.count >= 8
+        else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+
+        var cursor = ByteCursor(message.payload)
+        let surfaceID = try cursor.readLittleEndianUInt16()
+        let fillPixel = try RDPGFXColor32.parse(&cursor)
+        let rectCount = try cursor.readLittleEndianUInt16()
+        guard cursor.remaining == Int(rectCount) * 8 else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+
+        var fillRects: [RDPGFXRect16] = []
+        fillRects.reserveCapacity(Int(rectCount))
+        for _ in 0 ..< Int(rectCount) {
+            try fillRects.append(RDPGFXRect16.parse(&cursor))
+        }
+
+        return RDPGFXSolidFillPDU(
+            surfaceID: surfaceID,
+            fillPixel: fillPixel,
+            fillRects: fillRects
+        )
+    }
+}
+
+struct RDPGFXSurfaceToCachePDU: Equatable, Sendable {
+    var surfaceID: UInt16
+    var cacheKey: UInt64
+    var cacheSlot: UInt16
+    var sourceRect: RDPGFXRect16
+
+    static func parse(from message: RDPGFXHeader) throws -> RDPGFXSurfaceToCachePDU {
+        guard message.commandID == RDPGFXCommandID.surfaceToCache,
+              message.payload.count == 20
+        else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+
+        var cursor = ByteCursor(message.payload)
+        return try RDPGFXSurfaceToCachePDU(
+            surfaceID: cursor.readLittleEndianUInt16(),
+            cacheKey: cursor.readLittleEndianUInt64(),
+            cacheSlot: cursor.readLittleEndianUInt16(),
+            sourceRect: RDPGFXRect16.parse(&cursor)
+        )
+    }
+}
+
+struct RDPGFXCacheToSurfacePDU: Equatable, Sendable {
+    var cacheSlot: UInt16
+    var surfaceID: UInt16
+    var destinationPoints: [RDPGFXPoint16]
+
+    static func parse(from message: RDPGFXHeader) throws -> RDPGFXCacheToSurfacePDU {
+        guard message.commandID == RDPGFXCommandID.cacheToSurface,
+              message.payload.count >= 6
+        else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+
+        var cursor = ByteCursor(message.payload)
+        let cacheSlot = try cursor.readLittleEndianUInt16()
+        let surfaceID = try cursor.readLittleEndianUInt16()
+        let destinationPointCount = try cursor.readLittleEndianUInt16()
+        guard cursor.remaining == Int(destinationPointCount) * 4 else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+
+        var destinationPoints: [RDPGFXPoint16] = []
+        destinationPoints.reserveCapacity(Int(destinationPointCount))
+        for _ in 0 ..< Int(destinationPointCount) {
+            try destinationPoints.append(RDPGFXPoint16.parse(&cursor))
+        }
+
+        return RDPGFXCacheToSurfacePDU(
+            cacheSlot: cacheSlot,
+            surfaceID: surfaceID,
+            destinationPoints: destinationPoints
+        )
+    }
+}
+
 struct RDPGFXStartFramePDU: Equatable, Sendable {
     var timestamp: UInt32
     var frameID: UInt32
@@ -804,6 +1033,7 @@ struct RDPGFXWireToSurface2PDU: Equatable, Sendable {
     var codecContextID: UInt32
     var pixelFormat: UInt8
     var bitmapDataLength: UInt32
+    var bitmapData: Data
 
     static func parse(from message: RDPGFXHeader) throws -> RDPGFXWireToSurface2PDU {
         guard message.commandID == RDPGFXCommandID.wireToSurface2,
@@ -821,14 +1051,598 @@ struct RDPGFXWireToSurface2PDU: Equatable, Sendable {
         guard bitmapDataLength == UInt32(cursor.remaining) else {
             throw RDPDecodeError.invalidRDPGFXPDU
         }
+        let bitmapData = cursor.readRemainingData()
 
         return RDPGFXWireToSurface2PDU(
             surfaceID: surfaceID,
             codecID: codecID,
             codecContextID: codecContextID,
             pixelFormat: pixelFormat,
-            bitmapDataLength: bitmapDataLength
+            bitmapDataLength: bitmapDataLength,
+            bitmapData: bitmapData
         )
+    }
+}
+
+private enum RDPGFXProgressiveBlockType {
+    static let sync: UInt16 = 0xCCC0
+    static let frameBegin: UInt16 = 0xCCC1
+    static let frameEnd: UInt16 = 0xCCC2
+    static let context: UInt16 = 0xCCC3
+    static let region: UInt16 = 0xCCC4
+    static let tileSimple: UInt16 = 0xCCC5
+    static let tileFirst: UInt16 = 0xCCC6
+    static let tileUpgrade: UInt16 = 0xCCC7
+
+    static func name(for blockType: UInt16) -> String {
+        switch blockType {
+        case sync:
+            "sync"
+        case frameBegin:
+            "frame-begin"
+        case frameEnd:
+            "frame-end"
+        case context:
+            "context"
+        case region:
+            "region"
+        case tileSimple:
+            "tile-simple"
+        case tileFirst:
+            "tile-first"
+        case tileUpgrade:
+            "tile-upgrade"
+        default:
+            "block-0x\(String(format: "%04x", blockType))"
+        }
+    }
+}
+
+private struct RDPGFXProgressiveBitmapStreamSummary: Equatable, Sendable {
+    var blockTypes: [UInt16] = []
+    var blockTypeNames: [String] = []
+    var contextIDs: [UInt8] = []
+    var contextTileSizes: [UInt16] = []
+    var contextFlags: [UInt8] = []
+    var frameIndexes: [UInt32] = []
+    var frameRegionCounts: [UInt16] = []
+    var regionCount = 0
+    var regionRectCount = 0
+    var regionRects: [RDPFrameRect] = []
+    var regionTileCount = 0
+    var tileSimpleCount = 0
+    var tileFirstCount = 0
+    var tileUpgradeCount = 0
+
+    static func summarize(_ data: Data) throws -> RDPGFXProgressiveBitmapStreamSummary {
+        var cursor = ByteCursor(data)
+        var summary = RDPGFXProgressiveBitmapStreamSummary()
+        while cursor.remaining > 0 {
+            guard cursor.remaining >= 6 else {
+                throw RDPDecodeError.invalidRDPGFXPDU
+            }
+            let blockType = try cursor.readLittleEndianUInt16()
+            let blockLength = try cursor.readLittleEndianUInt32()
+            guard blockLength >= 6,
+                  UInt64(blockLength - 6) <= UInt64(cursor.remaining)
+            else {
+                throw RDPDecodeError.invalidRDPGFXPDU
+            }
+            let body = try cursor.readData(count: Int(blockLength - 6))
+            summary.blockTypes.append(blockType)
+            summary.blockTypeNames.append(RDPGFXProgressiveBlockType.name(for: blockType))
+
+            switch blockType {
+            case RDPGFXProgressiveBlockType.sync:
+                try parseSync(body)
+            case RDPGFXProgressiveBlockType.context:
+                try summary.parseContext(body)
+            case RDPGFXProgressiveBlockType.frameBegin:
+                try summary.parseFrameBegin(body)
+            case RDPGFXProgressiveBlockType.frameEnd:
+                guard body.isEmpty else {
+                    throw RDPDecodeError.invalidRDPGFXPDU
+                }
+            case RDPGFXProgressiveBlockType.region:
+                try summary.parseRegion(body)
+            case RDPGFXProgressiveBlockType.tileSimple,
+                 RDPGFXProgressiveBlockType.tileFirst,
+                 RDPGFXProgressiveBlockType.tileUpgrade:
+                throw RDPDecodeError.invalidRDPGFXPDU
+            default:
+                throw RDPDecodeError.invalidRDPGFXPDU
+            }
+        }
+        return summary
+    }
+
+    private static func parseSync(_ data: Data) throws {
+        var cursor = ByteCursor(data)
+        guard cursor.remaining == 6,
+              try cursor.readLittleEndianUInt32() == 0xCACC_ACCA,
+              try cursor.readLittleEndianUInt16() == 0x0100
+        else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+    }
+
+    private mutating func parseContext(_ data: Data) throws {
+        var cursor = ByteCursor(data)
+        guard cursor.remaining == 4 else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+        let contextID = try cursor.readUInt8()
+        let tileSize = try cursor.readLittleEndianUInt16()
+        let flags = try cursor.readUInt8()
+        guard tileSize == 64 else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+        contextIDs.append(contextID)
+        contextTileSizes.append(tileSize)
+        contextFlags.append(flags)
+    }
+
+    private mutating func parseFrameBegin(_ data: Data) throws {
+        var cursor = ByteCursor(data)
+        guard cursor.remaining == 6 else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+        frameIndexes.append(try cursor.readLittleEndianUInt32())
+        frameRegionCounts.append(try cursor.readLittleEndianUInt16())
+    }
+
+    private mutating func parseRegion(_ data: Data) throws {
+        var cursor = ByteCursor(data)
+        guard cursor.remaining >= 12 else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+        let tileSize = try cursor.readUInt8()
+        let rectangleCount = try Int(cursor.readLittleEndianUInt16())
+        let quantCount = try Int(cursor.readUInt8())
+        let progressiveQuantCount = try Int(cursor.readUInt8())
+        _ = try cursor.readUInt8()
+        let tileCount = try Int(cursor.readLittleEndianUInt16())
+        let tileDataSize = try Int(cursor.readLittleEndianUInt32())
+        guard tileSize == 64,
+              rectangleCount > 0,
+              quantCount <= 7
+        else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+
+        let metadataByteCount = rectangleCount * 8 + quantCount * 5 + progressiveQuantCount * 16
+        guard cursor.remaining == metadataByteCount + tileDataSize else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+
+        regionCount += 1
+        regionRectCount += rectangleCount
+        for _ in 0 ..< rectangleCount {
+            let x = try cursor.readLittleEndianUInt16()
+            let y = try cursor.readLittleEndianUInt16()
+            let width = try cursor.readLittleEndianUInt16()
+            let height = try cursor.readLittleEndianUInt16()
+            guard UInt32(x) + UInt32(width) <= UInt32(UInt16.max),
+                  UInt32(y) + UInt32(height) <= UInt32(UInt16.max)
+            else {
+                throw RDPDecodeError.invalidRDPGFXPDU
+            }
+            regionRects.append(RDPFrameRect(
+                left: x,
+                top: y,
+                right: x + width,
+                bottom: y + height
+            ))
+        }
+        _ = try cursor.readData(count: quantCount * 5)
+        _ = try cursor.readData(count: progressiveQuantCount * 16)
+        try parseRegionTiles(
+            cursor.readRemainingData(),
+            expectedTileCount: tileCount
+        )
+    }
+
+    private mutating func parseRegionTiles(_ data: Data, expectedTileCount: Int) throws {
+        var cursor = ByteCursor(data)
+        var parsedTileCount = 0
+        while cursor.remaining > 0 {
+            guard cursor.remaining >= 6 else {
+                throw RDPDecodeError.invalidRDPGFXPDU
+            }
+            let blockType = try cursor.readLittleEndianUInt16()
+            let blockLength = try cursor.readLittleEndianUInt32()
+            guard blockLength >= 6,
+                  UInt64(blockLength - 6) <= UInt64(cursor.remaining)
+            else {
+                throw RDPDecodeError.invalidRDPGFXPDU
+            }
+            let tileBody = try cursor.readData(count: Int(blockLength - 6))
+            switch blockType {
+            case RDPGFXProgressiveBlockType.tileSimple:
+                try Self.parseSimpleOrFirstTile(tileBody, hasQuality: false)
+                tileSimpleCount += 1
+            case RDPGFXProgressiveBlockType.tileFirst:
+                try Self.parseSimpleOrFirstTile(tileBody, hasQuality: true)
+                tileFirstCount += 1
+            case RDPGFXProgressiveBlockType.tileUpgrade:
+                try Self.parseUpgradeTile(tileBody)
+                tileUpgradeCount += 1
+            default:
+                throw RDPDecodeError.invalidRDPGFXPDU
+            }
+            parsedTileCount += 1
+        }
+        guard parsedTileCount == expectedTileCount else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+        regionTileCount += parsedTileCount
+    }
+
+    private static func parseSimpleOrFirstTile(_ data: Data, hasQuality: Bool) throws {
+        var cursor = ByteCursor(data)
+        let headerByteCount = hasQuality ? 17 : 16
+        guard cursor.remaining >= headerByteCount else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+        _ = try cursor.readUInt8()
+        _ = try cursor.readUInt8()
+        _ = try cursor.readUInt8()
+        _ = try cursor.readLittleEndianUInt16()
+        _ = try cursor.readLittleEndianUInt16()
+        _ = try cursor.readUInt8()
+        if hasQuality {
+            _ = try cursor.readUInt8()
+        }
+        let yByteCount = try Int(cursor.readLittleEndianUInt16())
+        let cbByteCount = try Int(cursor.readLittleEndianUInt16())
+        let crByteCount = try Int(cursor.readLittleEndianUInt16())
+        let tailByteCount = try Int(cursor.readLittleEndianUInt16())
+        guard cursor.remaining == yByteCount + cbByteCount + crByteCount + tailByteCount else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+    }
+
+    private static func parseUpgradeTile(_ data: Data) throws {
+        var cursor = ByteCursor(data)
+        guard cursor.remaining >= 20 else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+        _ = try cursor.readUInt8()
+        _ = try cursor.readUInt8()
+        _ = try cursor.readUInt8()
+        _ = try cursor.readLittleEndianUInt16()
+        _ = try cursor.readLittleEndianUInt16()
+        _ = try cursor.readUInt8()
+        let ySRLByteCount = try Int(cursor.readLittleEndianUInt16())
+        let yRawByteCount = try Int(cursor.readLittleEndianUInt16())
+        let cbSRLByteCount = try Int(cursor.readLittleEndianUInt16())
+        let cbRawByteCount = try Int(cursor.readLittleEndianUInt16())
+        let crSRLByteCount = try Int(cursor.readLittleEndianUInt16())
+        let crRawByteCount = try Int(cursor.readLittleEndianUInt16())
+        let componentByteCount = ySRLByteCount + yRawByteCount
+            + cbSRLByteCount + cbRawByteCount
+            + crSRLByteCount + crRawByteCount
+        guard cursor.remaining == componentByteCount else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+    }
+}
+
+private enum RDPGFXCAVideoBlockType {
+    static let tile: UInt16 = 0xCAC3
+    static let sync: UInt16 = 0xCCC0
+    static let codecVersions: UInt16 = 0xCCC1
+    static let channels: UInt16 = 0xCCC2
+    static let context: UInt16 = 0xCCC3
+    static let frameBegin: UInt16 = 0xCCC4
+    static let frameEnd: UInt16 = 0xCCC5
+    static let region: UInt16 = 0xCCC6
+    static let tileSet: UInt16 = 0xCCC7
+
+    static func name(for blockType: UInt16) -> String {
+        switch blockType {
+        case tile:
+            "tile"
+        case sync:
+            "sync"
+        case codecVersions:
+            "codec-versions"
+        case channels:
+            "channels"
+        case context:
+            "context"
+        case frameBegin:
+            "frame-begin"
+        case frameEnd:
+            "frame-end"
+        case region:
+            "region"
+        case tileSet:
+            "tile-set"
+        default:
+            "block-0x\(String(format: "%04x", blockType))"
+        }
+    }
+
+    static func isChannelBlock(_ blockType: UInt16) -> Bool {
+        switch blockType {
+        case context, frameBegin, frameEnd, region, tileSet:
+            true
+        default:
+            false
+        }
+    }
+}
+
+private struct RDPGFXCAVideoBitmapStreamSummary: Equatable, Sendable {
+    var blockTypes: [UInt16] = []
+    var blockTypeNames: [String] = []
+    var channelWidths: [UInt16] = []
+    var channelHeights: [UInt16] = []
+    var contextEntropyAlgorithms: [String] = []
+    var tileSetEntropyAlgorithms: [String] = []
+    var frameIndexes: [UInt32] = []
+    var frameRegionCounts: [UInt16] = []
+    var regionCount = 0
+    var regionRectCount = 0
+    var regionRects: [RDPFrameRect] = []
+    var tileCount = 0
+    var tileRects: [RDPFrameRect] = []
+    var tileDataByteCount = 0
+
+    static func summarize(_ data: Data) throws -> RDPGFXCAVideoBitmapStreamSummary {
+        var cursor = ByteCursor(data)
+        var summary = RDPGFXCAVideoBitmapStreamSummary()
+        while cursor.remaining > 0 {
+            try summary.parseBlock(from: &cursor, topLevel: true)
+        }
+        return summary
+    }
+
+    private mutating func parseBlock(from cursor: inout ByteCursor, topLevel: Bool) throws {
+        guard cursor.remaining >= 6 else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+        let blockType = try cursor.readLittleEndianUInt16()
+        let blockLength = try cursor.readLittleEndianUInt32()
+        guard blockLength >= 6,
+              UInt64(blockLength - 6) <= UInt64(cursor.remaining)
+        else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+
+        blockTypes.append(blockType)
+        blockTypeNames.append(RDPGFXCAVideoBlockType.name(for: blockType))
+
+        var bodyCursor = ByteCursor(try cursor.readData(count: Int(blockLength - 6)))
+        if RDPGFXCAVideoBlockType.isChannelBlock(blockType) {
+            let channelID = try Self.parseCodecChannelHeader(&bodyCursor)
+            switch blockType {
+            case RDPGFXCAVideoBlockType.context:
+                guard channelID == 0xFF else {
+                    throw RDPDecodeError.invalidRDPGFXPDU
+                }
+            default:
+                guard channelID == 0 else {
+                    throw RDPDecodeError.invalidRDPGFXPDU
+                }
+            }
+        }
+
+        switch blockType {
+        case RDPGFXCAVideoBlockType.sync:
+            try Self.parseSync(&bodyCursor)
+        case RDPGFXCAVideoBlockType.codecVersions:
+            try Self.parseCodecVersions(&bodyCursor)
+        case RDPGFXCAVideoBlockType.channels:
+            try parseChannels(&bodyCursor)
+        case RDPGFXCAVideoBlockType.context:
+            try parseContext(&bodyCursor)
+        case RDPGFXCAVideoBlockType.frameBegin:
+            try parseFrameBegin(&bodyCursor)
+        case RDPGFXCAVideoBlockType.frameEnd:
+            guard bodyCursor.remaining == 0 else {
+                throw RDPDecodeError.invalidRDPGFXPDU
+            }
+        case RDPGFXCAVideoBlockType.region:
+            try parseRegion(&bodyCursor)
+        case RDPGFXCAVideoBlockType.tileSet:
+            try parseTileSet(&bodyCursor)
+        case RDPGFXCAVideoBlockType.tile where !topLevel:
+            try parseTile(&bodyCursor)
+        default:
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+
+        guard bodyCursor.remaining == 0 else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+    }
+
+    private static func entropyAlgorithmName(_ bits: UInt16) -> String {
+        switch bits {
+        case 0x01:
+            "rlgr1"
+        case 0x04:
+            "rlgr3"
+        default:
+            "entropy-0x\(String(format: "%x", bits))"
+        }
+    }
+
+    private static func parseCodecChannelHeader(_ cursor: inout ByteCursor) throws -> UInt8 {
+        guard cursor.remaining >= 2,
+              try cursor.readUInt8() == 1
+        else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+        return try cursor.readUInt8()
+    }
+
+    private static func parseSync(_ cursor: inout ByteCursor) throws {
+        guard cursor.remaining == 6,
+              try cursor.readLittleEndianUInt32() == 0xCACC_ACCA,
+              try cursor.readLittleEndianUInt16() == 0x0100
+        else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+    }
+
+    private static func parseCodecVersions(_ cursor: inout ByteCursor) throws {
+        guard cursor.remaining >= 1 else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+        let codecCount = try Int(cursor.readUInt8())
+        guard cursor.remaining == codecCount * 3 else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+        for _ in 0 ..< codecCount {
+            guard try cursor.readUInt8() == 1,
+                  try cursor.readLittleEndianUInt16() == 0x0100
+            else {
+                throw RDPDecodeError.invalidRDPGFXPDU
+            }
+        }
+    }
+
+    private mutating func parseChannels(_ cursor: inout ByteCursor) throws {
+        guard cursor.remaining >= 1 else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+        let channelCount = try Int(cursor.readUInt8())
+        guard cursor.remaining == channelCount * 5 else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+        for _ in 0 ..< channelCount {
+            guard try cursor.readUInt8() == 0 else {
+                throw RDPDecodeError.invalidRDPGFXPDU
+            }
+            channelWidths.append(try cursor.readLittleEndianUInt16())
+            channelHeights.append(try cursor.readLittleEndianUInt16())
+        }
+    }
+
+    private mutating func parseContext(_ cursor: inout ByteCursor) throws {
+        guard cursor.remaining == 5,
+              try cursor.readUInt8() == 0,
+              try cursor.readLittleEndianUInt16() == 64
+        else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+        let properties = try cursor.readLittleEndianUInt16()
+        let entropy = (properties >> 9) & 0x0F
+        contextEntropyAlgorithms.append(Self.entropyAlgorithmName(entropy))
+    }
+
+    private mutating func parseFrameBegin(_ cursor: inout ByteCursor) throws {
+        guard cursor.remaining == 6 else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+        frameIndexes.append(try cursor.readLittleEndianUInt32())
+        frameRegionCounts.append(try cursor.readLittleEndianUInt16())
+    }
+
+    private mutating func parseRegion(_ cursor: inout ByteCursor) throws {
+        guard cursor.remaining >= 7,
+              try cursor.readUInt8() & 0x01 == 0x01
+        else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+        let rectangleCount = try Int(cursor.readLittleEndianUInt16())
+        guard cursor.remaining >= rectangleCount * 8 + 4 else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+
+        regionCount += 1
+        regionRectCount += rectangleCount
+        for _ in 0 ..< rectangleCount {
+            let x = try cursor.readLittleEndianUInt16()
+            let y = try cursor.readLittleEndianUInt16()
+            let width = try cursor.readLittleEndianUInt16()
+            let height = try cursor.readLittleEndianUInt16()
+            guard UInt32(x) + UInt32(width) <= UInt32(UInt16.max),
+                  UInt32(y) + UInt32(height) <= UInt32(UInt16.max)
+            else {
+                throw RDPDecodeError.invalidRDPGFXPDU
+            }
+            regionRects.append(RDPFrameRect(
+                left: x,
+                top: y,
+                right: x + width,
+                bottom: y + height
+            ))
+        }
+        guard try cursor.readLittleEndianUInt16() == 0xCAC1,
+              try cursor.readLittleEndianUInt16() == 1
+        else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+    }
+
+    private mutating func parseTileSet(_ cursor: inout ByteCursor) throws {
+        guard cursor.remaining >= 14,
+              try cursor.readLittleEndianUInt16() == 0xCAC2,
+              try cursor.readLittleEndianUInt16() == 0
+        else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+        let properties = try cursor.readLittleEndianUInt16()
+        let entropy = (properties >> 10) & 0x0F
+        tileSetEntropyAlgorithms.append(Self.entropyAlgorithmName(entropy))
+        let quantCount = try Int(cursor.readUInt8())
+        guard try cursor.readUInt8() == 64 else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+        let expectedTileCount = try Int(cursor.readLittleEndianUInt16())
+        let tilesDataSize = try Int(cursor.readLittleEndianUInt32())
+        guard cursor.remaining == quantCount * 5 + tilesDataSize else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+        _ = try cursor.readData(count: quantCount * 5)
+
+        var tileCursor = ByteCursor(try cursor.readData(count: tilesDataSize))
+        let startTileCount = tileCount
+        while tileCursor.remaining > 0 {
+            try parseBlock(from: &tileCursor, topLevel: false)
+        }
+        guard tileCount - startTileCount == expectedTileCount else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+    }
+
+    private mutating func parseTile(_ cursor: inout ByteCursor) throws {
+        guard cursor.remaining >= 13 else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+        _ = try cursor.readUInt8()
+        _ = try cursor.readUInt8()
+        _ = try cursor.readUInt8()
+        let xIndex = try cursor.readLittleEndianUInt16()
+        let yIndex = try cursor.readLittleEndianUInt16()
+        let yByteCount = try Int(cursor.readLittleEndianUInt16())
+        let cbByteCount = try Int(cursor.readLittleEndianUInt16())
+        let crByteCount = try Int(cursor.readLittleEndianUInt16())
+        let componentByteCount = yByteCount + cbByteCount + crByteCount
+        guard cursor.remaining == componentByteCount else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+        _ = try cursor.readData(count: componentByteCount)
+
+        let left = UInt32(xIndex) * 64
+        let top = UInt32(yIndex) * 64
+        guard left + 64 <= UInt32(UInt16.max),
+              top + 64 <= UInt32(UInt16.max)
+        else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+        tileCount += 1
+        tileDataByteCount += componentByteCount
+        tileRects.append(RDPFrameRect(
+            left: UInt16(left),
+            top: UInt16(top),
+            right: UInt16(left + 64),
+            bottom: UInt16(top + 64)
+        ))
     }
 }
 
@@ -867,6 +1681,7 @@ public struct RDPGFXMessageSummary: Encodable, Equatable, Sendable {
     public var pixelFormat: UInt8?
     public var codecID: UInt16?
     public var codecName: String?
+    public var codecContextID: UInt32?
     public var bitmapDataLength: UInt32?
     public var avc420RegionCount: Int?
     public var avc420EncodedBitstreamLength: Int?
@@ -877,9 +1692,58 @@ public struct RDPGFXMessageSummary: Encodable, Equatable, Sendable {
     public var avc444Chroma420RegionCount: Int?
     public var avc444Chroma420EncodedBitstreamLength: Int?
     public var h264NalUnitTypes: [UInt8]?
+    public var clearCodecFlags: UInt8?
+    public var clearCodecSequenceNumber: UInt8?
+    public var clearCodecGlyphIndex: UInt16?
+    public var clearCodecResidualByteCount: UInt32?
+    public var clearCodecBandsByteCount: UInt32?
+    public var clearCodecSubcodecByteCount: UInt32?
+    public var clearCodecSubcodecIDs: [UInt8]?
+    public var clearCodecSubcodecRects: [RDPFrameRect]?
+    public var clearCodecSubcodecByteCounts: [UInt32]?
+    public var clearCodecNSCodecYByteCounts: [UInt32?]?
+    public var clearCodecNSCodecCoByteCounts: [UInt32?]?
+    public var clearCodecNSCodecCgByteCounts: [UInt32?]?
+    public var clearCodecNSCodecAlphaByteCounts: [UInt32?]?
+    public var clearCodecNSCodecColorLossLevels: [UInt8?]?
+    public var clearCodecNSCodecChromaSubsamplingLevels: [UInt8?]?
+    public var cavideoBlockTypes: [UInt16]?
+    public var cavideoBlockTypeNames: [String]?
+    public var cavideoChannelWidths: [UInt16]?
+    public var cavideoChannelHeights: [UInt16]?
+    public var cavideoContextEntropyAlgorithms: [String]?
+    public var cavideoTileSetEntropyAlgorithms: [String]?
+    public var cavideoFrameIndexes: [UInt32]?
+    public var cavideoFrameRegionCounts: [UInt16]?
+    public var cavideoRegionCount: Int?
+    public var cavideoRegionRectCount: Int?
+    public var cavideoRegionRects: [RDPFrameRect]?
+    public var cavideoTileCount: Int?
+    public var cavideoTileRects: [RDPFrameRect]?
+    public var cavideoTileDataByteCount: Int?
+    public var progressiveBlockTypes: [UInt16]?
+    public var progressiveBlockTypeNames: [String]?
+    public var progressiveContextIDs: [UInt8]?
+    public var progressiveContextTileSizes: [UInt16]?
+    public var progressiveContextFlags: [UInt8]?
+    public var progressiveFrameIndexes: [UInt32]?
+    public var progressiveFrameRegionCounts: [UInt16]?
+    public var progressiveRegionCount: Int?
+    public var progressiveRegionRectCount: Int?
+    public var progressiveRegionRects: [RDPFrameRect]?
+    public var progressiveRegionTileCount: Int?
+    public var progressiveTileSimpleCount: Int?
+    public var progressiveTileFirstCount: Int?
+    public var progressiveTileUpgradeCount: Int?
     public var frameID: UInt32?
     public var outputOriginX: UInt32?
     public var outputOriginY: UInt32?
+    public var fillColor: String?
+    public var fillRectCount: Int?
+    public var sourceRect: RDPFrameRect?
+    public var cacheKey: UInt64?
+    public var cacheSlot: UInt16?
+    public var destinationPointCount: Int?
 
     static func summarize(
         _ message: RDPGFXHeader,
@@ -910,6 +1774,31 @@ public struct RDPGFXMessageSummary: Encodable, Equatable, Sendable {
                 outputOriginX: map.outputOriginX,
                 outputOriginY: map.outputOriginY
             )
+        case RDPGFXCommandID.solidFill:
+            let solidFill = try RDPGFXSolidFillPDU.parse(from: message)
+            return RDPGFXMessageSummary(
+                typeName: message.typeName,
+                surfaceID: solidFill.surfaceID,
+                fillColor: solidFill.fillPixel.rgbHexString,
+                fillRectCount: solidFill.fillRects.count
+            )
+        case RDPGFXCommandID.surfaceToCache:
+            let surfaceToCache = try RDPGFXSurfaceToCachePDU.parse(from: message)
+            return RDPGFXMessageSummary(
+                typeName: message.typeName,
+                surfaceID: surfaceToCache.surfaceID,
+                sourceRect: RDPFrameRect(surfaceToCache.sourceRect),
+                cacheKey: surfaceToCache.cacheKey,
+                cacheSlot: surfaceToCache.cacheSlot
+            )
+        case RDPGFXCommandID.cacheToSurface:
+            let cacheToSurface = try RDPGFXCacheToSurfacePDU.parse(from: message)
+            return RDPGFXMessageSummary(
+                typeName: message.typeName,
+                surfaceID: cacheToSurface.surfaceID,
+                cacheSlot: cacheToSurface.cacheSlot,
+                destinationPointCount: cacheToSurface.destinationPoints.count
+            )
         case RDPGFXCommandID.startFrame:
             let startFrame = try RDPGFXStartFramePDU.parse(from: message)
             return RDPGFXMessageSummary(
@@ -931,6 +1820,12 @@ public struct RDPGFXMessageSummary: Encodable, Equatable, Sendable {
                 && (wire.codecID == RDPGFXCodecID.avc444 || wire.codecID == RDPGFXCodecID.avc444v2)
                 ? try? RDPGFXAVC444BitmapStream.parse(from: wire.bitmapData)
                 : nil
+            let clearCodec = wire.codecID == RDPGFXCodecID.clearCodec
+                ? try? RDPClearCodecDecoder.summarize(wire.bitmapData)
+                : nil
+            let cavideo = includeVideoDetails && wire.codecID == RDPGFXCodecID.cavideo
+                ? try? RDPGFXCAVideoBitmapStreamSummary.summarize(wire.bitmapData)
+                : nil
             return RDPGFXMessageSummary(
                 typeName: message.typeName,
                 surfaceID: wire.surfaceID,
@@ -946,17 +1841,64 @@ public struct RDPGFXMessageSummary: Encodable, Equatable, Sendable {
                 avc444YUV420EncodedBitstreamLength: avc444?.yuv420Stream?.encodedBitstream.count,
                 avc444Chroma420RegionCount: avc444?.chroma420Stream?.regionRects.count,
                 avc444Chroma420EncodedBitstreamLength: avc444?.chroma420Stream?.encodedBitstream.count,
-                h264NalUnitTypes: includeVideoDetails ? avc420?.nalUnitTypes ?? avc444?.nalUnitTypes : nil
+                h264NalUnitTypes: includeVideoDetails ? avc420?.nalUnitTypes ?? avc444?.nalUnitTypes : nil,
+                clearCodecFlags: clearCodec?.flags,
+                clearCodecSequenceNumber: clearCodec?.sequenceNumber,
+                clearCodecGlyphIndex: clearCodec?.glyphIndex,
+                clearCodecResidualByteCount: clearCodec?.residualByteCount,
+                clearCodecBandsByteCount: clearCodec?.bandsByteCount,
+                clearCodecSubcodecByteCount: clearCodec?.subcodecByteCount,
+                clearCodecSubcodecIDs: clearCodec?.subcodecRegions.map(\.codecID),
+                clearCodecSubcodecRects: clearCodec?.subcodecRegions.map(\.rect),
+                clearCodecSubcodecByteCounts: clearCodec?.subcodecRegions.map(\.byteCount),
+                clearCodecNSCodecYByteCounts: clearCodec?.subcodecRegions.map(\.nsCodecYByteCount),
+                clearCodecNSCodecCoByteCounts: clearCodec?.subcodecRegions.map(\.nsCodecCoByteCount),
+                clearCodecNSCodecCgByteCounts: clearCodec?.subcodecRegions.map(\.nsCodecCgByteCount),
+                clearCodecNSCodecAlphaByteCounts: clearCodec?.subcodecRegions.map(\.nsCodecAlphaByteCount),
+                clearCodecNSCodecColorLossLevels: clearCodec?.subcodecRegions.map(\.nsCodecColorLossLevel),
+                clearCodecNSCodecChromaSubsamplingLevels: clearCodec?.subcodecRegions.map(\.nsCodecChromaSubsamplingLevel),
+                cavideoBlockTypes: cavideo?.blockTypes,
+                cavideoBlockTypeNames: cavideo?.blockTypeNames,
+                cavideoChannelWidths: cavideo?.channelWidths,
+                cavideoChannelHeights: cavideo?.channelHeights,
+                cavideoContextEntropyAlgorithms: cavideo?.contextEntropyAlgorithms,
+                cavideoTileSetEntropyAlgorithms: cavideo?.tileSetEntropyAlgorithms,
+                cavideoFrameIndexes: cavideo?.frameIndexes,
+                cavideoFrameRegionCounts: cavideo?.frameRegionCounts,
+                cavideoRegionCount: cavideo?.regionCount,
+                cavideoRegionRectCount: cavideo?.regionRectCount,
+                cavideoRegionRects: cavideo?.regionRects,
+                cavideoTileCount: cavideo?.tileCount,
+                cavideoTileRects: cavideo?.tileRects,
+                cavideoTileDataByteCount: cavideo?.tileDataByteCount
             )
         case RDPGFXCommandID.wireToSurface2:
             let wire = try RDPGFXWireToSurface2PDU.parse(from: message)
+            let progressive = wire.codecID == RDPGFXCodecID.caProgressive
+                ? try? RDPGFXProgressiveBitmapStreamSummary.summarize(wire.bitmapData)
+                : nil
             return RDPGFXMessageSummary(
                 typeName: message.typeName,
                 surfaceID: wire.surfaceID,
                 pixelFormat: wire.pixelFormat,
                 codecID: wire.codecID,
                 codecName: RDPGFXCodecID.name(for: wire.codecID),
-                bitmapDataLength: wire.bitmapDataLength
+                codecContextID: wire.codecContextID,
+                bitmapDataLength: wire.bitmapDataLength,
+                progressiveBlockTypes: progressive?.blockTypes,
+                progressiveBlockTypeNames: progressive?.blockTypeNames,
+                progressiveContextIDs: progressive?.contextIDs,
+                progressiveContextTileSizes: progressive?.contextTileSizes,
+                progressiveContextFlags: progressive?.contextFlags,
+                progressiveFrameIndexes: progressive?.frameIndexes,
+                progressiveFrameRegionCounts: progressive?.frameRegionCounts,
+                progressiveRegionCount: progressive?.regionCount,
+                progressiveRegionRectCount: progressive?.regionRectCount,
+                progressiveRegionRects: progressive?.regionRects,
+                progressiveRegionTileCount: progressive?.regionTileCount,
+                progressiveTileSimpleCount: progressive?.tileSimpleCount,
+                progressiveTileFirstCount: progressive?.tileFirstCount,
+                progressiveTileUpgradeCount: progressive?.tileUpgradeCount
             )
         default:
             return RDPGFXMessageSummary(typeName: message.typeName)
@@ -964,55 +1906,33 @@ public struct RDPGFXMessageSummary: Encodable, Equatable, Sendable {
     }
 }
 
+final class RDPGFXServerTransportDecoder {
+    private let zgfx = RDPZGFXDecompressor()
+
+    func decodeGraphicsMessages(from data: Data) throws -> [RDPGFXHeader] {
+        try RDPGFXServerTransport.decodeGraphicsMessages(from: data, zgfx: zgfx)
+    }
+}
+
 enum RDPGFXServerTransport {
     static func decodeGraphicsMessages(from data: Data) throws -> [RDPGFXHeader] {
+        try decodeGraphicsMessages(from: data, zgfx: RDPZGFXDecompressor())
+    }
+
+    fileprivate static func decodeGraphicsMessages(
+        from data: Data,
+        zgfx: RDPZGFXDecompressor
+    ) throws -> [RDPGFXHeader] {
         guard let descriptor = data.first else {
             throw RDPDecodeError.invalidRDPGFXPDU
         }
 
         switch descriptor {
-        case 0xE0:
-            var cursor = ByteCursor(data.dropFirst())
-            return try splitGraphicsMessages(from: decodeRDP8BulkData(&cursor))
-        case 0xE1:
-            var cursor = ByteCursor(data.dropFirst())
-            return try splitGraphicsMessages(from: decodeMultipartSegmentedData(&cursor))
+        case 0xE0, 0xE1:
+            return try splitGraphicsMessages(from: zgfx.decompress(data))
         default:
             return try splitGraphicsMessages(from: data)
         }
-    }
-
-    private static func decodeMultipartSegmentedData(_ cursor: inout ByteCursor) throws -> Data {
-        let segmentCount = try cursor.readLittleEndianUInt16()
-        let uncompressedSize = try cursor.readLittleEndianUInt32()
-        var data = Data()
-
-        for _ in 0 ..< segmentCount {
-            let segmentSize = try cursor.readLittleEndianUInt32()
-            guard segmentSize > 0,
-                  segmentSize <= UInt32(cursor.remaining)
-            else {
-                throw RDPDecodeError.invalidRDPGFXPDU
-            }
-
-            var segmentCursor = try ByteCursor(cursor.readData(count: Int(segmentSize)))
-            try data.append(decodeRDP8BulkData(&segmentCursor))
-        }
-
-        guard data.count == Int(uncompressedSize) else {
-            throw RDPDecodeError.invalidRDPGFXPDU
-        }
-        return data
-    }
-
-    private static func decodeRDP8BulkData(_ cursor: inout ByteCursor) throws -> Data {
-        let header = try cursor.readUInt8()
-        let compressionType = header & 0x0F
-        let isCompressed = header & 0x20 != 0
-        guard compressionType == 0x04, !isCompressed else {
-            throw RDPDecodeError.invalidRDPGFXPDU
-        }
-        return cursor.readRemainingData()
     }
 
     private static func splitGraphicsMessages(from data: Data) throws -> [RDPGFXHeader] {

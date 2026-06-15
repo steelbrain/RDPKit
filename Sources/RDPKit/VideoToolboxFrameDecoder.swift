@@ -16,20 +16,155 @@ public struct RDPH264FirstFrameDecoder {
 public final class RDPVideoToolboxFrameDecoder {
     private let h264Decoder = RDPH264FrameSequenceDecoder()
     private let hevcDecoder = RDPHEVCFrameSequenceDecoder()
+    private let bitmapDecoder = RDPBitmapFrameDecoder()
     private let imageConverter = RDPVideoToolboxCGImageConverter()
 
     public init() {}
+
+    public func reset() {
+        h264Decoder.reset()
+        hevcDecoder.reset()
+    }
 
     public func decode(_ frame: RDPGraphicsFrameSnapshot) throws -> CGImage {
         try imageConverter.makeImage(from: decodeDetailed(frame).imageBuffer)
     }
 
     public func decodeDetailed(_ frame: RDPGraphicsFrameSnapshot) throws -> RDPVideoToolboxDecodeResult {
+        if frame.contentKind == .bitmap {
+            return try bitmapDecoder.decodeDetailed(frame)
+        }
+
         switch frame.videoCodec {
         case .h264:
-            try h264Decoder.decodeDetailed(frame.encodedVideoData)
+            return try h264Decoder.decodeDetailed(frame.encodedVideoData)
         case .hevc:
-            try hevcDecoder.decodeDetailed(frame.encodedVideoData)
+            return try hevcDecoder.decodeDetailed(frame.encodedVideoData)
+        }
+    }
+}
+
+private final class RDPBitmapFrameDecoder {
+    func decodeDetailed(_ frame: RDPGraphicsFrameSnapshot) throws -> RDPVideoToolboxDecodeResult {
+        guard frame.contentKind == .bitmap,
+              let bitmapData = frame.decodedBitmapData,
+              let bytesPerRow = frame.decodedBitmapBytesPerRow
+        else {
+            throw RDPBitmapFrameDecodeError.missingBitmapData
+        }
+
+        let width = Int(frame.width)
+        let height = Int(frame.height)
+        guard width > 0,
+              height > 0,
+              bytesPerRow >= width * 4,
+              bitmapData.count >= bytesPerRow * height
+        else {
+            throw RDPBitmapFrameDecodeError.invalidBitmapLayout
+        }
+
+        let start = Date()
+        let imageBuffer = try makePixelBuffer(
+            width: width,
+            height: height,
+            bytesPerRow: bytesPerRow,
+            data: bitmapData
+        )
+        let elapsed = Date().timeIntervalSince(start) * 1000
+        return RDPVideoToolboxDecodeResult(
+            imageBuffer: imageBuffer,
+            samplePreparationMilliseconds: 0,
+            videoToolboxMilliseconds: 0,
+            imageConversionMilliseconds: elapsed,
+            decodedPixelFormat: kCVPixelFormatType_32BGRA,
+            usesHardwareAcceleration: nil
+        )
+    }
+
+    private func makePixelBuffer(
+        width: Int,
+        height: Int,
+        bytesPerRow: Int,
+        data: Data
+    ) throws -> CVPixelBuffer {
+        let nsData = data as NSData
+        let retainedData = Unmanaged.passRetained(nsData)
+        var pixelBuffer: CVPixelBuffer?
+        let status = CVPixelBufferCreateWithBytes(
+            kCFAllocatorDefault,
+            width,
+            height,
+            kCVPixelFormatType_32BGRA,
+            UnsafeMutableRawPointer(mutating: nsData.bytes),
+            bytesPerRow,
+            { releaseRefCon, _ in
+                guard let releaseRefCon else {
+                    return
+                }
+                Unmanaged<NSData>.fromOpaque(releaseRefCon).release()
+            },
+            retainedData.toOpaque(),
+            nil,
+            &pixelBuffer
+        )
+
+        if status != kCVReturnSuccess {
+            retainedData.release()
+            return try makeCopiedPixelBuffer(width: width, height: height, bytesPerRow: bytesPerRow, data: data)
+        }
+
+        guard let pixelBuffer else {
+            throw RDPBitmapFrameDecodeError.missingPixelBuffer
+        }
+        return pixelBuffer
+    }
+
+    private func makeCopiedPixelBuffer(
+        width: Int,
+        height: Int,
+        bytesPerRow: Int,
+        data: Data
+    ) throws -> CVPixelBuffer {
+        var pixelBuffer: CVPixelBuffer?
+        let status = CVPixelBufferCreate(
+            kCFAllocatorDefault,
+            width,
+            height,
+            kCVPixelFormatType_32BGRA,
+            makeVideoDecoderImageBufferAttributes(),
+            &pixelBuffer
+        )
+        try check(status, operation: "create bitmap pixel buffer")
+
+        guard let pixelBuffer else {
+            throw RDPBitmapFrameDecodeError.missingPixelBuffer
+        }
+        CVPixelBufferLockBaseAddress(pixelBuffer, [])
+        defer {
+            CVPixelBufferUnlockBaseAddress(pixelBuffer, [])
+        }
+
+        guard let destination = CVPixelBufferGetBaseAddress(pixelBuffer) else {
+            throw RDPBitmapFrameDecodeError.missingBaseAddress
+        }
+
+        let destinationBytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
+        data.withUnsafeBytes { sourceBuffer in
+            guard let source = sourceBuffer.baseAddress else {
+                return
+            }
+            for row in 0 ..< height {
+                let sourceRow = source.advanced(by: row * bytesPerRow)
+                let destinationRow = destination.advanced(by: row * destinationBytesPerRow)
+                memcpy(destinationRow, sourceRow, width * 4)
+            }
+        }
+        return pixelBuffer
+    }
+
+    private func check(_ status: CVReturn, operation: String) throws {
+        guard status == kCVReturnSuccess else {
+            throw RDPBitmapFrameDecodeError.coreVideo(operation: operation, status: status)
         }
     }
 }
@@ -164,6 +299,19 @@ public final class RDPH264FrameSequenceDecoder {
     }
 
     public init() {}
+
+    public func reset() {
+        if let session {
+            VTDecompressionSessionInvalidate(session)
+        }
+        sequenceParameterSet = nil
+        pictureParameterSet = nil
+        formatDescription = nil
+        session = nil
+        usesHardwareAcceleration = nil
+        output.status = noErr
+        output.imageBuffer = nil
+    }
 
     public func decode(_ annexBData: Data) throws -> CGImage {
         try imageConverter.makeImage(from: decodeDetailed(annexBData).imageBuffer)
@@ -421,6 +569,20 @@ public final class RDPHEVCFrameSequenceDecoder {
     }
 
     public init() {}
+
+    public func reset() {
+        if let session {
+            VTDecompressionSessionInvalidate(session)
+        }
+        videoParameterSet = nil
+        sequenceParameterSet = nil
+        pictureParameterSet = nil
+        formatDescription = nil
+        session = nil
+        usesHardwareAcceleration = nil
+        output.status = noErr
+        output.imageBuffer = nil
+    }
 
     public func decode(_ annexBData: Data) throws -> CGImage {
         try imageConverter.makeImage(from: decodeDetailed(annexBData).imageBuffer)
@@ -720,6 +882,29 @@ public enum RDPH264FirstFrameDecodeError: Error, CustomStringConvertible {
             "CoreGraphics could not crop decoded frame from \(sourceWidth)x\(sourceHeight) to \(destinationWidth)x\(destinationHeight)."
         case let .videoToolbox(operation, status):
             "\(operation) failed with OSStatus \(status)."
+        }
+    }
+}
+
+public enum RDPBitmapFrameDecodeError: Error, Equatable, CustomStringConvertible {
+    case missingBitmapData
+    case invalidBitmapLayout
+    case missingPixelBuffer
+    case missingBaseAddress
+    case coreVideo(operation: String, status: CVReturn)
+
+    public var description: String {
+        switch self {
+        case .missingBitmapData:
+            "Decoded bitmap frame is missing BGRA data."
+        case .invalidBitmapLayout:
+            "Decoded bitmap frame has an invalid layout."
+        case .missingPixelBuffer:
+            "Core Video did not return a bitmap pixel buffer."
+        case .missingBaseAddress:
+            "Core Video did not expose the bitmap pixel buffer base address."
+        case let .coreVideo(operation, status):
+            "Core Video failed to \(operation): \(status)."
         }
     }
 }

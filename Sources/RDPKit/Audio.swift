@@ -5,6 +5,10 @@ enum RDPAudioChannel {
     static let name = "rdpsnd"
 }
 
+enum RDPAudioDynamicChannel {
+    static let name = "AUDIO_PLAYBACK_DVC"
+}
+
 enum RDPAudioMessageType {
     static let close: UInt8 = 0x01
     static let waveInfo: UInt8 = 0x02
@@ -442,11 +446,27 @@ struct RDPAudioFormatsPDU: Equatable, Sendable {
 
     static func clientPCM(version: UInt16) -> RDPAudioFormatsPDU {
         RDPAudioFormatsPDU(
-            flags: RDPAudioCapabilityFlags.alive,
+            flags: RDPAudioCapabilityFlags.alive | RDPAudioCapabilityFlags.volume,
+            volume: 0xFFFF_FFFF,
             datagramPort: 0,
             version: version,
             formats: [.pcmStereo48k16Bit]
         )
+    }
+
+    static func compatibleClientFormats(from serverFormats: [RDPAudioFormat]) -> [RDPAudioFormat] {
+        let exactPCM = serverFormats.first { format in
+            format.formatTag == RDPAudioFormatTag.pcm
+                && format.channelCount == RDPAudioFormat.pcmStereo48k16Bit.channelCount
+                && format.samplesPerSecond == RDPAudioFormat.pcmStereo48k16Bit.samplesPerSecond
+                && format.bitsPerSample == RDPAudioFormat.pcmStereo48k16Bit.bitsPerSample
+                && format.blockAlign == RDPAudioFormat.pcmStereo48k16Bit.blockAlign
+        }
+        if let exactPCM {
+            return [exactPCM]
+        }
+
+        return serverFormats.first(where: \.isPCM16Bit).map { [$0] } ?? [.pcmStereo48k16Bit]
     }
 
     static func parseIfPresent(from pdu: RDPAudioPDU) throws -> RDPAudioFormatsPDU? {
@@ -559,6 +579,7 @@ public final class RDPAudioSession: @unchecked Sendable {
     public let staticChannelID: UInt16
     private let userChannelID: UInt16
     private let channel: Channel
+    private let dynamicChannelID: UInt32?
     private let lock = NSLock()
     private var serverFormats: [RDPAudioFormat] = []
     private var negotiatedFormats: [RDPAudioFormat] = []
@@ -569,13 +590,31 @@ public final class RDPAudioSession: @unchecked Sendable {
         self.userChannelID = userChannelID
         self.staticChannelID = staticChannelID
         self.channel = channel
+        dynamicChannelID = nil
+    }
+
+    init(
+        userChannelID: UInt16,
+        dynamicStaticChannelID: UInt16,
+        dynamicChannelID: UInt32,
+        channel: Channel
+    ) {
+        self.userChannelID = userChannelID
+        staticChannelID = dynamicStaticChannelID
+        self.channel = channel
+        self.dynamicChannelID = dynamicChannelID
+    }
+
+    func handlesDynamicChannel(_ channelID: UInt32) -> Bool {
+        dynamicChannelID == channelID
     }
 
     func respondToServerFormats(_ serverFormatsPDU: RDPAudioFormatsPDU) {
         let clientVersion = min(UInt16(8), max(UInt16(2), serverFormatsPDU.version))
         let formats = negotiatedFormats(from: serverFormatsPDU.formats)
         let clientFormats = RDPAudioFormatsPDU(
-            flags: RDPAudioCapabilityFlags.alive,
+            flags: RDPAudioCapabilityFlags.alive | RDPAudioCapabilityFlags.volume,
+            volume: 0xFFFF_FFFF,
             datagramPort: 0,
             version: clientVersion,
             formats: formats
@@ -589,7 +628,7 @@ public final class RDPAudioSession: @unchecked Sendable {
 
         send(clientFormats.encoded())
         if serverFormatsPDU.version >= 6 {
-            send(RDPAudioQualityModePDU().encoded())
+            send(RDPAudioQualityModePDU(qualityMode: RDPAudioQualityMode.high).encoded())
         }
     }
 
@@ -656,14 +695,7 @@ public final class RDPAudioSession: @unchecked Sendable {
     }
 
     private func negotiatedFormats(from serverFormats: [RDPAudioFormat]) -> [RDPAudioFormat] {
-        let compatiblePCM = serverFormats.first { format in
-            format.formatTag == RDPAudioFormatTag.pcm
-                && format.channelCount == RDPAudioFormat.pcmStereo48k16Bit.channelCount
-                && format.samplesPerSecond == RDPAudioFormat.pcmStereo48k16Bit.samplesPerSecond
-                && format.bitsPerSample == RDPAudioFormat.pcmStereo48k16Bit.bitsPerSample
-                && format.blockAlign == RDPAudioFormat.pcmStereo48k16Bit.blockAlign
-        }
-        return compatiblePCM.map { [$0] } ?? [.pcmStereo48k16Bit]
+        RDPAudioFormatsPDU.compatibleClientFormats(from: serverFormats)
     }
 
     private func sample(
@@ -701,7 +733,16 @@ public final class RDPAudioSession: @unchecked Sendable {
     }
 
     private func send(_ payload: Data) {
-        let packet = RDPStaticVirtualChannelPDU(payload: payload)
+        let channelPayload: Data
+        if let dynamicChannelID {
+            channelPayload = RDPDynamicVirtualChannelDataPDU(
+                channelID: dynamicChannelID,
+                payload: payload
+            ).encoded()
+        } else {
+            channelPayload = payload
+        }
+        let packet = RDPStaticVirtualChannelPDU(payload: channelPayload)
             .encodedTPKT(initiator: userChannelID, channelID: staticChannelID)
         channel.eventLoop.execute {
             guard self.channel.isActive else {

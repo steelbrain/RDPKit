@@ -27,6 +27,23 @@ import Testing
     """))
 }
 
+@Test func clipboardTemporaryDirectoryEncodesFixedUTF16PathBuffer() throws {
+    let encoded = RDPClipboardTemporaryDirectoryPDU(path: "/tmp").encoded()
+    let pdu = try RDPClipboardPDU.parse(from: encoded)
+
+    #expect(encoded.count == 528)
+    #expect(pdu.typeName == "clipboard-temporary-directory")
+    #expect(pdu.header.dataLength == 520)
+    #expect(pdu.payload.prefix(10) == Data([
+        0x2F, 0x00,
+        0x74, 0x00,
+        0x6D, 0x00,
+        0x70, 0x00,
+        0x00, 0x00,
+    ]))
+    #expect(pdu.payload.dropFirst(10).allSatisfy { $0 == 0 })
+}
+
 @Test func clipboardFormatListParsesLongAndShortNameVariants() throws {
     let long = try RDPClipboardPDU.parse(from: hexData("""
     02 00 00 00 06 00 00 00 0d 00 00 00 00 00

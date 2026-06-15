@@ -9,6 +9,18 @@ import Testing
     #expect(pdu.isComplete)
 }
 
+@Test func staticVirtualChannelCanRequestShowProtocolFraming() {
+    let pdu = RDPStaticVirtualChannelPDU(
+        payload: Data([0x07, 0x00, 0x00, 0x00]),
+        flags: RDPStaticVirtualChannelFlags.first
+            | RDPStaticVirtualChannelFlags.last
+            | RDPStaticVirtualChannelFlags.showProtocol
+    )
+
+    #expect(pdu.encodedUserData().rdpHexString == "04 00 00 00 13 00 00 00 07 00 00 00")
+    #expect(pdu.isComplete)
+}
+
 @Test func staticVirtualChannelParsesFromMCSDataIndication() throws {
     let packet = Data([
         0x03, 0x00, 0x00, 0x1A,

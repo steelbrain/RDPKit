@@ -46,6 +46,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
     private var remoteClipboardFileTransfer: RDPRemoteSessionRemoteClipboardFileTransfer?
     private var remoteClipboardDownloadDirectory: URL?
     private var nextRemoteClipboardStreamID: UInt32 = 1
+    private var graphicsCapabilityProfile: RDPGraphicsCapabilityProfile = .automatic
     private var audioPlaybackEnabled = false
     private var audioMessage: String?
     private var remoteAudioPlayer = RDPAudioPlayer()
@@ -88,6 +89,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
     private let passwordField = NSSecureTextField()
     private let rememberPasswordButton = NSButton(checkboxWithTitle: "Remember password in Keychain", target: nil, action: nil)
     private let autoApplyViewerSizeButton = NSButton(checkboxWithTitle: "Follow View Size", target: nil, action: nil)
+    private let graphicsProfilePopup = NSPopUpButton()
     private let clipboardSharingButton = NSButton(checkboxWithTitle: "Share Clipboard", target: nil, action: nil)
     private let audioPlaybackButton = NSButton(checkboxWithTitle: "Request Remote Audio", target: nil, action: nil)
     private let hideCertificateWarningsButton = NSButton(checkboxWithTitle: "Hide certificate warnings", target: nil, action: nil)
@@ -124,6 +126,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         rememberPassword = draft.rememberPassword
         hideCertificateWarnings = draft.hideCertificateWarnings
         timeoutSeconds = Double(draft.timeoutSeconds)
+        graphicsCapabilityProfile = draft.graphicsCapabilityProfile
         clipboardSharingEnabled = draft.clipboardSharingEnabled
         audioPlaybackEnabled = draft.audioPlaybackEnabled
         super.init(nibName: nil, bundle: nil)
@@ -271,6 +274,14 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         configureCheckbox(audioPlaybackButton, action: #selector(toggleAudioPlayback(_:)))
         configureCheckbox(hideCertificateWarningsButton, action: #selector(toggleHideCertificateWarnings(_:)))
 
+        graphicsProfilePopup.removeAllItems()
+        for profile in RDPGraphicsCapabilityProfile.allCases {
+            graphicsProfilePopup.addItem(withTitle: profile.displayName)
+            graphicsProfilePopup.lastItem?.representedObject = profile.rawValue
+        }
+        graphicsProfilePopup.target = self
+        graphicsProfilePopup.action = #selector(graphicsProfileChanged(_:))
+
         timeoutStepper.minValue = 3
         timeoutStepper.maxValue = 60
         timeoutStepper.increment = 1
@@ -315,6 +326,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
             sizeRow(),
             viewerSizeActionsRow(),
             viewerSizeLabel,
+            labeledControl("Graphics Profile", graphicsProfilePopup),
             displayControlLabel,
         ]))
         sidebarStack.addArrangedSubview(section("Credentials", [
@@ -363,6 +375,8 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         clipboardSharingButton.state = clipboardSharingEnabled ? .on : .off
         audioPlaybackButton.state = audioPlaybackEnabled ? .on : .off
         hideCertificateWarningsButton.state = hideCertificateWarnings ? .on : .off
+        graphicsProfilePopup.selectItem(withTitle: graphicsCapabilityProfile.displayName)
+        graphicsProfilePopup.isEnabled = !isConnecting
 
         timeoutStepper.doubleValue = timeoutSeconds
         timeoutLabel.stringValue = "Timeout: \(Int(timeoutSeconds))s"
@@ -402,6 +416,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
             status: status,
             decodeError: previewDecodeError,
             metricsSummary: viewerMetricsSummary,
+            graphicsPathSummary: report.map { RDPGraphicsPathDescription.describe(report: $0) },
             inputSession: inputSession,
             isConnecting: isConnecting,
             formError: formError,
@@ -597,7 +612,8 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
             graphicsFrameCaptureLimit: nil,
             desktopSize: requestedDesktopSize,
             clipboardEnabled: clipboardSharingEnabled,
-            audioPlaybackEnabled: audioPlaybackEnabled
+            audioPlaybackEnabled: audioPlaybackEnabled,
+            graphicsCapabilityProfile: graphicsCapabilityProfile
         )
 
         let connectionID = UUID()
@@ -1708,6 +1724,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         username = usernameField.stringValue
         domain = domainField.stringValue
         password = passwordField.stringValue
+        graphicsCapabilityProfile = selectedGraphicsProfile()
     }
 
     private func syncFieldsFromState() {
@@ -1827,6 +1844,11 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         render()
     }
 
+    @objc private func graphicsProfileChanged(_: NSPopUpButton) {
+        graphicsCapabilityProfile = selectedGraphicsProfile()
+        render()
+    }
+
     @objc private func timeoutChanged(_ sender: NSStepper) {
         timeoutSeconds = sender.doubleValue
         render()
@@ -1907,6 +1929,29 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         stack.addArrangedSubview(field)
         field.widthAnchor.constraint(equalToConstant: fieldWidth ?? 260).isActive = true
         return stack
+    }
+
+    private func labeledControl(_ title: String, _ control: NSControl, width: CGFloat = 260) -> NSStackView {
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 4
+        let label = NSTextField(labelWithString: title)
+        label.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        label.textColor = .secondaryLabelColor
+        stack.addArrangedSubview(label)
+        stack.addArrangedSubview(control)
+        control.widthAnchor.constraint(equalToConstant: width).isActive = true
+        return stack
+    }
+
+    private func selectedGraphicsProfile() -> RDPGraphicsCapabilityProfile {
+        guard let rawValue = graphicsProfilePopup.selectedItem?.representedObject as? String,
+              let profile = RDPGraphicsCapabilityProfile(rawValue: rawValue)
+        else {
+            return .automatic
+        }
+        return profile
     }
 
     private func sizeRow() -> NSStackView {
@@ -2181,6 +2226,7 @@ private final class RDPRemoteSessionAppKitDetailView: NSView {
         status: RDPRemoteSessionAppKitStatus,
         decodeError: String?,
         metricsSummary: String?,
+        graphicsPathSummary: String?,
         inputSession: RDPInputSession?,
         isConnecting: Bool,
         formError: String?,
@@ -2214,7 +2260,12 @@ private final class RDPRemoteSessionAppKitDetailView: NSView {
             isConnecting: isConnecting
         )
 
-        footerLabel.stringValue = footerText(frame: frame, frameCount: frameCount, metricsSummary: metricsSummary)
+        footerLabel.stringValue = footerText(
+            frame: frame,
+            frameCount: frameCount,
+            metricsSummary: metricsSummary,
+            graphicsPathSummary: graphicsPathSummary
+        )
         footerLabel.isHidden = footerLabel.stringValue.isEmpty
 
         formErrorNotice.render(
@@ -2334,8 +2385,16 @@ private final class RDPRemoteSessionAppKitDetailView: NSView {
         button.bezelStyle = .rounded
     }
 
-    private func footerText(frame: RDPFrameMetadata?, frameCount: Int, metricsSummary: String?) -> String {
+    private func footerText(
+        frame: RDPFrameMetadata?,
+        frameCount: Int,
+        metricsSummary: String?,
+        graphicsPathSummary: String?
+    ) -> String {
         var parts: [String] = []
+        if let graphicsPathSummary {
+            parts.append(graphicsPathSummary)
+        }
         if let frame {
             parts.append(frameLabel(frame))
         }
@@ -2349,10 +2408,13 @@ private final class RDPRemoteSessionAppKitDetailView: NSView {
     }
 
     private func frameLabel(_ frame: RDPFrameMetadata) -> String {
+        let codecDescription = frame.contentKind == .video
+            ? "\(frame.codecName)/\(frame.videoCodec.displayName)"
+            : frame.codecName
         var parts = [
-            "\(frame.codecName)/\(frame.videoCodec.displayName)",
+            codecDescription,
             "\(frame.width)x\(frame.height)",
-            "\(frame.videoByteCount) bytes",
+            "\(frame.payloadByteCount) bytes",
         ]
         if let frameID = frame.frameID {
             parts.append("frame \(frameID)")

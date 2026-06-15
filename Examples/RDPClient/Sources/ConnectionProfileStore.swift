@@ -11,6 +11,7 @@ struct ConnectionProfile: Codable, Equatable, Identifiable, Sendable {
     var desktopHeight: UInt16
     var hideCertificateWarnings: Bool
     var timeoutSeconds: Int
+    var graphicsCapabilityProfile: RDPGraphicsCapabilityProfile
     var clipboardSharingEnabled: Bool
     var audioPlaybackEnabled: Bool
     var rememberPassword: Bool
@@ -26,6 +27,7 @@ struct ConnectionProfile: Codable, Equatable, Identifiable, Sendable {
         case desktopHeight
         case hideCertificateWarnings
         case timeoutSeconds
+        case graphicsCapabilityProfile
         case clipboardSharingEnabled
         case audioPlaybackEnabled
         case rememberPassword
@@ -42,6 +44,7 @@ struct ConnectionProfile: Codable, Equatable, Identifiable, Sendable {
         desktopHeight: UInt16,
         hideCertificateWarnings: Bool,
         timeoutSeconds: Int,
+        graphicsCapabilityProfile: RDPGraphicsCapabilityProfile = .automatic,
         clipboardSharingEnabled: Bool,
         audioPlaybackEnabled: Bool,
         rememberPassword: Bool,
@@ -56,6 +59,7 @@ struct ConnectionProfile: Codable, Equatable, Identifiable, Sendable {
         self.desktopHeight = desktopHeight
         self.hideCertificateWarnings = hideCertificateWarnings
         self.timeoutSeconds = timeoutSeconds
+        self.graphicsCapabilityProfile = graphicsCapabilityProfile
         self.clipboardSharingEnabled = clipboardSharingEnabled
         self.audioPlaybackEnabled = audioPlaybackEnabled
         self.rememberPassword = rememberPassword
@@ -73,6 +77,10 @@ struct ConnectionProfile: Codable, Equatable, Identifiable, Sendable {
         desktopHeight = try container.decode(UInt16.self, forKey: .desktopHeight)
         hideCertificateWarnings = try container.decode(Bool.self, forKey: .hideCertificateWarnings)
         timeoutSeconds = try container.decode(Int.self, forKey: .timeoutSeconds)
+        graphicsCapabilityProfile = try container.decodeIfPresent(
+            RDPGraphicsCapabilityProfile.self,
+            forKey: .graphicsCapabilityProfile
+        ) ?? .automatic
         clipboardSharingEnabled = try container.decodeIfPresent(
             Bool.self,
             forKey: .clipboardSharingEnabled

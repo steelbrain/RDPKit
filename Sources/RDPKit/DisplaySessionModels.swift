@@ -134,24 +134,32 @@ public struct RDPFrameMetadata: Equatable, Sendable {
     public var surfaceID: UInt16
     public var codecID: UInt16
     public var codecName: String
+    public var contentKind: RDPGraphicsFrameContentKind
     public var videoCodec: RDPVideoCodec
     public var pixelFormat: UInt8
     public var width: UInt16
     public var height: UInt16
     public var videoByteCount: Int
+    public var bitmapByteCount: Int
     public var videoNalUnitTypes: [UInt8]
     public var regionCount: Int
+
+    public var payloadByteCount: Int {
+        contentKind == .bitmap ? bitmapByteCount : videoByteCount
+    }
 
     public init(_ frame: RDPGraphicsFrameSnapshot) {
         frameID = frame.frameID
         surfaceID = frame.surfaceID
         codecID = frame.codecID
         codecName = frame.codecName
+        contentKind = frame.contentKind
         videoCodec = frame.videoCodec
         pixelFormat = frame.pixelFormat
         width = frame.width
         height = frame.height
         videoByteCount = frame.videoByteCount
+        bitmapByteCount = frame.bitmapByteCount
         videoNalUnitTypes = frame.videoNalUnitTypes
         regionCount = frame.regionRects.count
     }

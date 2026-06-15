@@ -152,12 +152,21 @@ struct RDPClientConfirmActivePDU: Equatable, Sendable {
         [
             capabilitySet(type: 0x0001, body: generalCapabilitySetBody()),
             capabilitySet(type: 0x0002, body: bitmapCapabilitySetBody()),
+            capabilitySet(type: 0x0003, body: orderCapabilitySetBody()),
+            capabilitySet(type: 0x0004, body: bitmapCacheCapabilitySetBody()),
+            capabilitySet(type: 0x0008, body: pointerCapabilitySetBody()),
             capabilitySet(type: 0x000D, body: inputCapabilitySetBody()),
             capabilitySet(type: 0x000E, body: fontCapabilitySetBody()),
+            capabilitySet(type: 0x000F, body: brushCapabilitySetBody()),
+            capabilitySet(type: 0x0010, body: glyphCacheCapabilitySetBody()),
+            capabilitySet(type: 0x0011, body: offscreenBitmapCacheCapabilitySetBody()),
             capabilitySet(type: 0x0014, body: virtualChannelCapabilitySetBody()),
+            capabilitySet(type: 0x000C, body: soundCapabilitySetBody()),
             capabilitySet(type: 0x001A, body: multifragmentUpdateCapabilitySetBody()),
             capabilitySet(type: 0x001B, body: largePointerCapabilitySetBody()),
             capabilitySet(type: 0x001C, body: surfaceCommandsCapabilitySetBody()),
+            capabilitySet(type: 0x001D, body: bitmapCodecsCapabilitySetBody()),
+            capabilitySet(type: 0x001E, body: frameAcknowledgeCapabilitySetBody()),
         ]
     }
 
@@ -178,7 +187,7 @@ struct RDPClientConfirmActivePDU: Equatable, Sendable {
         data.appendLittleEndianUInt16(0x0200)
         data.appendLittleEndianUInt16(0)
         data.appendLittleEndianUInt16(0)
-        data.appendLittleEndianUInt16(0x0405)
+        data.appendLittleEndianUInt16(0x0404)
         data.appendLittleEndianUInt16(0)
         data.appendLittleEndianUInt16(0)
         data.appendLittleEndianUInt16(0)
@@ -205,6 +214,40 @@ struct RDPClientConfirmActivePDU: Equatable, Sendable {
         return data
     }
 
+    private func orderCapabilitySetBody() -> Data {
+        var data = Data()
+        data.append(Data(repeating: 0, count: 16))
+        data.appendLittleEndianUInt32(0)
+        data.appendLittleEndianUInt16(1)
+        data.appendLittleEndianUInt16(20)
+        data.appendLittleEndianUInt16(0)
+        data.appendLittleEndianUInt16(1)
+        data.appendLittleEndianUInt16(0)
+        data.appendLittleEndianUInt16(0x000A)
+        data.append(Data(repeating: 0, count: 32))
+        data.appendLittleEndianUInt16(0)
+        data.appendLittleEndianUInt16(0)
+        data.appendLittleEndianUInt32(0)
+        data.appendLittleEndianUInt32(0)
+        data.appendLittleEndianUInt16(0)
+        data.appendLittleEndianUInt16(0)
+        data.appendLittleEndianUInt16(0)
+        data.appendLittleEndianUInt16(0)
+        return data
+    }
+
+    private func bitmapCacheCapabilitySetBody() -> Data {
+        Data(repeating: 0, count: 36)
+    }
+
+    private func pointerCapabilitySetBody() -> Data {
+        var data = Data()
+        data.appendLittleEndianUInt16(1)
+        data.appendLittleEndianUInt16(32)
+        data.appendLittleEndianUInt16(32)
+        return data
+    }
+
     private func inputCapabilitySetBody() -> Data {
         var data = Data()
         data.appendLittleEndianUInt16(0x0131)
@@ -224,6 +267,20 @@ struct RDPClientConfirmActivePDU: Equatable, Sendable {
         return data
     }
 
+    private func brushCapabilitySetBody() -> Data {
+        var data = Data()
+        data.appendLittleEndianUInt32(0)
+        return data
+    }
+
+    private func glyphCacheCapabilitySetBody() -> Data {
+        Data(repeating: 0, count: 48)
+    }
+
+    private func offscreenBitmapCacheCapabilitySetBody() -> Data {
+        Data(repeating: 0, count: 8)
+    }
+
     private func virtualChannelCapabilitySetBody() -> Data {
         var data = Data()
         data.appendLittleEndianUInt32(0)
@@ -231,22 +288,115 @@ struct RDPClientConfirmActivePDU: Equatable, Sendable {
         return data
     }
 
+    private func soundCapabilitySetBody() -> Data {
+        var data = Data()
+        data.appendLittleEndianUInt16(0)
+        data.appendLittleEndianUInt16(0)
+        return data
+    }
+
     private func multifragmentUpdateCapabilitySetBody() -> Data {
         var data = Data()
-        data.appendLittleEndianUInt32(0x0001_0000)
+        data.appendLittleEndianUInt32(0x0080_0000)
         return data
     }
 
     private func largePointerCapabilitySetBody() -> Data {
         var data = Data()
-        data.appendLittleEndianUInt16(1)
+        data.appendLittleEndianUInt16(3)
         return data
     }
 
     private func surfaceCommandsCapabilitySetBody() -> Data {
         var data = Data()
-        data.appendLittleEndianUInt32(0x0000_0052)
         data.appendLittleEndianUInt32(0)
+        data.appendLittleEndianUInt32(0)
+        return data
+    }
+
+    private func bitmapCodecsCapabilitySetBody() -> Data {
+        var data = Data()
+        data.appendUInt8(2)
+        data.append(remoteFXCodecGUID())
+        data.appendUInt8(3)
+        data.append(remoteFXClientCapabilityContainer())
+        data.append(nsCodecGUID())
+        data.appendUInt8(1)
+        data.append(nsCodecCapabilitySet())
+        return data
+    }
+
+    private func remoteFXCodecGUID() -> Data {
+        Data([
+            0x12, 0x2F, 0x77, 0x76,
+            0x72, 0xBD,
+            0x63, 0x44,
+            0xAF, 0xB3, 0xB7, 0x3C, 0x9C, 0x6F, 0x78, 0x86,
+        ])
+    }
+
+    private func remoteFXClientCapabilityContainer() -> Data {
+        var data = Data()
+        data.appendLittleEndianUInt16(49)
+        data.appendLittleEndianUInt32(49)
+        data.appendLittleEndianUInt32(1)
+        data.appendLittleEndianUInt32(37)
+        data.appendLittleEndianUInt16(0xCBC0)
+        data.appendLittleEndianUInt32(8)
+        data.appendLittleEndianUInt16(1)
+        data.appendLittleEndianUInt16(0xCBC1)
+        data.appendLittleEndianUInt32(29)
+        data.appendUInt8(1)
+        data.appendLittleEndianUInt16(0xCFC0)
+        data.appendLittleEndianUInt16(2)
+        data.appendLittleEndianUInt16(8)
+        appendRemoteFXImageCodecCapability(
+            to: &data,
+            flags: 0,
+            entropyAlgorithm: 1
+        )
+        appendRemoteFXImageCodecCapability(
+            to: &data,
+            flags: 2,
+            entropyAlgorithm: 4
+        )
+        return data
+    }
+
+    private func nsCodecGUID() -> Data {
+        Data([
+            0xB9, 0x1B, 0x8D, 0xCA,
+            0x0F, 0x00,
+            0x4F, 0x15,
+            0x58, 0x9F, 0xAE, 0x2D, 0x1A, 0x87, 0xE2, 0xD6,
+        ])
+    }
+
+    private func nsCodecCapabilitySet() -> Data {
+        var data = Data()
+        data.appendLittleEndianUInt16(3)
+        data.appendUInt8(1)
+        data.appendUInt8(1)
+        data.appendUInt8(3)
+        return data
+    }
+
+    private func appendRemoteFXImageCodecCapability(
+        to data: inout Data,
+        flags: UInt8,
+        entropyAlgorithm: UInt8
+    ) {
+        data.appendLittleEndianUInt16(0x0100)
+        data.appendLittleEndianUInt16(0x0040)
+        data.appendUInt8(flags)
+        data.appendUInt8(1)
+        data.appendUInt8(1)
+        data.appendUInt8(entropyAlgorithm)
+    }
+
+    private func frameAcknowledgeCapabilitySetBody() -> Data {
+        var data = Data()
+        data.appendLittleEndianUInt32(2)
         return data
     }
 }

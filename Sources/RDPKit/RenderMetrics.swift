@@ -226,7 +226,7 @@ public struct RDPRenderMetrics: Equatable {
         lastFrameReceivedAt = receivedAt
         lastFrameDecodedAt = decodedAt
         decodedFrameCount += 1
-        decodedByteCount += frame.videoByteCount
+        decodedByteCount += frame.payloadByteCount
         totalDecodeMilliseconds += timing.totalMilliseconds
         lastDecodeMilliseconds = timing.totalMilliseconds
         maxDecodeMilliseconds = max(maxDecodeMilliseconds ?? 0, timing.totalMilliseconds)

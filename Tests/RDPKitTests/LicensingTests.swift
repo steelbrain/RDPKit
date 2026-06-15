@@ -2,7 +2,7 @@ import Foundation
 @testable import RDPKit
 import Testing
 
-@Test func parsesLicenseErrorValidClientFromKRdpPacket() throws {
+@Test func parsesLicenseErrorValidClientFromServerPacket() throws {
     let license = try #require(try RDPServerLicensePDU.parseIfPresent(fromTPKT: Data([
         0x03, 0x00, 0x00, 0x23,
         0x02, 0xF0, 0x80,

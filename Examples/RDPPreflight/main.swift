@@ -9,8 +9,15 @@ struct Arguments {
     var passwordEnv: String?
     var timeoutSeconds: Int = 10
     var graphicsFrames: Int = 1
+    var graphicsCapabilityProfile: RDPGraphicsCapabilityProfile = .automatic
     var hideCertificateWarnings = false
     var audioPlaybackEnabled = false
+    var probeClipboardText: String?
+    var probeWindowsClipboardText: String?
+    var probeWindowsPasteClipboard = false
+    var probeInputText: String?
+    var probeInputPointer = false
+    var probeWindowsAudio = false
     var dryRun = false
     var json = false
 }
@@ -23,6 +30,9 @@ enum CLIError: Error, CustomStringConvertible {
     case invalidPort(String)
     case invalidTimeout(String)
     case invalidGraphicsFrames(String)
+    case invalidGraphicsProfile(String)
+    case invalidProbeClipboardText
+    case invalidProbeWindowsClipboardText
 
     var description: String {
         switch self {
@@ -40,7 +50,207 @@ enum CLIError: Error, CustomStringConvertible {
             "invalid --timeout-seconds \(value)"
         case let .invalidGraphicsFrames(value):
             "invalid --graphics-frames \(value)"
+        case let .invalidGraphicsProfile(value):
+            "invalid --graphics-profile \(value)"
+        case .invalidProbeClipboardText:
+            "--probe-clipboard-text exceeds the CLIPRDR single-message text limit"
+        case .invalidProbeWindowsClipboardText:
+            "--probe-windows-clipboard-text must be non-empty ASCII text up to 96 code units"
         }
+    }
+}
+
+final class PreflightProbeRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private let windowsClipboardProbeText: String?
+    private var clipboardProbeTextUTF16CodeUnitCount: Int?
+    private var clipboardReceivedTextUTF16CodeUnitCount: Int?
+    private var clipboardReceivedTextMatchesProbe: Bool?
+    private var inputProbeEvents: [String] = []
+    private var inputSession: RDPInputSession?
+    private var inputProbeSent = false
+
+    init(windowsClipboardProbeText: String?) {
+        self.windowsClipboardProbeText = windowsClipboardProbeText
+    }
+
+    func publishClipboardText(_ text: String, on session: RDPClipboardSession) {
+        session.publishLocalUnicodeText(text)
+
+        lock.lock()
+        clipboardProbeTextUTF16CodeUnitCount = text.utf16.count
+        lock.unlock()
+    }
+
+    func recordClipboardText(_ text: String) {
+        lock.lock()
+        clipboardReceivedTextUTF16CodeUnitCount = text.utf16.count
+        if let windowsClipboardProbeText {
+            clipboardReceivedTextMatchesProbe = text == windowsClipboardProbeText
+        }
+        lock.unlock()
+    }
+
+    func recordInputSession(_ session: RDPInputSession) {
+        lock.lock()
+        inputSession = session
+        lock.unlock()
+    }
+
+    func sendInputProbeAfterFirstFrame(
+        text: String?,
+        movePointerToCenter: Bool,
+        pasteClipboardOnWindows: Bool,
+        windowsClipboardText: String?,
+        triggerWindowsAudio: Bool
+    ) {
+        let session: RDPInputSession
+        lock.lock()
+        guard inputProbeSent == false, let recordedSession = inputSession else {
+            lock.unlock()
+            return
+        }
+        inputProbeSent = true
+        session = recordedSession
+        lock.unlock()
+
+        var events: [RDPSlowPathInputEvent] = []
+        var eventNames: [String] = []
+
+        if movePointerToCenter {
+            events.append(.pointerMove(x: 640, y: 360))
+            eventNames.append("pointer-move:640x360")
+        }
+
+        if let text, text.isEmpty == false {
+            for codeUnit in text.utf16 {
+                events.append(.unicode(codeUnit: codeUnit, isReleased: false))
+                events.append(.unicode(codeUnit: codeUnit, isReleased: true))
+            }
+            eventNames.append("unicode-text:\(text.utf16.count)-code-units")
+        }
+
+        if events.isEmpty == false {
+            session.send(events)
+        }
+
+        if pasteClipboardOnWindows {
+            sendWindowsClipboardPasteProbe(on: session)
+            eventNames.append("windows-clipboard-paste")
+            Thread.sleep(forTimeInterval: 0.8)
+        }
+        if let windowsClipboardText {
+            sendWindowsRunCommand(windowsClipboardCommand(for: windowsClipboardText), on: session)
+            eventNames.append("windows-clipboard-command:\(windowsClipboardText.utf16.count)-code-units")
+            Thread.sleep(forTimeInterval: 0.8)
+        }
+        if triggerWindowsAudio {
+            sendWindowsRunPowerShellCommand(
+                "$p=New-Object System.Media.SoundPlayer 'C:\\Windows\\Media\\Windows Notify.wav';1..6|%{$p.PlaySync()}",
+                on: session
+            )
+            eventNames.append("windows-audio-command")
+        }
+
+        guard eventNames.isEmpty == false else {
+            return
+        }
+
+        lock.lock()
+        inputProbeEvents.append(contentsOf: eventNames)
+        lock.unlock()
+    }
+
+    private func sendWindowsClipboardPasteProbe(on session: RDPInputSession) {
+        let escape = RDPKeyboardScancode(code: 0x0001)
+        let leftWindows = RDPKeyboardScancode(code: 0x005B, isExtended: true)
+        let rKey = RDPKeyboardScancode(code: 0x0013)
+        let leftControl = RDPKeyboardScancode(code: 0x001D)
+        let aKey = RDPKeyboardScancode(code: 0x001E)
+        let vKey = RDPKeyboardScancode(code: 0x002F)
+        let backspace = RDPKeyboardScancode(code: 0x000E)
+
+        session.send(keyStroke(escape))
+        Thread.sleep(forTimeInterval: 0.2)
+        session.send(keyChord(modifier: leftWindows, key: rKey))
+        Thread.sleep(forTimeInterval: 1.25)
+        session.send(keyChord(modifier: leftControl, key: aKey))
+        session.send(keyStroke(backspace))
+        Thread.sleep(forTimeInterval: 0.2)
+        session.send(keyChord(modifier: leftControl, key: vKey))
+        Thread.sleep(forTimeInterval: 0.5)
+        session.send(keyStroke(escape))
+    }
+
+    private func sendWindowsRunPowerShellCommand(_ command: String, on session: RDPInputSession) {
+        sendWindowsRunCommand("powershell -NoProfile -Command \"\(command)\"", on: session)
+    }
+
+    private func sendWindowsRunCommand(_ command: String, on session: RDPInputSession) {
+        let escape = RDPKeyboardScancode(code: 0x0001)
+        let leftWindows = RDPKeyboardScancode(code: 0x005B, isExtended: true)
+        let rKey = RDPKeyboardScancode(code: 0x0013)
+        let leftControl = RDPKeyboardScancode(code: 0x001D)
+        let aKey = RDPKeyboardScancode(code: 0x001E)
+        let backspace = RDPKeyboardScancode(code: 0x000E)
+        let enter = RDPKeyboardScancode(code: 0x001C)
+
+        session.send(keyStroke(escape))
+        Thread.sleep(forTimeInterval: 0.2)
+        session.send(keyChord(modifier: leftWindows, key: rKey))
+        Thread.sleep(forTimeInterval: 1.25)
+        session.send(keyChord(modifier: leftControl, key: aKey))
+        session.send(keyStroke(backspace))
+        Thread.sleep(forTimeInterval: 0.2)
+        session.send(unicodeInputEvents(for: command))
+        Thread.sleep(forTimeInterval: 0.2)
+        session.send(keyStroke(enter))
+    }
+
+    private func keyStroke(_ scancode: RDPKeyboardScancode) -> [RDPSlowPathInputEvent] {
+        [
+            .keyboard(scancode: scancode, isReleased: false),
+            .keyboard(scancode: scancode, isReleased: true),
+        ]
+    }
+
+    private func keyChord(
+        modifier: RDPKeyboardScancode,
+        key: RDPKeyboardScancode
+    ) -> [RDPSlowPathInputEvent] {
+        [
+            .keyboard(scancode: modifier, isReleased: false),
+            .keyboard(scancode: key, isReleased: false),
+            .keyboard(scancode: key, isReleased: true),
+            .keyboard(scancode: modifier, isReleased: true),
+        ]
+    }
+
+    private func unicodeInputEvents(for text: String) -> [RDPSlowPathInputEvent] {
+        text.utf16.flatMap { codeUnit in
+            [
+                RDPSlowPathInputEvent.unicode(codeUnit: codeUnit, isReleased: false),
+                RDPSlowPathInputEvent.unicode(codeUnit: codeUnit, isReleased: true),
+            ]
+        }
+    }
+
+    private func windowsClipboardCommand(for text: String) -> String {
+        "cmd /c <nul set /p \"=\(text)\"|clip"
+    }
+
+    func apply(to report: inout RDPPreflightReport) {
+        lock.lock()
+        let clipboardProbeTextUTF16CodeUnitCount = clipboardProbeTextUTF16CodeUnitCount
+        let clipboardReceivedTextUTF16CodeUnitCount = clipboardReceivedTextUTF16CodeUnitCount
+        let clipboardReceivedTextMatchesProbe = clipboardReceivedTextMatchesProbe
+        let inputProbeEvents = inputProbeEvents
+        lock.unlock()
+
+        report.rdpClipboardProbeTextUTF16CodeUnitCount = clipboardProbeTextUTF16CodeUnitCount
+        report.rdpClipboardReceivedTextUTF16CodeUnitCount = clipboardReceivedTextUTF16CodeUnitCount
+        report.rdpClipboardReceivedTextMatchesProbe = clipboardReceivedTextMatchesProbe
+        report.rdpInputProbeEvents = inputProbeEvents.isEmpty ? nil : inputProbeEvents
     }
 }
 
@@ -86,10 +296,42 @@ func parseArguments(_ values: [String]) throws -> Arguments {
                 throw CLIError.invalidGraphicsFrames(values[index])
             }
             args.graphicsFrames = frames
+        case "--graphics-profile":
+            index += 1
+            guard index < values.count else { throw CLIError.missingValue(value) }
+            guard let profile = RDPGraphicsCapabilityProfile(rawValue: values[index]) else {
+                throw CLIError.invalidGraphicsProfile(values[index])
+            }
+            args.graphicsCapabilityProfile = profile
         case "--hide-certificate-warnings":
             args.hideCertificateWarnings = true
         case "--audio":
             args.audioPlaybackEnabled = true
+        case "--probe-clipboard-text":
+            index += 1
+            guard index < values.count else { throw CLIError.missingValue(value) }
+            guard RDPClipboardLimits.canPublishUnicodeText(values[index]) else {
+                throw CLIError.invalidProbeClipboardText
+            }
+            args.probeClipboardText = values[index]
+        case "--probe-windows-clipboard-text":
+            index += 1
+            guard index < values.count else { throw CLIError.missingValue(value) }
+            guard isValidWindowsClipboardProbeText(values[index]) else {
+                throw CLIError.invalidProbeWindowsClipboardText
+            }
+            args.probeWindowsClipboardText = values[index]
+        case "--probe-windows-paste-clipboard":
+            args.probeWindowsPasteClipboard = true
+        case "--probe-input-text":
+            index += 1
+            guard index < values.count else { throw CLIError.missingValue(value) }
+            args.probeInputText = values[index]
+        case "--probe-input-pointer":
+            args.probeInputPointer = true
+        case "--probe-windows-audio":
+            args.audioPlaybackEnabled = true
+            args.probeWindowsAudio = true
         case "--dry-run":
             args.dryRun = true
         case "--json":
@@ -105,6 +347,16 @@ func parseArguments(_ values: [String]) throws -> Arguments {
 
     guard args.host != nil else { throw CLIError.missingHost }
     return args
+}
+
+func isValidWindowsClipboardProbeText(_ text: String) -> Bool {
+    let allowedPunctuation = " -_:."
+    return text.isEmpty == false
+        && text.count <= 96
+        && text.allSatisfy { character in
+            character.isASCII
+                && (character.isLetter || character.isNumber || allowedPunctuation.contains(character))
+        }
 }
 
 func loadCredentials(from args: Arguments) throws -> RDPCredentials? {
@@ -135,7 +387,7 @@ func passwordIsConfigured(in args: Arguments?) -> Bool {
 
 func printUsage() {
     print("""
-    Usage: RDPPreflight --host <host> [--port 3389] [--username <name>] [--domain <domain>] [--password-env <env>] [--timeout-seconds 10] [--graphics-frames 1] [--hide-certificate-warnings] [--audio] [--dry-run] [--json]
+    Usage: RDPPreflight --host <host> [--port 3389] [--username <name>] [--domain <domain>] [--password-env <env>] [--timeout-seconds 10] [--graphics-frames 1] [--graphics-profile automatic|avcThinClient|avc420|legacy] [--hide-certificate-warnings] [--audio] [--probe-clipboard-text <text>] [--probe-windows-paste-clipboard] [--probe-windows-clipboard-text <text>] [--probe-input-text <text>] [--probe-input-pointer] [--probe-windows-audio] [--dry-run] [--json]
 
     Sends X.224/RDP negotiation, upgrades to TLS when selected, joins MCS channels, and sends Client Info.
     Credentials are validated now and used by later authentication stages; passwords are never printed.
@@ -360,10 +612,33 @@ func printReport(_ report: RDPPreflightReport, json: Bool) throws {
                 .joined(separator: ", ")
             print("rdp clipboard messages: \(messages)")
         }
+        if let rdpClipboardSentMessages = report.rdpClipboardSentMessages, !rdpClipboardSentMessages.isEmpty {
+            let messages = rdpClipboardSentMessages
+                .map { "\($0.typeName):flags=0x\(String(format: "%04x", $0.messageFlags)):bytes=\($0.dataLength)" }
+                .joined(separator: ", ")
+            print("rdp clipboard sent messages: \(messages)")
+        }
         if let rdpClipboardMessageHexes = report.rdpClipboardMessageHexes {
             for (index, messageHex) in rdpClipboardMessageHexes.enumerated() {
                 print("rdp clipboard message \(index + 1): \(messageHex)")
             }
+        }
+        if let rdpClipboardSentMessageHexes = report.rdpClipboardSentMessageHexes {
+            for (index, messageHex) in rdpClipboardSentMessageHexes.enumerated() {
+                print("rdp clipboard sent message \(index + 1): \(messageHex)")
+            }
+        }
+        if let rdpClipboardProbeTextUTF16CodeUnitCount = report.rdpClipboardProbeTextUTF16CodeUnitCount {
+            print("rdp clipboard probe text code units: \(rdpClipboardProbeTextUTF16CodeUnitCount)")
+        }
+        if let rdpClipboardReceivedTextUTF16CodeUnitCount = report.rdpClipboardReceivedTextUTF16CodeUnitCount {
+            print("rdp clipboard received text code units: \(rdpClipboardReceivedTextUTF16CodeUnitCount)")
+        }
+        if let rdpClipboardReceivedTextMatchesProbe = report.rdpClipboardReceivedTextMatchesProbe {
+            print("rdp clipboard received text matches probe: \(rdpClipboardReceivedTextMatchesProbe)")
+        }
+        if let rdpInputProbeEvents = report.rdpInputProbeEvents, !rdpInputProbeEvents.isEmpty {
+            print("rdp input probe events: \(rdpInputProbeEvents.joined(separator: ", "))")
         }
         if let rdpAudioChannelID = report.rdpAudioChannelID {
             print("rdp audio channel id: \(rdpAudioChannelID)")
@@ -385,6 +660,8 @@ func printReport(_ report: RDPPreflightReport, json: Bool) throws {
         if let rdpGraphicsResponseType = report.rdpGraphicsResponseType {
             print("rdp graphics response type: \(rdpGraphicsResponseType)")
         }
+        print("rdp graphics requested capability profile: \(report.rdpGraphicsCapabilityProfile.rawValue)")
+        print("rdp graphics path: \(RDPGraphicsPathDescription.describe(report: report))")
         if let rdpGraphicsSelectedCapabilityVersion = report.rdpGraphicsSelectedCapabilityVersion {
             print("rdp graphics selected capability version: 0x\(String(format: "%08x", rdpGraphicsSelectedCapabilityVersion))")
         }
@@ -398,6 +675,20 @@ func printReport(_ report: RDPPreflightReport, json: Bool) throws {
         }
         if let rdpGraphicsUpdateResponseCount = report.rdpGraphicsUpdateResponseCount {
             print("rdp graphics update response count: \(rdpGraphicsUpdateResponseCount)")
+        }
+        if let failureIndex = report.rdpGraphicsFailureUpdateMessageIndex {
+            print("rdp graphics failure update message index: \(failureIndex)")
+        }
+        if let failureMessages = report.rdpGraphicsFailureUpdateMessages,
+           !failureMessages.isEmpty
+        {
+            print("rdp graphics failure update messages: \(graphicsUpdateList(failureMessages))")
+        }
+        if let failurePayloadHex = report.rdpGraphicsFailureUpdatePayloadHex {
+            print("rdp graphics failure update payload: \(failurePayloadHex)")
+        }
+        if let failureResponseHex = report.rdpGraphicsFailureUpdateResponseHex {
+            print("rdp graphics failure update response: \(failureResponseHex)")
         }
         if let rdpGraphicsFrameAcknowledgeHexes = report.rdpGraphicsFrameAcknowledgeHexes {
             for (index, acknowledgeHex) in rdpGraphicsFrameAcknowledgeHexes.enumerated() {
@@ -461,6 +752,38 @@ func graphicsUpdateList(_ messages: [RDPGFXMessageSummary]) -> String {
             if let bitmapDataLength = message.bitmapDataLength {
                 parts.append("bytes=\(bitmapDataLength)")
             }
+            if let codecContextID = message.codecContextID {
+                parts.append("ctx=\(codecContextID)")
+            }
+            if let progressiveBlockTypeNames = message.progressiveBlockTypeNames,
+               !progressiveBlockTypeNames.isEmpty
+            {
+                parts.append("progressive=\(progressiveBlockTypeNames.joined(separator: "+"))")
+            }
+            if let progressiveRegionTileCount = message.progressiveRegionTileCount {
+                parts.append("tiles=\(progressiveRegionTileCount)")
+            }
+            if let progressiveTileFirstCount = message.progressiveTileFirstCount,
+               progressiveTileFirstCount > 0
+            {
+                parts.append("tile-first=\(progressiveTileFirstCount)")
+            }
+            if let progressiveTileUpgradeCount = message.progressiveTileUpgradeCount,
+               progressiveTileUpgradeCount > 0
+            {
+                parts.append("tile-upgrade=\(progressiveTileUpgradeCount)")
+            }
+            if let cavideoBlockTypeNames = message.cavideoBlockTypeNames,
+               !cavideoBlockTypeNames.isEmpty
+            {
+                parts.append("remotefx=\(cavideoBlockTypeNames.joined(separator: "+"))")
+            }
+            if let cavideoTileCount = message.cavideoTileCount {
+                parts.append("rfx-tiles=\(cavideoTileCount)")
+            }
+            if let entropy = message.cavideoTileSetEntropyAlgorithms?.last {
+                parts.append("rfx-entropy=\(entropy)")
+            }
             if let avc444Layout = message.avc444Layout {
                 parts.append("avc444=\(avc444Layout)")
             }
@@ -479,11 +802,14 @@ func graphicsFrameSummary(_ frame: RDPGraphicsFrameSnapshot) -> String {
     var parts = [
         "surface=\(frame.surfaceID)",
         "codec=\(frame.codecName)",
-        "video=\(frame.videoCodec.displayName)",
+        "content=\(frame.contentKind.rawValue)",
         "size=\(frame.width)x\(frame.height)",
-        "video-bytes=\(frame.videoByteCount)",
+        "payload-bytes=\(frame.payloadByteCount)",
         "regions=\(frame.regionRects.count)",
     ]
+    if frame.contentKind == .video {
+        parts.append("video=\(frame.videoCodec.displayName)")
+    }
     if let frameID = frame.frameID {
         parts.append("frame=\(frameID)")
     }
@@ -507,7 +833,8 @@ func failureReport(args: Arguments?, error: Error) -> RDPPreflightReport {
     let configuration = RDPConnectionConfiguration(
         host: host,
         port: port,
-        credentials: credentials
+        credentials: credentials,
+        graphicsCapabilityProfile: args?.graphicsCapabilityProfile ?? .automatic
     )
     var report = RDPPreflightClient().dryRun(configuration: configuration)
     report.status = "failure"
@@ -532,15 +859,41 @@ do {
         timeoutSeconds: args.timeoutSeconds,
         hideCertificateWarnings: args.hideCertificateWarnings,
         graphicsFrameCaptureLimit: args.graphicsFrames,
-        audioPlaybackEnabled: args.audioPlaybackEnabled
+        audioPlaybackEnabled: args.audioPlaybackEnabled,
+        graphicsCapabilityProfile: args.graphicsCapabilityProfile
     )
     let client = RDPPreflightClient()
+    let probeRecorder = PreflightProbeRecorder(windowsClipboardProbeText: args.probeWindowsClipboardText)
     let report = args.dryRun
         ? client.dryRun(configuration: configuration)
-        : client.run(configuration: configuration)
+        : client.run(
+            configuration: configuration,
+            onGraphicsFrame: { _ in
+                probeRecorder.sendInputProbeAfterFirstFrame(
+                    text: args.probeInputText,
+                    movePointerToCenter: args.probeInputPointer,
+                    pasteClipboardOnWindows: args.probeWindowsPasteClipboard,
+                    windowsClipboardText: args.probeWindowsClipboardText,
+                    triggerWindowsAudio: args.probeWindowsAudio
+                )
+            },
+            onInputReady: { session in
+                probeRecorder.recordInputSession(session)
+            },
+            onClipboardReady: { session in
+                if let probeClipboardText = args.probeClipboardText {
+                    probeRecorder.publishClipboardText(probeClipboardText, on: session)
+                }
+            },
+            onClipboardText: { text in
+                probeRecorder.recordClipboardText(text)
+            }
+        )
+    var annotatedReport = report
+    probeRecorder.apply(to: &annotatedReport)
 
-    try printReport(report, json: args.json)
-    if report.status == "failure" {
+    try printReport(annotatedReport, json: args.json)
+    if annotatedReport.status == "failure" {
         exit(1)
     }
 } catch {

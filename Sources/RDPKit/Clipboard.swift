@@ -41,6 +41,7 @@ enum RDPClipboardMessageType {
     static let formatListResponse: UInt16 = 0x0003
     static let formatDataRequest: UInt16 = 0x0004
     static let formatDataResponse: UInt16 = 0x0005
+    static let temporaryDirectory: UInt16 = 0x0006
     static let clipboardCapabilities: UInt16 = 0x0007
     static let fileContentsRequest: UInt16 = 0x0008
     static let fileContentsResponse: UInt16 = 0x0009
@@ -109,6 +110,8 @@ public struct RDPClipboardMessageSummary: Encodable, Equatable, Sendable {
     }
 }
 
+typealias RDPClipboardSentMessageHandler = (RDPClipboardMessageSummary, Data) -> Void
+
 struct RDPClipboardPDU: Equatable, Sendable {
     static let headerByteCount = 8
 
@@ -138,6 +141,8 @@ struct RDPClipboardPDU: Equatable, Sendable {
             "clipboard-format-data-request"
         case RDPClipboardMessageType.formatDataResponse:
             "clipboard-format-data-response"
+        case RDPClipboardMessageType.temporaryDirectory:
+            "clipboard-temporary-directory"
         case RDPClipboardMessageType.clipboardCapabilities:
             "clipboard-capabilities"
         case RDPClipboardMessageType.fileContentsRequest:
@@ -172,6 +177,36 @@ struct RDPClipboardPDU: Equatable, Sendable {
     private init(header: RDPClipboardHeader, payload: Data) {
         self.header = header
         self.payload = payload
+    }
+}
+
+struct RDPClipboardTemporaryDirectoryPDU: Equatable, Sendable {
+    private static let pathBufferUTF16CodeUnitCount = 260
+
+    var path: String
+
+    init(path: String = "/tmp") {
+        self.path = path
+    }
+
+    func encoded() -> Data {
+        var payload = Data()
+        let maximumPathCodeUnitCount = Self.pathBufferUTF16CodeUnitCount - 1
+        for codeUnit in path.utf16.prefix(maximumPathCodeUnitCount) {
+            payload.appendLittleEndianUInt16(codeUnit)
+        }
+        payload.appendLittleEndianUInt16(0)
+        if payload.count < Self.pathBufferUTF16CodeUnitCount * 2 {
+            payload.append(Data(
+                repeating: 0,
+                count: Self.pathBufferUTF16CodeUnitCount * 2 - payload.count
+            ))
+        }
+
+        return RDPClipboardPDU(
+            messageType: RDPClipboardMessageType.temporaryDirectory,
+            payload: payload
+        ).encoded()
     }
 }
 
@@ -899,15 +934,22 @@ public final class RDPClipboardSession: @unchecked Sendable {
     public let staticChannelID: UInt16
     private let userChannelID: UInt16
     private let channel: Channel
+    private let sentMessageHandler: RDPClipboardSentMessageHandler?
     private let lock = NSLock()
     private var localContent = RDPClipboardLocalContent.empty
     private var pendingFormatDataResponse: RDPClipboardRequestedFormatDataResponse?
     private var serverGeneralFlags: UInt32 = 0
 
-    init(userChannelID: UInt16, staticChannelID: UInt16, channel: Channel) {
+    init(
+        userChannelID: UInt16,
+        staticChannelID: UInt16,
+        channel: Channel,
+        sentMessageHandler: RDPClipboardSentMessageHandler? = nil
+    ) {
         self.userChannelID = userChannelID
         self.staticChannelID = staticChannelID
         self.channel = channel
+        self.sentMessageHandler = sentMessageHandler
     }
 
     public func publishLocalUnicodeText(_ text: String?) {
@@ -956,6 +998,7 @@ public final class RDPClipboardSession: @unchecked Sendable {
 
     func sendClientCapabilities() {
         send(RDPClipboardCapabilitiesPDU().encoded())
+        send(RDPClipboardTemporaryDirectoryPDU().encoded())
     }
 
     func sendFormatListResponse(ok: Bool) {
@@ -1079,8 +1122,18 @@ public final class RDPClipboardSession: @unchecked Sendable {
             return false
         }
 
-        let packet = RDPStaticVirtualChannelPDU(payload: payload)
+        let packet = RDPStaticVirtualChannelPDU(
+            payload: payload,
+            flags: RDPStaticVirtualChannelFlags.first
+                | RDPStaticVirtualChannelFlags.last
+                | RDPStaticVirtualChannelFlags.showProtocol
+        )
             .encodedTPKT(initiator: userChannelID, channelID: staticChannelID)
+        if let sentMessageHandler,
+           let pdu = try? RDPClipboardPDU.parse(from: payload)
+        {
+            sentMessageHandler(.summarize(pdu), packet)
+        }
         channel.eventLoop.execute {
             guard self.channel.isActive else {
                 return

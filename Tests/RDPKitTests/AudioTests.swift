@@ -66,8 +66,8 @@ import Testing
 
     #expect(encoded == Data([
         0x07, 0x00, 0x26, 0x00,
-        0x01, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00,
+        0x03, 0x00, 0x00, 0x00,
+        0xFF, 0xFF, 0xFF, 0xFF,
         0x00, 0x00, 0x00, 0x00,
         0x00, 0x00,
         0x01, 0x00,
@@ -82,16 +82,60 @@ import Testing
         0x10, 0x00,
         0x00, 0x00,
     ]))
-    #expect(parsed.flags == RDPAudioCapabilityFlags.alive)
+    #expect(parsed.flags == RDPAudioCapabilityFlags.alive | RDPAudioCapabilityFlags.volume)
+    #expect(parsed.volume == 0xFFFF_FFFF)
     #expect(parsed.datagramPort == 0)
     #expect(parsed.version == 6)
     #expect(parsed.formats == [.pcmStereo48k16Bit])
 }
 
-@Test func audioQualityModeEncodesDynamicQuality() {
-    #expect(RDPAudioQualityModePDU().encoded() == Data([
+@Test func audioClientFormatsPreferExactPCMWhenServerOffersIt() throws {
+    let pcmStereo44k = try RDPAudioFormat(
+        formatTag: RDPAudioFormatTag.pcm,
+        channelCount: 2,
+        samplesPerSecond: 44100,
+        averageBytesPerSecond: 176_400,
+        blockAlign: 4,
+        bitsPerSample: 16
+    )
+
+    #expect(RDPAudioFormatsPDU.compatibleClientFormats(
+        from: [pcmStereo44k, .pcmStereo48k16Bit]
+    ) == [.pcmStereo48k16Bit])
+}
+
+@Test func audioClientFormatsUseServerPCMWhenExactFormatIsMissing() throws {
+    let pcmStereo44k = try RDPAudioFormat(
+        formatTag: RDPAudioFormatTag.pcm,
+        channelCount: 2,
+        samplesPerSecond: 44100,
+        averageBytesPerSecond: 176_400,
+        blockAlign: 4,
+        bitsPerSample: 16
+    )
+
+    #expect(RDPAudioFormatsPDU.compatibleClientFormats(from: [pcmStereo44k]) == [pcmStereo44k])
+}
+
+@Test func audioClientFormatsFallbackToSyntheticPCMWithoutServerPCM() throws {
+    let compressedFormat = try RDPAudioFormat(
+        formatTag: 0xA106,
+        channelCount: 2,
+        samplesPerSecond: 44100,
+        averageBytesPerSecond: 24000,
+        blockAlign: 4,
+        bitsPerSample: 16
+    )
+
+    #expect(RDPAudioFormatsPDU.compatibleClientFormats(
+        from: [compressedFormat]
+    ) == [.pcmStereo48k16Bit])
+}
+
+@Test func audioQualityModeEncodesHighQuality() {
+    #expect(RDPAudioQualityModePDU(qualityMode: RDPAudioQualityMode.high).encoded() == Data([
         0x0C, 0x00, 0x04, 0x00,
-        0x00, 0x00,
+        0x02, 0x00,
         0x00, 0x00,
     ]))
 }

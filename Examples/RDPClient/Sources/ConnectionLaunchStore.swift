@@ -17,6 +17,7 @@ struct RDPConnectionDraft: Equatable, Sendable {
     var desktopHeight: UInt16
     var hideCertificateWarnings: Bool
     var timeoutSeconds: Int
+    var graphicsCapabilityProfile: RDPGraphicsCapabilityProfile
     var clipboardSharingEnabled: Bool
     var audioPlaybackEnabled: Bool
     var rememberPassword: Bool
@@ -36,7 +37,8 @@ struct RDPConnectionDraft: Equatable, Sendable {
             desktopWidth: desktopWidth,
             desktopHeight: desktopHeight,
             clipboardEnabled: clipboardSharingEnabled,
-            audioPlaybackEnabled: audioPlaybackEnabled
+            audioPlaybackEnabled: audioPlaybackEnabled,
+            graphicsCapabilityProfile: graphicsCapabilityProfile
         )
     }
 

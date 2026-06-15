@@ -25,6 +25,14 @@ struct RDPStaticVirtualChannel: Equatable, Sendable {
         options: ChannelOptions.initialized
             | ChannelOptions.encryptRDP
             | ChannelOptions.compressRDP
+            | ChannelOptions.showProtocol
+    )
+
+    static let rdpdr = RDPStaticVirtualChannel(
+        name: "rdpdr",
+        options: ChannelOptions.initialized
+            | ChannelOptions.encryptRDP
+            | ChannelOptions.compressRDP
     )
 
     static let rdpsnd = RDPStaticVirtualChannel(

@@ -22,7 +22,7 @@ import Testing
     #expect(report.passwordConfigured)
     #expect(report.requestedProtocols == ["tls", "credssp"])
     #expect(report.requestHex == "03 00 00 13 0e e0 00 00 00 00 00 01 00 08 00 03 00 00 00")
-    #expect(report.nextStage == "send request to KRdp")
+    #expect(report.nextStage == "send negotiation request to server")
     #expect(report.error == nil)
 }
 
@@ -40,8 +40,8 @@ import Testing
 
 @Test func liveGraphicsUpdatesBoundDiagnosticsForReports() {
     #expect(recordedGraphicsMessageLimit(targetFrameCount: nil) == 16)
-    #expect(recordedGraphicsMessageLimit(targetFrameCount: 1) == 4)
-    #expect(recordedGraphicsMessageLimit(targetFrameCount: 3) == 12)
+    #expect(recordedGraphicsMessageLimit(targetFrameCount: 1) == 16)
+    #expect(recordedGraphicsMessageLimit(targetFrameCount: 3) == 16)
 
     #expect(recordedGraphicsAcknowledgeLimit(targetFrameCount: nil) == 8)
     #expect(recordedGraphicsAcknowledgeLimit(targetFrameCount: 1) == 1)
@@ -112,15 +112,29 @@ import Testing
             host: "example.test",
             clipboardEnabled: false,
             audioPlaybackEnabled: true
-        ).staticVirtualChannels == [.drdynvc, .rdpsnd]
+        ).staticVirtualChannels == [.drdynvc, .rdpdr, .rdpsnd]
     )
     #expect(
         RDPConnectionConfiguration(
             host: "example.test",
             clipboardEnabled: true,
             audioPlaybackEnabled: true
-        ).staticVirtualChannels == [.drdynvc, .cliprdr, .rdpsnd]
+        ).staticVirtualChannels == [.drdynvc, .cliprdr, .rdpdr, .rdpsnd]
     )
+}
+
+@Test func connectionConfigurationCarriesGraphicsCapabilityProfile() throws {
+    let target = try RDPConnectionTarget(host: "example.test", portText: "3390")
+    let desktopSize = try RDPDesktopSize(widthText: "1920", heightText: "1080")
+
+    let configuration = RDPConnectionConfiguration(
+        target: target,
+        graphicsFrameCaptureLimit: nil,
+        desktopSize: desktopSize,
+        graphicsCapabilityProfile: .avc420
+    )
+
+    #expect(configuration.graphicsCapabilityProfile == .avc420)
 }
 
 @Test func wireReceiveSampleConvertsBytesToMegabits() {
@@ -178,6 +192,120 @@ import Testing
     #expect(frame.h264NalUnitTypes == [5])
 }
 
+@Test func graphicsPathDescriptionNamesAVC444VideoPath() {
+    let frame = RDPGraphicsFrameSnapshot(
+        frameID: 2,
+        surfaceID: 0,
+        codecID: RDPGFXCodecID.avc444v2,
+        codecName: RDPGFXCodecID.name(for: RDPGFXCodecID.avc444v2),
+        pixelFormat: 32,
+        destinationRect: RDPFrameRect(left: 0, top: 0, right: 1280, bottom: 720),
+        regionRects: [RDPFrameRect(left: 0, top: 0, right: 1280, bottom: 720)],
+        h264AnnexBData: Data([0x00, 0x00, 0x01, 0x65])
+    )
+
+    let description = RDPGraphicsPathDescription.describe(
+        selectedCapabilityVersion: RDPGFXCapabilityVersion.version107,
+        selectedCapabilityFlags: RDPGFXCapabilityFlags.defaultVersion107,
+        firstFrame: frame,
+        updateMessages: nil
+    )
+
+    #expect(description == "RDPGFX v10.7 AVC thin-client scaled-map disabled flags=0x000000c2 -> avc444v2/H.264")
+}
+
+@Test func graphicsPathDescriptionNamesCaprogressiveUpdatePath() throws {
+    var payload = Data()
+    payload.appendLittleEndianUInt16(0)
+    payload.appendLittleEndianUInt16(RDPGFXCodecID.caProgressive)
+    payload.appendLittleEndianUInt32(12)
+    payload.appendUInt8(32)
+    payload.appendLittleEndianUInt32(1)
+    payload.appendUInt8(0x00)
+    let message = try RDPGFXHeader.parse(
+        from: preflightGraphicsMessage(commandID: RDPGFXCommandID.wireToSurface2, payload: payload)
+    )
+    let summary = try RDPGFXMessageSummary.summarize(message)
+
+    let description = RDPGraphicsPathDescription.describe(
+        selectedCapabilityVersion: RDPGFXCapabilityVersion.version81,
+        selectedCapabilityFlags: RDPGFXCapabilityFlags.defaultVersion81,
+        firstFrame: nil,
+        updateMessages: [summary]
+    )
+
+    #expect(description == "RDPGFX v8.1 thin-client AVC420 flags=0x00000013 -> rdpgfx-wire-to-surface-2 caprogressive")
+}
+
+@Test func graphicsPathDescriptionNamesCAVideoRemoteFXUpdatePath() {
+    var summary = RDPGFXMessageSummary(typeName: "rdpgfx-wire-to-surface-1")
+    summary.codecName = "cavideo"
+    summary.cavideoTileCount = 2
+    summary.cavideoTileSetEntropyAlgorithms = ["rlgr3"]
+
+    let description = RDPGraphicsPathDescription.describe(
+        selectedCapabilityVersion: RDPGFXCapabilityVersion.version81,
+        selectedCapabilityFlags: RDPGFXCapabilityFlags.thinClient
+            | RDPGFXCapabilityFlags.smallCache
+            | RDPGFXCapabilityFlags.avc420Enabled,
+        firstFrame: nil,
+        updateMessages: [summary]
+    )
+
+    #expect(
+        description == """
+        RDPGFX v8.1 thin-client AVC420 flags=0x00000013 -> rdpgfx-wire-to-surface-1 cavideo remotefx tiles=2 entropy=rlgr3
+        """.trimmingCharacters(in: .whitespacesAndNewlines)
+    )
+}
+
+@Test func graphicsPathDescriptionPreservesCAVideoPathForDecodedBitmapFrame() {
+    var summary = RDPGFXMessageSummary(typeName: "rdpgfx-wire-to-surface-1")
+    summary.codecName = "cavideo"
+    summary.cavideoTileCount = 1
+    summary.cavideoTileSetEntropyAlgorithms = ["rlgr3"]
+    let frame = RDPGraphicsFrameSnapshot(
+        frameID: 4,
+        surfaceID: 1,
+        codecID: RDPGFXCodecID.uncompressed,
+        codecName: "surface-bgra",
+        pixelFormat: 32,
+        destinationRect: RDPFrameRect(left: 10, top: 20, right: 74, bottom: 84),
+        regionRects: [RDPFrameRect(left: 10, top: 20, right: 74, bottom: 84)],
+        encodedVideoData: Data(),
+        contentKind: .bitmap,
+        decodedBitmapData: Data(repeating: 0x80, count: 64 * 64 * 4),
+        decodedBitmapBytesPerRow: 64 * 4
+    )
+    let cases: [(version: UInt32, flags: UInt32, description: String)] = [
+        (
+            RDPGFXCapabilityVersion.version8,
+            RDPGFXCapabilityFlags.defaultVersion8,
+            """
+            RDPGFX v8 thin-client flags=0x00000003 -> rdpgfx-wire-to-surface-1 cavideo remotefx tiles=1 entropy=rlgr3 -> surface-bgra
+            """.trimmingCharacters(in: .whitespacesAndNewlines)
+        ),
+        (
+            RDPGFXCapabilityVersion.version81,
+            RDPGFXCapabilityFlags.defaultVersion8,
+            """
+            RDPGFX v8.1 thin-client flags=0x00000003 -> rdpgfx-wire-to-surface-1 cavideo remotefx tiles=1 entropy=rlgr3 -> surface-bgra
+            """.trimmingCharacters(in: .whitespacesAndNewlines)
+        ),
+    ]
+
+    for testCase in cases {
+        let description = RDPGraphicsPathDescription.describe(
+            selectedCapabilityVersion: testCase.version,
+            selectedCapabilityFlags: testCase.flags,
+            firstFrame: frame,
+            updateMessages: [summary]
+        )
+
+        #expect(description == testCase.description)
+    }
+}
+
 @Test func graphicsFrameSnapshotReportsHEVCVideoMetadata() {
     let frame = RDPGraphicsFrameSnapshot(
         frameID: 8,
@@ -200,4 +328,13 @@ import Testing
     #expect(frame.videoNalUnitTypes == [32, 33, 34, 19])
     #expect(frame.h264ByteCount == 0)
     #expect(frame.h264NalUnitTypes == [])
+}
+
+private func preflightGraphicsMessage(commandID: UInt16, payload: Data) -> Data {
+    var bytes = Data()
+    bytes.appendLittleEndianUInt16(commandID)
+    bytes.appendLittleEndianUInt16(0)
+    bytes.appendLittleEndianUInt32(UInt32(8 + payload.count))
+    bytes.append(payload)
+    return bytes
 }

@@ -23,6 +23,7 @@ public enum RDPDecodeError: Error, Equatable, CustomStringConvertible {
     case invalidClipboardPDU
     case invalidAudioPDU
     case invalidRDPGFXPDU
+    case invalidCredSSPMessage
     case invalidBERTag(expected: UInt8, actual: UInt8)
     case invalidBERLength
     case invalidUserDataBlockLength(UInt16)
@@ -73,6 +74,8 @@ public enum RDPDecodeError: Error, Equatable, CustomStringConvertible {
             "invalid RDP Audio PDU"
         case .invalidRDPGFXPDU:
             "invalid RDP Graphics Pipeline PDU"
+        case .invalidCredSSPMessage:
+            "invalid CredSSP message"
         case let .invalidBERTag(expected, actual):
             "invalid BER tag 0x\(String(actual, radix: 16)), expected 0x\(String(expected, radix: 16))"
         case .invalidBERLength:
@@ -127,6 +130,12 @@ struct ByteCursor {
         return value
     }
 
+    mutating func readLittleEndianUInt64() throws -> UInt64 {
+        let low = try readLittleEndianUInt32()
+        let high = try readLittleEndianUInt32()
+        return UInt64(low) | UInt64(high) << 32
+    }
+
     mutating func readRemainingData() -> Data {
         let data = bytes.subdata(in: index(at: offset) ..< bytes.endIndex)
         offset = bytes.count
@@ -170,6 +179,11 @@ extension Data {
         appendUInt8(UInt8((value >> 8) & 0xFF))
         appendUInt8(UInt8((value >> 16) & 0xFF))
         appendUInt8(UInt8((value >> 24) & 0xFF))
+    }
+
+    mutating func appendLittleEndianUInt64(_ value: UInt64) {
+        appendLittleEndianUInt32(UInt32(value & 0xFFFF_FFFF))
+        appendLittleEndianUInt32(UInt32((value >> 32) & 0xFFFF_FFFF))
     }
 }
 

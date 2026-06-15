@@ -20,9 +20,9 @@ The library should prefer Apple primitives and Apple-maintained Swift packages:
 VideoToolbox, CoreMedia, CoreVideo, AVFoundation, Security, SwiftNIO, and
 SwiftNIO SSL. Do not add FreeRDP or another native RDP stack as a dependency.
 
-KDE KRdp compatibility remains a primary validation target. Treat RDPGFX,
-AVC420/H.264, AVC444/H.264, HEVC/H.265, frame acknowledgements, display resize,
-keyboard, pointer, clipboard, and audio as first-class library concerns.
+Windows RDP and KDE KRdp compatibility remain primary validation targets. Treat
+RDPGFX, AVC420/H.264, AVC444/H.264, HEVC/H.265, frame acknowledgements, display
+resize, keyboard, pointer, clipboard, and audio as first-class library concerns.
 
 ## Cursor Behavior
 
@@ -47,10 +47,10 @@ Suggested checks:
 
 - Library behavior: `swift test`
 - Swift style gate: `swiftlint lint --strict`
-- Xcode project generation:
-  `xcodegen generate --spec Examples/RDPClient/project.yml`
-- macOS example build:
-  `xcodebuild -project Examples/RDPClient/RDPKitExamples.xcodeproj -scheme RDPClient -destination 'platform=macOS' build`
+- Example app and tool builds:
+  `swift build --package-path Examples --product RDPClient`
+  `swift build --package-path Examples --product RDPPreflight`
+  `swift build --package-path Examples --product RDPFirstFrameCapture`
 
 For documentation-only changes, a full build is optional, but check links,
 commands, and references to removed files.

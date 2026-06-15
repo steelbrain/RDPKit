@@ -22,6 +22,7 @@ struct ConnectionManagerView: View {
     @State private var keychainMessage: String?
     @State private var hideCertificateWarnings = false
     @State private var timeoutSeconds = 10.0
+    @State private var graphicsCapabilityProfile: RDPGraphicsCapabilityProfile = .automatic
     @State private var clipboardSharingEnabled = true
     @State private var audioPlaybackEnabled = false
     @State private var formError: String?
@@ -90,6 +91,12 @@ struct ConnectionManagerView: View {
                 }
 
                 Section("Options") {
+                    Picker("Graphics Profile", selection: $graphicsCapabilityProfile) {
+                        ForEach(RDPGraphicsCapabilityProfile.allCases, id: \.self) { profile in
+                            Text(profile.displayName).tag(profile)
+                        }
+                    }
+                    .pickerStyle(.menu)
                     Toggle("Share Clipboard", isOn: $clipboardSharingEnabled)
                     Toggle("Request Remote Audio", isOn: $audioPlaybackEnabled)
                     Toggle("Hide certificate warnings", isOn: $hideCertificateWarnings)
@@ -175,6 +182,7 @@ struct ConnectionManagerView: View {
         keychainMessage = nil
         hideCertificateWarnings = false
         timeoutSeconds = 10
+        graphicsCapabilityProfile = .automatic
         clipboardSharingEnabled = true
         audioPlaybackEnabled = false
     }
@@ -265,6 +273,7 @@ struct ConnectionManagerView: View {
         rememberPassword = profile.rememberPassword
         hideCertificateWarnings = profile.hideCertificateWarnings
         timeoutSeconds = Double(profile.timeoutSeconds)
+        graphicsCapabilityProfile = profile.graphicsCapabilityProfile
         clipboardSharingEnabled = profile.clipboardSharingEnabled
         audioPlaybackEnabled = profile.audioPlaybackEnabled
         profileMessage = nil
@@ -298,6 +307,7 @@ struct ConnectionManagerView: View {
             desktopHeight: profile.desktopHeight,
             hideCertificateWarnings: profile.hideCertificateWarnings,
             timeoutSeconds: profile.timeoutSeconds,
+            graphicsCapabilityProfile: profile.graphicsCapabilityProfile,
             clipboardSharingEnabled: profile.clipboardSharingEnabled,
             audioPlaybackEnabled: profile.audioPlaybackEnabled,
             rememberPassword: profile.rememberPassword
@@ -337,6 +347,7 @@ struct ConnectionManagerView: View {
             desktopHeight: desktopSize.height,
             hideCertificateWarnings: hideCertificateWarnings,
             timeoutSeconds: Int(timeoutSeconds),
+            graphicsCapabilityProfile: graphicsCapabilityProfile,
             clipboardSharingEnabled: clipboardSharingEnabled,
             audioPlaybackEnabled: audioPlaybackEnabled,
             rememberPassword: rememberPassword,

@@ -141,5 +141,6 @@ import Testing
     #expect(metadata.width == 1920)
     #expect(metadata.height == 1080)
     #expect(metadata.videoByteCount == 4)
+    #expect(metadata.payloadByteCount == 4)
     #expect(metadata.regionCount == 2)
 }

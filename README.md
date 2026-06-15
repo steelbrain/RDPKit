@@ -146,7 +146,8 @@ viewer on top of those hooks.
 
 ### Testing And Diagnostics
 
-- Mock KRdp server tests for graphics and clipboard flows
+- Mock server tests for graphics, clipboard, audio, security, and Windows
+  compatibility flows
 - First-frame capture tooling for live server validation
 - Preflight tooling for connection, security, channel, graphics, clipboard, and
   audio inspection
@@ -154,22 +155,24 @@ viewer on top of those hooks.
 
 ## Run The Example App
 
-Generate the Xcode project:
+Run the native macOS viewer:
 
 ```sh
-xcodegen generate --spec Examples/RDPClient/project.yml
+cd Examples
+swift run RDPClient
 ```
 
-Run from Xcode:
+Run the diagnostic tools:
 
 ```sh
-open Examples/RDPClient/RDPKitExamples.xcodeproj
+cd Examples
+swift run RDPPreflight --host <host> --username <name> --password-env RDP_PASSWORD
+swift run RDPFirstFrameCapture --host <host> --username <name> --password-env RDP_PASSWORD --output frame.png
 ```
 
-Select the `RDPClient` scheme, choose `My Mac`, and press Run. The included app
-lets you save connections, store credentials in Keychain, review certificate
-warnings, control a remote desktop, toggle clipboard and audio support, and open
-the Stats for Nerds window while a session is running.
+The included app lets you save connections, store credentials in Keychain,
+review certificate warnings, control a remote desktop, toggle clipboard and
+audio support, and open the Stats for Nerds window while a session is running.
 
 ### Example App Performance
 
@@ -178,14 +181,15 @@ observed at about 70 MB of memory and 20% of one CPU core. In the same scenario,
 Microsoft's Windows RDP client was observed at about 900 MB of memory and 30% of
 one CPU core.
 
-You can also build and launch it from the command line:
+You can also build without launching:
 
 ```sh
-xcodebuild -project Examples/RDPClient/RDPKitExamples.xcodeproj -scheme RDPClient -destination 'platform=macOS' -derivedDataPath DerivedData build
-open "DerivedData/Build/Products/Debug/RDP Client.app"
+swift build --package-path Examples --product RDPClient
+swift build --package-path Examples --product RDPPreflight
+swift build --package-path Examples --product RDPFirstFrameCapture
 ```
 
-The `RDPPreflight` and `RDPFirstFrameCapture` targets are included as lower-level
+The `RDPPreflight` and `RDPFirstFrameCapture` products are lower-level
 diagnostic tools, but the native `RDPClient` app is the recommended starting
 point.
 
@@ -196,6 +200,7 @@ Package.swift                         SwiftPM library manifest
 Sources/RDPKit/                       Reusable RDP protocol, transport, media,
                                       input, clipboard, audio, and metrics code
 Tests/RDPKitTests/                    Unit and mock-server integration tests
+Examples/Package.swift                SwiftPM example app and tool manifest
 Examples/RDPClient/                   Native macOS viewer shell
 Examples/RDPPreflight/                Connection and protocol inspection tool
 Examples/RDPFirstFrameCapture/        Live graphics capture and decode tool
@@ -219,16 +224,8 @@ swiftlint lint --strict
 ```
 
 The mock server tests exercise the library without a live desktop. Live
-compatibility should still be validated against KRdp or another real RDP server
-when changing negotiation, graphics, input, clipboard, display, audio, or TLS
-behavior.
-
-## Status
-
-RDPKit is active, KRdp-focused, and not yet a full replacement for mature
-desktop clients. The goal is a reusable Apple-platform RDP library that can power
-macOS, iOS, tvOS, Mac Catalyst, visionOS, and third-party clients without
-embedding a native RDP stack.
+compatibility should still be validated against real RDP servers when changing
+negotiation, graphics, input, clipboard, display, audio, or TLS behavior.
 
 ## License
 

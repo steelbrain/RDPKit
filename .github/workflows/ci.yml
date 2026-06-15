@@ -19,10 +19,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install build tools
-        run: brew install xcodegen swiftlint
-
-      - name: Generate Xcode project
-        run: xcodegen generate --spec Examples/RDPClient/project.yml
+        run: brew install swiftlint
 
       - name: Lint Swift sources
         run: swiftlint lint --strict
@@ -31,31 +28,10 @@ jobs:
         run: swift test
 
       - name: Build RDPClient app
-        run: |
-          xcodebuild \
-            -project Examples/RDPClient/RDPKitExamples.xcodeproj \
-            -scheme RDPClient \
-            -destination 'platform=macOS' \
-            -derivedDataPath DerivedData \
-            CODE_SIGNING_ALLOWED=NO \
-            build
+        run: swift build --package-path Examples --product RDPClient
 
       - name: Build first-frame capture tool
-        run: |
-          xcodebuild \
-            -project Examples/RDPClient/RDPKitExamples.xcodeproj \
-            -scheme RDPFirstFrameCapture \
-            -destination 'platform=macOS' \
-            -derivedDataPath DerivedData \
-            CODE_SIGNING_ALLOWED=NO \
-            build
+        run: swift build --package-path Examples --product RDPFirstFrameCapture
 
       - name: Build preflight tool
-        run: |
-          xcodebuild \
-            -project Examples/RDPClient/RDPKitExamples.xcodeproj \
-            -scheme RDPPreflight \
-            -destination 'platform=macOS' \
-            -derivedDataPath DerivedData \
-            CODE_SIGNING_ALLOWED=NO \
-            build
+        run: swift build --package-path Examples --product RDPPreflight

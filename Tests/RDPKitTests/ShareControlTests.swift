@@ -2,7 +2,7 @@ import Foundation
 @testable import RDPKit
 import Testing
 
-@Test func parsesServerDeactivateAllFromKRdpPostAutoDetectPacket() throws {
+@Test func parsesServerDeactivateAllFromPostAutoDetectPacket() throws {
     let pdu = try #require(try RDPShareControlPDU.parseIfPresent(fromTPKT: Data([
         0x03, 0x00, 0x00, 0x1C,
         0x02, 0xF0, 0x80,

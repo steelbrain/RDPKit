@@ -3,6 +3,7 @@ import SwiftUI
 
 @main
 struct RDPClientApp: App {
+    @NSApplicationDelegateAdaptor(RDPClientAppDelegate.self) private var appDelegate
     @StateObject private var launchStore = RDPConnectionLaunchStore()
 
     var body: some Scene {
@@ -22,6 +23,33 @@ struct RDPClientApp: App {
         }
         .windowStyle(.titleBar)
         .defaultSize(width: 840, height: 720)
+    }
+}
+
+@MainActor
+private final class RDPClientAppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.setActivationPolicy(.regular)
+        activateViewerWindow()
+    }
+
+    private func activateViewerWindow() {
+        NSApp.activate(ignoringOtherApps: true)
+        if makeVisibleWindowKey() {
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            _ = self.makeVisibleWindowKey()
+            NSApp.activate(ignoringOtherApps: true)
+        }
+    }
+
+    private func makeVisibleWindowKey() -> Bool {
+        guard let window = NSApp.windows.first(where: { $0.isVisible }) else {
+            return false
+        }
+        window.makeKeyAndOrderFront(nil)
+        return true
     }
 }
 
