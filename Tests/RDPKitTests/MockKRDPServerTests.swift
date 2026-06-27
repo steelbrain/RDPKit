@@ -53,6 +53,36 @@ import Testing
     #expect(report.error == nil)
 }
 
+@Test func preflightFollowsServerRedirectionAndReconnects() throws {
+    let server = try MockKRDPServer.start(redirectionBehavior: .redirectFirstConnection)
+    defer { server.stop() }
+
+    let observed = MockKRDPObservedEvents()
+    let report = RDPPreflightClient().run(
+        configuration: RDPConnectionConfiguration(
+            host: "127.0.0.1",
+            port: server.port,
+            credentials: RDPCredentials(username: "aneesi", password: "secret"),
+            timeoutSeconds: 5,
+            hideCertificateWarnings: true,
+            graphicsFrameCaptureLimit: 1,
+            desktopWidth: 1280,
+            desktopHeight: 720,
+            clipboardEnabled: false
+        ),
+        onGraphicsFrame: { frame in
+            observed.record(frame)
+        }
+    )
+
+    // The first connection is redirected mid graphics handshake; the client must
+    // reconnect (carrying the routing token) and complete on the second attempt.
+    #expect(server.connectionCount == 2)
+    #expect(report.status == "success")
+    #expect(report.rdpGraphicsFirstFrame?.codecName == "avc420")
+    #expect(report.error == nil)
+}
+
 @Test func preflightHandlesMultiStepBandwidthAutoDetectBeforeActivation() throws {
     let server = try MockKRDPServer.start(autoDetectBehavior: .bandwidthMeasure)
     defer { server.stop() }

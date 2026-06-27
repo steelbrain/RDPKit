@@ -39,28 +39,10 @@ import Testing
     #expect(request.typeName == "dynvc-create-request")
 }
 
-@Test func encodesDynamicVirtualChannelCreateRequest() {
-    let request = RDPDynamicVirtualChannelCreateRequest(
-        channelID: 1,
-        channelName: RDPGFXChannel.name
-    )
-
-    #expect(request.encoded() == Data([0x10, 0x01] + Array(RDPGFXChannel.name.utf8) + [0x00]))
-}
-
 @Test func encodesDynamicVirtualChannelCreateResponse() {
     let response = RDPDynamicVirtualChannelCreateResponse(channelID: 300)
 
     #expect(response.encoded().rdpHexString == "11 2c 01 00 00 00 00")
-}
-
-@Test func parsesDynamicVirtualChannelCreateResponse() throws {
-    let response = try #require(try RDPDynamicVirtualChannelCreateResponse.parseIfPresent(
-        from: Data([0x10, 0x01, 0x00, 0x00, 0x00, 0x00])
-    ))
-
-    #expect(response.channelID == 1)
-    #expect(response.creationStatus == 0)
 }
 
 @Test func encodesDynamicVirtualChannelDataPDU() {

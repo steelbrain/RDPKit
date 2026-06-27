@@ -16,8 +16,10 @@ struct RDPServerRedirectionPDU: Equatable, Sendable {
         static let targetNetBIOSName = Flags(rawValue: 0x0000_0200)
         static let targetNetAddresses = Flags(rawValue: 0x0000_0800)
         static let tsvURL = Flags(rawValue: 0x0000_1000)
-        static let redirectionGuid = Flags(rawValue: 0x0000_2000)
-        static let targetCertificate = Flags(rawValue: 0x0000_4000)
+        static let serverTSVCapable = Flags(rawValue: 0x0000_2000)
+        static let passwordIsPKEncrypted = Flags(rawValue: 0x0000_4000)
+        static let redirectionGuid = Flags(rawValue: 0x0000_8000)
+        static let targetCertificate = Flags(rawValue: 0x0001_0000)
     }
 
     var channelID: UInt16
@@ -94,6 +96,15 @@ struct RDPServerRedirectionPDU: Equatable, Sendable {
             targetCertificate: nil
         )
 
+        // Optional redirection fields appear on the wire in ascending flag-bit
+        // order. If the server set a flag we don't recognize, we can't know the
+        // layout of (or skip past) its field, so parsing any later field risks
+        // misalignment. Bail out before reading optionals rather than follow a
+        // redirection we can't fully interpret.
+        guard flags.rawValue & ~Flags.knownFieldMask == 0 else {
+            return pdu
+        }
+
         if flags.contains(.targetNetAddress) {
             pdu.targetNetAddress = try cursor.readLengthPrefixedUTF16String()
         }
@@ -109,9 +120,6 @@ struct RDPServerRedirectionPDU: Equatable, Sendable {
         if flags.contains(.password) {
             pdu.password = try cursor.readLengthPrefixedUTF16String()
         }
-        if flags.rawValue & ~Flags.knownFieldMask != 0 {
-            return pdu
-        }
         if flags.contains(.targetFQDN) {
             pdu.targetFQDN = try cursor.readLengthPrefixedUTF16String()
         }
@@ -125,7 +133,7 @@ struct RDPServerRedirectionPDU: Equatable, Sendable {
             pdu.tsvURL = try cursor.readLengthPrefixedUTF16String()
         }
         if flags.contains(.redirectionGuid) {
-            pdu.redirectionGuid = try cursor.readData(count: 16)
+            pdu.redirectionGuid = try cursor.readLengthPrefixedBytes()
         }
         if flags.contains(.targetCertificate) {
             pdu.targetCertificate = try cursor.readLengthPrefixedBytes()
@@ -149,6 +157,8 @@ private extension RDPServerRedirectionPDU.Flags {
         targetNetBIOSName,
         targetNetAddresses,
         tsvURL,
+        serverTSVCapable,
+        passwordIsPKEncrypted,
         redirectionGuid,
         targetCertificate,
     ].reduce(0) { $0 | $1.rawValue }

@@ -130,29 +130,6 @@ struct RDPDynamicVirtualChannelCreateRequest: Equatable, Sendable {
         "dynvc-create-request"
     }
 
-    init(channelID: UInt32, priority: UInt8 = 0, channelName: String) {
-        precondition(priority < 4)
-        precondition(!channelName.isEmpty)
-        precondition(channelName.utf8.allSatisfy { $0 < 0x80 })
-
-        self.channelID = channelID
-        self.priority = priority
-        self.channelName = channelName
-    }
-
-    func encoded() -> Data {
-        var data = Data()
-        data.appendUInt8(RDPDynamicVirtualChannelHeader(
-            channelIDLength: dynamicVirtualChannelIDLengthCode(channelID),
-            sp: priority,
-            command: .create
-        ).encodedByte)
-        data.appendDynamicVirtualChannelID(channelID)
-        data.append(Data(channelName.utf8))
-        data.appendUInt8(0)
-        return data
-    }
-
     static func parseIfPresent(from data: Data) throws -> RDPDynamicVirtualChannelCreateRequest? {
         guard data.count >= 3 else {
             return nil
@@ -205,27 +182,6 @@ struct RDPDynamicVirtualChannelCreateResponse: Equatable, Sendable {
         data.appendDynamicVirtualChannelID(channelID)
         data.appendLittleEndianUInt32(UInt32(bitPattern: creationStatus))
         return data
-    }
-
-    static func parseIfPresent(from data: Data) throws -> RDPDynamicVirtualChannelCreateResponse? {
-        guard data.count >= 6 else {
-            return nil
-        }
-
-        var cursor = ByteCursor(data)
-        let header = try RDPDynamicVirtualChannelHeader(byte: cursor.readUInt8())
-        guard header.command == .create else {
-            return nil
-        }
-
-        let channelID = try cursor.readDynamicVirtualChannelID(lengthCode: header.channelIDLength)
-        guard cursor.remaining == 4 else {
-            return nil
-        }
-        return try RDPDynamicVirtualChannelCreateResponse(
-            channelID: channelID,
-            creationStatus: Int32(bitPattern: cursor.readLittleEndianUInt32())
-        )
     }
 }
 
