@@ -17,6 +17,30 @@ import Testing
     #expect(request.requestTypeName == "connect-time-rtt-measure-request")
 }
 
+@Test func parsesBandwidthMeasureStopRequestWithPayload() throws {
+    var pdu = Data()
+    pdu.appendUInt8(0x68)
+    pdu.appendBigEndianUInt16(5)
+    pdu.appendBigEndianUInt16(1005)
+    pdu.appendUInt8(0x70)
+    pdu.appendUInt8(0x0E)
+    pdu.append(contentsOf: [
+        0x00, 0x10, 0x00, 0x00,
+        0x08, 0x00,
+        0x23, 0x00,
+        0x2B, 0x00,
+        0x04, 0x00,
+        0xAA, 0xBB, 0xCC, 0xDD,
+    ])
+    let request = try #require(try RDPServerAutoDetectRequest.parseIfPresent(fromTPKT: X224DataTPDU.wrap(pdu)))
+
+    #expect(request.channelID == 1005)
+    #expect(request.sequenceNumber == 0x0023)
+    #expect(request.requestType == 0x002B)
+    #expect(request.requestTypeName == "bandwidth-measure-stop")
+    #expect(request.payloadByteCount == 4)
+}
+
 @Test func ignoresNonAutoDetectSendDataIndication() throws {
     let packet = MCSSendDataRequestPDU(
         initiator: 1005,
@@ -36,5 +60,24 @@ import Testing
         0x64, 0x00, 0x04, 0x00, 0x00, 0x70, 0x0A,
         0x00, 0x20, 0x00, 0x00,
         0x06, 0x01, 0x23, 0x00, 0x00, 0x00,
+    ]))
+}
+
+@Test func autoDetectBandwidthResultResponseMatchesExpectedBytes() {
+    let response = RDPClientAutoDetectResponsePDU(
+        sequenceNumber: 0x0023,
+        responseType: 0x0003,
+        bandwidthByteCount: 4,
+        bandwidthMilliseconds: 7
+    )
+
+    #expect(response.encodedTPKT(userChannelID: 1005, messageChannelID: 1006) == Data([
+        0x03, 0x00, 0x00, 0x20,
+        0x02, 0xF0, 0x80,
+        0x64, 0x00, 0x04, 0x00, 0x05, 0x70, 0x80, 0x12,
+        0x00, 0x20, 0x00, 0x00,
+        0x0E, 0x01, 0x23, 0x00, 0x03, 0x00,
+        0x04, 0x00, 0x00, 0x00,
+        0x07, 0x00, 0x00, 0x00,
     ]))
 }

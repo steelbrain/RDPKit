@@ -29,6 +29,7 @@ final class MockKRDPServer {
         clipboardFiles: [RDPClipboardLocalFile] = [],
         graphicsBehavior: MockKRDPGraphicsBehavior = .sendFirstFrame,
         graphicsCapabilitySelection: MockKRDPGraphicsCapabilitySelection = .fixedVersion81,
+        autoDetectBehavior: MockKRDPAutoDetectBehavior = .singleRTT,
         remoteClipboardText: String? = nil,
         audioEnabled: Bool = false,
         waitForCompatibilityTraffic: Bool = false
@@ -45,6 +46,7 @@ final class MockKRDPServer {
                         securityProtocol: securityProtocol,
                         graphicsBehavior: graphicsBehavior,
                         graphicsCapabilitySelection: graphicsCapabilitySelection,
+                        autoDetectBehavior: autoDetectBehavior,
                         clipboardFiles: clipboardFiles,
                         remoteClipboardText: remoteClipboardText,
                         audioEnabled: audioEnabled,
@@ -137,6 +139,11 @@ enum MockKRDPGraphicsCapabilitySelection {
             .version107(flags: RDPGFXCapabilityFlags.defaultVersion107)
         }
     }
+}
+
+enum MockKRDPAutoDetectBehavior {
+    case singleRTT
+    case bandwidthMeasure
 }
 
 enum MockKRDPServerError: Error {
@@ -752,8 +759,10 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
         case channelJoin(Int)
         case clientInfo
         case autoDetectResponse
+        case bandwidthMeasureResponse
         case confirmActive
         case finalization(Int)
+        case finalizationFontList
         case dynamicCapabilitiesResponse
         case graphicsCreateResponse
         case graphicsCapsAdvertise
@@ -765,6 +774,7 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
     private let securityProtocol: MockKRDPSecurityProtocol
     private let graphicsBehavior: MockKRDPGraphicsBehavior
     private let graphicsCapabilitySelection: MockKRDPGraphicsCapabilitySelection
+    private let autoDetectBehavior: MockKRDPAutoDetectBehavior
     private let clipboardFiles: [RDPClipboardLocalFile]
     private let remoteClipboardText: String?
     private let audioEnabled: Bool
@@ -781,6 +791,7 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
         securityProtocol: MockKRDPSecurityProtocol,
         graphicsBehavior: MockKRDPGraphicsBehavior,
         graphicsCapabilitySelection: MockKRDPGraphicsCapabilitySelection,
+        autoDetectBehavior: MockKRDPAutoDetectBehavior,
         clipboardFiles: [RDPClipboardLocalFile],
         remoteClipboardText: String?,
         audioEnabled: Bool,
@@ -791,6 +802,7 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
         self.securityProtocol = securityProtocol
         self.graphicsBehavior = graphicsBehavior
         self.graphicsCapabilitySelection = graphicsCapabilitySelection
+        self.autoDetectBehavior = autoDetectBehavior
         self.clipboardFiles = clipboardFiles
         self.remoteClipboardText = remoteClipboardText
         self.audioEnabled = audioEnabled
@@ -967,6 +979,18 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
 
         case .autoDetectResponse:
             try MockKRDPFixtures.expectSendDataRequest(packet, channelID: MockKRDPConstants.messageChannelID)
+            if autoDetectBehavior == .bandwidthMeasure {
+                writePacket(MockKRDPFixtures.autoDetectBandwidthMeasureStop(), context: context)
+                stage = .bandwidthMeasureResponse
+                break
+            }
+            writePacket(MockKRDPFixtures.licenseValidClient(), context: context)
+            writePacket(MockKRDPFixtures.demandActive(), context: context)
+            stage = .confirmActive
+
+        case .bandwidthMeasureResponse:
+            let request = try MockKRDPFixtures.expectSendDataRequest(packet, channelID: MockKRDPConstants.messageChannelID)
+            try MockKRDPFixtures.expectAutoDetectBandwidthResult(request.userData)
             writePacket(MockKRDPFixtures.licenseValidClient(), context: context)
             writePacket(MockKRDPFixtures.demandActive(), context: context)
             stage = .confirmActive
@@ -979,7 +1003,7 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
         case let .finalization(count):
             try MockKRDPFixtures.expectSendDataRequest(packet, channelID: MockKRDPConstants.ioChannelID)
             let nextCount = count + 1
-            if nextCount == 4 {
+            if nextCount == 3 {
                 writePacket(MockKRDPFixtures.controlGranted(), context: context)
                 writePacket(MockKRDPFixtures.fontMap(), context: context)
                 if clipboardEnabled {
@@ -1001,10 +1025,14 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
                 if clipboardFiles.isEmpty || remoteClipboardText != nil || waitForCompatibilityTraffic {
                     releaseGraphicsHandshake(context: context)
                 }
-                stage = .dynamicCapabilitiesResponse
+                stage = .finalizationFontList
             } else {
                 stage = .finalization(nextCount)
             }
+
+        case .finalizationFontList:
+            try MockKRDPFixtures.expectSendDataRequest(packet, channelID: MockKRDPConstants.ioChannelID)
+            stage = .dynamicCapabilitiesResponse
 
         case .dynamicCapabilitiesResponse:
             _ = try MockKRDPFixtures.staticVirtualChannelPayload(from: packet)
@@ -1472,6 +1500,38 @@ private enum MockKRDPFixtures {
         )
     }
 
+    static func autoDetectBandwidthMeasureStop() -> Data {
+        var payload = Data()
+        payload.appendLittleEndianUInt16(0x1000)
+        payload.appendLittleEndianUInt16(0)
+        payload.appendUInt8(0x08)
+        payload.appendUInt8(0x00)
+        payload.appendLittleEndianUInt16(1)
+        payload.appendLittleEndianUInt16(0x002B)
+        payload.appendLittleEndianUInt16(16)
+        payload.append(Data(repeating: 0xA5, count: 16))
+        return mcsSendDataIndication(
+            channelID: MockKRDPConstants.messageChannelID,
+            userData: payload
+        )
+    }
+
+    static func expectAutoDetectBandwidthResult(_ userData: Data) throws {
+        var cursor = ByteCursor(userData)
+        guard try cursor.readLittleEndianUInt16() == 0x2000,
+              try cursor.readLittleEndianUInt16() == 0,
+              try cursor.readUInt8() == 0x0E,
+              try cursor.readUInt8() == 0x01,
+              try cursor.readLittleEndianUInt16() == 1,
+              try cursor.readLittleEndianUInt16() == 0x0003,
+              try cursor.readLittleEndianUInt32() == 16,
+              try cursor.readLittleEndianUInt32() > 0,
+              cursor.remaining == 0
+        else {
+            throw MockKRDPServerError.invalidClientPDU
+        }
+    }
+
     static func licenseValidClient() -> Data {
         var payload = Data()
         payload.appendLittleEndianUInt16(0x0080)
@@ -1825,13 +1885,15 @@ private enum MockKRDPFixtures {
         return graphicsDynamicPacket(messages)
     }
 
-    static func expectSendDataRequest(_ packet: Data, channelID expectedChannelID: UInt16) throws {
+    @discardableResult
+    static func expectSendDataRequest(_ packet: Data, channelID expectedChannelID: UInt16) throws -> MockMCSSendDataRequest {
         let request = try clientSendDataRequest(from: packet)
         guard request.initiator == MockKRDPConstants.userChannelID,
               request.channelID == expectedChannelID
         else {
             throw MockKRDPServerError.invalidClientPDU
         }
+        return request
     }
 
     static func staticVirtualChannelPayload(from packet: Data) throws -> Data {

@@ -187,7 +187,7 @@ struct RDPClientConfirmActivePDU: Equatable, Sendable {
         data.appendLittleEndianUInt16(0x0200)
         data.appendLittleEndianUInt16(0)
         data.appendLittleEndianUInt16(0)
-        data.appendLittleEndianUInt16(0x0404)
+        data.appendLittleEndianUInt16(0x0405)
         data.appendLittleEndianUInt16(0)
         data.appendLittleEndianUInt16(0)
         data.appendLittleEndianUInt16(0)

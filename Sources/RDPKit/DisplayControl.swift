@@ -234,7 +234,10 @@ public final class RDPDisplayControlSession: @unchecked Sendable {
             channelID: dynamicChannelID,
             payload: layout.encoded()
         ).encoded()
-        let packet = RDPStaticVirtualChannelPDU(payload: dynamicPayload)
+        let packet = RDPStaticVirtualChannelPDU(
+            payload: dynamicPayload,
+            flags: RDPStaticVirtualChannelFlags.completeWithShowProtocol
+        )
             .encodedTPKT(initiator: userChannelID, channelID: staticChannelID)
         channel.eventLoop.execute {
             guard self.channel.isActive else {

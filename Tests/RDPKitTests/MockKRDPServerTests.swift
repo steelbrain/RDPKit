@@ -53,6 +53,38 @@ import Testing
     #expect(report.error == nil)
 }
 
+@Test func preflightHandlesMultiStepBandwidthAutoDetectBeforeActivation() throws {
+    let server = try MockKRDPServer.start(autoDetectBehavior: .bandwidthMeasure)
+    defer { server.stop() }
+
+    let observed = MockKRDPObservedEvents()
+    let report = RDPPreflightClient().run(
+        configuration: RDPConnectionConfiguration(
+            host: "127.0.0.1",
+            port: server.port,
+            credentials: RDPCredentials(username: "aneesi", password: "secret"),
+            timeoutSeconds: 5,
+            hideCertificateWarnings: true,
+            graphicsFrameCaptureLimit: 1,
+            desktopWidth: 1280,
+            desktopHeight: 720,
+            clipboardEnabled: false
+        ),
+        onGraphicsFrame: { frame in
+            observed.record(frame)
+        }
+    )
+
+    #expect(report.status == "success")
+    #expect(report.stage == "rdp-graphics-dynamic-channel")
+    #expect(report.rdpAutoDetectRequestType == "connect-time-rtt-measure-request")
+    #expect(report.rdpLicensingResponseType == "license-error-valid-client")
+    #expect(report.rdpPostLicensingResponseType == "server-demand-active")
+    #expect(report.rdpGraphicsFirstFrame?.codecName == "avc420")
+    #expect(observed.frames == report.rdpGraphicsFrames)
+    #expect(report.error == nil)
+}
+
 @Test func preflightAdvertisesGraphicsProfilesToMockServer() throws {
     let cases: [(profile: RDPGraphicsCapabilityProfile, selectedVersion: UInt32, selectedFlags: UInt32)] = [
         (.automatic, RDPGFXCapabilityVersion.version107, RDPGFXCapabilityFlags.defaultVersion107),

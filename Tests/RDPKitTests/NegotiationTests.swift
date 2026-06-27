@@ -22,6 +22,25 @@ import Testing
     ]))
 }
 
+@Test func x224ConnectionRequestCanCarryRoutingToken() {
+    let routingToken = Data("Cookie: mststs=1183689379\r\n".utf8)
+    let request = X224ConnectionRequest(
+        routingToken: routingToken,
+        negotiationRequest: RDPNegotiationRequest(requestedProtocols: [.credSSP])
+    )
+    let packet = request.encodedTPKT()
+
+    #expect(packet.prefix(11) == Data([
+        0x03, 0x00, 0x00, 0x2d,
+        0x28, 0xe0, 0x00, 0x00, 0x00, 0x00, 0x00,
+    ]))
+    #expect(packet.dropFirst(11).prefix(routingToken.count) == routingToken)
+    #expect(packet.suffix(8) == Data([
+        0x01, 0x00, 0x08, 0x00,
+        0x02, 0x00, 0x00, 0x00,
+    ]))
+}
+
 @Test func parsesX224ConnectionConfirmWithTlsSelection() throws {
     let packet = Data([
         0x03, 0x00, 0x00, 0x13,

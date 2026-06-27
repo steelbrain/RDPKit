@@ -32,24 +32,31 @@ enum X224DataTPDU {
 }
 
 struct X224ConnectionRequest: Equatable, Sendable {
+    var routingToken: Data?
     var negotiationRequest: RDPNegotiationRequest
 
     init(
+        routingToken: Data? = nil,
         negotiationRequest: RDPNegotiationRequest = RDPNegotiationRequest()
     ) {
+        self.routingToken = routingToken
         self.negotiationRequest = negotiationRequest
     }
 
     func encodedTPKT() -> Data {
         let negotiation = negotiationRequest.encoded()
-        precondition(negotiation.count <= Int(UInt8.max) - 6)
+        let trailingByteCount = (routingToken?.count ?? 0) + negotiation.count
+        precondition(trailingByteCount <= Int(UInt8.max) - 6)
 
         var tpdu = Data()
-        tpdu.appendUInt8(UInt8(6 + negotiation.count))
+        tpdu.appendUInt8(UInt8(6 + trailingByteCount))
         tpdu.appendUInt8(X224TPDUType.connectionRequest.rawValue)
         tpdu.appendBigEndianUInt16(0)
         tpdu.appendBigEndianUInt16(0)
         tpdu.appendUInt8(0)
+        if let routingToken {
+            tpdu.append(routingToken)
+        }
         tpdu.append(negotiation)
 
         return TPKT.wrap(tpdu)
