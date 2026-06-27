@@ -3562,47 +3562,6 @@ private func performRDPGraphicsDynamicChannelHandshake(
                     .encodedTPKT(initiator: userChannelID, channelID: staticChannelID)
                 result.dynamicChannelCapabilitiesResponseData = responsePacket
                 try sendApplicationPacket(responsePacket, on: channel)
-
-                if result.graphicsChannelCreateRequest == nil {
-                    let createRequest = RDPDynamicVirtualChannelCreateRequest(
-                        channelID: 1,
-                        channelName: RDPGFXChannel.name
-                    )
-                    result.graphicsChannelCreateRequest = createRequest
-                    let createPacket = RDPStaticVirtualChannelPDU(
-                        payload: createRequest.encoded(),
-                        flags: RDPStaticVirtualChannelFlags.completeWithShowProtocol
-                    ).encodedTPKT(initiator: userChannelID, channelID: staticChannelID)
-                    try sendApplicationPacket(createPacket, on: channel)
-
-                    let graphicsPacket = graphicsCapsAdvertisePacket(
-                        dynamicChannelID: createRequest.channelID,
-                        userChannelID: userChannelID,
-                        staticChannelID: staticChannelID,
-                        graphicsCapabilityProfile: graphicsCapabilityProfile
-                    )
-                    result.graphicsCapsAdvertiseData = graphicsPacket
-                    try sendApplicationPacket(graphicsPacket, on: channel)
-                }
-                continue
-            }
-
-            if let createResponse = try RDPDynamicVirtualChannelCreateResponse.parseIfPresent(
-                from: staticPDU.payload
-            ) {
-                result.dynamicChannelRequestTypes.append("dynvc-create-response")
-                if createResponse.channelID == result.graphicsChannelCreateRequest?.channelID,
-                   createResponse.creationStatus == 0
-                {
-                    let graphicsPacket = graphicsCapsAdvertisePacket(
-                        dynamicChannelID: createResponse.channelID,
-                        userChannelID: userChannelID,
-                        staticChannelID: staticChannelID,
-                        graphicsCapabilityProfile: graphicsCapabilityProfile
-                    )
-                    result.graphicsCapsAdvertiseData = graphicsPacket
-                    try sendApplicationPacket(graphicsPacket, on: channel)
-                }
                 continue
             }
 

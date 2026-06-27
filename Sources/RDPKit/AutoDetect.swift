@@ -60,16 +60,17 @@ struct RDPServerAutoDetectRequest: Equatable, Sendable {
 
         let sequenceNumber = try cursor.readLittleEndianUInt16()
         let requestType = try cursor.readLittleEndianUInt16()
-        let payloadByteCount = Int(headerLength) - 6
-        if payloadByteCount > 0 {
-            _ = try cursor.readData(count: payloadByteCount)
-        }
+        // For payload-bearing requests (e.g. bandwidth-measure-stop, headerLength 0x08)
+        // a 16-bit payload length field follows the fixed 6-byte header.
+        let payloadByteCount = headerLength >= 0x08
+            ? Int(try cursor.readLittleEndianUInt16())
+            : 0
 
         return RDPServerAutoDetectRequest(
             channelID: indication.channelID,
             sequenceNumber: sequenceNumber,
             requestType: requestType,
-            payloadByteCount: cursor.remaining
+            payloadByteCount: payloadByteCount
         )
     }
 }
