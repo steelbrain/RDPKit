@@ -2,6 +2,8 @@ import Foundation
 @testable import RDPKit
 import Testing
 
+@Suite(.serialized)
+struct MockKRDPServerTests {
 @Test func preflightCapturesGraphicsFrameFromMockKRDPServer() throws {
     let server = try MockKRDPServer.start()
     defer { server.stop() }
@@ -717,6 +719,7 @@ import Testing
     #expect(observed.audioSamples.first?.format == .pcmStereo48k16Bit)
     #expect(observed.audioSamples.first?.data == Data([0x11, 0x22, 0x33, 0x44]))
     #expect(report.error == nil)
+}
 }
 
 private final class RDPTestCertificateCapture: @unchecked Sendable {
