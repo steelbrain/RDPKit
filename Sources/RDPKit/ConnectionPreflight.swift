@@ -948,6 +948,7 @@ public struct RDPPreflightClient: Sendable {
         onAudioSample: RDPAudioSampleHandler? = nil,
         onCertificate: RDPServerCertificateHandler? = nil,
         onWireReceive: RDPWireReceiveHandler? = nil,
+        wireTranscript: RDPWireTranscript? = nil,
         cancellation: RDPConnectionCancellation? = nil,
         shouldCancel: RDPCancellationHandler? = nil
     ) -> RDPPreflightReport {
@@ -964,6 +965,7 @@ public struct RDPPreflightClient: Sendable {
                 onAudioSample: onAudioSample,
                 onCertificate: onCertificate,
                 onWireReceive: onWireReceive,
+                wireTranscript: wireTranscript,
                 cancellation: cancellation,
                 shouldCancel: shouldCancel
             )
@@ -984,6 +986,7 @@ public struct RDPPreflightClient: Sendable {
         onAudioSample: RDPAudioSampleHandler? = nil,
         onCertificate: RDPServerCertificateHandler? = nil,
         onWireReceive: RDPWireReceiveHandler? = nil,
+        wireTranscript: RDPWireTranscript? = nil,
         cancellation: RDPConnectionCancellation? = nil,
         shouldCancel: RDPCancellationHandler? = nil
     ) throws -> RDPPreflightReport {
@@ -996,6 +999,7 @@ public struct RDPPreflightClient: Sendable {
             timeoutSeconds: configuration.timeoutSeconds,
             packet: packet,
             onWireReceive: onWireReceive,
+            wireTranscript: wireTranscript,
             cancellation: cancellation
         )
         try throwIfCancelled(shouldCancel, cancellation: cancellation)
@@ -1062,6 +1066,7 @@ public struct RDPPreflightClient: Sendable {
                     onAudioSample: onAudioSample,
                     onCertificate: onCertificate,
                     onWireReceive: onWireReceive,
+                    wireTranscript: wireTranscript,
                     cancellation: cancellation,
                     shouldCancel: shouldCancel
                 )
@@ -1098,6 +1103,7 @@ public struct RDPPreflightClient: Sendable {
                         onAudioSample: onAudioSample,
                         onCertificate: onCertificate,
                         onWireReceive: onWireReceive,
+                        wireTranscript: wireTranscript,
                         cancellation: cancellation,
                         shouldCancel: shouldCancel
                     )
@@ -1777,6 +1783,7 @@ private func connectAndNegotiate(
     timeoutSeconds: Int,
     packet: Data,
     onWireReceive: RDPWireReceiveHandler?,
+    wireTranscript: RDPWireTranscript?,
     cancellation: RDPConnectionCancellation?
 ) throws -> NegotiatedConnection {
     let fd = try openSocket(host: host, port: port, timeoutSeconds: timeoutSeconds)
@@ -1785,12 +1792,14 @@ private func connectAndNegotiate(
     }
     do {
         try sendAll(fd: fd, packet: packet)
+        wireTranscript?.record(direction: .clientToServer, layer: .x224, bytes: packet, capturePayload: true)
         let response = try receiveTPKT(
             fd: fd,
             timeoutSeconds: timeoutSeconds,
             timeoutDescription: "X224 Connection Confirm"
         )
         onWireReceive?(RDPWireReceiveSample(byteCount: response.count, receivedAt: Date()))
+        wireTranscript?.record(direction: .serverToClient, layer: .x224, bytes: response, capturePayload: true)
         let confirm = try X224ConnectionConfirm.parse(fromTPKT: response)
         cancellationRegistration?.cancel()
         return NegotiatedConnection(fd: fd, response: response, confirm: confirm)
@@ -1937,14 +1946,27 @@ private final class TLSTPKTStreamHandler: ChannelInboundHandler, RemovableChanne
     typealias InboundIn = ByteBuffer
 
     private let onWireReceive: RDPWireReceiveHandler?
+    private let transcript: RDPWireTranscript?
     private var received = Data()
     private var receivedReadOffset = 0
     private var packets: [Data] = []
     private var pending: [EventLoopPromise<Data>] = []
     private var failure: Error?
 
-    init(onWireReceive: RDPWireReceiveHandler? = nil) {
+    init(onWireReceive: RDPWireReceiveHandler? = nil, transcript: RDPWireTranscript? = nil) {
         self.onWireReceive = onWireReceive
+        self.transcript = transcript
+    }
+
+    /// Records a client→server application PDU as a length-only ordering marker
+    /// (its payload can carry credentials and is not needed for replay).
+    func recordSend(_ packet: Data) {
+        transcript?.record(
+            direction: .clientToServer,
+            layer: .application,
+            bytes: packet,
+            capturePayload: false
+        )
     }
 
     func nextPacket(on channel: Channel) -> EventLoopFuture<Data> {
@@ -2018,6 +2040,12 @@ private final class TLSTPKTStreamHandler: ChannelInboundHandler, RemovableChanne
             receivedReadOffset += length
             compactReceivedBufferIfNeeded()
             onWireReceive?(RDPWireReceiveSample(byteCount: packet.count, receivedAt: Date()))
+            transcript?.record(
+                direction: .serverToClient,
+                layer: .application,
+                bytes: packet,
+                capturePayload: true
+            )
             if pending.isEmpty {
                 packets.append(packet)
             } else {
@@ -2287,6 +2315,7 @@ private func performTLSHandshake(
     onAudioSample: RDPAudioSampleHandler?,
     onCertificate: RDPServerCertificateHandler?,
     onWireReceive: RDPWireReceiveHandler?,
+    wireTranscript: RDPWireTranscript?,
     cancellation: RDPConnectionCancellation?,
     shouldCancel: RDPCancellationHandler?
 ) throws -> TLSProbeResult {
@@ -2379,6 +2408,7 @@ private func performTLSHandshake(
             cancellation: cancellation,
             shouldCancel: shouldCancel
         )
+        wireTranscript?.recordMarker(direction: .clientToServer, layer: .security)
     }
     let mcsConnectionSequence = try mcsConfiguration.map { configuration in
         try performMCSConnectionSequence(
@@ -2397,6 +2427,7 @@ private func performTLSHandshake(
             onClipboardFileContents: onClipboardFileContents,
             onAudioSample: onAudioSample,
             onWireReceive: onWireReceive,
+            wireTranscript: wireTranscript,
             cancellation: cancellation,
             shouldCancel: shouldCancel
         )
@@ -2594,10 +2625,11 @@ private func performMCSConnectionSequence(
     onClipboardFileContents: RDPClipboardFileContentsHandler?,
     onAudioSample: RDPAudioSampleHandler?,
     onWireReceive: RDPWireReceiveHandler?,
+    wireTranscript: RDPWireTranscript?,
     cancellation: RDPConnectionCancellation?,
     shouldCancel: RDPCancellationHandler?
 ) throws -> MCSConnectionSequence {
-    let tpktReader = TLSTPKTStreamHandler(onWireReceive: onWireReceive)
+    let tpktReader = TLSTPKTStreamHandler(onWireReceive: onWireReceive, transcript: wireTranscript)
     try channel.pipeline.addHandler(tpktReader).wait()
     defer {
         try? channel.pipeline.removeHandler(tpktReader).wait()
@@ -2631,7 +2663,7 @@ private func performMCSConnectionSequence(
     }
 
     let erectDomainRequest = MCSErectDomainRequestPDU().encodedTPKT()
-    try sendApplicationPacket(erectDomainRequest, on: channel)
+    try sendApplicationPacket(erectDomainRequest, on: channel, reader: tpktReader)
 
     let attachUserRequest = MCSAttachUserRequestPDU().encodedTPKT()
     let attachUserConfirmData = try sendApplicationPacketAndReceiveTPKT(
@@ -3415,9 +3447,9 @@ private func performRDPConnectionFinalization(
     )
 
     do {
-        try sendApplicationPacket(clientSynchronizeRequest, on: channel)
-        try sendApplicationPacket(clientControlCooperateRequest, on: channel)
-        try sendApplicationPacket(clientControlRequest, on: channel)
+        try sendApplicationPacket(clientSynchronizeRequest, on: channel, reader: reader)
+        try sendApplicationPacket(clientControlCooperateRequest, on: channel, reader: reader)
+        try sendApplicationPacket(clientControlRequest, on: channel, reader: reader)
     } catch {
         result.error = String(describing: error)
         return result
@@ -3437,7 +3469,7 @@ private func performRDPConnectionFinalization(
             if let response = try RDPShareDataPDU.parseIfPresent(fromTPKT: packet) {
                 result.responses.append(response)
                 if response.typeName == "control-granted-control", sentFontList == false {
-                    try sendApplicationPacket(clientFontListRequest, on: channel)
+                    try sendApplicationPacket(clientFontListRequest, on: channel, reader: reader)
                     sentFontList = true
                 }
                 if response.typeName == "font-map" {
@@ -3561,7 +3593,7 @@ private func performRDPGraphicsDynamicChannelHandshake(
                 )
                     .encodedTPKT(initiator: userChannelID, channelID: staticChannelID)
                 result.dynamicChannelCapabilitiesResponseData = responsePacket
-                try sendApplicationPacket(responsePacket, on: channel)
+                try sendApplicationPacket(responsePacket, on: channel, reader: reader)
                 continue
             }
 
@@ -3581,7 +3613,7 @@ private func performRDPGraphicsDynamicChannelHandshake(
                     )
                         .encodedTPKT(initiator: userChannelID, channelID: staticChannelID)
                     result.graphicsChannelCreateResponseData = responsePacket
-                    try sendApplicationPacket(responsePacket, on: channel)
+                    try sendApplicationPacket(responsePacket, on: channel, reader: reader)
 
                     let graphicsPacket = graphicsCapsAdvertisePacket(
                         dynamicChannelID: createRequest.channelID,
@@ -3590,7 +3622,7 @@ private func performRDPGraphicsDynamicChannelHandshake(
                         graphicsCapabilityProfile: graphicsCapabilityProfile
                     )
                     result.graphicsCapsAdvertiseData = graphicsPacket
-                    try sendApplicationPacket(graphicsPacket, on: channel)
+                    try sendApplicationPacket(graphicsPacket, on: channel, reader: reader)
                 } else if try handleDisplayControlCreateRequest(
                     createRequest,
                     userChannelID: userChannelID,
@@ -3617,7 +3649,7 @@ private func performRDPGraphicsDynamicChannelHandshake(
                         flags: RDPStaticVirtualChannelFlags.completeWithShowProtocol
                     )
                         .encodedTPKT(initiator: userChannelID, channelID: staticChannelID)
-                    try sendApplicationPacket(responsePacket, on: channel)
+                    try sendApplicationPacket(responsePacket, on: channel, reader: reader)
                 }
                 continue
             }
@@ -4525,8 +4557,10 @@ private func appendGraphicsFrame(
 
 private func sendApplicationPacket(
     _ packet: Data,
-    on channel: Channel
+    on channel: Channel,
+    reader: TLSTPKTStreamHandler? = nil
 ) throws {
+    reader?.recordSend(packet)
     var buffer = channel.allocator.buffer(capacity: packet.count)
     buffer.writeBytes(packet)
     try channel.writeAndFlush(buffer).wait()
@@ -4540,7 +4574,7 @@ private func sendApplicationPacketAndReceiveTPKT(
     timeoutDescription: String
 ) throws -> Data {
     let response = reader.nextPacket(on: channel)
-    try sendApplicationPacket(packet, on: channel)
+    try sendApplicationPacket(packet, on: channel, reader: reader)
 
     return try waitForApplicationTPKT(
         response,

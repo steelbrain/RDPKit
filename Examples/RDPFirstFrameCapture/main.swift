@@ -15,6 +15,7 @@ private struct CaptureArguments {
     var graphicsCapabilityProfile: RDPGraphicsCapabilityProfile = .automatic
     var hideCertificateWarnings = false
     var outputPath: String?
+    var transcriptPath: String?
 }
 
 private enum CaptureError: Error, CustomStringConvertible {
@@ -90,6 +91,7 @@ private struct FirstFrameCapture {
             var decodeFailureCount = 0
             var lastDecodeError: Error?
             let cancellation = RDPConnectionCancellation()
+            let wireTranscript = arguments.transcriptPath.map { _ in RDPWireTranscript() }
             let report = RDPPreflightClient().run(
                 configuration: RDPConnectionConfiguration(
                     host: try requiredHost(arguments),
@@ -102,6 +104,9 @@ private struct FirstFrameCapture {
                     graphicsCapabilityProfile: arguments.graphicsCapabilityProfile
                 ),
                 onGraphicsFrame: { frame in
+                    // Freeze the transcript the moment video frames start flowing:
+                    // it captures the whole negotiation up to, but not past, here.
+                    wireTranscript?.stop()
                     guard decodedFrameCount < arguments.frames else {
                         return
                     }
@@ -137,8 +142,13 @@ private struct FirstFrameCapture {
                         fputs("\n", stderr)
                     }
                 },
+                wireTranscript: wireTranscript,
                 cancellation: cancellation
             )
+
+            if let transcriptPath = arguments.transcriptPath, let wireTranscript {
+                try writeTranscript(wireTranscript, to: transcriptPath)
+            }
 
             guard decodedFrameCount > 0 else {
                 guard report.status == "success" else {
@@ -229,6 +239,10 @@ private struct FirstFrameCapture {
                 index += 1
                 guard index < values.count else { throw CaptureError.missingValue(value) }
                 args.outputPath = values[index]
+            case "--capture-transcript":
+                index += 1
+                guard index < values.count else { throw CaptureError.missingValue(value) }
+                args.transcriptPath = values[index]
             case "-h", "--help":
                 printUsage()
                 exit(0)
@@ -289,6 +303,17 @@ private struct FirstFrameCapture {
             .path
     }
 
+    private static func writeTranscript(_ transcript: RDPWireTranscript, to path: String) throws {
+        let url = URL(fileURLWithPath: path)
+        try createOutputDirectory(for: url)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let data = try encoder.encode(transcript.events)
+        try data.write(to: url)
+        let serverEvents = transcript.events.filter { $0.direction == .serverToClient }.count
+        print("wrote transcript \(path): \(transcript.events.count) events (\(serverEvents) server\u{2192}client)")
+    }
+
     private static func writePNG(_ image: CGImage, to path: String) throws {
         let url = URL(fileURLWithPath: path)
         try createOutputDirectory(for: url)
@@ -326,9 +351,11 @@ private struct FirstFrameCapture {
 
     private static func printUsage() {
         print("""
-        Usage: RDPFirstFrameCapture --host <host> --output <frame.png> [--port 3389] [--username <name>] [--domain <domain>] [--password-env <env>] [--timeout-seconds 30] [--frames 1] [--graphics-profile automatic|avcThinClient|avc420|legacy] [--hide-certificate-warnings]
+        Usage: RDPFirstFrameCapture --host <host> --output <frame.png> [--port 3389] [--username <name>] [--domain <domain>] [--password-env <env>] [--timeout-seconds 30] [--frames 1] [--graphics-profile automatic|avcThinClient|avc420|legacy] [--hide-certificate-warnings] [--capture-transcript <transcript.json>]
 
         Connects to an RDP host, captures RDPGFX frames, decodes them, and writes PNGs.
+        With --capture-transcript, also dumps the negotiation wire exchange (up to the
+        first video frame) as JSON for use as a deterministic replay regression fixture.
         """)
     }
 }

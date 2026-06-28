@@ -311,7 +311,7 @@ private struct MockClientShareDataPDU {
     var payload: Data
 }
 
-private final class MockCredSSPServer {
+final class MockCredSSPServer {
     private enum Stage {
         case negotiate
         case authenticate
@@ -757,7 +757,7 @@ private final class MockCredSSPServer {
         | negotiateSign
 }
 
-private final class MockNTLMRC4 {
+final class MockNTLMRC4 {
     private var i = 0
     private var j = 0
     private var state = [UInt8](0 ... 255)
@@ -2500,7 +2500,7 @@ private enum MockKRDPFixtures {
     }
 }
 
-private enum MockKRDPTLS {
+enum MockKRDPTLS {
     static func configuration() throws -> TLSConfiguration {
         let certificates = try certificates()
         let privateKey = try NIOSSLPrivateKey(bytes: Array(privateKeyPEM.utf8), format: .pem)
