@@ -41,6 +41,41 @@ import Testing
     #expect(request.payloadByteCount == 4)
 }
 
+@Test func rejectsAutoDetectRequestWhenDeclaredHeaderLengthExceedsPayload() {
+    var pdu = Data()
+    pdu.appendUInt8(0x68)
+    pdu.appendBigEndianUInt16(5)
+    pdu.appendBigEndianUInt16(1005)
+    pdu.appendUInt8(0x70)
+    pdu.appendUInt8(0x0A)
+    pdu.append(contentsOf: [
+        0x00, 0x10, 0x00, 0x00,
+        0x08, 0x00,
+        0x23, 0x00,
+        0x2B, 0x00,
+    ])
+
+    #expect(throws: RDPDecodeError.invalidAutoDetectRequest) {
+        try RDPServerAutoDetectRequest.parseIfPresent(fromTPKT: X224DataTPDU.wrap(pdu))
+    }
+}
+
+@Test func bandwidthMeasureStopRequestBuildsResultResponseFromPayloadLength() throws {
+    let request = RDPServerAutoDetectRequest(
+        channelID: 1005,
+        sequenceNumber: 0x0023,
+        requestType: 0x002B,
+        payloadByteCount: 4
+    )
+
+    #expect(request.response.encodedPDUData() == Data([
+        0x00, 0x20, 0x00, 0x00,
+        0x0E, 0x01, 0x23, 0x00, 0x03, 0x00,
+        0x04, 0x00, 0x00, 0x00,
+        0x01, 0x00, 0x00, 0x00,
+    ]))
+}
+
 @Test func ignoresNonAutoDetectSendDataIndication() throws {
     let packet = MCSSendDataRequestPDU(
         initiator: 1005,

@@ -63,6 +63,34 @@ import Testing
     #expect(try bgraPixel(atX: 4, y: 2, in: presentation.imageBuffer) == [0x33, 0x44, 0x55, 0xFF])
 }
 
+@Test func decodedVideoCompositorClearsStaleSurfaceOnFullResyncFrame() throws {
+    let compositor = RDPDecodedVideoSurfaceCompositor()
+    _ = try compositor.presentation(
+        for: videoFrame(
+            id: 1,
+            surfaceRect: RDPFrameRect(left: 0, top: 0, right: 4, bottom: 4),
+            destinationRect: RDPFrameRect(left: 0, top: 0, right: 4, bottom: 4),
+            regionRects: [RDPFrameRect(left: 0, top: 0, right: 4, bottom: 4)]
+        ),
+        decodedImageBuffer: try bgraPixelBuffer(width: 4, height: 4, pixel: [0x10, 0x20, 0x30, 0xFF])
+    )
+
+    let presentation = try compositor.presentation(
+        for: videoFrame(
+            id: 2,
+            surfaceRect: RDPFrameRect(left: 0, top: 0, right: 2, bottom: 2),
+            destinationRect: RDPFrameRect(left: 0, top: 0, right: 2, bottom: 2),
+            regionRects: [RDPFrameRect(left: 0, top: 0, right: 2, bottom: 2)]
+        ),
+        decodedImageBuffer: try bgraPixelBuffer(width: 2, height: 2, pixel: [0xA0, 0xB0, 0xC0, 0xFF])
+    )
+
+    #expect(presentation.frame.destinationRect == RDPFrameRect(left: 0, top: 0, right: 2, bottom: 2))
+    #expect(CVPixelBufferGetWidth(presentation.imageBuffer) == 2)
+    #expect(CVPixelBufferGetHeight(presentation.imageBuffer) == 2)
+    #expect(try bgraPixel(atX: 1, y: 1, in: presentation.imageBuffer) == [0xA0, 0xB0, 0xC0, 0xFF])
+}
+
 @Test func decodedVideoCompositorSynchronizesBitmapFramesBeforeLaterVideoDeltas() throws {
     let compositor = RDPDecodedVideoSurfaceCompositor()
     _ = try compositor.presentation(

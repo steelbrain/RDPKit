@@ -53,7 +53,7 @@ struct RDPServerAutoDetectRequest: Equatable, Sendable {
         let headerTypeID = try cursor.readUInt8()
         guard headerLength >= 0x06,
               headerTypeID == 0x00,
-              Int(headerLength) - 6 <= cursor.remaining
+              Int(headerLength) - 2 <= cursor.remaining
         else {
             throw RDPDecodeError.invalidAutoDetectRequest
         }
