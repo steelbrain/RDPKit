@@ -1,3 +1,4 @@
+import CoreImage
 import CoreVideo
 import Foundation
 
@@ -241,9 +242,450 @@ public func decodeReportFirstFrame(_ frame: RDPGraphicsFrameSnapshot) -> RDPRepo
     }
 }
 
+final class RDPDecodedVideoSurfaceCompositor {
+    private struct Surface {
+        var width: Int
+        var height: Int
+        var bytesPerRow: Int
+        var data: Data
+    }
+
+    private var surfaces: [UInt16: Surface] = [:]
+    private let imageConverter = RDPDecodedImageBufferConverter()
+
+    func reset() {
+        surfaces.removeAll()
+    }
+
+    func presentation(
+        for frame: RDPGraphicsFrameSnapshot,
+        decodedImageBuffer: CVImageBuffer
+    ) throws -> RDPDecodedFramePresentation {
+        guard frame.contentKind == .video else {
+            synchronizeBitmapSurface(from: frame)
+            return RDPDecodedFramePresentation(frame: frame, imageBuffer: decodedImageBuffer)
+        }
+
+        let updateRect = frame.destinationRect
+        let requestedSurfaceRect = frame.surfaceRect ?? inferredSurfaceRect(from: updateRect)
+        let surfaceWidth = Int(requestedSurfaceRect.width)
+        let surfaceHeight = Int(requestedSurfaceRect.height)
+        guard surfaceWidth > 0, surfaceHeight > 0 else {
+            return RDPDecodedFramePresentation(frame: frame, imageBuffer: decodedImageBuffer)
+        }
+
+        if frame.isVideoResyncFrame,
+           updateRect.left == 0,
+           updateRect.top == 0
+        {
+            surfaces[frame.surfaceID] = nil
+        }
+        var surface = surface(for: frame.surfaceID, width: surfaceWidth, height: surfaceHeight)
+        let surfaceRect = frame.surfaceRect ?? RDPFrameRect(
+            left: 0,
+            top: 0,
+            right: UInt16(clamping: surface.width),
+            bottom: UInt16(clamping: surface.height)
+        )
+        let source = try imageConverter.bgraData(from: decodedImageBuffer)
+        let copyRegions = videoCopyRegions(
+            updateRect: updateRect,
+            regionRects: frame.regionRects,
+            sourceWidth: source.width,
+            sourceHeight: source.height,
+            surfaceWidth: surface.width,
+            surfaceHeight: surface.height
+        )
+        guard copyRegions.isEmpty == false else {
+            let imageBuffer = try makePixelBuffer(surface: surface)
+            return RDPDecodedFramePresentation(
+                frame: composedFrame(from: frame, surface: surface, surfaceRect: surfaceRect),
+                imageBuffer: imageBuffer
+            )
+        }
+
+        for region in copyRegions {
+            copy(
+                source: source.data,
+                sourceBytesPerRow: source.bytesPerRow,
+                destination: &surface.data,
+                destinationBytesPerRow: surface.bytesPerRow,
+                sourceX: region.sourceX,
+                sourceY: region.sourceY,
+                destinationX: region.destinationX,
+                destinationY: region.destinationY,
+                width: region.width,
+                height: region.height
+            )
+        }
+        surfaces[frame.surfaceID] = surface
+
+        let imageBuffer = try makePixelBuffer(surface: surface)
+        return RDPDecodedFramePresentation(
+            frame: composedFrame(from: frame, surface: surface, surfaceRect: surfaceRect),
+            imageBuffer: imageBuffer
+        )
+    }
+
+    private func surface(for surfaceID: UInt16, width: Int, height: Int) -> Surface {
+        if let existing = surfaces[surfaceID],
+           existing.width >= width,
+           existing.height >= height
+        {
+            return existing
+        }
+
+        let nextWidth = max(width, surfaces[surfaceID]?.width ?? 0)
+        let nextHeight = max(height, surfaces[surfaceID]?.height ?? 0)
+        let bytesPerRow = nextWidth * 4
+        var surface = Surface(
+            width: nextWidth,
+            height: nextHeight,
+            bytesPerRow: bytesPerRow,
+            data: Data(repeating: 0, count: bytesPerRow * nextHeight)
+        )
+
+        if let existing = surfaces[surfaceID] {
+            copy(
+                source: existing.data,
+                sourceBytesPerRow: existing.bytesPerRow,
+                destination: &surface.data,
+                destinationBytesPerRow: surface.bytesPerRow,
+                sourceX: 0,
+                sourceY: 0,
+                destinationX: 0,
+                destinationY: 0,
+                width: existing.width,
+                height: existing.height
+            )
+        }
+        surfaces[surfaceID] = surface
+        return surface
+    }
+
+    private func composedFrame(
+        from frame: RDPGraphicsFrameSnapshot,
+        surface: Surface,
+        surfaceRect: RDPFrameRect
+    ) -> RDPGraphicsFrameSnapshot {
+        let destinationRect = surfaceRect
+        let regionRects = frame.regionRects.compactMap {
+            outputRegionRect($0, updateRect: frame.destinationRect, surfaceRect: surfaceRect)
+        }
+        return RDPGraphicsFrameSnapshot(
+            frameID: frame.frameID,
+            surfaceID: frame.surfaceID,
+            codecID: RDPGFXCodecID.uncompressed,
+            codecName: "surface-bgra",
+            videoCodec: frame.videoCodec,
+            pixelFormat: frame.pixelFormat,
+            surfaceRect: surfaceRect,
+            destinationRect: destinationRect,
+            regionRects: regionRects.isEmpty ? [destinationRect] : regionRects,
+            encodedVideoData: Data(),
+            contentKind: .bitmap,
+            decodedBitmapData: surface.data,
+            decodedBitmapBytesPerRow: surface.bytesPerRow
+        )
+    }
+
+    private func makePixelBuffer(surface: Surface) throws -> CVPixelBuffer {
+        var pixelBuffer: CVPixelBuffer?
+        let status = CVPixelBufferCreate(
+            kCFAllocatorDefault,
+            surface.width,
+            surface.height,
+            kCVPixelFormatType_32BGRA,
+            [
+                kCVPixelBufferMetalCompatibilityKey: true,
+                kCVPixelBufferIOSurfacePropertiesKey: [:],
+            ] as CFDictionary,
+            &pixelBuffer
+        )
+        guard status == kCVReturnSuccess, let pixelBuffer else {
+            throw RDPBitmapFrameDecodeError.coreVideo(operation: "create composed video pixel buffer", status: status)
+        }
+
+        CVPixelBufferLockBaseAddress(pixelBuffer, [])
+        defer {
+            CVPixelBufferUnlockBaseAddress(pixelBuffer, [])
+        }
+        guard let destination = CVPixelBufferGetBaseAddress(pixelBuffer) else {
+            throw RDPBitmapFrameDecodeError.missingBaseAddress
+        }
+        let destinationBytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
+        surface.data.withUnsafeBytes { sourceBuffer in
+            guard let source = sourceBuffer.baseAddress else {
+                return
+            }
+            for row in 0 ..< surface.height {
+                memcpy(
+                    destination.advanced(by: row * destinationBytesPerRow),
+                    source.advanced(by: row * surface.bytesPerRow),
+                    surface.width * 4
+                )
+            }
+        }
+        return pixelBuffer
+    }
+
+    private func synchronizeBitmapSurface(from frame: RDPGraphicsFrameSnapshot) {
+        guard let data = frame.decodedBitmapData,
+              let bytesPerRow = frame.decodedBitmapBytesPerRow,
+              frame.width > 0,
+              frame.height > 0
+        else {
+            surfaces[frame.surfaceID] = nil
+            return
+        }
+        surfaces[frame.surfaceID] = Surface(
+            width: Int(frame.width),
+            height: Int(frame.height),
+            bytesPerRow: bytesPerRow,
+            data: data
+        )
+    }
+}
+
+private struct RDPVideoCopyRegion {
+    var sourceX: Int
+    var sourceY: Int
+    var destinationX: Int
+    var destinationY: Int
+    var width: Int
+    var height: Int
+}
+
+private func inferredSurfaceRect(from updateRect: RDPFrameRect) -> RDPFrameRect {
+    RDPFrameRect(
+        left: 0,
+        top: 0,
+        right: max(updateRect.right, updateRect.width),
+        bottom: max(updateRect.bottom, updateRect.height)
+    )
+}
+
+private func videoCopyRegions(
+    updateRect: RDPFrameRect,
+    regionRects: [RDPFrameRect],
+    sourceWidth: Int,
+    sourceHeight: Int,
+    surfaceWidth: Int,
+    surfaceHeight: Int
+) -> [RDPVideoCopyRegion] {
+    let regions = regionRects.isEmpty
+        ? [RDPFrameRect(left: 0, top: 0, right: updateRect.width, bottom: updateRect.height)]
+        : regionRects
+    let regionsAreRelative = regions.allSatisfy {
+        $0.left <= updateRect.width
+            && $0.top <= updateRect.height
+            && $0.right <= updateRect.width
+            && $0.bottom <= updateRect.height
+    }
+
+    return regions.compactMap { region in
+        let sourceLeft: Int
+        let sourceTop: Int
+        let destinationLeft: Int
+        let destinationTop: Int
+        if regionsAreRelative {
+            sourceLeft = Int(region.left)
+            sourceTop = Int(region.top)
+            destinationLeft = Int(updateRect.left) + sourceLeft
+            destinationTop = Int(updateRect.top) + sourceTop
+        } else {
+            sourceLeft = Int(region.left) - Int(updateRect.left)
+            sourceTop = Int(region.top) - Int(updateRect.top)
+            destinationLeft = Int(region.left)
+            destinationTop = Int(region.top)
+        }
+
+        return clippedVideoCopyRegion(
+            sourceLeft: sourceLeft,
+            sourceTop: sourceTop,
+            destinationLeft: destinationLeft,
+            destinationTop: destinationTop,
+            width: Int(region.width),
+            height: Int(region.height),
+            sourceWidth: sourceWidth,
+            sourceHeight: sourceHeight,
+            surfaceWidth: surfaceWidth,
+            surfaceHeight: surfaceHeight
+        )
+    }
+}
+
+private func clippedVideoCopyRegion(
+    sourceLeft: Int,
+    sourceTop: Int,
+    destinationLeft: Int,
+    destinationTop: Int,
+    width: Int,
+    height: Int,
+    sourceWidth: Int,
+    sourceHeight: Int,
+    surfaceWidth: Int,
+    surfaceHeight: Int
+) -> RDPVideoCopyRegion? {
+    let shiftX = max(0, -sourceLeft, -destinationLeft)
+    let shiftY = max(0, -sourceTop, -destinationTop)
+    let sourceX = sourceLeft + shiftX
+    let sourceY = sourceTop + shiftY
+    let destinationX = destinationLeft + shiftX
+    let destinationY = destinationTop + shiftY
+    let clippedWidth = min(
+        width - shiftX,
+        sourceWidth - sourceX,
+        surfaceWidth - destinationX
+    )
+    let clippedHeight = min(
+        height - shiftY,
+        sourceHeight - sourceY,
+        surfaceHeight - destinationY
+    )
+    guard clippedWidth > 0, clippedHeight > 0 else {
+        return nil
+    }
+    return RDPVideoCopyRegion(
+        sourceX: sourceX,
+        sourceY: sourceY,
+        destinationX: destinationX,
+        destinationY: destinationY,
+        width: clippedWidth,
+        height: clippedHeight
+    )
+}
+
+private func outputRegionRect(
+    _ region: RDPFrameRect,
+    updateRect: RDPFrameRect,
+    surfaceRect: RDPFrameRect
+) -> RDPFrameRect? {
+    let relative = region.right <= updateRect.width && region.bottom <= updateRect.height
+    let outputLeft = relative
+        ? Int(surfaceRect.left) + Int(updateRect.left) + Int(region.left)
+        : Int(surfaceRect.left) + Int(region.left)
+    let outputTop = relative
+        ? Int(surfaceRect.top) + Int(updateRect.top) + Int(region.top)
+        : Int(surfaceRect.top) + Int(region.top)
+    let outputRight = outputLeft + Int(region.width)
+    let outputBottom = outputTop + Int(region.height)
+    let clippedLeft = min(max(outputLeft, Int(surfaceRect.left)), Int(surfaceRect.right))
+    let clippedTop = min(max(outputTop, Int(surfaceRect.top)), Int(surfaceRect.bottom))
+    let clippedRight = min(max(outputRight, Int(surfaceRect.left)), Int(surfaceRect.right))
+    let clippedBottom = min(max(outputBottom, Int(surfaceRect.top)), Int(surfaceRect.bottom))
+    guard clippedRight > clippedLeft, clippedBottom > clippedTop else {
+        return nil
+    }
+    return RDPFrameRect(
+        left: UInt16(clippedLeft),
+        top: UInt16(clippedTop),
+        right: UInt16(clippedRight),
+        bottom: UInt16(clippedBottom)
+    )
+}
+
+private struct RDPDecodedBGRAImage {
+    var width: Int
+    var height: Int
+    var bytesPerRow: Int
+    var data: Data
+}
+
+private final class RDPDecodedImageBufferConverter {
+    private let ciContext = CIContext()
+
+    func bgraData(from imageBuffer: CVImageBuffer) throws -> RDPDecodedBGRAImage {
+        let width = CVPixelBufferGetWidth(imageBuffer)
+        let height = CVPixelBufferGetHeight(imageBuffer)
+        guard width > 0, height > 0 else {
+            throw RDPBitmapFrameDecodeError.invalidBitmapLayout
+        }
+
+        if CVPixelBufferGetPixelFormatType(imageBuffer) == kCVPixelFormatType_32BGRA {
+            return try copyBGRAData(from: imageBuffer, width: width, height: height)
+        }
+
+        let bytesPerRow = width * 4
+        var data = Data(repeating: 0, count: bytesPerRow * height)
+        data.withUnsafeMutableBytes { buffer in
+            guard let baseAddress = buffer.baseAddress else {
+                return
+            }
+            ciContext.render(
+                CIImage(cvImageBuffer: imageBuffer),
+                toBitmap: baseAddress,
+                rowBytes: bytesPerRow,
+                bounds: CGRect(x: 0, y: 0, width: width, height: height),
+                format: .BGRA8,
+                colorSpace: CGColorSpaceCreateDeviceRGB()
+            )
+        }
+        return RDPDecodedBGRAImage(width: width, height: height, bytesPerRow: bytesPerRow, data: data)
+    }
+
+    private func copyBGRAData(from imageBuffer: CVImageBuffer, width: Int, height: Int) throws -> RDPDecodedBGRAImage {
+        CVPixelBufferLockBaseAddress(imageBuffer, .readOnly)
+        defer {
+            CVPixelBufferUnlockBaseAddress(imageBuffer, .readOnly)
+        }
+        guard let source = CVPixelBufferGetBaseAddress(imageBuffer) else {
+            throw RDPBitmapFrameDecodeError.missingBaseAddress
+        }
+
+        let sourceBytesPerRow = CVPixelBufferGetBytesPerRow(imageBuffer)
+        let bytesPerRow = width * 4
+        var data = Data(repeating: 0, count: bytesPerRow * height)
+        data.withUnsafeMutableBytes { buffer in
+            guard let destination = buffer.baseAddress else {
+                return
+            }
+            for row in 0 ..< height {
+                memcpy(
+                    destination.advanced(by: row * bytesPerRow),
+                    source.advanced(by: row * sourceBytesPerRow),
+                    bytesPerRow
+                )
+            }
+        }
+        return RDPDecodedBGRAImage(width: width, height: height, bytesPerRow: bytesPerRow, data: data)
+    }
+}
+
+private func copy(
+    source: Data,
+    sourceBytesPerRow: Int,
+    destination: inout Data,
+    destinationBytesPerRow: Int,
+    sourceX: Int,
+    sourceY: Int,
+    destinationX: Int,
+    destinationY: Int,
+    width: Int,
+    height: Int
+) {
+    source.withUnsafeBytes { sourceBuffer in
+        destination.withUnsafeMutableBytes { destinationBuffer in
+            guard let sourceBase = sourceBuffer.baseAddress,
+                  let destinationBase = destinationBuffer.baseAddress
+            else {
+                return
+            }
+            for row in 0 ..< height {
+                let sourceRow = sourceBase.advanced(by: (sourceY + row) * sourceBytesPerRow + sourceX * 4)
+                let destinationRow = destinationBase.advanced(
+                    by: (destinationY + row) * destinationBytesPerRow + destinationX * 4
+                )
+                memcpy(destinationRow, sourceRow, width * 4)
+            }
+        }
+    }
+}
+
 public final class RDPLatestFrameDecodeQueue: @unchecked Sendable {
     private let lock = NSLock()
     private let decoder = RDPVideoToolboxFrameDecoder()
+    private let videoCompositor = RDPDecodedVideoSurfaceCompositor()
     private var backlog: RDPFrameDecodeBacklog
     private var skippedPendingFrameCount = 0
     private var latestSkippedFrameReceivedAt: Date?
@@ -332,14 +774,16 @@ public final class RDPLatestFrameDecodeQueue: @unchecked Sendable {
                 do {
                     if pendingFrame.resetDecoderBeforeDecode {
                         decoder.reset()
+                        videoCompositor.reset()
                     }
                     let decodedFrame = try decoder.decodeDetailed(pendingFrame.frame)
                     let decodedAt = Date()
+                    let presentation = try videoCompositor.presentation(
+                        for: pendingFrame.frame,
+                        decodedImageBuffer: decodedFrame.imageBuffer
+                    )
                     onDecoded(
-                        RDPDecodedFramePresentation(
-                            frame: pendingFrame.frame,
-                            imageBuffer: decodedFrame.imageBuffer
-                        ),
+                        presentation,
                         pendingFrame.receivedAt,
                         decodedAt,
                         RDPFrameDecodeTiming(

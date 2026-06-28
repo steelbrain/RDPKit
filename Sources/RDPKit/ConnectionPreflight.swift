@@ -126,6 +126,8 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
     public var clipboardEnabled: Bool
     public var audioPlaybackEnabled: Bool
     public var graphicsCapabilityProfile: RDPGraphicsCapabilityProfile
+    var redirectionRoutingToken: Data?
+    var redirectionDepth: Int
 
     public init(
         host: String,
@@ -151,6 +153,8 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
         self.clipboardEnabled = clipboardEnabled
         self.audioPlaybackEnabled = audioPlaybackEnabled
         self.graphicsCapabilityProfile = graphicsCapabilityProfile
+        self.redirectionRoutingToken = nil
+        self.redirectionDepth = 0
     }
 
     public init(
@@ -391,6 +395,7 @@ public struct RDPGraphicsFrameSnapshot: Encodable, Equatable, Sendable {
     public var codecName: String
     public var videoCodec: RDPVideoCodec
     public var pixelFormat: UInt8
+    public var surfaceRect: RDPFrameRect?
     public var destinationRect: RDPFrameRect
     public var regionRects: [RDPFrameRect]
     public var encodedVideoData: Data
@@ -405,6 +410,7 @@ public struct RDPGraphicsFrameSnapshot: Encodable, Equatable, Sendable {
         codecName: String,
         videoCodec: RDPVideoCodec = .h264,
         pixelFormat: UInt8,
+        surfaceRect: RDPFrameRect? = nil,
         destinationRect: RDPFrameRect,
         regionRects: [RDPFrameRect],
         h264AnnexBData: Data
@@ -416,6 +422,7 @@ public struct RDPGraphicsFrameSnapshot: Encodable, Equatable, Sendable {
             codecName: codecName,
             videoCodec: videoCodec,
             pixelFormat: pixelFormat,
+            surfaceRect: surfaceRect,
             destinationRect: destinationRect,
             regionRects: regionRects,
             encodedVideoData: h264AnnexBData
@@ -429,6 +436,7 @@ public struct RDPGraphicsFrameSnapshot: Encodable, Equatable, Sendable {
         codecName: String,
         videoCodec: RDPVideoCodec = .h264,
         pixelFormat: UInt8,
+        surfaceRect: RDPFrameRect? = nil,
         destinationRect: RDPGFXRect16,
         regionRects: [RDPGFXRect16],
         h264AnnexBData: Data
@@ -440,6 +448,7 @@ public struct RDPGraphicsFrameSnapshot: Encodable, Equatable, Sendable {
             codecName: codecName,
             videoCodec: videoCodec,
             pixelFormat: pixelFormat,
+            surfaceRect: surfaceRect,
             destinationRect: RDPFrameRect(destinationRect),
             regionRects: regionRects.map(RDPFrameRect.init),
             encodedVideoData: h264AnnexBData
@@ -453,6 +462,7 @@ public struct RDPGraphicsFrameSnapshot: Encodable, Equatable, Sendable {
         codecName: String,
         videoCodec: RDPVideoCodec = .h264,
         pixelFormat: UInt8,
+        surfaceRect: RDPFrameRect? = nil,
         destinationRect: RDPFrameRect,
         regionRects: [RDPFrameRect],
         encodedVideoData: Data,
@@ -466,6 +476,7 @@ public struct RDPGraphicsFrameSnapshot: Encodable, Equatable, Sendable {
         self.codecName = codecName
         self.videoCodec = videoCodec
         self.pixelFormat = pixelFormat
+        self.surfaceRect = surfaceRect
         self.destinationRect = destinationRect
         self.regionRects = regionRects
         self.encodedVideoData = encodedVideoData
@@ -481,6 +492,7 @@ public struct RDPGraphicsFrameSnapshot: Encodable, Equatable, Sendable {
         codecName: String,
         videoCodec: RDPVideoCodec = .h264,
         pixelFormat: UInt8,
+        surfaceRect: RDPFrameRect? = nil,
         destinationRect: RDPGFXRect16,
         regionRects: [RDPGFXRect16],
         encodedVideoData: Data
@@ -492,6 +504,7 @@ public struct RDPGraphicsFrameSnapshot: Encodable, Equatable, Sendable {
             codecName: codecName,
             videoCodec: videoCodec,
             pixelFormat: pixelFormat,
+            surfaceRect: surfaceRect,
             destinationRect: RDPFrameRect(destinationRect),
             regionRects: regionRects.map(RDPFrameRect.init),
             encodedVideoData: encodedVideoData
@@ -549,6 +562,7 @@ public struct RDPGraphicsFrameSnapshot: Encodable, Equatable, Sendable {
         case videoCodec
         case videoCodecName
         case pixelFormat
+        case surfaceRect
         case destinationRect
         case regionRects
         case videoByteCount
@@ -569,6 +583,7 @@ public struct RDPGraphicsFrameSnapshot: Encodable, Equatable, Sendable {
         try container.encode(videoCodec, forKey: .videoCodec)
         try container.encode(videoCodec.displayName, forKey: .videoCodecName)
         try container.encode(pixelFormat, forKey: .pixelFormat)
+        try container.encodeIfPresent(surfaceRect, forKey: .surfaceRect)
         try container.encode(destinationRect, forKey: .destinationRect)
         try container.encode(regionRects, forKey: .regionRects)
         try container.encode(videoByteCount, forKey: .videoByteCount)
@@ -944,6 +959,7 @@ public struct RDPPreflightClient: Sendable {
         onAudioSample: RDPAudioSampleHandler? = nil,
         onCertificate: RDPServerCertificateHandler? = nil,
         onWireReceive: RDPWireReceiveHandler? = nil,
+        wireTranscript: RDPWireTranscript? = nil,
         cancellation: RDPConnectionCancellation? = nil,
         shouldCancel: RDPCancellationHandler? = nil
     ) -> RDPPreflightReport {
@@ -960,6 +976,7 @@ public struct RDPPreflightClient: Sendable {
                 onAudioSample: onAudioSample,
                 onCertificate: onCertificate,
                 onWireReceive: onWireReceive,
+                wireTranscript: wireTranscript,
                 cancellation: cancellation,
                 shouldCancel: shouldCancel
             )
@@ -980,11 +997,12 @@ public struct RDPPreflightClient: Sendable {
         onAudioSample: RDPAudioSampleHandler? = nil,
         onCertificate: RDPServerCertificateHandler? = nil,
         onWireReceive: RDPWireReceiveHandler? = nil,
+        wireTranscript: RDPWireTranscript? = nil,
         cancellation: RDPConnectionCancellation? = nil,
         shouldCancel: RDPCancellationHandler? = nil
     ) throws -> RDPPreflightReport {
         try throwIfCancelled(shouldCancel, cancellation: cancellation)
-        let request = X224ConnectionRequest()
+        let request = X224ConnectionRequest(routingToken: configuration.redirectionRoutingToken)
         let packet = request.encodedTPKT()
         let connection = try connectAndNegotiate(
             host: configuration.host,
@@ -992,6 +1010,7 @@ public struct RDPPreflightClient: Sendable {
             timeoutSeconds: configuration.timeoutSeconds,
             packet: packet,
             onWireReceive: onWireReceive,
+            wireTranscript: wireTranscript,
             cancellation: cancellation
         )
         try throwIfCancelled(shouldCancel, cancellation: cancellation)
@@ -1058,6 +1077,7 @@ public struct RDPPreflightClient: Sendable {
                     onAudioSample: onAudioSample,
                     onCertificate: onCertificate,
                     onWireReceive: onWireReceive,
+                    wireTranscript: wireTranscript,
                     cancellation: cancellation,
                     shouldCancel: shouldCancel
                 )
@@ -1065,6 +1085,40 @@ public struct RDPPreflightClient: Sendable {
                     throw RDPPreflightError.receive("MCS channel connection sequence did not run")
                 }
                 let mcsSequenceSucceeded = mcsSequence.sequenceSucceeded
+                if let serverRedirection = mcsSequence.serverRedirection,
+                   let routingToken = serverRedirection.routingToken,
+                   configuration.redirectionDepth < 2
+                {
+                    var redirectedConfiguration = configuration
+                    redirectedConfiguration.host = serverRedirection.targetHost ?? configuration.host
+                    redirectedConfiguration.redirectionRoutingToken = routingToken
+                    if let username = serverRedirection.username,
+                       let password = serverRedirection.password
+                    {
+                        redirectedConfiguration.credentials = RDPCredentials(
+                            username: username,
+                            domain: serverRedirection.domain,
+                            password: password
+                        )
+                    }
+                    redirectedConfiguration.redirectionDepth += 1
+                    return try connect(
+                        configuration: redirectedConfiguration,
+                        onGraphicsFrame: onGraphicsFrame,
+                        onInputReady: onInputReady,
+                        onDisplayControlReady: onDisplayControlReady,
+                        onClipboardReady: onClipboardReady,
+                        onClipboardText: onClipboardText,
+                        onClipboardFileGroupDescriptor: onClipboardFileGroupDescriptor,
+                        onClipboardFileContents: onClipboardFileContents,
+                        onAudioSample: onAudioSample,
+                        onCertificate: onCertificate,
+                        onWireReceive: onWireReceive,
+                        wireTranscript: wireTranscript,
+                        cancellation: cancellation,
+                        shouldCancel: shouldCancel
+                    )
+                }
 
                 return RDPPreflightReport(
                     status: mcsSequenceSucceeded ? "success" : "failure",
@@ -1299,6 +1353,8 @@ private struct MCSConnectionSequence {
     var graphicsChannelCreateRequest: RDPDynamicVirtualChannelCreateRequest? = nil
     var graphicsChannelCreateResponseData: Data? = nil
     var graphicsCapsAdvertiseData: Data? = nil
+    var serverRedirectionData: Data? = nil
+    var serverRedirection: RDPServerRedirectionPDU? = nil
     var graphicsResponseData: Data? = nil
     var graphicsResponse: RDPGFXHeader? = nil
     var graphicsCapsConfirm: RDPGFXCapsConfirmPDU? = nil
@@ -1356,7 +1412,7 @@ private struct MCSConnectionSequence {
             }
         }
         if finalizationAttempted {
-            guard finalizationResponses.contains(where: { $0.typeName == "font-map" }) else {
+            guard connectionFinalized else {
                 return false
             }
         }
@@ -1395,6 +1451,12 @@ private struct MCSConnectionSequence {
             || clientFontListRequestData != nil
             || !finalizationResponses.isEmpty
             || finalizationError != nil
+    }
+
+    var connectionFinalized: Bool {
+        finalizationResponses.contains(where: {
+            $0.typeName == "font-map" || $0.typeName == "control-granted-control"
+        })
     }
 
     var graphicsAttempted: Bool {
@@ -1449,11 +1511,11 @@ private struct MCSConnectionSequence {
         if graphicsAttempted {
             return "rdp-open-graphics-dynamic-channel"
         }
-        if finalizationResponses.contains(where: { $0.typeName == "font-map" }) {
+        if connectionFinalized {
             return "rdp-open-graphics-dynamic-channel"
         }
         if finalizationAttempted {
-            return "rdp-wait-for-font-map"
+            return "rdp-wait-for-control-granted"
         }
         if postConfirmActiveShareData?.typeName == "server-synchronize" {
             return "rdp-connection-finalization"
@@ -1556,8 +1618,8 @@ private struct MCSConnectionSequence {
             else {
                 return finalizationError ?? "RDP connection finalization request batch was not sent"
             }
-            guard finalizationResponses.contains(where: { $0.typeName == "font-map" }) else {
-                return finalizationError ?? "server did not send Font Map PDU during connection finalization"
+            guard connectionFinalized else {
+                return finalizationError ?? "server did not grant control during connection finalization"
             }
         } else if let finalizationError {
             return finalizationError
@@ -1577,6 +1639,12 @@ private struct MCSConnectionSequence {
             }
             guard graphicsCapsAdvertiseData != nil else {
                 return graphicsError ?? "RDPGFX capabilities advertise PDU was not sent"
+            }
+            if let serverRedirection {
+                if let targetHost = serverRedirection.targetHost {
+                    return graphicsError ?? "server requested RDP redirection to \(targetHost)"
+                }
+                return graphicsError ?? "server requested RDP redirection"
             }
             guard graphicsCapsConfirm != nil else {
                 return graphicsError ?? "server did not confirm RDPGFX capabilities"
@@ -1612,6 +1680,12 @@ private struct RDPConnectionFinalizationResult {
     var responseData: [Data]
     var responses: [RDPShareDataPDU]
     var error: String?
+
+    var completed: Bool {
+        responses.contains(where: {
+            $0.typeName == "font-map" || $0.typeName == "control-granted-control"
+        })
+    }
 }
 
 private struct RDPGraphicsDynamicChannelResult {
@@ -1622,6 +1696,8 @@ private struct RDPGraphicsDynamicChannelResult {
     var graphicsChannelCreateRequest: RDPDynamicVirtualChannelCreateRequest? = nil
     var graphicsChannelCreateResponseData: Data? = nil
     var graphicsCapsAdvertiseData: Data? = nil
+    var serverRedirectionData: Data? = nil
+    var serverRedirection: RDPServerRedirectionPDU? = nil
     var graphicsResponseData: Data? = nil
     var graphicsResponse: RDPGFXHeader? = nil
     var graphicsCapsConfirm: RDPGFXCapsConfirmPDU? = nil
@@ -1718,6 +1794,7 @@ private func connectAndNegotiate(
     timeoutSeconds: Int,
     packet: Data,
     onWireReceive: RDPWireReceiveHandler?,
+    wireTranscript: RDPWireTranscript?,
     cancellation: RDPConnectionCancellation?
 ) throws -> NegotiatedConnection {
     let fd = try openSocket(host: host, port: port, timeoutSeconds: timeoutSeconds)
@@ -1726,12 +1803,14 @@ private func connectAndNegotiate(
     }
     do {
         try sendAll(fd: fd, packet: packet)
+        wireTranscript?.record(direction: .clientToServer, layer: .x224, bytes: packet, capturePayload: true)
         let response = try receiveTPKT(
             fd: fd,
             timeoutSeconds: timeoutSeconds,
             timeoutDescription: "X224 Connection Confirm"
         )
         onWireReceive?(RDPWireReceiveSample(byteCount: response.count, receivedAt: Date()))
+        wireTranscript?.record(direction: .serverToClient, layer: .x224, bytes: response, capturePayload: true)
         let confirm = try X224ConnectionConfirm.parse(fromTPKT: response)
         cancellationRegistration?.cancel()
         return NegotiatedConnection(fd: fd, response: response, confirm: confirm)
@@ -1878,14 +1957,27 @@ private final class TLSTPKTStreamHandler: ChannelInboundHandler, RemovableChanne
     typealias InboundIn = ByteBuffer
 
     private let onWireReceive: RDPWireReceiveHandler?
+    private let transcript: RDPWireTranscript?
     private var received = Data()
     private var receivedReadOffset = 0
     private var packets: [Data] = []
     private var pending: [EventLoopPromise<Data>] = []
     private var failure: Error?
 
-    init(onWireReceive: RDPWireReceiveHandler? = nil) {
+    init(onWireReceive: RDPWireReceiveHandler? = nil, transcript: RDPWireTranscript? = nil) {
         self.onWireReceive = onWireReceive
+        self.transcript = transcript
+    }
+
+    /// Records a client→server application PDU as a length-only ordering marker
+    /// (its payload can carry credentials and is not needed for replay).
+    func recordSend(_ packet: Data) {
+        transcript?.record(
+            direction: .clientToServer,
+            layer: .application,
+            bytes: packet,
+            capturePayload: false
+        )
     }
 
     func nextPacket(on channel: Channel) -> EventLoopFuture<Data> {
@@ -1959,6 +2051,12 @@ private final class TLSTPKTStreamHandler: ChannelInboundHandler, RemovableChanne
             receivedReadOffset += length
             compactReceivedBufferIfNeeded()
             onWireReceive?(RDPWireReceiveSample(byteCount: packet.count, receivedAt: Date()))
+            transcript?.record(
+                direction: .serverToClient,
+                layer: .application,
+                bytes: packet,
+                capturePayload: true
+            )
             if pending.isEmpty {
                 packets.append(packet)
             } else {
@@ -2228,6 +2326,7 @@ private func performTLSHandshake(
     onAudioSample: RDPAudioSampleHandler?,
     onCertificate: RDPServerCertificateHandler?,
     onWireReceive: RDPWireReceiveHandler?,
+    wireTranscript: RDPWireTranscript?,
     cancellation: RDPConnectionCancellation?,
     shouldCancel: RDPCancellationHandler?
 ) throws -> TLSProbeResult {
@@ -2320,6 +2419,7 @@ private func performTLSHandshake(
             cancellation: cancellation,
             shouldCancel: shouldCancel
         )
+        wireTranscript?.recordMarker(direction: .clientToServer, layer: .security)
     }
     let mcsConnectionSequence = try mcsConfiguration.map { configuration in
         try performMCSConnectionSequence(
@@ -2338,6 +2438,7 @@ private func performTLSHandshake(
             onClipboardFileContents: onClipboardFileContents,
             onAudioSample: onAudioSample,
             onWireReceive: onWireReceive,
+            wireTranscript: wireTranscript,
             cancellation: cancellation,
             shouldCancel: shouldCancel
         )
@@ -2535,10 +2636,11 @@ private func performMCSConnectionSequence(
     onClipboardFileContents: RDPClipboardFileContentsHandler?,
     onAudioSample: RDPAudioSampleHandler?,
     onWireReceive: RDPWireReceiveHandler?,
+    wireTranscript: RDPWireTranscript?,
     cancellation: RDPConnectionCancellation?,
     shouldCancel: RDPCancellationHandler?
 ) throws -> MCSConnectionSequence {
-    let tpktReader = TLSTPKTStreamHandler(onWireReceive: onWireReceive)
+    let tpktReader = TLSTPKTStreamHandler(onWireReceive: onWireReceive, transcript: wireTranscript)
     try channel.pipeline.addHandler(tpktReader).wait()
     defer {
         try? channel.pipeline.removeHandler(tpktReader).wait()
@@ -2572,7 +2674,7 @@ private func performMCSConnectionSequence(
     }
 
     let erectDomainRequest = MCSErectDomainRequestPDU().encodedTPKT()
-    try sendApplicationPacket(erectDomainRequest, on: channel)
+    try sendApplicationPacket(erectDomainRequest, on: channel, reader: tpktReader)
 
     let attachUserRequest = MCSAttachUserRequestPDU().encodedTPKT()
     let attachUserConfirmData = try sendApplicationPacketAndReceiveTPKT(
@@ -2720,49 +2822,21 @@ private func performMCSConnectionSequence(
         )
     }
 
-    let autoDetectResponse: Data?
+    var autoDetectResponse: Data?
     let serverActivationResponseData: Data
     let postAutoDetectResponseData: Data?
     if let autoDetectRequest {
-        let autoDetectResponseChannelID = autoDetectRequest.channelID != 0
-            ? autoDetectRequest.channelID
-            : connectResponse.messageChannelID ?? 0
-        guard autoDetectResponseChannelID != 0 else {
-            return MCSConnectionSequence(
-                connectInitial: connectInitial,
-                connectResponseData: connectResponseData,
-                connectResponse: connectResponse,
-                erectDomainRequest: erectDomainRequest,
-                attachUserRequest: attachUserRequest,
-                attachUserConfirmData: attachUserConfirmData,
-                attachUserConfirm: attachUserConfirm,
-                expectedJoinCount: joinTargets.count,
-                joinedChannels: joinedChannels,
-                clientInfoRequestByteCount: clientInfoRequest.count,
-                clientInfoCredentialsIncluded: clientInfo.credentialsIncluded,
-                clientInfoResponseData: clientInfoResponseData,
-                clientInfoError: nil,
-                autoDetectRequest: autoDetectRequest,
-                autoDetectResponseData: nil,
-                postAutoDetectResponseData: nil,
-                autoDetectError: "server sent RDP Auto-Detect request without an assigned message channel"
-            )
-        }
-
-        let response = RDPClientAutoDetectResponsePDU(
-            sequenceNumber: autoDetectRequest.sequenceNumber
-        ).encodedTPKT(
-            userChannelID: userChannelID,
-            messageChannelID: autoDetectResponseChannelID
-        )
         do {
-            serverActivationResponseData = try sendApplicationPacketAndReceiveTPKT(
-                response,
+            let autoDetectResult = try performRDPAutoDetectExchange(
+                initialRequest: autoDetectRequest,
+                userChannelID: userChannelID,
+                fallbackMessageChannelID: connectResponse.messageChannelID,
                 on: channel,
                 reader: tpktReader,
-                timeoutSeconds: timeoutSeconds,
-                timeoutDescription: "RDP Post Auto-Detect Response"
+                timeoutSeconds: timeoutSeconds
             )
+            autoDetectResponse = autoDetectResult.lastResponse
+            serverActivationResponseData = autoDetectResult.activationResponseData
         } catch {
             return MCSConnectionSequence(
                 connectInitial: connectInitial,
@@ -2779,12 +2853,11 @@ private func performMCSConnectionSequence(
                 clientInfoResponseData: clientInfoResponseData,
                 clientInfoError: nil,
                 autoDetectRequest: autoDetectRequest,
-                autoDetectResponseData: response,
+                autoDetectResponseData: autoDetectResponse,
                 postAutoDetectResponseData: nil,
                 autoDetectError: String(describing: error)
             )
         }
-        autoDetectResponse = response
         postAutoDetectResponseData = serverActivationResponseData
     } else {
         autoDetectResponse = nil
@@ -2964,7 +3037,8 @@ private func performMCSConnectionSequence(
                                 timeoutSeconds: timeoutSeconds
                             )
                             : nil
-                        if finalizationResult?.responses.contains(where: { $0.typeName == "font-map" }) == true {
+                        let connectionFinalized = finalizationResult?.completed == true
+                        if connectionFinalized {
                             onInputReady?(
                                 RDPInputSession(
                                     shareID: demandActive.shareID,
@@ -3055,7 +3129,7 @@ private func performMCSConnectionSequence(
                             }
                         }
                         let graphicsResult: RDPGraphicsDynamicChannelResult?
-                        if finalizationResult?.responses.contains(where: { $0.typeName == "font-map" }) == true,
+                        if connectionFinalized,
                            let dynamicChannelID = connectResponse.staticChannelAssignments.first(
                                where: { $0.name == RDPStaticVirtualChannel.drdynvc.name }
                            )?.channelID
@@ -3129,6 +3203,8 @@ private func performMCSConnectionSequence(
                             graphicsChannelCreateRequest: graphicsResult?.graphicsChannelCreateRequest,
                             graphicsChannelCreateResponseData: graphicsResult?.graphicsChannelCreateResponseData,
                             graphicsCapsAdvertiseData: graphicsResult?.graphicsCapsAdvertiseData,
+                            serverRedirectionData: graphicsResult?.serverRedirectionData,
+                            serverRedirection: graphicsResult?.serverRedirection,
                             graphicsResponseData: graphicsResult?.graphicsResponseData,
                             graphicsResponse: graphicsResult?.graphicsResponse,
                             graphicsCapsConfirm: graphicsResult?.graphicsCapsConfirm,
@@ -3290,6 +3366,53 @@ private func performMCSConnectionSequence(
     }
 }
 
+private struct RDPAutoDetectExchangeResult {
+    var lastResponse: Data
+    var activationResponseData: Data
+}
+
+private func performRDPAutoDetectExchange(
+    initialRequest: RDPServerAutoDetectRequest,
+    userChannelID: UInt16,
+    fallbackMessageChannelID: UInt16?,
+    on channel: Channel,
+    reader: TLSTPKTStreamHandler,
+    timeoutSeconds: Int
+) throws -> RDPAutoDetectExchangeResult {
+    var request = initialRequest
+
+    while true {
+        let responseChannelID = request.channelID != 0
+            ? request.channelID
+            : fallbackMessageChannelID ?? 0
+        guard responseChannelID != 0 else {
+            throw RDPPreflightError.receive(
+                "server sent RDP Auto-Detect request without an assigned message channel"
+            )
+        }
+
+        let response = request.response.encodedTPKT(
+            userChannelID: userChannelID,
+            messageChannelID: responseChannelID
+        )
+        let nextPacket = try sendApplicationPacketAndReceiveTPKT(
+            response,
+            on: channel,
+            reader: reader,
+            timeoutSeconds: timeoutSeconds,
+            timeoutDescription: "RDP Post Auto-Detect Response"
+        )
+
+        guard let nextRequest = try RDPServerAutoDetectRequest.parseIfPresent(fromTPKT: nextPacket) else {
+            return RDPAutoDetectExchangeResult(
+                lastResponse: response,
+                activationResponseData: nextPacket
+            )
+        }
+        request = nextRequest
+    }
+}
+
 private func channelJoinTargets(
     userChannelID: UInt16,
     connectResponse: MCSConnectResponse
@@ -3335,16 +3458,16 @@ private func performRDPConnectionFinalization(
     )
 
     do {
-        try sendApplicationPacket(clientSynchronizeRequest, on: channel)
-        try sendApplicationPacket(clientControlCooperateRequest, on: channel)
-        try sendApplicationPacket(clientControlRequest, on: channel)
-        try sendApplicationPacket(clientFontListRequest, on: channel)
+        try sendApplicationPacket(clientSynchronizeRequest, on: channel, reader: reader)
+        try sendApplicationPacket(clientControlCooperateRequest, on: channel, reader: reader)
+        try sendApplicationPacket(clientControlRequest, on: channel, reader: reader)
     } catch {
         result.error = String(describing: error)
         return result
     }
 
     do {
+        var sentFontList = false
         for _ in 0 ..< 8 {
             let packet = try receiveApplicationTPKT(
                 on: channel,
@@ -3356,18 +3479,25 @@ private func performRDPConnectionFinalization(
 
             if let response = try RDPShareDataPDU.parseIfPresent(fromTPKT: packet) {
                 result.responses.append(response)
+                if response.typeName == "control-granted-control", sentFontList == false {
+                    try sendApplicationPacket(clientFontListRequest, on: channel, reader: reader)
+                    sentFontList = true
+                }
                 if response.typeName == "font-map" {
                     break
                 }
             }
         }
     } catch {
+        if result.completed {
+            return result
+        }
         result.error = String(describing: error)
         return result
     }
 
-    if !result.responses.contains(where: { $0.typeName == "font-map" }) {
-        result.error = "server did not send Font Map PDU during connection finalization"
+    if !result.completed {
+        result.error = "server did not grant control during connection finalization"
     }
     return result
 }
@@ -3410,6 +3540,12 @@ private func performRDPGraphicsDynamicChannelHandshake(
                 fromTPKT: packet,
                 channelID: staticChannelID
             ) else {
+                if let redirection = try RDPServerRedirectionPDU.parseIfPresent(fromTPKT: packet) {
+                    result.serverRedirectionData = packet
+                    result.serverRedirection = redirection
+                    result.error = "server requested RDP redirection"
+                    return result
+                }
                 if let clipboardSession,
                    try handleClipboardPacket(
                        packet,
@@ -3462,10 +3598,13 @@ private func performRDPGraphicsDynamicChannelHandshake(
                 let responsePayload = RDPDynamicVirtualChannelCapabilitiesResponse(
                     version: responseVersion
                 ).encoded()
-                let responsePacket = RDPStaticVirtualChannelPDU(payload: responsePayload)
+                let responsePacket = RDPStaticVirtualChannelPDU(
+                    payload: responsePayload,
+                    flags: RDPStaticVirtualChannelFlags.completeWithShowProtocol
+                )
                     .encodedTPKT(initiator: userChannelID, channelID: staticChannelID)
                 result.dynamicChannelCapabilitiesResponseData = responsePacket
-                try sendApplicationPacket(responsePacket, on: channel)
+                try sendApplicationPacket(responsePacket, on: channel, reader: reader)
                 continue
             }
 
@@ -3479,22 +3618,22 @@ private func performRDPGraphicsDynamicChannelHandshake(
                     let responsePayload = RDPDynamicVirtualChannelCreateResponse(
                         channelID: createRequest.channelID
                     ).encoded()
-                    let responsePacket = RDPStaticVirtualChannelPDU(payload: responsePayload)
+                    let responsePacket = RDPStaticVirtualChannelPDU(
+                        payload: responsePayload,
+                        flags: RDPStaticVirtualChannelFlags.completeWithShowProtocol
+                    )
                         .encodedTPKT(initiator: userChannelID, channelID: staticChannelID)
                     result.graphicsChannelCreateResponseData = responsePacket
-                    try sendApplicationPacket(responsePacket, on: channel)
+                    try sendApplicationPacket(responsePacket, on: channel, reader: reader)
 
-                    let graphicsPayload = RDPGFXCapsAdvertisePDU(
-                        capabilitySets: graphicsCapabilityProfile.capabilitySets
-                    ).encoded()
-                    let dynamicPayload = RDPDynamicVirtualChannelDataPDU(
-                        channelID: createRequest.channelID,
-                        payload: graphicsPayload
-                    ).encoded()
-                    let graphicsPacket = RDPStaticVirtualChannelPDU(payload: dynamicPayload)
-                        .encodedTPKT(initiator: userChannelID, channelID: staticChannelID)
+                    let graphicsPacket = graphicsCapsAdvertisePacket(
+                        dynamicChannelID: createRequest.channelID,
+                        userChannelID: userChannelID,
+                        staticChannelID: staticChannelID,
+                        graphicsCapabilityProfile: graphicsCapabilityProfile
+                    )
                     result.graphicsCapsAdvertiseData = graphicsPacket
-                    try sendApplicationPacket(graphicsPacket, on: channel)
+                    try sendApplicationPacket(graphicsPacket, on: channel, reader: reader)
                 } else if try handleDisplayControlCreateRequest(
                     createRequest,
                     userChannelID: userChannelID,
@@ -3516,9 +3655,12 @@ private func performRDPGraphicsDynamicChannelHandshake(
                         channelID: createRequest.channelID,
                         creationStatus: Int32(bitPattern: 0x8000_4001)
                     ).encoded()
-                    let responsePacket = RDPStaticVirtualChannelPDU(payload: responsePayload)
+                    let responsePacket = RDPStaticVirtualChannelPDU(
+                        payload: responsePayload,
+                        flags: RDPStaticVirtualChannelFlags.completeWithShowProtocol
+                    )
                         .encodedTPKT(initiator: userChannelID, channelID: staticChannelID)
-                    try sendApplicationPacket(responsePacket, on: channel)
+                    try sendApplicationPacket(responsePacket, on: channel, reader: reader)
                 }
                 continue
             }
@@ -3607,6 +3749,25 @@ private func performRDPGraphicsDynamicChannelHandshake(
     return result
 }
 
+private func graphicsCapsAdvertisePacket(
+    dynamicChannelID: UInt32,
+    userChannelID: UInt16,
+    staticChannelID: UInt16,
+    graphicsCapabilityProfile: RDPGraphicsCapabilityProfile
+) -> Data {
+    let graphicsPayload = RDPGFXCapsAdvertisePDU(
+        capabilitySets: graphicsCapabilityProfile.capabilitySets
+    ).encoded()
+    let dynamicPayload = RDPDynamicVirtualChannelDataPDU(
+        channelID: dynamicChannelID,
+        payload: graphicsPayload
+    ).encoded()
+    return RDPStaticVirtualChannelPDU(
+        payload: dynamicPayload,
+        flags: RDPStaticVirtualChannelFlags.completeWithShowProtocol
+    ).encodedTPKT(initiator: userChannelID, channelID: staticChannelID)
+}
+
 private func handleDisplayControlCreateRequest(
     _ createRequest: RDPDynamicVirtualChannelCreateRequest,
     userChannelID: UInt16,
@@ -3622,7 +3783,10 @@ private func handleDisplayControlCreateRequest(
     let responsePayload = RDPDynamicVirtualChannelCreateResponse(
         channelID: createRequest.channelID
     ).encoded()
-    let responsePacket = RDPStaticVirtualChannelPDU(payload: responsePayload)
+    let responsePacket = RDPStaticVirtualChannelPDU(
+        payload: responsePayload,
+        flags: RDPStaticVirtualChannelFlags.completeWithShowProtocol
+    )
         .encodedTPKT(initiator: userChannelID, channelID: staticChannelID)
     result.displayControlChannelCreateResponseData = responsePacket
     try sendApplicationPacket(responsePacket, on: channel)
@@ -3853,7 +4017,10 @@ private func acceptDynamicAudioCreateRequest(
     let responsePayload = RDPDynamicVirtualChannelCreateResponse(
         channelID: createRequest.channelID
     ).encoded()
-    let responsePacket = RDPStaticVirtualChannelPDU(payload: responsePayload)
+    let responsePacket = RDPStaticVirtualChannelPDU(
+        payload: responsePayload,
+        flags: RDPStaticVirtualChannelFlags.completeWithShowProtocol
+    )
         .encodedTPKT(initiator: userChannelID, channelID: staticChannelID)
     try sendApplicationPacket(responsePacket, on: channel)
     return RDPAudioSession(
@@ -3996,7 +4163,10 @@ private func receiveRDPGraphicsUpdateBatch(
                 channelID: createRequest.channelID,
                 creationStatus: Int32(bitPattern: 0x8000_4001)
             ).encoded()
-            let responsePacket = RDPStaticVirtualChannelPDU(payload: responsePayload)
+            let responsePacket = RDPStaticVirtualChannelPDU(
+                payload: responsePayload,
+                flags: RDPStaticVirtualChannelFlags.completeWithShowProtocol
+            )
                 .encodedTPKT(initiator: userChannelID, channelID: staticChannelID)
             try sendApplicationPacket(responsePacket, on: channel)
             continue
@@ -4262,6 +4432,7 @@ private func processRDPGraphicsUpdatePayload(
                             codecName: RDPGFXCodecID.name(for: wire.codecID),
                             videoCodec: .h264,
                             pixelFormat: wire.pixelFormat,
+                            surfaceRect: surfaceCompositor.surfaceRect(surfaceID: wire.surfaceID),
                             destinationRect: wire.destinationRect,
                             regionRects: avc420.regionRects,
                             encodedVideoData: avc420.encodedBitstream
@@ -4285,6 +4456,7 @@ private func processRDPGraphicsUpdatePayload(
                             codecName: RDPGFXCodecID.name(for: wire.codecID),
                             videoCodec: .h264,
                             pixelFormat: wire.pixelFormat,
+                            surfaceRect: surfaceCompositor.surfaceRect(surfaceID: wire.surfaceID),
                             destinationRect: wire.destinationRect,
                             regionRects: yuv420Stream.regionRects,
                             encodedVideoData: yuv420Stream.encodedBitstream
@@ -4315,7 +4487,10 @@ private func processRDPGraphicsUpdatePayload(
                     channelID: dynamicChannelID,
                     payload: acknowledgePayload
                 ).encoded()
-                let acknowledgePacket = RDPStaticVirtualChannelPDU(payload: dynamicPayload)
+                let acknowledgePacket = RDPStaticVirtualChannelPDU(
+                    payload: dynamicPayload,
+                    flags: RDPStaticVirtualChannelFlags.completeWithShowProtocol
+                )
                     .encodedTPKT(initiator: userChannelID, channelID: staticChannelID)
                 if result.graphicsFrameAcknowledgeData.count < maximumRecordedAcknowledgements {
                     result.graphicsFrameAcknowledgeData.append(acknowledgePacket)
@@ -4395,8 +4570,10 @@ private func appendGraphicsFrame(
 
 private func sendApplicationPacket(
     _ packet: Data,
-    on channel: Channel
+    on channel: Channel,
+    reader: TLSTPKTStreamHandler? = nil
 ) throws {
+    reader?.recordSend(packet)
     var buffer = channel.allocator.buffer(capacity: packet.count)
     buffer.writeBytes(packet)
     try channel.writeAndFlush(buffer).wait()
@@ -4410,7 +4587,7 @@ private func sendApplicationPacketAndReceiveTPKT(
     timeoutDescription: String
 ) throws -> Data {
     let response = reader.nextPacket(on: channel)
-    try sendApplicationPacket(packet, on: channel)
+    try sendApplicationPacket(packet, on: channel, reader: reader)
 
     return try waitForApplicationTPKT(
         response,

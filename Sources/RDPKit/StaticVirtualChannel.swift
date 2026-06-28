@@ -4,6 +4,8 @@ enum RDPStaticVirtualChannelFlags {
     static let first: UInt32 = 0x0000_0001
     static let last: UInt32 = 0x0000_0002
     static let showProtocol: UInt32 = 0x0000_0010
+    static let complete: UInt32 = first | last
+    static let completeWithShowProtocol: UInt32 = complete | showProtocol
 }
 
 struct RDPStaticVirtualChannelPDU: Equatable, Sendable {
@@ -16,7 +18,7 @@ struct RDPStaticVirtualChannelPDU: Equatable, Sendable {
 
     init(
         payload: Data,
-        flags: UInt32 = RDPStaticVirtualChannelFlags.first | RDPStaticVirtualChannelFlags.last
+        flags: UInt32 = RDPStaticVirtualChannelFlags.complete
     ) {
         precondition(payload.count <= Int(UInt32.max))
 

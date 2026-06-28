@@ -2,6 +2,8 @@ import Foundation
 @testable import RDPKit
 import Testing
 
+@Suite(.serialized)
+struct MockKRDPServerTests {
 @Test func preflightCapturesGraphicsFrameFromMockKRDPServer() throws {
     let server = try MockKRDPServer.start()
     defer { server.stop() }
@@ -50,6 +52,68 @@ import Testing
     #expect(report.rdpGraphicsFirstFrame?.h264NalUnitTypes == [7, 8, 5])
     #expect(observed.frames == report.rdpGraphicsFrames)
     #expect(observed.wireBytes > 0)
+    #expect(report.error == nil)
+}
+
+@Test func preflightFollowsServerRedirectionAndReconnects() throws {
+    let server = try MockKRDPServer.start(redirectionBehavior: .redirectFirstConnection)
+    defer { server.stop() }
+
+    let observed = MockKRDPObservedEvents()
+    let report = RDPPreflightClient().run(
+        configuration: RDPConnectionConfiguration(
+            host: "127.0.0.1",
+            port: server.port,
+            credentials: RDPCredentials(username: "aneesi", password: "secret"),
+            timeoutSeconds: 5,
+            hideCertificateWarnings: true,
+            graphicsFrameCaptureLimit: 1,
+            desktopWidth: 1280,
+            desktopHeight: 720,
+            clipboardEnabled: false
+        ),
+        onGraphicsFrame: { frame in
+            observed.record(frame)
+        }
+    )
+
+    // The first connection is redirected mid graphics handshake; the client must
+    // reconnect (carrying the routing token) and complete on the second attempt.
+    #expect(server.connectionCount == 2)
+    #expect(report.status == "success")
+    #expect(report.rdpGraphicsFirstFrame?.codecName == "avc420")
+    #expect(report.error == nil)
+}
+
+@Test func preflightHandlesMultiStepBandwidthAutoDetectBeforeActivation() throws {
+    let server = try MockKRDPServer.start(autoDetectBehavior: .bandwidthMeasure)
+    defer { server.stop() }
+
+    let observed = MockKRDPObservedEvents()
+    let report = RDPPreflightClient().run(
+        configuration: RDPConnectionConfiguration(
+            host: "127.0.0.1",
+            port: server.port,
+            credentials: RDPCredentials(username: "aneesi", password: "secret"),
+            timeoutSeconds: 5,
+            hideCertificateWarnings: true,
+            graphicsFrameCaptureLimit: 1,
+            desktopWidth: 1280,
+            desktopHeight: 720,
+            clipboardEnabled: false
+        ),
+        onGraphicsFrame: { frame in
+            observed.record(frame)
+        }
+    )
+
+    #expect(report.status == "success")
+    #expect(report.stage == "rdp-graphics-dynamic-channel")
+    #expect(report.rdpAutoDetectRequestType == "connect-time-rtt-measure-request")
+    #expect(report.rdpLicensingResponseType == "license-error-valid-client")
+    #expect(report.rdpPostLicensingResponseType == "server-demand-active")
+    #expect(report.rdpGraphicsFirstFrame?.codecName == "avc420")
+    #expect(observed.frames == report.rdpGraphicsFrames)
     #expect(report.error == nil)
 }
 
@@ -655,6 +719,7 @@ import Testing
     #expect(observed.audioSamples.first?.format == .pcmStereo48k16Bit)
     #expect(observed.audioSamples.first?.data == Data([0x11, 0x22, 0x33, 0x44]))
     #expect(report.error == nil)
+}
 }
 
 private final class RDPTestCertificateCapture: @unchecked Sendable {

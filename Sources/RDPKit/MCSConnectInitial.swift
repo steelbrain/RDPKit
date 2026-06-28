@@ -18,6 +18,7 @@ struct RDPStaticVirtualChannel: Equatable, Sendable {
         options: ChannelOptions.initialized
             | ChannelOptions.encryptRDP
             | ChannelOptions.compressRDP
+            | ChannelOptions.showProtocol
     )
 
     static let cliprdr = RDPStaticVirtualChannel(

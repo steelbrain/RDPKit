@@ -38,6 +38,9 @@ let package = Package(
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOPosix", package: "swift-nio"),
                 .product(name: "NIOSSL", package: "swift-nio-ssl"),
+            ],
+            resources: [
+                .copy("Fixtures"),
             ]
         ),
     ]

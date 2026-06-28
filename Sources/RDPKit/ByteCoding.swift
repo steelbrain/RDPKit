@@ -191,4 +191,24 @@ extension Data {
     var rdpHexString: String {
         map { String(format: "%02x", $0) }.joined(separator: " ")
     }
+
+    /// Parses a hex string, ignoring any interspersed whitespace (spaces, tabs,
+    /// newlines). Returns `nil` if the remaining digits are not an even number of
+    /// valid hex characters. Round-trips with ``rdpHexString``.
+    init?(rdpHexString: String) {
+        let digits = rdpHexString.unicodeScalars.filter { !$0.properties.isWhitespace }
+        guard digits.count.isMultiple(of: 2) else {
+            return nil
+        }
+        var bytes = [UInt8]()
+        bytes.reserveCapacity(digits.count / 2)
+        var iterator = digits.makeIterator()
+        while let high = iterator.next(), let low = iterator.next() {
+            guard let byte = UInt8(String(String.UnicodeScalarView([high, low])), radix: 16) else {
+                return nil
+            }
+            bytes.append(byte)
+        }
+        self = Data(bytes)
+    }
 }

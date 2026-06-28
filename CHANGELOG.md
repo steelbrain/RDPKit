@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Add GNOME Remote Desktop compatibility by following server redirection PDUs, reconnecting with the server-provided routing token, and handling GNOME's connect-time bandwidth auto-detect exchange.
+- Add parsing for RDP server-redirection fields, including load-balance cookies, target host names, redirected credentials, redirection GUIDs, and target certificates, while avoiding redirects when unknown flags make the field layout ambiguous.
+- Improve dynamic virtual channel interoperability by advertising and emitting ShowProtocol framing for `drdynvc` traffic where required by GNOME Remote Desktop.
+- Add `RDPWireTranscript` capture support and a `RDPFirstFrameCapture --capture-transcript` option for recording negotiation traffic up to the first graphics frame.
+- Add a real GNOME Remote Desktop negotiation fixture plus an offline transcript replay server that regression-tests redirect/reconnect, auto-detect, RDPGFX negotiation, and first-frame detection without requiring a live GNOME host.
+
 ## 0.2.0
 
 - Add a TLS certificate callback so live clients can show certificate trust state before the session ends.
