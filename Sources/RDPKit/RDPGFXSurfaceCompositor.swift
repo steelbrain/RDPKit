@@ -102,6 +102,28 @@ final class RDPGFXSurfaceCompositor {
         )
     }
 
+    func surfaceRect(surfaceID: UInt16) -> RDPFrameRect? {
+        guard let surface = surfaces[surfaceID] else {
+            return nil
+        }
+        let mapping = surface.outputMapping ?? OutputMapping(x: 0, y: 0)
+        guard mapping.x <= UInt32(UInt16.max),
+              mapping.y <= UInt32(UInt16.max),
+              mapping.x + UInt32(surface.width) <= UInt32(UInt16.max),
+              mapping.y + UInt32(surface.height) <= UInt32(UInt16.max)
+        else {
+            return nil
+        }
+        let outputLeft = UInt16(mapping.x)
+        let outputTop = UInt16(mapping.y)
+        return RDPFrameRect(
+            left: outputLeft,
+            top: outputTop,
+            right: outputLeft + UInt16(surface.width),
+            bottom: outputTop + UInt16(surface.height)
+        )
+    }
+
     private func createSurface(_ pdu: RDPGFXCreateSurfacePDU) {
         let width = Int(pdu.width)
         let height = Int(pdu.height)

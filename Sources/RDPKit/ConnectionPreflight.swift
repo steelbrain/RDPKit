@@ -395,6 +395,7 @@ public struct RDPGraphicsFrameSnapshot: Encodable, Equatable, Sendable {
     public var codecName: String
     public var videoCodec: RDPVideoCodec
     public var pixelFormat: UInt8
+    public var surfaceRect: RDPFrameRect?
     public var destinationRect: RDPFrameRect
     public var regionRects: [RDPFrameRect]
     public var encodedVideoData: Data
@@ -409,6 +410,7 @@ public struct RDPGraphicsFrameSnapshot: Encodable, Equatable, Sendable {
         codecName: String,
         videoCodec: RDPVideoCodec = .h264,
         pixelFormat: UInt8,
+        surfaceRect: RDPFrameRect? = nil,
         destinationRect: RDPFrameRect,
         regionRects: [RDPFrameRect],
         h264AnnexBData: Data
@@ -420,6 +422,7 @@ public struct RDPGraphicsFrameSnapshot: Encodable, Equatable, Sendable {
             codecName: codecName,
             videoCodec: videoCodec,
             pixelFormat: pixelFormat,
+            surfaceRect: surfaceRect,
             destinationRect: destinationRect,
             regionRects: regionRects,
             encodedVideoData: h264AnnexBData
@@ -433,6 +436,7 @@ public struct RDPGraphicsFrameSnapshot: Encodable, Equatable, Sendable {
         codecName: String,
         videoCodec: RDPVideoCodec = .h264,
         pixelFormat: UInt8,
+        surfaceRect: RDPFrameRect? = nil,
         destinationRect: RDPGFXRect16,
         regionRects: [RDPGFXRect16],
         h264AnnexBData: Data
@@ -444,6 +448,7 @@ public struct RDPGraphicsFrameSnapshot: Encodable, Equatable, Sendable {
             codecName: codecName,
             videoCodec: videoCodec,
             pixelFormat: pixelFormat,
+            surfaceRect: surfaceRect,
             destinationRect: RDPFrameRect(destinationRect),
             regionRects: regionRects.map(RDPFrameRect.init),
             encodedVideoData: h264AnnexBData
@@ -457,6 +462,7 @@ public struct RDPGraphicsFrameSnapshot: Encodable, Equatable, Sendable {
         codecName: String,
         videoCodec: RDPVideoCodec = .h264,
         pixelFormat: UInt8,
+        surfaceRect: RDPFrameRect? = nil,
         destinationRect: RDPFrameRect,
         regionRects: [RDPFrameRect],
         encodedVideoData: Data,
@@ -470,6 +476,7 @@ public struct RDPGraphicsFrameSnapshot: Encodable, Equatable, Sendable {
         self.codecName = codecName
         self.videoCodec = videoCodec
         self.pixelFormat = pixelFormat
+        self.surfaceRect = surfaceRect
         self.destinationRect = destinationRect
         self.regionRects = regionRects
         self.encodedVideoData = encodedVideoData
@@ -485,6 +492,7 @@ public struct RDPGraphicsFrameSnapshot: Encodable, Equatable, Sendable {
         codecName: String,
         videoCodec: RDPVideoCodec = .h264,
         pixelFormat: UInt8,
+        surfaceRect: RDPFrameRect? = nil,
         destinationRect: RDPGFXRect16,
         regionRects: [RDPGFXRect16],
         encodedVideoData: Data
@@ -496,6 +504,7 @@ public struct RDPGraphicsFrameSnapshot: Encodable, Equatable, Sendable {
             codecName: codecName,
             videoCodec: videoCodec,
             pixelFormat: pixelFormat,
+            surfaceRect: surfaceRect,
             destinationRect: RDPFrameRect(destinationRect),
             regionRects: regionRects.map(RDPFrameRect.init),
             encodedVideoData: encodedVideoData
@@ -553,6 +562,7 @@ public struct RDPGraphicsFrameSnapshot: Encodable, Equatable, Sendable {
         case videoCodec
         case videoCodecName
         case pixelFormat
+        case surfaceRect
         case destinationRect
         case regionRects
         case videoByteCount
@@ -573,6 +583,7 @@ public struct RDPGraphicsFrameSnapshot: Encodable, Equatable, Sendable {
         try container.encode(videoCodec, forKey: .videoCodec)
         try container.encode(videoCodec.displayName, forKey: .videoCodecName)
         try container.encode(pixelFormat, forKey: .pixelFormat)
+        try container.encodeIfPresent(surfaceRect, forKey: .surfaceRect)
         try container.encode(destinationRect, forKey: .destinationRect)
         try container.encode(regionRects, forKey: .regionRects)
         try container.encode(videoByteCount, forKey: .videoByteCount)
@@ -4421,6 +4432,7 @@ private func processRDPGraphicsUpdatePayload(
                             codecName: RDPGFXCodecID.name(for: wire.codecID),
                             videoCodec: .h264,
                             pixelFormat: wire.pixelFormat,
+                            surfaceRect: surfaceCompositor.surfaceRect(surfaceID: wire.surfaceID),
                             destinationRect: wire.destinationRect,
                             regionRects: avc420.regionRects,
                             encodedVideoData: avc420.encodedBitstream
@@ -4444,6 +4456,7 @@ private func processRDPGraphicsUpdatePayload(
                             codecName: RDPGFXCodecID.name(for: wire.codecID),
                             videoCodec: .h264,
                             pixelFormat: wire.pixelFormat,
+                            surfaceRect: surfaceCompositor.surfaceRect(surfaceID: wire.surfaceID),
                             destinationRect: wire.destinationRect,
                             regionRects: yuv420Stream.regionRects,
                             encodedVideoData: yuv420Stream.encodedBitstream
