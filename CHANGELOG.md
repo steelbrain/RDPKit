@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.3.0
+
 - Add server-redirection compatibility by following redirection PDUs, reconnecting with server-provided routing tokens, handling connect-time bandwidth detection, and using the required `drdynvc` ShowProtocol framing.
 - Improve Windows and KDE KRdp activation compatibility across licensing, auto-detect, Confirm Active, finalization, auxiliary dynamic channels, remote termination, and reconnect flows.
 - Add a persistent RDPGFX compositor for mapped and scaled surfaces, partial and multi-surface updates, surface caches, solid fills, alpha bitmaps, graphics resets, and output composition.
