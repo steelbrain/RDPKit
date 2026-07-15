@@ -3,11 +3,16 @@ import Foundation
 public enum RDPDecodeError: Error, Equatable, CustomStringConvertible {
     case truncated(needed: Int, remaining: Int)
     case invalidTPKTVersion(UInt8)
+    case invalidTPKTReserved(UInt8)
     case invalidTPKTLength(declared: Int, actual: Int)
     case invalidX224Length(declared: Int, actual: Int)
     case invalidX224Type(UInt8)
+    case invalidX224ClassAndOptions(UInt8)
     case invalidNegotiationType(UInt8)
     case invalidNegotiationLength(UInt16)
+    case invalidNegotiationFlags(UInt8)
+    case invalidNegotiationProtocol(UInt32)
+    case invalidNegotiationFailureCode(UInt32)
     case invalidX224DataTPDU
     case invalidMCSConnectResponseHeader
     case invalidMCSAttachUserConfirm
@@ -17,11 +22,14 @@ public enum RDPDecodeError: Error, Equatable, CustomStringConvertible {
     case invalidShareControlHeader
     case invalidShareDataHeader
     case invalidDemandActivePDU
+    case invalidFastPathOutputPDU
+    case invalidGraphicsUpdatePDU
     case invalidLicensePDU
     case invalidStaticVirtualChannelPDU
     case invalidDynamicVirtualChannelPDU
     case invalidClipboardPDU
     case invalidAudioPDU
+    case invalidPointerPDU
     case invalidRDPGFXPDU
     case invalidCredSSPMessage
     case invalidBERTag(expected: UInt8, actual: UInt8)
@@ -34,16 +42,26 @@ public enum RDPDecodeError: Error, Equatable, CustomStringConvertible {
             "truncated input: needed \(needed) bytes, had \(remaining)"
         case let .invalidTPKTVersion(version):
             "invalid TPKT version \(version)"
+        case let .invalidTPKTReserved(reserved):
+            "invalid TPKT reserved byte \(reserved)"
         case let .invalidTPKTLength(declared, actual):
             "invalid TPKT length \(declared), actual \(actual)"
         case let .invalidX224Length(declared, actual):
             "invalid X.224 length \(declared), actual \(actual)"
         case let .invalidX224Type(type):
             "invalid X.224 TPDU type 0x\(String(type, radix: 16))"
+        case let .invalidX224ClassAndOptions(value):
+            "invalid X.224 class and options 0x\(String(value, radix: 16))"
         case let .invalidNegotiationType(type):
             "invalid RDP negotiation type \(type)"
         case let .invalidNegotiationLength(length):
             "invalid RDP negotiation length \(length)"
+        case let .invalidNegotiationFlags(flags):
+            "invalid RDP negotiation flags 0x\(String(flags, radix: 16))"
+        case let .invalidNegotiationProtocol(protocols):
+            "invalid RDP negotiation protocol 0x\(String(protocols, radix: 16))"
+        case let .invalidNegotiationFailureCode(code):
+            "invalid RDP negotiation failure code 0x\(String(code, radix: 16))"
         case .invalidX224DataTPDU:
             "invalid X.224 Data TPDU"
         case .invalidMCSConnectResponseHeader:
@@ -62,6 +80,10 @@ public enum RDPDecodeError: Error, Equatable, CustomStringConvertible {
             "invalid RDP Share Data Header"
         case .invalidDemandActivePDU:
             "invalid RDP Demand Active PDU"
+        case .invalidFastPathOutputPDU:
+            "invalid RDP Fast-Path Output PDU"
+        case .invalidGraphicsUpdatePDU:
+            "invalid RDP Graphics Update PDU"
         case .invalidLicensePDU:
             "invalid RDP License PDU"
         case .invalidStaticVirtualChannelPDU:
@@ -72,6 +94,8 @@ public enum RDPDecodeError: Error, Equatable, CustomStringConvertible {
             "invalid RDP Clipboard PDU"
         case .invalidAudioPDU:
             "invalid RDP Audio PDU"
+        case .invalidPointerPDU:
+            "invalid RDP Pointer PDU"
         case .invalidRDPGFXPDU:
             "invalid RDP Graphics Pipeline PDU"
         case .invalidCredSSPMessage:
@@ -96,6 +120,10 @@ struct ByteCursor {
 
     var remaining: Int {
         bytes.count - offset
+    }
+
+    var currentOffset: Int {
+        offset
     }
 
     mutating func readUInt8() throws -> UInt8 {

@@ -40,8 +40,16 @@ let package = Package(
             name: "RDPFirstFrameCapture",
             dependencies: [
                 .product(name: "RDPKit", package: "RDPKit"),
+                "RDPFirstFrameCaptureSupport",
             ],
             path: "RDPFirstFrameCapture"
+        ),
+        .target(
+            name: "RDPFirstFrameCaptureSupport",
+            dependencies: [
+                .product(name: "RDPKit", package: "RDPKit"),
+            ],
+            path: "RDPFirstFrameCaptureSupport"
         ),
         .executableTarget(
             name: "RDPFrameBenchmark",
@@ -56,6 +64,20 @@ let package = Package(
                 .product(name: "RDPKit", package: "RDPKit"),
             ],
             path: "RDPPreflight"
+        ),
+        .testTarget(
+            name: "RDPFirstFrameCaptureSupportTests",
+            dependencies: [
+                "RDPFirstFrameCaptureSupport",
+            ],
+            path: "Tests/RDPFirstFrameCaptureSupportTests"
+        ),
+        .testTarget(
+            name: "RDPClientTests",
+            dependencies: [
+                "RDPClient",
+            ],
+            path: "Tests/RDPClientTests"
         ),
     ]
 )

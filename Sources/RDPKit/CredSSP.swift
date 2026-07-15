@@ -17,6 +17,9 @@ struct RDPCredSSPTSRequest: Equatable, Sendable {
         errorCode: UInt32? = nil,
         clientNonce: Data? = nil
     ) {
+        if let clientNonce {
+            precondition(clientNonce.count == 32)
+        }
         self.version = version
         self.negoTokens = negoTokens
         self.authInfo = authInfo
@@ -55,27 +58,61 @@ struct RDPCredSSPTSRequest: Equatable, Sendable {
 
         var request = RDPCredSSPTSRequest()
         var didReadVersion = false
+        var didReadNegoTokens = false
+        var didReadAuthInfo = false
+        var didReadPubKeyAuth = false
+        var didReadErrorCode = false
+        var didReadClientNonce = false
         while !sequence.isAtEnd {
             let field = try sequence.readElement()
             switch field.tag {
             case 0xA0:
+                guard !didReadVersion else {
+                    throw RDPDecodeError.invalidCredSSPMessage
+                }
                 request.version = try RDPASN1.explicitInteger(from: field.payload)
                 didReadVersion = true
             case 0xA1:
+                guard !didReadNegoTokens else {
+                    throw RDPDecodeError.invalidCredSSPMessage
+                }
                 request.negoTokens = try parseNegoData(field.payload)
+                didReadNegoTokens = true
             case 0xA2:
+                guard !didReadAuthInfo else {
+                    throw RDPDecodeError.invalidCredSSPMessage
+                }
                 request.authInfo = try RDPASN1.explicitOctetString(from: field.payload)
+                didReadAuthInfo = true
             case 0xA3:
+                guard !didReadPubKeyAuth else {
+                    throw RDPDecodeError.invalidCredSSPMessage
+                }
                 request.pubKeyAuth = try RDPASN1.explicitOctetString(from: field.payload)
+                didReadPubKeyAuth = true
             case 0xA4:
-                request.errorCode = UInt32(try RDPASN1.explicitInteger(from: field.payload))
+                guard !didReadErrorCode else {
+                    throw RDPDecodeError.invalidCredSSPMessage
+                }
+                request.errorCode = try RDPASN1.explicitUInt32(from: field.payload)
+                didReadErrorCode = true
             case 0xA5:
+                guard !didReadClientNonce else {
+                    throw RDPDecodeError.invalidCredSSPMessage
+                }
                 request.clientNonce = try RDPASN1.explicitOctetString(from: field.payload)
+                guard request.clientNonce?.count == 32 else {
+                    throw RDPDecodeError.invalidCredSSPMessage
+                }
+                didReadClientNonce = true
             default:
                 throw RDPDecodeError.invalidCredSSPMessage
             }
         }
         guard didReadVersion else {
+            throw RDPDecodeError.invalidCredSSPMessage
+        }
+        guard request.version >= 2 else {
             throw RDPDecodeError.invalidCredSSPMessage
         }
         return request
@@ -202,6 +239,187 @@ enum RDPCredSSPCertificate {
         }
         return subjectPublicKey.payload.dropFirst()
     }
+
+    static func ntlmChannelBindingsHash(fromCertificateDER certificate: Data) throws -> Data {
+        let certificateDigest = try tlsServerEndPointCertificateDigest(fromCertificateDER: certificate)
+        let channelBindingToken = Data("tls-server-end-point:".utf8) + certificateDigest
+        var bindings = Data()
+        bindings.appendLittleEndianUInt32(0)
+        bindings.appendLittleEndianUInt32(0)
+        bindings.appendLittleEndianUInt32(0)
+        bindings.appendLittleEndianUInt32(0)
+        bindings.appendLittleEndianUInt32(UInt32(channelBindingToken.count))
+        bindings.append(channelBindingToken)
+        return Data(Insecure.MD5.hash(data: bindings))
+    }
+
+    private static func tlsServerEndPointCertificateDigest(fromCertificateDER certificate: Data) throws -> Data {
+        let algorithm = try signatureDigestAlgorithm(fromCertificateDER: certificate)
+        switch algorithm {
+        case .sha384:
+            return Data(SHA384.hash(data: certificate))
+        case .sha512:
+            return Data(SHA512.hash(data: certificate))
+        case .sha256:
+            return Data(SHA256.hash(data: certificate))
+        }
+    }
+
+    private static func signatureDigestAlgorithm(fromCertificateDER certificate: Data) throws -> SignatureDigestAlgorithm {
+        var certificateReader = RDPASN1Reader(certificate)
+        var certificateSequence = try certificateReader.readConstructed(tag: 0x30)
+        guard certificateReader.isAtEnd else {
+            throw RDPDecodeError.invalidCredSSPMessage
+        }
+
+        _ = try certificateSequence.readElement()
+        var signatureAlgorithm = RDPASN1Reader(try certificateSequence.readElement().payload)
+        let oid = try signatureAlgorithm.readObjectIdentifier()
+        return SignatureDigestAlgorithm(oid: oid)
+    }
+
+    private enum SignatureDigestAlgorithm {
+        case sha256
+        case sha384
+        case sha512
+
+        init(oid: Data) {
+            switch oid {
+            case Data([0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0C]),
+                 Data([0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x04, 0x03, 0x03]):
+                self = .sha384
+            case Data([0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0D]),
+                 Data([0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x04, 0x03, 0x04]):
+                self = .sha512
+            default:
+                self = .sha256
+            }
+        }
+    }
+}
+
+enum RDPSPNEGO {
+    private static let spnegoOID = Data([0x2B, 0x06, 0x01, 0x05, 0x05, 0x02])
+    private static let ntlmOID = Data([0x2B, 0x06, 0x01, 0x04, 0x01, 0x82, 0x37, 0x02, 0x02, 0x0A])
+    private static let ntlmSignature = Data("NTLMSSP\u{0}".utf8)
+
+    static func negTokenInit(mechToken: Data) -> Data {
+        var mechTypes = Data()
+        mechTypes.append(RDPASN1.objectIdentifier(ntlmOID))
+
+        var initBody = Data()
+        initBody.append(RDPASN1.context(0, RDPASN1.sequence(mechTypes)))
+        initBody.append(RDPASN1.context(2, RDPASN1.octetString(mechToken)))
+
+        let negotiationToken = RDPASN1.context(0, RDPASN1.sequence(initBody))
+        return RDPASN1.application(0, RDPASN1.objectIdentifier(spnegoOID) + negotiationToken)
+    }
+
+    static func negTokenResponse(responseToken: Data) -> Data {
+        var responseBody = Data()
+        responseBody.append(RDPASN1.context(2, RDPASN1.octetString(responseToken)))
+        return RDPASN1.context(1, RDPASN1.sequence(responseBody))
+    }
+
+    static func mechanismToken(from token: Data) throws -> Data {
+        if token.starts(with: ntlmSignature) {
+            return token
+        }
+
+        var reader = RDPASN1Reader(token)
+        let first = try reader.readElement()
+        guard reader.isAtEnd else {
+            throw RDPDecodeError.invalidCredSSPMessage
+        }
+
+        if first.tag == 0x60 {
+            return try mechanismToken(fromInitialContextToken: first.payload)
+        }
+        if first.tag == 0xA1 {
+            return try mechanismToken(fromNegTokenResp: first.payload)
+        }
+        throw RDPDecodeError.invalidCredSSPMessage
+    }
+
+    private static func mechanismToken(fromInitialContextToken payload: Data) throws -> Data {
+        var reader = RDPASN1Reader(payload)
+        let oid = try reader.readObjectIdentifier()
+        guard oid == spnegoOID else {
+            throw RDPDecodeError.invalidCredSSPMessage
+        }
+        let token = try reader.readElement()
+        guard token.tag == 0xA0, reader.isAtEnd else {
+            throw RDPDecodeError.invalidCredSSPMessage
+        }
+        return try mechanismToken(fromNegTokenInit: token.payload)
+    }
+
+    private static func mechanismToken(fromNegTokenInit payload: Data) throws -> Data {
+        var outer = RDPASN1Reader(payload)
+        var sequence = try outer.readConstructed(tag: 0x30)
+        guard outer.isAtEnd else {
+            throw RDPDecodeError.invalidCredSSPMessage
+        }
+
+        var foundNTLM = false
+        var mechToken: Data?
+        while !sequence.isAtEnd {
+            let field = try sequence.readElement()
+            switch field.tag {
+            case 0xA0:
+                foundNTLM = try mechanismListContainsNTLM(field.payload)
+            case 0xA2:
+                mechToken = try RDPASN1.explicitOctetString(from: field.payload)
+            case 0xA1, 0xA3:
+                break
+            default:
+                throw RDPDecodeError.invalidCredSSPMessage
+            }
+        }
+        guard foundNTLM, let mechToken else {
+            throw RDPDecodeError.invalidCredSSPMessage
+        }
+        return mechToken
+    }
+
+    private static func mechanismListContainsNTLM(_ payload: Data) throws -> Bool {
+        var outer = RDPASN1Reader(payload)
+        var sequence = try outer.readConstructed(tag: 0x30)
+        guard outer.isAtEnd else {
+            throw RDPDecodeError.invalidCredSSPMessage
+        }
+
+        var foundNTLM = false
+        while !sequence.isAtEnd {
+            foundNTLM = try sequence.readObjectIdentifier() == ntlmOID || foundNTLM
+        }
+        return foundNTLM
+    }
+
+    private static func mechanismToken(fromNegTokenResp payload: Data) throws -> Data {
+        var outer = RDPASN1Reader(payload)
+        var sequence = try outer.readConstructed(tag: 0x30)
+        guard outer.isAtEnd else {
+            throw RDPDecodeError.invalidCredSSPMessage
+        }
+
+        var responseToken: Data?
+        while !sequence.isAtEnd {
+            let field = try sequence.readElement()
+            switch field.tag {
+            case 0xA0, 0xA1, 0xA3:
+                break
+            case 0xA2:
+                responseToken = try RDPASN1.explicitOctetString(from: field.payload)
+            default:
+                throw RDPDecodeError.invalidCredSSPMessage
+            }
+        }
+        guard let responseToken else {
+            throw RDPDecodeError.invalidCredSSPMessage
+        }
+        return responseToken
+    }
 }
 
 enum RDPCredSSPError: Error, CustomStringConvertible {
@@ -235,6 +453,7 @@ enum RDPCredSSPError: Error, CustomStringConvertible {
 
 private struct RDPASN1Element: Equatable {
     var tag: UInt8
+    var encoded: Data
     var payload: Data
 }
 
@@ -281,8 +500,17 @@ private struct RDPASN1Reader {
         return element.payload
     }
 
+    mutating func readObjectIdentifier() throws -> Data {
+        let element = try readElement()
+        guard element.tag == 0x06 else {
+            throw RDPDecodeError.invalidCredSSPMessage
+        }
+        return element.payload
+    }
+
     mutating func readElement() throws -> RDPASN1Element {
         try require(2)
+        let elementStart = index(at: offset)
         let tag = data[index(at: offset)]
         offset += 1
         let length = try readLength()
@@ -291,6 +519,7 @@ private struct RDPASN1Reader {
         offset += length
         return RDPASN1Element(
             tag: tag,
+            encoded: data.subdata(in: elementStart ..< index(at: offset)),
             payload: data.subdata(in: payloadStart ..< index(at: offset))
         )
     }
@@ -308,10 +537,16 @@ private struct RDPASN1Reader {
             throw RDPDecodeError.invalidBERLength
         }
         try require(byteCount)
+        guard data[index(at: offset)] != 0 else {
+            throw RDPDecodeError.invalidBERLength
+        }
         var length = 0
         for _ in 0 ..< byteCount {
             length = (length << 8) | Int(data[index(at: offset)])
             offset += 1
+        }
+        guard length >= 0x80 else {
+            throw RDPDecodeError.invalidBERLength
         }
         return length
     }
@@ -332,8 +567,17 @@ private enum RDPASN1 {
         wrap(tag: 0x30, payload)
     }
 
+    static func application(_ number: UInt8, _ payload: Data) -> Data {
+        precondition(number < 31)
+        return wrap(tag: 0x60 + number, payload)
+    }
+
     static func context(_ number: UInt8, _ payload: Data) -> Data {
         wrap(tag: 0xA0 + number, payload)
+    }
+
+    static func objectIdentifier(_ value: Data) -> Data {
+        wrap(tag: 0x06, value)
     }
 
     static func octetString(_ value: Data) -> Data {
@@ -361,6 +605,12 @@ private enum RDPASN1 {
         guard data.first.map({ $0 & 0x80 == 0 }) == true else {
             throw RDPDecodeError.invalidCredSSPMessage
         }
+        if data.count > 1,
+           data[data.startIndex] == 0,
+           data[data.index(after: data.startIndex)] & 0x80 == 0
+        {
+            throw RDPDecodeError.invalidCredSSPMessage
+        }
         var value = 0
         for byte in data {
             value = (value << 8) | Int(byte)
@@ -371,6 +621,14 @@ private enum RDPASN1 {
     static func explicitInteger(from data: Data) throws -> Int {
         var reader = RDPASN1Reader(data)
         return try reader.readExplicitInteger()
+    }
+
+    static func explicitUInt32(from data: Data) throws -> UInt32 {
+        let value = try explicitInteger(from: data)
+        guard let unsignedValue = UInt32(exactly: value) else {
+            throw RDPDecodeError.invalidCredSSPMessage
+        }
+        return unsignedValue
     }
 
     static func explicitOctetString(from data: Data) throws -> Data {

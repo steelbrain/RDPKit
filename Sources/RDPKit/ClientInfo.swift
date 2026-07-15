@@ -15,15 +15,18 @@ struct RDPClientInfoPDU: Equatable, Sendable {
     var credentials: RDPCredentials?
     var clientAddress: String
     var clientDirectory: String
+    var audioPlaybackEnabled: Bool
 
     init(
         credentials: RDPCredentials?,
         clientAddress: String = "0.0.0.0",
-        clientDirectory: String = "KRDPSwift"
+        clientDirectory: String = "KRDPSwift",
+        audioPlaybackEnabled: Bool = false
     ) {
         self.credentials = credentials
         self.clientAddress = clientAddress
         self.clientDirectory = clientDirectory
+        self.audioPlaybackEnabled = audioPlaybackEnabled
     }
 
     var credentialsIncluded: Bool {
@@ -34,37 +37,37 @@ struct RDPClientInfoPDU: Equatable, Sendable {
         let domain = try rdpUnicodeString(
             credentials?.domain ?? "",
             name: "domain",
-            maxBytesIncludingNull: 512
+            maxBytesIncludingNull: RDPClientInfoLimits.standardFieldByteCount
         )
         let username = try rdpUnicodeString(
             credentials?.username ?? "",
             name: "username",
-            maxBytesIncludingNull: 512
+            maxBytesIncludingNull: RDPClientInfoLimits.standardFieldByteCount
         )
         let password = try rdpUnicodeString(
             credentials?.password ?? "",
             name: "password",
-            maxBytesIncludingNull: 512
+            maxBytesIncludingNull: RDPClientInfoLimits.standardFieldByteCount
         )
         let alternateShell = try rdpUnicodeString(
             "",
             name: "alternateShell",
-            maxBytesIncludingNull: 512
+            maxBytesIncludingNull: RDPClientInfoLimits.standardFieldByteCount
         )
         let workingDirectory = try rdpUnicodeString(
             "",
             name: "workingDirectory",
-            maxBytesIncludingNull: 512
+            maxBytesIncludingNull: RDPClientInfoLimits.standardFieldByteCount
         )
         let clientAddress = try rdpUnicodeString(
             clientAddress,
             name: "clientAddress",
-            maxBytesIncludingNull: 80
+            maxBytesIncludingNull: RDPClientInfoLimits.clientAddressByteCount
         )
         let clientDirectory = try rdpUnicodeString(
             clientDirectory,
             name: "clientDirectory",
-            maxBytesIncludingNull: 512
+            maxBytesIncludingNull: RDPClientInfoLimits.standardFieldByteCount
         )
 
         var data = Data()
@@ -82,11 +85,16 @@ struct RDPClientInfoPDU: Equatable, Sendable {
         data.append(password.bytes)
         data.append(alternateShell.bytes)
         data.append(workingDirectory.bytes)
-        data.appendLittleEndianUInt16(0x0002)
+        // MS-RDPBCGR 2.2.1.11.1.1.1 Extended Info Packet (optional for RDP 5.0+).
+        data.appendLittleEndianUInt16(clientAddressFamily)
         data.appendLittleEndianUInt16(clientAddress.byteCountIncludingTerminator)
         data.append(clientAddress.bytes)
         data.appendLittleEndianUInt16(clientDirectory.byteCountIncludingTerminator)
         data.append(clientDirectory.bytes)
+        data.append(clientTimeZone)
+        data.appendLittleEndianUInt32(0) // clientSessionId
+        data.appendLittleEndianUInt32(0) // performanceFlags
+        data.appendLittleEndianUInt16(0) // cbAutoReconnectCookie
         return data
     }
 
@@ -100,18 +108,45 @@ struct RDPClientInfoPDU: Equatable, Sendable {
 
     private var infoFlags: UInt32 {
         var flags: UInt32 = 0
-        flags |= 0x0000_0001
-        flags |= 0x0000_0002
+        flags |= RDPClientInfoFlags.mouse
+        flags |= RDPClientInfoFlags.disableCtrlAltDel
         if credentials != nil {
-            flags |= 0x0000_0008
+            flags |= RDPClientInfoFlags.autoLogon
         }
-        flags |= 0x0000_0010
-        flags |= 0x0000_0040
-        flags |= 0x0000_0100
-        flags |= 0x0000_4000
+        flags |= RDPClientInfoFlags.unicode
+        flags |= RDPClientInfoFlags.logonNotify
+        flags |= RDPClientInfoFlags.enableWindowsKey
+        flags |= RDPClientInfoFlags.forceEncryptedClientToServerPDU
+        flags |= RDPClientInfoFlags.mouseHasWheel
+        if !audioPlaybackEnabled {
+            flags |= RDPClientInfoFlags.noAudioPlayback
+        }
         return flags
     }
+
+    private var clientAddressFamily: UInt16 {
+        clientAddress.contains(":") ? 0x0017 : 0x0002
+    }
 }
+
+private enum RDPClientInfoFlags {
+    static let mouse: UInt32 = 0x0000_0001
+    static let disableCtrlAltDel: UInt32 = 0x0000_0002
+    static let autoLogon: UInt32 = 0x0000_0008
+    static let unicode: UInt32 = 0x0000_0010
+    static let logonNotify: UInt32 = 0x0000_0040
+    static let enableWindowsKey: UInt32 = 0x0000_0100
+    static let forceEncryptedClientToServerPDU: UInt32 = 0x0000_4000
+    static let mouseHasWheel: UInt32 = 0x0002_0000
+    static let noAudioPlayback: UInt32 = 0x0008_0000
+}
+
+private enum RDPClientInfoLimits {
+    static let standardFieldByteCount = 512
+    static let clientAddressByteCount = 80
+}
+
+private let clientTimeZone = Data(repeating: 0, count: 172)
 
 private struct RDPUnicodeString: Equatable {
     var bytes: Data

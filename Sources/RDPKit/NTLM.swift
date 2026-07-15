@@ -20,6 +20,7 @@ final class RDPCredSSPNTLMContext {
         var serverChallenge: Data
         var targetInfo: Data
         var timestamp: UInt64
+        var hasTimestamp: Bool
     }
 
     private struct MessageField {
@@ -27,7 +28,20 @@ final class RDPCredSSPNTLMContext {
         var offset: Int
     }
 
+    private struct TargetInfoMetadata {
+        var timestamp: UInt64?
+    }
+
+    private enum TargetInfoAVID {
+        static let eol: UInt16 = 0x0000
+        static let flags: UInt16 = 0x0006
+        static let timestamp: UInt16 = 0x0007
+        static let channelBindings: UInt16 = 0x000A
+    }
+
     private let credentials: RDPCredentials
+    private let workstationName: String
+    private let channelBindingsHash: Data?
     private let randomBytes: (Int) throws -> Data
     private let currentFileTime: () -> UInt64
     private var state: State = .negotiate
@@ -42,10 +56,17 @@ final class RDPCredSSPNTLMContext {
 
     init(
         credentials: RDPCredentials,
+        workstationName: String = "KRDPSWIFT",
+        channelBindingsHash: Data? = nil,
         randomBytes: @escaping (Int) throws -> Data = RDPCredSSPNTLMContext.secureRandomData(count:),
         currentFileTime: @escaping () -> UInt64 = RDPCredSSPNTLMContext.nowFileTime
     ) {
+        if let channelBindingsHash {
+            precondition(channelBindingsHash.count == Self.hashSize)
+        }
         self.credentials = credentials
+        self.workstationName = workstationName
+        self.channelBindingsHash = channelBindingsHash
         self.randomBytes = randomBytes
         self.currentFileTime = currentFileTime
     }
@@ -137,7 +158,10 @@ final class RDPCredSSPNTLMContext {
     private func makeAuthenticateMessage(for challenge: Challenge) throws -> Data {
         let clientChallenge = try randomBytes(Self.challengeSize)
         let ntlmV2Hash = Self.ntlmV2Hash(credentials: credentials)
-        let authenticateTargetInfo = try Self.authenticateTargetInfo(from: challenge.targetInfo)
+        let authenticateTargetInfo = try Self.authenticateTargetInfo(
+            from: challenge.targetInfo,
+            channelBindingsHash: channelBindingsHash
+        )
         let lmChallengeResponse = Self.lmV2Response(
             serverChallenge: challenge.serverChallenge,
             clientChallenge: clientChallenge,
@@ -151,7 +175,7 @@ final class RDPCredSSPNTLMContext {
             ntlmV2Hash: ntlmV2Hash
         )
 
-        negotiatedFlags = Self.authenticateFlags(from: challenge.flags, credentials: credentials)
+        negotiatedFlags = try Self.authenticateFlags(from: challenge.flags, credentials: credentials)
         let exportedSessionKey: Data
         let encryptedRandomSessionKey: Data
         if negotiatedFlags & Self.negotiateKeyExchange != 0 {
@@ -164,7 +188,9 @@ final class RDPCredSSPNTLMContext {
 
         let domain = Self.utf16LittleEndian(credentials.domain ?? "")
         let username = Self.utf16LittleEndian(credentials.username)
-        let workstation = Data()
+        let workstation = negotiatedFlags & Self.negotiateVersion != 0
+            ? Self.utf16LittleEndian(workstationName)
+            : Data()
         var payloadOffset = Self.authenticatePayloadOffset
         let domainField = Self.messageField(for: domain, offset: &payloadOffset)
         let usernameField = Self.messageField(for: username, offset: &payloadOffset)
@@ -183,7 +209,9 @@ final class RDPCredSSPNTLMContext {
         Self.append(field: workstationField, to: &message)
         Self.append(field: encryptedKeyField, to: &message)
         message.appendLittleEndianUInt32(negotiatedFlags)
-        message.append(Self.version)
+        message.append(negotiatedFlags & Self.negotiateVersion != 0
+            ? Self.version
+            : Data(repeating: 0, count: Self.version.count))
         message.append(Data(repeating: 0, count: Self.micSize))
         message.append(domain)
         message.append(username)
@@ -201,8 +229,16 @@ final class RDPCredSSPNTLMContext {
     private func installKeys(exportedSessionKey: Data) {
         sendSigningKey = Self.md5(exportedSessionKey + Self.clientSigningMagic)
         receiveSigningKey = Self.md5(exportedSessionKey + Self.serverSigningMagic)
-        sendSealingKey = RDPNTLMRC4(key: Self.md5(exportedSessionKey + Self.clientSealingMagic))
-        receiveSealingKey = RDPNTLMRC4(key: Self.md5(exportedSessionKey + Self.serverSealingMagic))
+        sendSealingKey = RDPNTLMRC4(key: Self.sealingKey(
+            exportedSessionKey: exportedSessionKey,
+            flags: negotiatedFlags,
+            magic: Self.clientSealingMagic
+        ))
+        receiveSealingKey = RDPNTLMRC4(key: Self.sealingKey(
+            exportedSessionKey: exportedSessionKey,
+            flags: negotiatedFlags,
+            magic: Self.serverSealingMagic
+        ))
     }
 
     private static func makeNegotiateMessage() -> Data {
@@ -230,54 +266,100 @@ final class RDPCredSSPNTLMContext {
         let flags = try readLittleEndianUInt32(message, at: 20)
         let serverChallenge = try readData(message, at: 24, count: challengeSize)
         let targetInfo = try readSecurityBuffer(message, at: 40)
+        let metadata = try targetInfoMetadata(from: targetInfo)
         return Challenge(
             message: message,
             flags: flags,
             serverChallenge: serverChallenge,
             targetInfo: targetInfo,
-            timestamp: try timestamp(from: targetInfo) ?? fallbackFileTime()
+            timestamp: metadata.timestamp ?? fallbackFileTime(),
+            hasTimestamp: metadata.timestamp != nil
         )
     }
 
-    private static func timestamp(from targetInfo: Data) throws -> UInt64? {
+    private static func targetInfoMetadata(from targetInfo: Data) throws -> TargetInfoMetadata {
         var cursor = ByteCursor(targetInfo)
+        var timestamp: UInt64?
+
         while cursor.remaining >= 4 {
             let avID = try cursor.readLittleEndianUInt16()
             let length = Int(try cursor.readLittleEndianUInt16())
             if avID == 0 {
-                return nil
+                guard length == 0, cursor.remaining == 0 else {
+                    throw RDPCredSSPError.ntlm("invalid NTLM target info terminator")
+                }
+                return TargetInfoMetadata(timestamp: timestamp)
             }
             let value = try cursor.readData(count: length)
-            if avID == 7 {
+            switch avID {
+            case TargetInfoAVID.timestamp:
                 guard value.count == 8 else {
                     throw RDPCredSSPError.ntlm("invalid NTLM timestamp AV pair")
                 }
-                return try readLittleEndianUInt64(value, at: 0)
+                timestamp = try readLittleEndianUInt64(value, at: 0)
+            default:
+                break
             }
         }
         guard cursor.remaining == 0 else {
             throw RDPCredSSPError.ntlm("truncated NTLM target info")
         }
-        return nil
+        throw RDPCredSSPError.ntlm("missing NTLM target info terminator")
     }
 
-    private static func authenticateTargetInfo(from targetInfo: Data) throws -> Data {
+    private static func authenticateTargetInfo(from targetInfo: Data, channelBindingsHash: Data?) throws -> Data {
         var cursor = ByteCursor(targetInfo)
         var output = Data()
+        var containsFlags = false
+        var containsChannelBindings = false
+        var didReadTerminator = false
+
         while cursor.remaining >= 4 {
             let avID = try cursor.readLittleEndianUInt16()
             let length = Int(try cursor.readLittleEndianUInt16())
-            if avID == 0 {
+            if avID == TargetInfoAVID.eol {
+                guard length == 0 else {
+                    throw RDPCredSSPError.ntlm("invalid NTLM target info terminator")
+                }
+                guard cursor.remaining == 0 else {
+                    throw RDPCredSSPError.ntlm("invalid NTLM target info terminator")
+                }
+                didReadTerminator = true
                 break
             }
             let value = try cursor.readData(count: length)
             output.appendLittleEndianUInt16(avID)
-            output.appendLittleEndianUInt16(UInt16(length))
-            output.append(value)
+            if avID == TargetInfoAVID.flags {
+                guard value.count == 4 else {
+                    throw RDPCredSSPError.ntlm("invalid NTLM flags AV pair")
+                }
+                containsFlags = true
+                output.appendLittleEndianUInt16(4)
+                output.appendLittleEndianUInt32(try readLittleEndianUInt32(value, at: 0) | 0x0000_0002)
+            } else {
+                if avID == TargetInfoAVID.channelBindings {
+                    containsChannelBindings = true
+                }
+                output.appendLittleEndianUInt16(UInt16(length))
+                output.append(value)
+            }
         }
-        output.appendLittleEndianUInt16(6)
-        output.appendLittleEndianUInt16(4)
-        output.appendLittleEndianUInt32(0x0000_0002)
+        guard cursor.remaining == 0 else {
+            throw RDPCredSSPError.ntlm("truncated NTLM target info")
+        }
+        guard didReadTerminator else {
+            throw RDPCredSSPError.ntlm("missing NTLM target info terminator")
+        }
+        if !containsFlags {
+            output.appendLittleEndianUInt16(6)
+            output.appendLittleEndianUInt16(4)
+            output.appendLittleEndianUInt32(0x0000_0002)
+        }
+        if !containsChannelBindings, let channelBindingsHash {
+            output.appendLittleEndianUInt16(TargetInfoAVID.channelBindings)
+            output.appendLittleEndianUInt16(UInt16(channelBindingsHash.count))
+            output.append(channelBindingsHash)
+        }
         output.appendLittleEndianUInt16(0)
         output.appendLittleEndianUInt16(0)
         output.appendLittleEndianUInt32(0)
@@ -323,22 +405,15 @@ final class RDPCredSSPNTLMContext {
         )
     }
 
-    private static func authenticateFlags(from challengeFlags: UInt32, credentials: RDPCredentials) -> UInt32 {
-        var flags = challengeFlags & negotiateKeyExchange
+    private static func authenticateFlags(from challengeFlags: UInt32, credentials: RDPCredentials) throws -> UInt32 {
+        guard challengeFlags & negotiateUnicode != 0 else {
+            throw RDPCredSSPError.ntlm("server did not negotiate NTLM Unicode encoding")
+        }
+
+        var flags = challengeFlags & authenticateSupportedFlags
         if credentials.domain?.isEmpty == false {
             flags |= negotiateDomainSupplied
         }
-        flags |= negotiate56
-            | negotiate128
-            | negotiateAlwaysSign
-            | negotiateExtendedSessionSecurity
-            | negotiateNTLM
-            | negotiateRequestTarget
-            | negotiateUnicode
-            | negotiateTargetInfo
-            | negotiateVersion
-            | negotiateSeal
-            | negotiateSign
         return flags
     }
 
@@ -409,6 +484,18 @@ final class RDPCredSSPNTLMContext {
         signature.append(checksum.prefix(8))
         signature.appendLittleEndianUInt32(sequenceNumber)
         return signature
+    }
+
+    private static func sealingKey(exportedSessionKey: Data, flags: UInt32, magic: Data) -> Data {
+        let material: Data
+        if flags & negotiate128 != 0 {
+            material = exportedSessionKey
+        } else if flags & negotiate56 != 0 {
+            material = exportedSessionKey.prefix(7)
+        } else {
+            material = exportedSessionKey.prefix(5)
+        }
+        return md5(material + magic)
     }
 
     private static func utf16LittleEndian(_ value: String) -> Data {
@@ -560,6 +647,7 @@ final class RDPCredSSPNTLMContext {
     private static let signatureBytes = Data("NTLMSSP\u{0}".utf8)
     private static let challengeSize = 8
     private static let hashSize = 16
+    private static let lmV2ResponseSize = 24
     private static let signatureSize = 16
     private static let micSize = 16
     private static let negotiatePayloadOffset = 0
@@ -597,6 +685,19 @@ final class RDPCredSSPNTLMContext {
         | negotiateUnicode
         | negotiateVersion
         | negotiateLMKey
+        | negotiateSeal
+        | negotiateKeyExchange
+        | negotiateSign
+
+    private static let authenticateSupportedFlags: UInt32 = negotiate56
+        | negotiate128
+        | negotiateAlwaysSign
+        | negotiateExtendedSessionSecurity
+        | negotiateNTLM
+        | negotiateRequestTarget
+        | negotiateUnicode
+        | negotiateTargetInfo
+        | negotiateVersion
         | negotiateSeal
         | negotiateKeyExchange
         | negotiateSign

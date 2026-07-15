@@ -54,3 +54,21 @@ import Testing
     #expect(store.snapshotIfNeeded(at: start.addingTimeInterval(0.6)) != nil)
     #expect(store.snapshotIfNeeded(force: true, at: start.addingTimeInterval(0.7)) != nil)
 }
+
+@Test func graphicsFrameCountsBothAVC444Substreams() {
+    let frame = RDPGraphicsFrameSnapshot(
+        frameID: 1,
+        surfaceID: 2,
+        codecID: RDPGFXCodecID.avc444,
+        codecName: "avc444",
+        pixelFormat: 32,
+        destinationRect: RDPFrameRect(left: 0, top: 0, right: 16, bottom: 16),
+        regionRects: [RDPFrameRect(left: 0, top: 0, right: 16, bottom: 16)],
+        encodedVideoData: Data([0x00, 0x00, 0x01, 0x65]),
+        auxiliaryEncodedVideoData: Data([0x00, 0x00, 0x01, 0x41]),
+        avc444SubframeLayout: .yuv420AndChroma420
+    )
+
+    #expect(frame.videoByteCount == 8)
+    #expect(frame.videoNalUnitTypes == [5, 1])
+}

@@ -1,0 +1,92 @@
+import Foundation
+@testable import RDPKit
+import Testing
+
+@Test func decodesNSCodecRawPlanesWithAlpha() throws {
+    var stream = Data()
+    for _ in 0 ..< 4 {
+        stream.appendLittleEndianUInt32(1)
+    }
+    stream.append(contentsOf: [1, 0, 0, 0, 100, 10, 5, 0x7F])
+
+    let decoded = try RDPNSCodecDecoder.decode(stream, width: 1, height: 1)
+
+    #expect(decoded == Data([85, 105, 105, 0x7F]))
+}
+
+@Test func decodesMicrosoftNSCodecSubsamplingExample() throws {
+    let stream = Data([
+        0x71, 0x00, 0x00, 0x00, 0x07, 0x00, 0x00, 0x00,
+        0x0B, 0x00, 0x00, 0x00, 0x07, 0x00, 0x00, 0x00,
+        0x03, 0x01, 0x00, 0x00,
+        0x63, 0x63, 0x01, 0x64, 0x64, 0x00, 0x63, 0x63,
+        0x02, 0x64, 0x64, 0x00, 0x63, 0x63, 0x00, 0x64,
+        0x64, 0x01, 0x63, 0x63, 0x01, 0x64, 0x64, 0x01,
+        0x63, 0x63, 0x01, 0x64, 0x64, 0x00, 0x63, 0x63,
+        0x00, 0x64, 0x64, 0x01, 0x63, 0x63, 0x00, 0x64,
+        0x64, 0x0C, 0x63, 0x63, 0x00, 0x64, 0x64, 0x0C,
+        0x63, 0x63, 0x00, 0x64, 0x64, 0x0C, 0x63, 0x63,
+        0x00, 0x64, 0x64, 0x0C, 0x63, 0x64, 0x64, 0x04,
+        0x63, 0x64, 0x63, 0x63, 0x00, 0x64, 0x64, 0x03,
+        0x63, 0x64, 0x64, 0x03, 0x63, 0x63, 0x00, 0x64,
+        0x63, 0x63, 0x00, 0x64, 0x64, 0x03, 0x65, 0x63,
+        0x64, 0x64, 0x01, 0x63, 0x64, 0x64, 0x00, 0x65,
+        0x64, 0x64, 0x06, 0x63, 0x64, 0x64, 0x00, 0x63,
+        0x63, 0x00, 0x64, 0x64, 0x04, 0x64, 0x65, 0x65,
+        0x65,
+        0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22,
+        0x37, 0x37, 0x19, 0x36, 0x37, 0x37, 0x06, 0x37,
+        0x37, 0x37, 0x37,
+        0xFF, 0xFF, 0x90, 0xFF, 0xFF, 0xFF, 0xFF,
+    ])
+
+    let decoded = try RDPNSCodecDecoder.decode(stream, width: 15, height: 10)
+    let dark = Data([0xFF, 0x3F, 0x0F, 0xFF])
+    let light = Data([0xFF, 0x40, 0x10, 0xFF])
+    let expectedFirstRow = [
+        dark, dark, dark, light, light,
+        dark, dark, dark, dark, light,
+        light, dark, dark, light, light,
+    ].reduce(into: Data()) { $0.append($1) }
+
+    #expect(decoded.count == 600)
+    #expect(decoded.prefix(60) == expectedFirstRow)
+    #expect(stride(from: 3, to: decoded.count, by: 4).allSatisfy { decoded[$0] == 0xFF })
+}
+
+@Test func rejectsMalformedNSCodecStreams() {
+    let malformed = [
+        Data(),
+        nsCodecStream(y: Data(), co: Data([0]), cg: Data([0]), alpha: Data()),
+        nsCodecStream(y: Data([0]), co: Data([0]), cg: Data([0]), alpha: Data(), colorLoss: 0),
+        nsCodecStream(y: Data([0]), co: Data([0]), cg: Data([0]), alpha: Data(), subsampling: 2),
+        nsCodecStream(y: Data([0, 0, 0]), co: Data([0]), cg: Data([0]), alpha: Data()),
+    ]
+
+    for stream in malformed {
+        #expect(throws: RDPDecodeError.invalidGraphicsUpdatePDU) {
+            try RDPNSCodecDecoder.decode(stream, width: 1, height: 1)
+        }
+    }
+}
+
+private func nsCodecStream(
+    y: Data,
+    co: Data,
+    cg: Data,
+    alpha: Data,
+    colorLoss: UInt8 = 1,
+    subsampling: UInt8 = 0
+) -> Data {
+    var stream = Data()
+    stream.appendLittleEndianUInt32(UInt32(y.count))
+    stream.appendLittleEndianUInt32(UInt32(co.count))
+    stream.appendLittleEndianUInt32(UInt32(cg.count))
+    stream.appendLittleEndianUInt32(UInt32(alpha.count))
+    stream.append(contentsOf: [colorLoss, subsampling, 0, 0])
+    stream.append(y)
+    stream.append(co)
+    stream.append(cg)
+    stream.append(alpha)
+    return stream
+}

@@ -30,6 +30,43 @@ import Testing
     #expect(try bgraPixel(atX: 0, y: 1, in: second.imageBuffer) == [0x70, 0x80, 0x90, 0xFF])
 }
 
+@Test func videoToolboxFrameDecoderKeepsSequenceStatePerSurface() {
+    let decoder = RDPVideoToolboxFrameDecoder()
+
+    for surfaceID: UInt16 in [1, 2] {
+        #expect(throws: (any Error).self) {
+            try decoder.decodeDetailed(videoFrame(surfaceID: surfaceID, videoCodec: .h264))
+        }
+        #expect(throws: (any Error).self) {
+            try decoder.decodeDetailed(videoFrame(
+                surfaceID: surfaceID,
+                codecID: RDPGFXCodecID.avc444v2,
+                videoCodec: .h264,
+                avc444SubframeLayout: .yuv420Only
+            ))
+        }
+        #expect(throws: (any Error).self) {
+            try decoder.decodeDetailed(videoFrame(surfaceID: surfaceID, videoCodec: .hevc))
+        }
+    }
+
+    #expect(decoder.decoderContextCounts.h264 == 2)
+    #expect(decoder.decoderContextCounts.avc444 == 2)
+    #expect(decoder.decoderContextCounts.hevc == 2)
+
+    decoder.reset(surfaceID: 1)
+
+    #expect(decoder.decoderContextCounts.h264 == 1)
+    #expect(decoder.decoderContextCounts.avc444 == 1)
+    #expect(decoder.decoderContextCounts.hevc == 1)
+
+    decoder.reset()
+
+    #expect(decoder.decoderContextCounts.h264 == 0)
+    #expect(decoder.decoderContextCounts.avc444 == 0)
+    #expect(decoder.decoderContextCounts.hevc == 0)
+}
+
 private func bitmapFrame(pixels: [UInt8]) -> RDPGraphicsFrameSnapshot {
     RDPGraphicsFrameSnapshot(
         frameID: 1,
@@ -43,6 +80,26 @@ private func bitmapFrame(pixels: [UInt8]) -> RDPGraphicsFrameSnapshot {
         contentKind: .bitmap,
         decodedBitmapData: Data(pixels),
         decodedBitmapBytesPerRow: 8
+    )
+}
+
+private func videoFrame(
+    surfaceID: UInt16,
+    codecID: UInt16 = RDPGFXCodecID.avc420,
+    videoCodec: RDPVideoCodec,
+    avc444SubframeLayout: RDPAVC444SubframeLayout? = nil
+) -> RDPGraphicsFrameSnapshot {
+    RDPGraphicsFrameSnapshot(
+        frameID: 1,
+        surfaceID: surfaceID,
+        codecID: codecID,
+        codecName: RDPGFXCodecID.name(for: codecID),
+        videoCodec: videoCodec,
+        pixelFormat: 0x20,
+        destinationRect: RDPFrameRect(left: 0, top: 0, right: 16, bottom: 16),
+        regionRects: [RDPFrameRect(left: 0, top: 0, right: 16, bottom: 16)],
+        encodedVideoData: Data([0]),
+        avc444SubframeLayout: avc444SubframeLayout
     )
 }
 

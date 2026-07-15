@@ -3,7 +3,8 @@
 Pure Swift RDP library for Apple platforms, built around Apple media, security,
 and networking primitives instead of FreeRDP.
 
-- RDPGFX video path with AVC420/H.264, AVC444/H.264, AVC444v2, and HEVC/H.265
+- RDPGFX rendering with AVC420/H.264, RemoteFX, Progressive, and ClearCodec
+- AVC444/AVC444v2 chroma reconstruction and HEVC/H.265 Annex B helpers
 - VideoToolbox-backed decode helpers, CoreVideo frame output, and
   AVFoundation-ready presentation plumbing
 - SwiftNIO and SwiftNIO SSL transport, including TLS upgrade on an existing RDP
@@ -79,6 +80,9 @@ let report = client.run(
         let metadata = RDPFrameMetadata(frame)
         print("\(metadata.codecName) \(metadata.width)x\(metadata.height)")
     },
+    onRemotePointer: { update in
+        print("remote pointer: \(update)")
+    },
     onCertificate: { certificate in
         print("certificate trusted: \(certificate.trusted)")
         print("certificate sha256: \(certificate.sha256 ?? "unavailable")")
@@ -94,18 +98,19 @@ let report = client.run(
 print(report.status)
 ```
 
-`RDPPreflightClient` exposes callbacks for graphics frames, input readiness,
-display control, clipboard messages, audio samples, TLS certificate inspection,
-wire bandwidth samples, and cancellation. The macOS example app builds a full
-viewer on top of those hooks.
+`RDPPreflightClient` exposes callbacks for graphics frames, remote pointer
+updates, input readiness, display control, clipboard messages, audio
+samples, TLS certificate inspection, wire bandwidth samples, and cancellation.
+The macOS example app builds a full viewer on top of those hooks.
 
 ## Features
 
 ### Graphics
 
 - RDP Graphics Pipeline (RDPGFX) capability negotiation and frame parsing
-- AVC420/H.264 and AVC444/H.264 bitmap streams
-- AVC444v2 layout handling
+- AVC420/H.264 bitmap-stream rendering
+- AVC444/H.264 and AVC444v2 layout parsing, persistent luma/chroma subframes,
+  reverse filtering, and full chroma reconstruction
 - HEVC/H.265 Annex B sample preparation
 - H.264/H.265 NAL unit metadata extraction
 - VideoToolbox decode helpers with hardware-acceleration reporting

@@ -22,8 +22,18 @@ enum TPKT {
             throw RDPDecodeError.invalidTPKTVersion(parsedVersion)
         }
 
-        _ = try cursor.readUInt8()
+        let reserved = try cursor.readUInt8()
+        guard reserved == 0 else {
+            throw RDPDecodeError.invalidTPKTReserved(reserved)
+        }
+
         let declaredLength = try Int(cursor.readBigEndianUInt16())
+        guard declaredLength >= headerLength else {
+            throw RDPDecodeError.invalidTPKTLength(
+                declared: declaredLength,
+                actual: packet.count
+            )
+        }
         guard declaredLength == packet.count else {
             throw RDPDecodeError.invalidTPKTLength(
                 declared: declaredLength,

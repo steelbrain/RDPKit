@@ -18,7 +18,7 @@ import Testing
     let segments = RDPTranscriptReplayServer.segment(events)
     #expect(segments.count == 2)
 
-    let credentials = RDPCredentials(username: "aneesiqbal", password: "aneesiqbal")
+    let credentials = RDPCredentials(username: "rdp-user", password: "rdp-user")
     let server = try RDPTranscriptReplayServer.start(transcript: events, credentials: credentials)
     defer { server.stop() }
 
@@ -32,7 +32,8 @@ import Testing
             graphicsFrameCaptureLimit: 1,
             desktopWidth: 1280,
             desktopHeight: 720,
-            clipboardEnabled: false
+            clipboardEnabled: false,
+            graphicsCapabilityProfile: .avcThinClient
         )
     )
 
@@ -42,9 +43,44 @@ import Testing
     #expect(report.rdpGraphicsResponseType == "rdpgfx-caps-confirm")
     #expect(report.rdpGraphicsFirstFrame?.codecName == "avc420")
     #expect(report.rdpGraphicsFirstFrame?.videoCodec == .h264)
+    #expect(report.rdpGraphicsFirstFrame?.surfaceID == 0)
     #expect(report.rdpGraphicsFirstFrame?.width == 1280)
     #expect(report.rdpGraphicsFirstFrame?.height == 720)
     #expect(report.rdpGraphicsFirstFrame?.videoNalUnitTypes == [7, 8, 5])
+}
+
+@Test func replaysKrdpNegotiationTranscriptThroughToFirstFrame() throws {
+    let events = try loadTranscriptFixture("krdp-negotiation-transcript")
+    let segments = RDPTranscriptReplayServer.segment(events)
+    #expect(segments.count == 1)
+
+    let credentials = RDPCredentials(username: "rdp-user", password: "rdp-user")
+    let server = try RDPTranscriptReplayServer.start(transcript: events, credentials: credentials)
+    defer { server.stop() }
+
+    let report = RDPPreflightClient().run(
+        configuration: RDPConnectionConfiguration(
+            host: "127.0.0.1",
+            port: server.port,
+            credentials: credentials,
+            timeoutSeconds: 10,
+            hideCertificateWarnings: true,
+            graphicsFrameCaptureLimit: 1,
+            desktopWidth: 1280,
+            desktopHeight: 720,
+            clipboardEnabled: false,
+            graphicsCapabilityProfile: .avcThinClient
+        )
+    )
+
+    #expect(report.status == "success")
+    #expect(report.error == nil)
+    #expect(report.rdpGraphicsResponseType == "rdpgfx-caps-confirm")
+    #expect(report.rdpGraphicsFirstFrame?.codecName == "avc420")
+    #expect(report.rdpGraphicsFirstFrame?.videoCodec == .h264)
+    #expect(report.rdpGraphicsFirstFrame?.width == 3840)
+    #expect(report.rdpGraphicsFirstFrame?.height == 2400)
+    #expect(report.rdpGraphicsFirstFrame.map { Array($0.videoNalUnitTypes.prefix(3)) } == [7, 8, 6])
 }
 
 private func loadTranscriptFixture(_ name: String) throws -> [RDPWireEvent] {

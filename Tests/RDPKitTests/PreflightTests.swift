@@ -3,9 +3,9 @@ import Foundation
 import Testing
 
 @Test func dryRunReportIncludesTargetCredentialsAndNegotiationBytes() {
-    let credentials = RDPCredentials(username: "aneesi", domain: "LAB", password: "secret")
+    let credentials = RDPCredentials(username: "rdp-user", domain: "LAB", password: "secret")
     let configuration = RDPConnectionConfiguration(
-        host: "192.168.1.126",
+        host: "192.0.2.10",
         port: 3390,
         credentials: credentials,
         timeoutSeconds: 5,
@@ -16,14 +16,24 @@ import Testing
 
     #expect(report.status == "dry-run")
     #expect(report.stage == "x224-rdp-negotiation-request")
-    #expect(report.target == "192.168.1.126:3390")
-    #expect(report.username == "aneesi")
+    #expect(report.target == "192.0.2.10:3390")
+    #expect(report.username == "rdp-user")
     #expect(report.domain == "LAB")
     #expect(report.passwordConfigured)
     #expect(report.requestedProtocols == ["tls", "credssp"])
     #expect(report.requestHex == "03 00 00 13 0e e0 00 00 00 00 00 01 00 08 00 03 00 00 00")
     #expect(report.nextStage == "send negotiation request to server")
     #expect(report.error == nil)
+}
+
+@Test func dryRunCanRequestEarlyUserAuthorization() {
+    let report = RDPPreflightClient().dryRun(configuration: RDPConnectionConfiguration(
+        host: "192.0.2.10",
+        earlyUserAuthorizationEnabled: true
+    ))
+
+    #expect(report.requestedProtocols == ["tls", "credssp", "credssp-early-user-auth"])
+    #expect(report.requestHex == "03 00 00 13 0e e0 00 00 00 00 00 01 00 08 00 0b 00 00 00")
 }
 
 @Test func connectionConfigurationClampsGraphicsFrameCaptureLimit() {
@@ -179,17 +189,53 @@ import Testing
         passwordConfigured: false,
         requestedProtocols: ["tls"],
         requestHex: "",
+        rdpFastPathUpdateMessages: [
+            RDPFastPathUpdateSummary(
+                typeName: "fastpath-pointer-position",
+                fragmentation: "single",
+                compressed: false,
+                byteCount: 4,
+                pointerTypeName: "pointer-position"
+            ),
+        ],
         rdpGraphicsFrames: [frame],
         warnings: []
     )
 
     #expect(report.rdpGraphicsFrames == [frame])
     #expect(report.rdpGraphicsFirstFrame == frame)
+    #expect(report.rdpFastPathUpdateMessages?.first?.typeName == "fastpath-pointer-position")
     #expect(frame.videoCodec == .h264)
     #expect(frame.videoByteCount == 4)
     #expect(frame.videoNalUnitTypes == [5])
     #expect(frame.h264ByteCount == 4)
     #expect(frame.h264NalUnitTypes == [5])
+}
+
+@Test func preflightReportCarriesIssuedClientLicenseForPersistence() throws {
+    let license = RDPStoredClientLicense(
+        version: 0x0006_0001,
+        scope: "localhost",
+        companyName: "Microsoft Corporation",
+        productID: "A02",
+        licenseInfo: Data([0x30, 0x82, 0x01, 0x02])
+    )
+    let report = RDPPreflightReport(
+        status: "success",
+        stage: "rdp-server-activation",
+        target: "example.test:3389",
+        passwordConfigured: false,
+        requestedProtocols: ["tls"],
+        requestHex: "",
+        rdpIssuedClientLicense: license,
+        warnings: []
+    )
+    let encoded = try JSONEncoder().encode(report)
+    let json = try #require(String(data: encoded, encoding: .utf8))
+
+    #expect(report.rdpIssuedClientLicense == license)
+    #expect(json.contains("\"rdpIssuedClientLicense\""))
+    #expect(json.contains("\"licenseInfo\""))
 }
 
 @Test func graphicsPathDescriptionNamesAVC444VideoPath() {
@@ -211,7 +257,7 @@ import Testing
         updateMessages: nil
     )
 
-    #expect(description == "RDPGFX v10.7 AVC thin-client scaled-map disabled flags=0x000000c2 -> avc444v2/H.264")
+    #expect(description == "RDPGFX v10.7 AVC thin-client flags=0x00000042 -> avc444v2/H.264")
 }
 
 @Test func graphicsPathDescriptionNamesCaprogressiveUpdatePath() throws {
@@ -234,7 +280,7 @@ import Testing
         updateMessages: [summary]
     )
 
-    #expect(description == "RDPGFX v8.1 thin-client AVC420 flags=0x00000013 -> rdpgfx-wire-to-surface-2 caprogressive")
+    #expect(description == "RDPGFX v8.1 AVC420 flags=0x00000012 -> rdpgfx-wire-to-surface-2 caprogressive")
 }
 
 @Test func graphicsPathDescriptionNamesCAVideoRemoteFXUpdatePath() {
@@ -280,16 +326,16 @@ import Testing
     let cases: [(version: UInt32, flags: UInt32, description: String)] = [
         (
             RDPGFXCapabilityVersion.version8,
-            RDPGFXCapabilityFlags.defaultVersion8,
+            RDPGFXCapabilityFlags.thinClient,
             """
-            RDPGFX v8 thin-client flags=0x00000003 -> rdpgfx-wire-to-surface-1 cavideo remotefx tiles=1 entropy=rlgr3 -> surface-bgra
+            RDPGFX v8 thin-client flags=0x00000001 -> rdpgfx-wire-to-surface-1 cavideo remotefx tiles=1 entropy=rlgr3 -> surface-bgra
             """.trimmingCharacters(in: .whitespacesAndNewlines)
         ),
         (
             RDPGFXCapabilityVersion.version81,
-            RDPGFXCapabilityFlags.defaultVersion8,
+            RDPGFXCapabilityFlags.thinClient,
             """
-            RDPGFX v8.1 thin-client flags=0x00000003 -> rdpgfx-wire-to-surface-1 cavideo remotefx tiles=1 entropy=rlgr3 -> surface-bgra
+            RDPGFX v8.1 thin-client flags=0x00000001 -> rdpgfx-wire-to-surface-1 cavideo remotefx tiles=1 entropy=rlgr3 -> surface-bgra
             """.trimmingCharacters(in: .whitespacesAndNewlines)
         ),
     ]
@@ -328,6 +374,30 @@ import Testing
     #expect(frame.videoNalUnitTypes == [32, 33, 34, 19])
     #expect(frame.h264ByteCount == 0)
     #expect(frame.h264NalUnitTypes == [])
+}
+
+@Test func copiedVideoFramesRejectsDestinationsOutsideCoordinateRange() {
+    let frame = RDPGraphicsFrameSnapshot(
+        frameID: 9,
+        surfaceID: 1,
+        codecID: RDPGFXCodecID.avc420,
+        codecName: "avc420",
+        pixelFormat: RDPGFXPixelFormat.xrgb8888,
+        destinationRect: RDPFrameRect(left: 0, top: 0, right: 40_000, bottom: 10),
+        regionRects: [RDPFrameRect(left: 0, top: 0, right: 40_000, bottom: 10)],
+        encodedVideoData: Data([0x00, 0x00, 0x01, 0x65])
+    )
+    let copy = RDPGFXSurfaceToSurfacePDU(
+        sourceSurfaceID: 1,
+        destinationSurfaceID: 2,
+        sourceRect: RDPGFXRect16(left: 0, top: 0, right: 40_000, bottom: 10),
+        destinationPoints: [
+            RDPGFXPoint16(x: -1, y: 0),
+            RDPGFXPoint16(x: Int16.max, y: 0),
+        ]
+    )
+
+    #expect(copiedVideoFrames([frame], using: copy).isEmpty)
 }
 
 private func preflightGraphicsMessage(commandID: UInt16, payload: Data) -> Data {

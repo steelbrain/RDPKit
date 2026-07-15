@@ -7,18 +7,41 @@ enum RDPGFXChannel {
 enum RDPGFXCommandID {
     static let wireToSurface1: UInt16 = 0x0001
     static let wireToSurface2: UInt16 = 0x0002
+    static let deleteEncodingContext: UInt16 = 0x0003
     static let solidFill: UInt16 = 0x0004
     static let surfaceToSurface: UInt16 = 0x0005
     static let surfaceToCache: UInt16 = 0x0006
     static let cacheToSurface: UInt16 = 0x0007
+    static let evictCacheEntry: UInt16 = 0x0008
     static let createSurface: UInt16 = 0x0009
+    static let deleteSurface: UInt16 = 0x000A
     static let startFrame: UInt16 = 0x000B
     static let endFrame: UInt16 = 0x000C
     static let frameAcknowledge: UInt16 = 0x000D
     static let resetGraphics: UInt16 = 0x000E
     static let mapSurfaceToOutput: UInt16 = 0x000F
+    static let cacheImportOffer: UInt16 = 0x0010
+    static let cacheImportReply: UInt16 = 0x0011
     static let capsAdvertise: UInt16 = 0x0012
     static let capsConfirm: UInt16 = 0x0013
+    static let mapSurfaceToWindow: UInt16 = 0x0015
+    static let qoeFrameAcknowledge: UInt16 = 0x0016
+    static let mapSurfaceToScaledOutput: UInt16 = 0x0017
+    static let mapSurfaceToScaledWindow: UInt16 = 0x0018
+
+    static func requiresLogicalFrame(_ commandID: UInt16) -> Bool {
+        switch commandID {
+        case wireToSurface1,
+             wireToSurface2,
+             solidFill,
+             surfaceToSurface,
+             surfaceToCache,
+             cacheToSurface:
+            true
+        default:
+            false
+        }
+    }
 }
 
 enum RDPGFXCodecID {
@@ -31,6 +54,19 @@ enum RDPGFXCodecID {
     static let alpha: UInt16 = 0x000C
     static let avc444: UInt16 = 0x000E
     static let avc444v2: UInt16 = 0x000F
+
+    static func isValidWireToSurface1(_ codecID: UInt16) -> Bool {
+        switch codecID {
+        case uncompressed, cavideo, clearCodec, planar, avc420, alpha, avc444, avc444v2:
+            true
+        default:
+            false
+        }
+    }
+
+    static func isValidWireToSurface2(_ codecID: UInt16) -> Bool {
+        codecID == caProgressive
+    }
 
     static func name(for codecID: UInt16) -> String {
         switch codecID {
@@ -61,6 +97,13 @@ enum RDPGFXCodecID {
 enum RDPGFXCapabilityVersion {
     static let version8: UInt32 = 0x0008_0004
     static let version81: UInt32 = 0x0008_0105
+    static let version10: UInt32 = 0x000A_0002
+    static let version101: UInt32 = 0x000A_0100
+    static let version102: UInt32 = 0x000A_0200
+    static let version103: UInt32 = 0x000A_0301
+    static let version104: UInt32 = 0x000A_0400
+    static let version105: UInt32 = 0x000A_0502
+    static let version106: UInt32 = 0x000A_0600
     static let version107: UInt32 = 0x000A_0701
 }
 
@@ -68,11 +111,39 @@ enum RDPGFXCapabilityFlags {
     static let thinClient: UInt32 = 0x0000_0001
     static let smallCache: UInt32 = 0x0000_0002
     static let avc420Enabled: UInt32 = 0x0000_0010
+    static let avcDisabled: UInt32 = 0x0000_0020
     static let avcThinClient: UInt32 = 0x0000_0040
     static let scaledMapDisabled: UInt32 = 0x0000_0080
-    static let defaultVersion8: UInt32 = thinClient | smallCache
-    static let defaultVersion81: UInt32 = thinClient | smallCache | avc420Enabled
-    static let defaultVersion107: UInt32 = smallCache | avcThinClient | scaledMapDisabled
+    static let defaultVersion8: UInt32 = smallCache
+    static let defaultVersion81: UInt32 = smallCache | avc420Enabled
+    static let defaultVersion10: UInt32 = smallCache
+    static let defaultVersion102: UInt32 = smallCache
+    static let defaultVersion103: UInt32 = avcThinClient
+    static let defaultVersion104Through107: UInt32 = smallCache | avcThinClient
+    static let defaultVersion107: UInt32 = smallCache | avcThinClient
+}
+
+enum RDPGFXPixelFormat {
+    static let xrgb8888: UInt8 = 0x20
+    static let argb8888: UInt8 = 0x21
+
+    static func isValid(_ value: UInt8) -> Bool {
+        value == xrgb8888 || value == argb8888
+    }
+}
+
+enum RDPGFXCacheSlot {
+    static let maximumSlot: UInt16 = 25_600
+    static let smallCacheMaximumSlot: UInt16 = 4_096
+
+    static func isValid(_ value: UInt16) -> Bool {
+        value >= 1 && value <= maximumSlot
+    }
+}
+
+enum RDPGFXBitmapCache {
+    static let maximumByteCount = 100 * 1_024 * 1_024
+    static let smallCacheMaximumByteCount = 16 * 1_024 * 1_024
 }
 
 public enum RDPGraphicsCapabilityProfile: String, CaseIterable, Codable, Equatable, Hashable, Sendable {
@@ -99,6 +170,31 @@ public enum RDPGraphicsCapabilityProfile: String, CaseIterable, Codable, Equatab
         case .automatic:
             [
                 .version107(flags: RDPGFXCapabilityFlags.defaultVersion107),
+                .flagged(
+                    version: RDPGFXCapabilityVersion.version106,
+                    flags: RDPGFXCapabilityFlags.defaultVersion104Through107
+                ),
+                .flagged(
+                    version: RDPGFXCapabilityVersion.version105,
+                    flags: RDPGFXCapabilityFlags.defaultVersion104Through107
+                ),
+                .flagged(
+                    version: RDPGFXCapabilityVersion.version104,
+                    flags: RDPGFXCapabilityFlags.defaultVersion104Through107
+                ),
+                .flagged(
+                    version: RDPGFXCapabilityVersion.version103,
+                    flags: RDPGFXCapabilityFlags.defaultVersion103
+                ),
+                .flagged(
+                    version: RDPGFXCapabilityVersion.version102,
+                    flags: RDPGFXCapabilityFlags.defaultVersion102
+                ),
+                .version101(),
+                .flagged(
+                    version: RDPGFXCapabilityVersion.version10,
+                    flags: RDPGFXCapabilityFlags.defaultVersion10
+                ),
                 .version81(flags: RDPGFXCapabilityFlags.defaultVersion81),
                 .version8(flags: RDPGFXCapabilityFlags.defaultVersion8),
             ]
@@ -130,6 +226,8 @@ struct RDPGFXHeader: Equatable, Sendable {
             "rdpgfx-wire-to-surface-1"
         case RDPGFXCommandID.wireToSurface2:
             "rdpgfx-wire-to-surface-2"
+        case RDPGFXCommandID.deleteEncodingContext:
+            "rdpgfx-delete-encoding-context"
         case RDPGFXCommandID.solidFill:
             "rdpgfx-solid-fill"
         case RDPGFXCommandID.surfaceToSurface:
@@ -138,8 +236,12 @@ struct RDPGFXHeader: Equatable, Sendable {
             "rdpgfx-surface-to-cache"
         case RDPGFXCommandID.cacheToSurface:
             "rdpgfx-cache-to-surface"
+        case RDPGFXCommandID.evictCacheEntry:
+            "rdpgfx-evict-cache-entry"
         case RDPGFXCommandID.createSurface:
             "rdpgfx-create-surface"
+        case RDPGFXCommandID.deleteSurface:
+            "rdpgfx-delete-surface"
         case RDPGFXCommandID.startFrame:
             "rdpgfx-start-frame"
         case RDPGFXCommandID.endFrame:
@@ -150,10 +252,22 @@ struct RDPGFXHeader: Equatable, Sendable {
             "rdpgfx-reset-graphics"
         case RDPGFXCommandID.mapSurfaceToOutput:
             "rdpgfx-map-surface-to-output"
+        case RDPGFXCommandID.cacheImportOffer:
+            "rdpgfx-cache-import-offer"
+        case RDPGFXCommandID.cacheImportReply:
+            "rdpgfx-cache-import-reply"
         case RDPGFXCommandID.capsAdvertise:
             "rdpgfx-caps-advertise"
         case RDPGFXCommandID.capsConfirm:
             "rdpgfx-caps-confirm"
+        case RDPGFXCommandID.mapSurfaceToWindow:
+            "rdpgfx-map-surface-to-window"
+        case RDPGFXCommandID.qoeFrameAcknowledge:
+            "rdpgfx-qoe-frame-acknowledge"
+        case RDPGFXCommandID.mapSurfaceToScaledOutput:
+            "rdpgfx-map-surface-to-scaled-output"
+        case RDPGFXCommandID.mapSurfaceToScaledWindow:
+            "rdpgfx-map-surface-to-scaled-window"
         default:
             "rdpgfx-0x\(String(format: "%04x", commandID))"
         }
@@ -165,7 +279,11 @@ struct RDPGFXHeader: Equatable, Sendable {
         }
 
         var cursor = ByteCursor(data)
-        return try parse(from: &cursor)
+        let header = try parse(from: &cursor)
+        guard cursor.remaining == 0 else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+        return header
     }
 
     static func parse(from cursor: inout ByteCursor) throws -> RDPGFXHeader {
@@ -176,7 +294,8 @@ struct RDPGFXHeader: Equatable, Sendable {
         let commandID = try cursor.readLittleEndianUInt16()
         let flags = try cursor.readLittleEndianUInt16()
         let pduLength = try cursor.readLittleEndianUInt32()
-        guard pduLength >= 8,
+        guard flags == 0,
+              pduLength >= 8,
               Int(pduLength) - 8 <= cursor.remaining
         else {
             throw RDPDecodeError.invalidRDPGFXPDU
@@ -192,12 +311,42 @@ struct RDPGFXHeader: Equatable, Sendable {
     }
 }
 
+struct RDPGFXLogicalFrameTracker: Equatable, Sendable {
+    private(set) var activeFrameID: UInt32?
+
+    mutating func shouldProcess(_ message: RDPGFXHeader) throws -> Bool {
+        switch message.commandID {
+        case RDPGFXCommandID.startFrame:
+            guard activeFrameID == nil else {
+                return false
+            }
+            activeFrameID = try RDPGFXStartFramePDU.parse(from: message).frameID
+            return true
+
+        case RDPGFXCommandID.endFrame:
+            let frameID = try RDPGFXEndFramePDU.parse(from: message).frameID
+            guard frameID == activeFrameID else {
+                return false
+            }
+            activeFrameID = nil
+            return true
+
+        default:
+            return !RDPGFXCommandID.requiresLogicalFrame(message.commandID)
+                || activeFrameID != nil
+        }
+    }
+}
+
 struct RDPGFXCapabilitySet: Equatable, Sendable {
     var version: UInt32
     var data: Data
 
     init(version: UInt32, data: Data) {
         precondition(data.count <= Int(UInt32.max))
+        if let expectedDataLength = Self.expectedDataLength(for: version) {
+            precondition(data.count == expectedDataLength)
+        }
 
         self.version = version
         self.data = data
@@ -219,6 +368,20 @@ struct RDPGFXCapabilitySet: Equatable, Sendable {
         var data = Data()
         data.appendLittleEndianUInt32(flags)
         return RDPGFXCapabilitySet(version: RDPGFXCapabilityVersion.version8, data: data)
+    }
+
+    static func flagged(version: UInt32, flags: UInt32) -> RDPGFXCapabilitySet {
+        precondition(version != RDPGFXCapabilityVersion.version101)
+        var data = Data()
+        data.appendLittleEndianUInt32(flags)
+        return RDPGFXCapabilitySet(version: version, data: data)
+    }
+
+    static func version101() -> RDPGFXCapabilitySet {
+        RDPGFXCapabilitySet(
+            version: RDPGFXCapabilityVersion.version101,
+            data: Data(repeating: 0, count: 16)
+        )
     }
 
     var encoded: Data {
@@ -245,14 +408,131 @@ struct RDPGFXCapabilitySet: Equatable, Sendable {
         var cursor = ByteCursor(data)
         let version = try cursor.readLittleEndianUInt32()
         let dataLength = try cursor.readLittleEndianUInt32()
-        guard dataLength <= UInt32(cursor.remaining) else {
+        let remainingDataLength = cursor.remaining
+        let capabilityData = try cursor.readData(count: remainingDataLength)
+        guard dataLength == UInt32(remainingDataLength),
+              isValidData(version: version, data: capabilityData)
+        else {
             throw RDPDecodeError.invalidRDPGFXPDU
         }
 
-        return try RDPGFXCapabilitySet(
+        return RDPGFXCapabilitySet(
             version: version,
-            data: cursor.readData(count: Int(dataLength))
+            data: capabilityData
         )
+    }
+
+    static func validated(version: UInt32, data: Data) throws -> RDPGFXCapabilitySet {
+        guard isValidData(version: version, data: data) else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+        return RDPGFXCapabilitySet(version: version, data: data)
+    }
+
+    static func isKnownVersion(_ version: UInt32) -> Bool {
+        expectedDataLength(for: version) != nil
+    }
+
+    private static func expectedDataLength(for version: UInt32) -> Int? {
+        switch version {
+        case RDPGFXCapabilityVersion.version8,
+             RDPGFXCapabilityVersion.version81,
+             RDPGFXCapabilityVersion.version10,
+             RDPGFXCapabilityVersion.version102,
+             RDPGFXCapabilityVersion.version103,
+             RDPGFXCapabilityVersion.version104,
+             RDPGFXCapabilityVersion.version105,
+             RDPGFXCapabilityVersion.version106,
+             RDPGFXCapabilityVersion.version107:
+            4
+        case RDPGFXCapabilityVersion.version101:
+            16
+        default:
+            nil
+        }
+    }
+
+    private static func isValidDataLength(_ dataLength: UInt32, for version: UInt32) -> Bool {
+        guard let expectedDataLength = expectedDataLength(for: version) else {
+            return true
+        }
+        return dataLength == UInt32(expectedDataLength)
+    }
+
+    private static func isValidData(version: UInt32, data: Data) -> Bool {
+        guard isValidDataLength(UInt32(data.count), for: version) else {
+            return false
+        }
+        switch version {
+        case RDPGFXCapabilityVersion.version101:
+            return data.allSatisfy { $0 == 0 }
+        case RDPGFXCapabilityVersion.version8:
+            guard let flags = data.littleEndianUInt32IfPresent(at: 0) else {
+                return false
+            }
+            return flags & ~(RDPGFXCapabilityFlags.thinClient | RDPGFXCapabilityFlags.smallCache) == 0
+        case RDPGFXCapabilityVersion.version81:
+            guard let flags = data.littleEndianUInt32IfPresent(at: 0) else {
+                return false
+            }
+            return flags & ~(RDPGFXCapabilityFlags.thinClient
+                | RDPGFXCapabilityFlags.smallCache
+                | RDPGFXCapabilityFlags.avc420Enabled) == 0
+        case RDPGFXCapabilityVersion.version10,
+             RDPGFXCapabilityVersion.version102:
+            guard let flags = data.littleEndianUInt32IfPresent(at: 0) else {
+                return false
+            }
+            return flags & ~(RDPGFXCapabilityFlags.smallCache | RDPGFXCapabilityFlags.avcDisabled) == 0
+        case RDPGFXCapabilityVersion.version103,
+             RDPGFXCapabilityVersion.version104,
+             RDPGFXCapabilityVersion.version105,
+             RDPGFXCapabilityVersion.version106,
+             RDPGFXCapabilityVersion.version107:
+            guard let flags = data.littleEndianUInt32IfPresent(at: 0) else {
+                return false
+            }
+            guard flags & ~allowedFlags(for: version) == 0 else {
+                return false
+            }
+            let incompatibleAVCFlags = RDPGFXCapabilityFlags.avcDisabled
+                | RDPGFXCapabilityFlags.avcThinClient
+            return flags & incompatibleAVCFlags != incompatibleAVCFlags
+        default:
+            return true
+        }
+    }
+
+    private static func allowedFlags(for version: UInt32) -> UInt32 {
+        switch version {
+        case RDPGFXCapabilityVersion.version103:
+            RDPGFXCapabilityFlags.avcDisabled | RDPGFXCapabilityFlags.avcThinClient
+        case RDPGFXCapabilityVersion.version104,
+             RDPGFXCapabilityVersion.version105,
+             RDPGFXCapabilityVersion.version106:
+            RDPGFXCapabilityFlags.smallCache
+                | RDPGFXCapabilityFlags.avcDisabled
+                | RDPGFXCapabilityFlags.avcThinClient
+        case RDPGFXCapabilityVersion.version107:
+            RDPGFXCapabilityFlags.smallCache
+                | RDPGFXCapabilityFlags.avcDisabled
+                | RDPGFXCapabilityFlags.avcThinClient
+                | RDPGFXCapabilityFlags.scaledMapDisabled
+        default:
+            UInt32.max
+        }
+    }
+}
+
+private extension Data {
+    func littleEndianUInt32IfPresent(at offset: Int) -> UInt32? {
+        guard offset >= 0, count >= offset + 4 else {
+            return nil
+        }
+        return UInt32(self[offset])
+            | UInt32(self[offset + 1]) << 8
+            | UInt32(self[offset + 2]) << 16
+            | UInt32(self[offset + 3]) << 24
     }
 }
 
@@ -262,6 +542,7 @@ struct RDPGFXCapsAdvertisePDU: Equatable, Sendable {
     init(capabilitySets: [RDPGFXCapabilitySet] = RDPGraphicsCapabilityProfile.automatic.capabilitySets) {
         precondition(!capabilitySets.isEmpty)
         precondition(capabilitySets.count <= Int(UInt16.max))
+        precondition(Set(capabilitySets.map(\.version)).count == capabilitySets.count)
 
         self.capabilitySets = capabilitySets
     }
@@ -304,9 +585,15 @@ struct RDPGFXCapsAdvertisePDU: Equatable, Sendable {
                 throw RDPDecodeError.invalidRDPGFXPDU
             }
             let data = try cursor.readData(count: Int(dataLength))
-            capabilitySets.append(RDPGFXCapabilitySet(version: version, data: data))
+            guard RDPGFXCapabilitySet.isKnownVersion(version) else {
+                throw RDPDecodeError.invalidRDPGFXPDU
+            }
+            capabilitySets.append(try RDPGFXCapabilitySet.validated(version: version, data: data))
         }
-        guard cursor.remaining == 0, !capabilitySets.isEmpty else {
+        guard cursor.remaining == 0,
+              !capabilitySets.isEmpty,
+              Set(capabilitySets.map(\.version)).count == capabilitySets.count
+        else {
             throw RDPDecodeError.invalidRDPGFXPDU
         }
         return RDPGFXCapsAdvertisePDU(capabilitySets: capabilitySets)
@@ -318,13 +605,19 @@ struct RDPGFXCapsConfirmPDU: Equatable, Sendable {
 
     static func parseIfPresent(from data: Data) throws -> RDPGFXCapsConfirmPDU? {
         let header = try RDPGFXHeader.parse(from: data)
+        return try parse(from: header)
+    }
+
+    static func parse(from header: RDPGFXHeader) throws -> RDPGFXCapsConfirmPDU? {
         guard header.commandID == RDPGFXCommandID.capsConfirm else {
             return nil
         }
 
-        return try RDPGFXCapsConfirmPDU(
-            capabilitySet: RDPGFXCapabilitySet.parse(from: header.payload)
-        )
+        let capabilitySet = try RDPGFXCapabilitySet.parse(from: header.payload)
+        guard RDPGFXCapabilitySet.isKnownVersion(capabilitySet.version) else {
+            return nil
+        }
+        return RDPGFXCapsConfirmPDU(capabilitySet: capabilitySet)
     }
 }
 
@@ -360,13 +653,13 @@ struct RDPGFXRect16: Encodable, Equatable, Sendable {
 }
 
 struct RDPGFXPoint16: Encodable, Equatable, Sendable {
-    var x: UInt16
-    var y: UInt16
+    var x: Int16
+    var y: Int16
 
     static func parse(_ cursor: inout ByteCursor) throws -> RDPGFXPoint16 {
         try RDPGFXPoint16(
-            x: cursor.readLittleEndianUInt16(),
-            y: cursor.readLittleEndianUInt16()
+            x: Int16(bitPattern: cursor.readLittleEndianUInt16()),
+            y: Int16(bitPattern: cursor.readLittleEndianUInt16())
         )
     }
 }
@@ -657,12 +950,29 @@ public enum RDPHEVCAnnexB {
 
 struct RDPGFXAVC420QuantQuality: Encodable, Equatable, Sendable {
     var qpVal: UInt8
+    var isProgressive: Bool
     var qualityVal: UInt8
 
+    init(qpVal: UInt8, isProgressive: Bool = false, qualityVal: UInt8) {
+        precondition(qpVal <= 51)
+        precondition(qualityVal <= 100)
+
+        self.qpVal = qpVal
+        self.isProgressive = isProgressive
+        self.qualityVal = qualityVal
+    }
+
     static func parse(_ cursor: inout ByteCursor) throws -> RDPGFXAVC420QuantQuality {
-        try RDPGFXAVC420QuantQuality(
-            qpVal: cursor.readUInt8(),
-            qualityVal: cursor.readUInt8()
+        let qpAndProgressive = try cursor.readUInt8()
+        let qualityVal = try cursor.readUInt8()
+        guard qpAndProgressive & 0x3F <= 51, qualityVal <= 100 else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+
+        return RDPGFXAVC420QuantQuality(
+            qpVal: qpAndProgressive & 0x3F,
+            isProgressive: qpAndProgressive & 0x80 != 0,
+            qualityVal: qualityVal
         )
     }
 }
@@ -787,7 +1097,20 @@ struct RDPGFXAVC444BitmapStream: Equatable, Sendable {
                 firstStream: RDPGFXAVC420BitmapStream.parse(from: Data(streamData.prefix(firstStreamEnd))),
                 secondStream: RDPGFXAVC420BitmapStream.parse(from: Data(streamData.dropFirst(firstStreamEnd)))
             )
-        case .yuv420Only, .chroma420Only:
+        case .yuv420Only:
+            guard firstStreamByteCount == UInt32(streamData.count) else {
+                throw RDPDecodeError.invalidRDPGFXPDU
+            }
+            return try RDPGFXAVC444BitmapStream(
+                layoutCode: layoutCode,
+                firstStreamByteCount: firstStreamByteCount,
+                firstStream: RDPGFXAVC420BitmapStream.parse(from: streamData),
+                secondStream: nil
+            )
+        case .chroma420Only:
+            guard firstStreamByteCount == 0 else {
+                throw RDPDecodeError.invalidRDPGFXPDU
+            }
             return try RDPGFXAVC444BitmapStream(
                 layoutCode: layoutCode,
                 firstStreamByteCount: firstStreamByteCount,
@@ -798,10 +1121,101 @@ struct RDPGFXAVC444BitmapStream: Equatable, Sendable {
     }
 }
 
+struct RDPGFXAlphaBitmapStream: Equatable, Sendable {
+    private static let alphaSignature: UInt16 = 0x414C
+
+    var compressed: Bool
+    var alphaValues: Data
+
+    static func parse(from data: Data, pixelCount: Int) throws -> RDPGFXAlphaBitmapStream {
+        guard pixelCount >= 0 else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+
+        var cursor = ByteCursor(data)
+        guard cursor.remaining >= 4 else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+
+        let alphaSignature = try cursor.readLittleEndianUInt16()
+        let compressed = try cursor.readLittleEndianUInt16()
+        guard alphaSignature == Self.alphaSignature else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+
+        if compressed == 0 {
+            let alphaValues = cursor.readRemainingData()
+            guard alphaValues.count == pixelCount else {
+                throw RDPDecodeError.invalidRDPGFXPDU
+            }
+            return RDPGFXAlphaBitmapStream(compressed: false, alphaValues: alphaValues)
+        }
+
+        var alphaValues: [UInt8] = []
+        alphaValues.reserveCapacity(pixelCount)
+        while cursor.remaining > 0 {
+            let runValue = try cursor.readUInt8()
+            let runLength = try readRunLength(&cursor)
+            guard UInt64(alphaValues.count) + UInt64(runLength) <= UInt64(pixelCount) else {
+                throw RDPDecodeError.invalidRDPGFXPDU
+            }
+            alphaValues.append(contentsOf: repeatElement(runValue, count: runLength))
+        }
+        guard alphaValues.count == pixelCount else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+
+        return RDPGFXAlphaBitmapStream(compressed: true, alphaValues: Data(alphaValues))
+    }
+
+    private static func readRunLength(_ cursor: inout ByteCursor) throws -> Int {
+        let firstFactor = try cursor.readUInt8()
+        guard firstFactor == 0xFF else {
+            return Int(firstFactor)
+        }
+
+        let secondFactor = try cursor.readLittleEndianUInt16()
+        guard secondFactor == 0xFFFF else {
+            return Int(secondFactor)
+        }
+
+        let thirdFactor = try cursor.readLittleEndianUInt32()
+        guard UInt64(thirdFactor) <= UInt64(Int.max) else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+        return Int(thirdFactor)
+    }
+}
+
+struct RDPGFXMonitorDefinition: Equatable, Sendable {
+    var left: Int32
+    var top: Int32
+    var right: Int32
+    var bottom: Int32
+    var flags: UInt32
+
+    static func parse(from cursor: inout ByteCursor) throws -> RDPGFXMonitorDefinition {
+        RDPGFXMonitorDefinition(
+            left: Int32(bitPattern: try cursor.readLittleEndianUInt32()),
+            top: Int32(bitPattern: try cursor.readLittleEndianUInt32()),
+            right: Int32(bitPattern: try cursor.readLittleEndianUInt32()),
+            bottom: Int32(bitPattern: try cursor.readLittleEndianUInt32()),
+            flags: try cursor.readLittleEndianUInt32()
+        )
+    }
+}
+
 struct RDPGFXResetGraphicsPDU: Equatable, Sendable {
+    static let maximumDimension: UInt32 = 32_766
+    static let maximumMonitorCount: UInt32 = 16
+
     var width: UInt32
     var height: UInt32
-    var monitorCount: UInt32
+    var monitorDefinitions: [RDPGFXMonitorDefinition]
+
+    var monitorCount: UInt32 {
+        UInt32(monitorDefinitions.count)
+    }
 
     static func parse(from message: RDPGFXHeader) throws -> RDPGFXResetGraphicsPDU {
         guard message.commandID == RDPGFXCommandID.resetGraphics,
@@ -811,10 +1225,26 @@ struct RDPGFXResetGraphicsPDU: Equatable, Sendable {
         }
 
         var cursor = ByteCursor(message.payload)
-        return try RDPGFXResetGraphicsPDU(
-            width: cursor.readLittleEndianUInt32(),
-            height: cursor.readLittleEndianUInt32(),
-            monitorCount: cursor.readLittleEndianUInt32()
+        let width = try cursor.readLittleEndianUInt32()
+        let height = try cursor.readLittleEndianUInt32()
+        let monitorCount = try cursor.readLittleEndianUInt32()
+        guard width <= maximumDimension,
+              height <= maximumDimension,
+              monitorCount <= maximumMonitorCount,
+              cursor.remaining >= Int(monitorCount) * 20
+        else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+        var monitorDefinitions: [RDPGFXMonitorDefinition] = []
+        monitorDefinitions.reserveCapacity(Int(monitorCount))
+        for _ in 0 ..< Int(monitorCount) {
+            monitorDefinitions.append(try RDPGFXMonitorDefinition.parse(from: &cursor))
+        }
+
+        return RDPGFXResetGraphicsPDU(
+            width: width,
+            height: height,
+            monitorDefinitions: monitorDefinitions
         )
     }
 }
@@ -833,12 +1263,35 @@ struct RDPGFXCreateSurfacePDU: Equatable, Sendable {
         }
 
         var cursor = ByteCursor(message.payload)
-        return try RDPGFXCreateSurfacePDU(
-            surfaceID: cursor.readLittleEndianUInt16(),
-            width: cursor.readLittleEndianUInt16(),
-            height: cursor.readLittleEndianUInt16(),
-            pixelFormat: cursor.readUInt8()
+        let surfaceID = try cursor.readLittleEndianUInt16()
+        let width = try cursor.readLittleEndianUInt16()
+        let height = try cursor.readLittleEndianUInt16()
+        let pixelFormat = try cursor.readUInt8()
+        guard RDPGFXPixelFormat.isValid(pixelFormat) else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+
+        return RDPGFXCreateSurfacePDU(
+            surfaceID: surfaceID,
+            width: width,
+            height: height,
+            pixelFormat: pixelFormat
         )
+    }
+}
+
+struct RDPGFXDeleteSurfacePDU: Equatable, Sendable {
+    var surfaceID: UInt16
+
+    static func parse(from message: RDPGFXHeader) throws -> RDPGFXDeleteSurfacePDU {
+        guard message.commandID == RDPGFXCommandID.deleteSurface,
+              message.payload.count == 2
+        else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+
+        var cursor = ByteCursor(message.payload)
+        return try RDPGFXDeleteSurfacePDU(surfaceID: cursor.readLittleEndianUInt16())
     }
 }
 
@@ -856,11 +1309,96 @@ struct RDPGFXMapSurfaceToOutputPDU: Equatable, Sendable {
 
         var cursor = ByteCursor(message.payload)
         let surfaceID = try cursor.readLittleEndianUInt16()
-        _ = try cursor.readLittleEndianUInt16()
-        return try RDPGFXMapSurfaceToOutputPDU(
+        let reserved = try cursor.readLittleEndianUInt16()
+        guard reserved == 0 else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+        let outputOriginX = try cursor.readLittleEndianUInt32()
+        let outputOriginY = try cursor.readLittleEndianUInt32()
+        return RDPGFXMapSurfaceToOutputPDU(
+            surfaceID: surfaceID,
+            outputOriginX: outputOriginX,
+            outputOriginY: outputOriginY
+        )
+    }
+}
+
+struct RDPGFXMapSurfaceToScaledOutputPDU: Equatable, Sendable {
+    var surfaceID: UInt16
+    var outputOriginX: UInt32
+    var outputOriginY: UInt32
+    var targetWidth: UInt32
+    var targetHeight: UInt32
+
+    static func parse(from message: RDPGFXHeader) throws -> RDPGFXMapSurfaceToScaledOutputPDU {
+        guard message.commandID == RDPGFXCommandID.mapSurfaceToScaledOutput,
+              message.payload.count == 20
+        else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+
+        var cursor = ByteCursor(message.payload)
+        let surfaceID = try cursor.readLittleEndianUInt16()
+        let reserved = try cursor.readLittleEndianUInt16()
+        guard reserved == 0 else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+        return try RDPGFXMapSurfaceToScaledOutputPDU(
             surfaceID: surfaceID,
             outputOriginX: cursor.readLittleEndianUInt32(),
-            outputOriginY: cursor.readLittleEndianUInt32()
+            outputOriginY: cursor.readLittleEndianUInt32(),
+            targetWidth: cursor.readLittleEndianUInt32(),
+            targetHeight: cursor.readLittleEndianUInt32()
+        )
+    }
+}
+
+struct RDPGFXMapSurfaceToWindowPDU: Equatable, Sendable {
+    var surfaceID: UInt16
+    var windowID: UInt64
+    var mappedWidth: UInt32
+    var mappedHeight: UInt32
+
+    static func parse(from message: RDPGFXHeader) throws -> RDPGFXMapSurfaceToWindowPDU {
+        guard message.commandID == RDPGFXCommandID.mapSurfaceToWindow,
+              message.payload.count == 18
+        else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+
+        var cursor = ByteCursor(message.payload)
+        return try RDPGFXMapSurfaceToWindowPDU(
+            surfaceID: cursor.readLittleEndianUInt16(),
+            windowID: cursor.readLittleEndianUInt64(),
+            mappedWidth: cursor.readLittleEndianUInt32(),
+            mappedHeight: cursor.readLittleEndianUInt32()
+        )
+    }
+}
+
+struct RDPGFXMapSurfaceToScaledWindowPDU: Equatable, Sendable {
+    var surfaceID: UInt16
+    var windowID: UInt64
+    var mappedWidth: UInt32
+    var mappedHeight: UInt32
+    var targetWidth: UInt32
+    var targetHeight: UInt32
+
+    static func parse(from message: RDPGFXHeader) throws -> RDPGFXMapSurfaceToScaledWindowPDU {
+        guard message.commandID == RDPGFXCommandID.mapSurfaceToScaledWindow,
+              message.payload.count == 26
+        else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+
+        var cursor = ByteCursor(message.payload)
+        return try RDPGFXMapSurfaceToScaledWindowPDU(
+            surfaceID: cursor.readLittleEndianUInt16(),
+            windowID: cursor.readLittleEndianUInt64(),
+            mappedWidth: cursor.readLittleEndianUInt32(),
+            mappedHeight: cursor.readLittleEndianUInt32(),
+            targetWidth: cursor.readLittleEndianUInt32(),
+            targetHeight: cursor.readLittleEndianUInt32()
         )
     }
 }
@@ -899,6 +1437,43 @@ struct RDPGFXSolidFillPDU: Equatable, Sendable {
     }
 }
 
+struct RDPGFXSurfaceToSurfacePDU: Equatable, Sendable {
+    var sourceSurfaceID: UInt16
+    var destinationSurfaceID: UInt16
+    var sourceRect: RDPGFXRect16
+    var destinationPoints: [RDPGFXPoint16]
+
+    static func parse(from message: RDPGFXHeader) throws -> RDPGFXSurfaceToSurfacePDU {
+        guard message.commandID == RDPGFXCommandID.surfaceToSurface,
+              message.payload.count >= 14
+        else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+
+        var cursor = ByteCursor(message.payload)
+        let sourceSurfaceID = try cursor.readLittleEndianUInt16()
+        let destinationSurfaceID = try cursor.readLittleEndianUInt16()
+        let sourceRect = try RDPGFXRect16.parse(&cursor)
+        let destinationPointCount = try cursor.readLittleEndianUInt16()
+        guard cursor.remaining == Int(destinationPointCount) * 4 else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+
+        var destinationPoints: [RDPGFXPoint16] = []
+        destinationPoints.reserveCapacity(Int(destinationPointCount))
+        for _ in 0 ..< Int(destinationPointCount) {
+            try destinationPoints.append(RDPGFXPoint16.parse(&cursor))
+        }
+
+        return RDPGFXSurfaceToSurfacePDU(
+            sourceSurfaceID: sourceSurfaceID,
+            destinationSurfaceID: destinationSurfaceID,
+            sourceRect: sourceRect,
+            destinationPoints: destinationPoints
+        )
+    }
+}
+
 struct RDPGFXSurfaceToCachePDU: Equatable, Sendable {
     var surfaceID: UInt16
     var cacheKey: UInt64
@@ -913,11 +1488,19 @@ struct RDPGFXSurfaceToCachePDU: Equatable, Sendable {
         }
 
         var cursor = ByteCursor(message.payload)
-        return try RDPGFXSurfaceToCachePDU(
-            surfaceID: cursor.readLittleEndianUInt16(),
-            cacheKey: cursor.readLittleEndianUInt64(),
-            cacheSlot: cursor.readLittleEndianUInt16(),
-            sourceRect: RDPGFXRect16.parse(&cursor)
+        let surfaceID = try cursor.readLittleEndianUInt16()
+        let cacheKey = try cursor.readLittleEndianUInt64()
+        let cacheSlot = try cursor.readLittleEndianUInt16()
+        guard RDPGFXCacheSlot.isValid(cacheSlot) else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+        let sourceRect = try RDPGFXRect16.parse(&cursor)
+
+        return RDPGFXSurfaceToCachePDU(
+            surfaceID: surfaceID,
+            cacheKey: cacheKey,
+            cacheSlot: cacheSlot,
+            sourceRect: sourceRect
         )
     }
 }
@@ -936,6 +1519,9 @@ struct RDPGFXCacheToSurfacePDU: Equatable, Sendable {
 
         var cursor = ByteCursor(message.payload)
         let cacheSlot = try cursor.readLittleEndianUInt16()
+        guard RDPGFXCacheSlot.isValid(cacheSlot) else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
         let surfaceID = try cursor.readLittleEndianUInt16()
         let destinationPointCount = try cursor.readLittleEndianUInt16()
         guard cursor.remaining == Int(destinationPointCount) * 4 else {
@@ -956,6 +1542,60 @@ struct RDPGFXCacheToSurfacePDU: Equatable, Sendable {
     }
 }
 
+struct RDPGFXEvictCacheEntryPDU: Equatable, Sendable {
+    var cacheSlot: UInt16
+
+    static func parse(from message: RDPGFXHeader) throws -> RDPGFXEvictCacheEntryPDU {
+        guard message.commandID == RDPGFXCommandID.evictCacheEntry,
+              message.payload.count == 2
+        else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+
+        var cursor = ByteCursor(message.payload)
+        let cacheSlot = try cursor.readLittleEndianUInt16()
+        guard RDPGFXCacheSlot.isValid(cacheSlot) else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+
+        return RDPGFXEvictCacheEntryPDU(cacheSlot: cacheSlot)
+    }
+}
+
+struct RDPGFXCacheImportReplyPDU: Equatable, Sendable {
+    var cacheSlots: [UInt16]
+
+    var importedEntriesCount: UInt16 {
+        UInt16(cacheSlots.count)
+    }
+
+    static func parse(from message: RDPGFXHeader) throws -> RDPGFXCacheImportReplyPDU {
+        guard message.commandID == RDPGFXCommandID.cacheImportReply,
+              message.payload.count >= 2
+        else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+
+        var cursor = ByteCursor(message.payload)
+        let importedEntriesCount = try cursor.readLittleEndianUInt16()
+        guard cursor.remaining == Int(importedEntriesCount) * 2 else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+
+        var cacheSlots: [UInt16] = []
+        cacheSlots.reserveCapacity(Int(importedEntriesCount))
+        for _ in 0 ..< Int(importedEntriesCount) {
+            let cacheSlot = try cursor.readLittleEndianUInt16()
+            guard RDPGFXCacheSlot.isValid(cacheSlot) else {
+                throw RDPDecodeError.invalidRDPGFXPDU
+            }
+            cacheSlots.append(cacheSlot)
+        }
+
+        return RDPGFXCacheImportReplyPDU(cacheSlots: cacheSlots)
+    }
+}
+
 struct RDPGFXStartFramePDU: Equatable, Sendable {
     var timestamp: UInt32
     var frameID: UInt32
@@ -968,10 +1608,25 @@ struct RDPGFXStartFramePDU: Equatable, Sendable {
         }
 
         var cursor = ByteCursor(message.payload)
+        let timestamp = try cursor.readLittleEndianUInt32()
+        guard isValidTimestamp(timestamp) else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
         return try RDPGFXStartFramePDU(
-            timestamp: cursor.readLittleEndianUInt32(),
+            timestamp: timestamp,
             frameID: cursor.readLittleEndianUInt32()
         )
+    }
+
+    private static func isValidTimestamp(_ timestamp: UInt32) -> Bool {
+        let milliseconds = timestamp & 0x03FF
+        let seconds = (timestamp >> 10) & 0x003F
+        let minutes = (timestamp >> 16) & 0x003F
+        let hours = (timestamp >> 22) & 0x03FF
+        return milliseconds <= 999
+            && seconds <= 59
+            && minutes <= 59
+            && hours <= 23
     }
 }
 
@@ -1008,7 +1663,13 @@ struct RDPGFXWireToSurface1PDU: Equatable, Sendable {
         var cursor = ByteCursor(message.payload)
         let surfaceID = try cursor.readLittleEndianUInt16()
         let codecID = try cursor.readLittleEndianUInt16()
+        guard RDPGFXCodecID.isValidWireToSurface1(codecID) else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
         let pixelFormat = try cursor.readUInt8()
+        guard RDPGFXPixelFormat.isValid(pixelFormat) else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
         let destinationRect = try RDPGFXRect16.parse(&cursor)
         let bitmapDataLength = try cursor.readLittleEndianUInt32()
         guard bitmapDataLength == UInt32(cursor.remaining) else {
@@ -1023,6 +1684,25 @@ struct RDPGFXWireToSurface1PDU: Equatable, Sendable {
             destinationRect: destinationRect,
             bitmapDataLength: bitmapDataLength,
             bitmapData: bitmapData
+        )
+    }
+}
+
+struct RDPGFXDeleteEncodingContextPDU: Equatable, Sendable {
+    var surfaceID: UInt16
+    var codecContextID: UInt32
+
+    static func parse(from message: RDPGFXHeader) throws -> RDPGFXDeleteEncodingContextPDU {
+        guard message.commandID == RDPGFXCommandID.deleteEncodingContext,
+              message.payload.count == 6
+        else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+
+        var cursor = ByteCursor(message.payload)
+        return try RDPGFXDeleteEncodingContextPDU(
+            surfaceID: cursor.readLittleEndianUInt16(),
+            codecContextID: cursor.readLittleEndianUInt32()
         )
     }
 }
@@ -1045,8 +1725,14 @@ struct RDPGFXWireToSurface2PDU: Equatable, Sendable {
         var cursor = ByteCursor(message.payload)
         let surfaceID = try cursor.readLittleEndianUInt16()
         let codecID = try cursor.readLittleEndianUInt16()
+        guard RDPGFXCodecID.isValidWireToSurface2(codecID) else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
         let codecContextID = try cursor.readLittleEndianUInt32()
         let pixelFormat = try cursor.readUInt8()
+        guard RDPGFXPixelFormat.isValid(pixelFormat) else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
         let bitmapDataLength = try cursor.readLittleEndianUInt32()
         guard bitmapDataLength == UInt32(cursor.remaining) else {
             throw RDPDecodeError.invalidRDPGFXPDU
@@ -1673,11 +2359,31 @@ struct RDPGFXFrameAcknowledgePDU: Equatable, Sendable {
     }
 }
 
+struct RDPGFXQoEFrameAcknowledgePDU: Equatable, Sendable {
+    var frameID: UInt32
+    var timestamp: UInt32
+    var timeDiffSE: UInt16
+    var timeDiffEDR: UInt16
+
+    func encoded() -> Data {
+        var data = Data()
+        data.appendLittleEndianUInt16(RDPGFXCommandID.qoeFrameAcknowledge)
+        data.appendLittleEndianUInt16(0)
+        data.appendLittleEndianUInt32(20)
+        data.appendLittleEndianUInt32(frameID)
+        data.appendLittleEndianUInt32(timestamp)
+        data.appendLittleEndianUInt16(timeDiffSE)
+        data.appendLittleEndianUInt16(timeDiffEDR)
+        return data
+    }
+}
+
 public struct RDPGFXMessageSummary: Encodable, Equatable, Sendable {
     public var typeName: String
     public var surfaceID: UInt16?
     public var width: UInt32?
     public var height: UInt32?
+    public var monitorCount: UInt32?
     public var pixelFormat: UInt8?
     public var codecID: UInt16?
     public var codecName: String?
@@ -1738,11 +2444,18 @@ public struct RDPGFXMessageSummary: Encodable, Equatable, Sendable {
     public var frameID: UInt32?
     public var outputOriginX: UInt32?
     public var outputOriginY: UInt32?
+    public var targetWidth: UInt32?
+    public var targetHeight: UInt32?
+    public var windowID: UInt64?
+    public var mappedWidth: UInt32?
+    public var mappedHeight: UInt32?
     public var fillColor: String?
     public var fillRectCount: Int?
+    public var sourceSurfaceID: UInt16?
     public var sourceRect: RDPFrameRect?
     public var cacheKey: UInt64?
     public var cacheSlot: UInt16?
+    public var importedEntriesCount: Int?
     public var destinationPointCount: Int?
 
     static func summarize(
@@ -1755,7 +2468,8 @@ public struct RDPGFXMessageSummary: Encodable, Equatable, Sendable {
             return RDPGFXMessageSummary(
                 typeName: message.typeName,
                 width: reset.width,
-                height: reset.height
+                height: reset.height,
+                monitorCount: reset.monitorCount
             )
         case RDPGFXCommandID.createSurface:
             let create = try RDPGFXCreateSurfacePDU.parse(from: message)
@@ -1766,6 +2480,12 @@ public struct RDPGFXMessageSummary: Encodable, Equatable, Sendable {
                 height: UInt32(create.height),
                 pixelFormat: create.pixelFormat
             )
+        case RDPGFXCommandID.deleteSurface:
+            let delete = try RDPGFXDeleteSurfacePDU.parse(from: message)
+            return RDPGFXMessageSummary(
+                typeName: message.typeName,
+                surfaceID: delete.surfaceID
+            )
         case RDPGFXCommandID.mapSurfaceToOutput:
             let map = try RDPGFXMapSurfaceToOutputPDU.parse(from: message)
             return RDPGFXMessageSummary(
@@ -1774,6 +2494,36 @@ public struct RDPGFXMessageSummary: Encodable, Equatable, Sendable {
                 outputOriginX: map.outputOriginX,
                 outputOriginY: map.outputOriginY
             )
+        case RDPGFXCommandID.mapSurfaceToScaledOutput:
+            let map = try RDPGFXMapSurfaceToScaledOutputPDU.parse(from: message)
+            return RDPGFXMessageSummary(
+                typeName: message.typeName,
+                surfaceID: map.surfaceID,
+                outputOriginX: map.outputOriginX,
+                outputOriginY: map.outputOriginY,
+                targetWidth: map.targetWidth,
+                targetHeight: map.targetHeight
+            )
+        case RDPGFXCommandID.mapSurfaceToWindow:
+            let map = try RDPGFXMapSurfaceToWindowPDU.parse(from: message)
+            return RDPGFXMessageSummary(
+                typeName: message.typeName,
+                surfaceID: map.surfaceID,
+                windowID: map.windowID,
+                mappedWidth: map.mappedWidth,
+                mappedHeight: map.mappedHeight
+            )
+        case RDPGFXCommandID.mapSurfaceToScaledWindow:
+            let map = try RDPGFXMapSurfaceToScaledWindowPDU.parse(from: message)
+            return RDPGFXMessageSummary(
+                typeName: message.typeName,
+                surfaceID: map.surfaceID,
+                targetWidth: map.targetWidth,
+                targetHeight: map.targetHeight,
+                windowID: map.windowID,
+                mappedWidth: map.mappedWidth,
+                mappedHeight: map.mappedHeight
+            )
         case RDPGFXCommandID.solidFill:
             let solidFill = try RDPGFXSolidFillPDU.parse(from: message)
             return RDPGFXMessageSummary(
@@ -1781,6 +2531,15 @@ public struct RDPGFXMessageSummary: Encodable, Equatable, Sendable {
                 surfaceID: solidFill.surfaceID,
                 fillColor: solidFill.fillPixel.rgbHexString,
                 fillRectCount: solidFill.fillRects.count
+            )
+        case RDPGFXCommandID.surfaceToSurface:
+            let surfaceToSurface = try RDPGFXSurfaceToSurfacePDU.parse(from: message)
+            return RDPGFXMessageSummary(
+                typeName: message.typeName,
+                surfaceID: surfaceToSurface.destinationSurfaceID,
+                sourceSurfaceID: surfaceToSurface.sourceSurfaceID,
+                sourceRect: RDPFrameRect(surfaceToSurface.sourceRect),
+                destinationPointCount: surfaceToSurface.destinationPoints.count
             )
         case RDPGFXCommandID.surfaceToCache:
             let surfaceToCache = try RDPGFXSurfaceToCachePDU.parse(from: message)
@@ -1799,6 +2558,18 @@ public struct RDPGFXMessageSummary: Encodable, Equatable, Sendable {
                 cacheSlot: cacheToSurface.cacheSlot,
                 destinationPointCount: cacheToSurface.destinationPoints.count
             )
+        case RDPGFXCommandID.evictCacheEntry:
+            let evict = try RDPGFXEvictCacheEntryPDU.parse(from: message)
+            return RDPGFXMessageSummary(
+                typeName: message.typeName,
+                cacheSlot: evict.cacheSlot
+            )
+        case RDPGFXCommandID.cacheImportReply:
+            let reply = try RDPGFXCacheImportReplyPDU.parse(from: message)
+            return RDPGFXMessageSummary(
+                typeName: message.typeName,
+                importedEntriesCount: reply.cacheSlots.count
+            )
         case RDPGFXCommandID.startFrame:
             let startFrame = try RDPGFXStartFramePDU.parse(from: message)
             return RDPGFXMessageSummary(
@@ -1810,6 +2581,13 @@ public struct RDPGFXMessageSummary: Encodable, Equatable, Sendable {
             return RDPGFXMessageSummary(
                 typeName: message.typeName,
                 frameID: endFrame.frameID
+            )
+        case RDPGFXCommandID.deleteEncodingContext:
+            let delete = try RDPGFXDeleteEncodingContextPDU.parse(from: message)
+            return RDPGFXMessageSummary(
+                typeName: message.typeName,
+                surfaceID: delete.surfaceID,
+                codecContextID: delete.codecContextID
             )
         case RDPGFXCommandID.wireToSurface1:
             let wire = try RDPGFXWireToSurface1PDU.parse(from: message)
@@ -1826,6 +2604,12 @@ public struct RDPGFXMessageSummary: Encodable, Equatable, Sendable {
             let cavideo = includeVideoDetails && wire.codecID == RDPGFXCodecID.cavideo
                 ? try? RDPGFXCAVideoBitmapStreamSummary.summarize(wire.bitmapData)
                 : nil
+            if wire.codecID == RDPGFXCodecID.alpha {
+                _ = try RDPGFXAlphaBitmapStream.parse(
+                    from: wire.bitmapData,
+                    pixelCount: Int(wire.destinationRect.width) * Int(wire.destinationRect.height)
+                )
+            }
             return RDPGFXMessageSummary(
                 typeName: message.typeName,
                 surfaceID: wire.surfaceID,

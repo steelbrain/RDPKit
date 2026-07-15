@@ -32,7 +32,13 @@ struct MCSAttachUserConfirm: Equatable, Sendable {
         }
 
         let result = try cursor.readUInt8()
-        guard cursor.remaining >= 2 else {
+        if result == 0, cursor.remaining == 0 {
+            throw RDPDecodeError.invalidMCSAttachUserConfirm
+        }
+        guard cursor.remaining == 2 else {
+            guard cursor.remaining == 0 else {
+                throw RDPDecodeError.invalidMCSAttachUserConfirm
+            }
             return MCSAttachUserConfirm(result: result, userChannelID: nil)
         }
 
@@ -74,10 +80,18 @@ struct MCSChannelJoinConfirm: Equatable, Sendable {
         result == 0 ? "rt-successful" : "rt-\(result)"
     }
 
+    func validates(requestedChannelID: UInt16) -> Bool {
+        result == 0
+            && channelID == requestedChannelID
+    }
+
     static func parse(fromTPKT packet: Data) throws -> MCSChannelJoinConfirm {
         var cursor = try ByteCursor(X224DataTPDU.unwrap(packet))
         let header = try cursor.readUInt8()
         guard header == 0x3E else {
+            throw RDPDecodeError.invalidMCSChannelJoinConfirm
+        }
+        guard cursor.remaining == 7 else {
             throw RDPDecodeError.invalidMCSChannelJoinConfirm
         }
 
@@ -85,6 +99,9 @@ struct MCSChannelJoinConfirm: Equatable, Sendable {
         let initiatorOffset = try cursor.readBigEndianUInt16()
         let requestedChannelID = try cursor.readBigEndianUInt16()
         let channelID = try cursor.readBigEndianUInt16()
+        guard cursor.remaining == 0 else {
+            throw RDPDecodeError.invalidMCSChannelJoinConfirm
+        }
 
         return try MCSChannelJoinConfirm(
             result: result,

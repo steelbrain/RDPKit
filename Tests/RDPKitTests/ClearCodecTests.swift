@@ -31,7 +31,7 @@ import Testing
 }
 
 @Test func decodesClearCodecRawSubcodecRegion() throws {
-    var stream = Data([0x00, 0x01])
+    var stream = Data([0x00, 0x00])
     stream.appendLittleEndianUInt32(0)
     stream.appendLittleEndianUInt32(0)
     stream.appendLittleEndianUInt32(19)
@@ -55,7 +55,7 @@ import Testing
 }
 
 @Test func decodesClearCodecRLEXMultiPaletteSuite() throws {
-    var stream = Data([0x00, 0x01])
+    var stream = Data([0x00, 0x00])
     stream.appendLittleEndianUInt32(0)
     stream.appendLittleEndianUInt32(0)
     stream.appendLittleEndianUInt32(25)
@@ -86,7 +86,7 @@ import Testing
 }
 
 @Test func decodesClearCodecNSCodecSubcodecRegion() throws {
-    var stream = Data([0x00, 0x01])
+    var stream = Data([0x00, 0x00])
     let nsCodec = nsCodecFrame(
         yPlane: [63, 127],
         coPlane: [127, 0],
@@ -130,7 +130,7 @@ import Testing
 }
 
 @Test func decodesClearCodecNSCodecSubcodecWithoutAlphaPlane() throws {
-    var stream = Data([0x00, 0x01])
+    var stream = Data([0x00, 0x00])
     let nsCodec = nsCodecFrame(
         yPlane: [127, 127],
         coPlane: [0, 0],
@@ -162,7 +162,7 @@ import Testing
 }
 
 @Test func decodesClearCodecNSCodecRawPlaneLongerThanRLETail() throws {
-    var stream = Data([0x00, 0x01])
+    var stream = Data([0x00, 0x00])
     let nsCodec = nsCodecFrame(
         yPlane: [10, 20, 30, 40, 50],
         coPlane: [0, 0, 0, 0, 0],
@@ -195,7 +195,7 @@ import Testing
 }
 
 @Test func decodesClearCodecNSCodecChromaShiftWithSignedTruncation() throws {
-    var stream = Data([0x00, 0x01])
+    var stream = Data([0x00, 0x00])
     let nsCodec = nsCodecFrame(
         yPlane: [127],
         coPlane: [127],
@@ -223,8 +223,79 @@ import Testing
     ]))
 }
 
+@Test func decodesClearCodecGlyphCacheHitWithoutPayload() throws {
+    let decoder = RDPClearCodecDecoder()
+    let glyphIndex: UInt16 = 7
+    let cached = try decoder.decode(clearCodecGlyphMissStream(glyphIndex: glyphIndex), width: 2, height: 1)
+
+    var hit = Data([0x03, 0x01])
+    hit.appendLittleEndianUInt16(glyphIndex)
+
+    let bitmap = try decoder.decode(hit, width: 2, height: 1)
+
+    #expect(bitmap == cached)
+}
+
+@Test func rejectsClearCodecGlyphCacheHitWithPayload() throws {
+    let decoder = RDPClearCodecDecoder()
+    let glyphIndex: UInt16 = 7
+    _ = try decoder.decode(clearCodecGlyphMissStream(glyphIndex: glyphIndex), width: 2, height: 1)
+
+    var hit = Data([0x03, 0x01])
+    hit.appendLittleEndianUInt16(glyphIndex)
+    hit.appendUInt8(0)
+
+    #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
+        try decoder.decode(hit, width: 2, height: 1)
+    }
+}
+
+@Test func rejectsClearCodecOutOfSequenceStreams() throws {
+    let decoder = RDPClearCodecDecoder()
+    _ = try decoder.decode(clearCodecBandsStream(seqNumber: 0, bandsData: Data()), width: 1, height: 1)
+
+    #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
+        try decoder.decode(clearCodecBandsStream(seqNumber: 2, bandsData: Data()), width: 1, height: 1)
+    }
+    _ = try decoder.decode(clearCodecBandsStream(seqNumber: 1, bandsData: Data()), width: 1, height: 1)
+
+    #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
+        try RDPClearCodecDecoder().decode(
+            clearCodecBandsStream(seqNumber: 1, bandsData: Data()),
+            width: 1,
+            height: 1
+        )
+    }
+}
+
+@Test func rejectsClearCodecReservedFlagsAndInvalidGlyphIndices() {
+    var reservedFlagsStream = clearCodecBandsStream(seqNumber: 0, bandsData: Data())
+    reservedFlagsStream[0] = 0x08
+    var invalidGlyphStream = Data([0x01, 0x00])
+    invalidGlyphStream.appendLittleEndianUInt16(4_000)
+
+    for stream in [reservedFlagsStream, invalidGlyphStream] {
+        #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
+            try RDPClearCodecDecoder().decode(stream, width: 1, height: 1)
+        }
+        #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
+            try RDPClearCodecDecoder.summarize(stream)
+        }
+    }
+}
+
+@Test func rejectsOversizedClearCodecGlyphsBeforeAllocation() {
+    #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
+        try RDPClearCodecDecoder().decode(
+            clearCodecGlyphMissStream(glyphIndex: 0),
+            width: 1_025,
+            height: 1_024
+        )
+    }
+}
+
 @Test func decodesClearCodecResidualRuns() throws {
-    var stream = Data([0x00, 0x02])
+    var stream = Data([0x00, 0x00])
     stream.appendLittleEndianUInt32(8)
     stream.appendLittleEndianUInt32(0)
     stream.appendLittleEndianUInt32(0)
@@ -241,6 +312,41 @@ import Testing
         0x04, 0x05, 0x06, 0xFF,
         0x04, 0x05, 0x06, 0xFF,
     ]))
+}
+
+@Test func rejectsClearCodecResidualRunWithZeroFirstFactor() {
+    #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
+        try RDPClearCodecDecoder().decode(
+            clearCodecResidualStream(Data([0x01, 0x02, 0x03, 0x00])),
+            width: 1,
+            height: 1
+        )
+    }
+}
+
+@Test func rejectsClearCodecResidualRunWithZeroSecondFactor() {
+    #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
+        try RDPClearCodecDecoder().decode(
+            clearCodecResidualStream(Data([0x01, 0x02, 0x03, 0xFF, 0x00, 0x00])),
+            width: 1,
+            height: 1
+        )
+    }
+}
+
+@Test func rejectsClearCodecResidualRunWithZeroThirdFactor() {
+    #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
+        try RDPClearCodecDecoder().decode(
+            clearCodecResidualStream(Data([
+                0x01, 0x02, 0x03,
+                0xFF,
+                0xFF, 0xFF,
+                0x00, 0x00, 0x00, 0x00,
+            ])),
+            width: 1,
+            height: 1
+        )
+    }
 }
 
 @Test func decodesClearCodecBandsWithShortVBarMisses() throws {
@@ -374,4 +480,19 @@ private func nsCodecFrame(
     data.append(contentsOf: cgPlane)
     data.append(contentsOf: alphaPlane)
     return data
+}
+
+private func clearCodecResidualStream(_ residualData: Data) -> Data {
+    var stream = Data([0x00, 0x00])
+    stream.appendLittleEndianUInt32(UInt32(residualData.count))
+    stream.appendLittleEndianUInt32(0)
+    stream.appendLittleEndianUInt32(0)
+    stream.append(residualData)
+    return stream
+}
+
+private func clearCodecGlyphMissStream(glyphIndex: UInt16) -> Data {
+    var stream = Data([0x01, 0x00])
+    stream.appendLittleEndianUInt16(glyphIndex)
+    return stream
 }

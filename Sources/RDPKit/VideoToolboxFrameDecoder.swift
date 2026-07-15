@@ -14,16 +14,24 @@ public struct RDPH264FirstFrameDecoder {
 }
 
 public final class RDPVideoToolboxFrameDecoder {
-    private let h264Decoder = RDPH264FrameSequenceDecoder()
-    private let hevcDecoder = RDPHEVCFrameSequenceDecoder()
+    private var h264Decoders: [UInt16: RDPH264FrameSequenceDecoder] = [:]
+    private var avc444Decoders: [UInt16: RDPAVC444FrameDecoder] = [:]
+    private var hevcDecoders: [UInt16: RDPHEVCFrameSequenceDecoder] = [:]
     private let bitmapDecoder = RDPBitmapFrameDecoder()
     private let imageConverter = RDPVideoToolboxCGImageConverter()
 
     public init() {}
 
     public func reset() {
-        h264Decoder.reset()
-        hevcDecoder.reset()
+        h264Decoders.removeAll()
+        avc444Decoders.removeAll()
+        hevcDecoders.removeAll()
+    }
+
+    func reset(surfaceID: UInt16) {
+        h264Decoders[surfaceID] = nil
+        avc444Decoders[surfaceID] = nil
+        hevcDecoders[surfaceID] = nil
     }
 
     public func decode(_ frame: RDPGraphicsFrameSnapshot) throws -> CGImage {
@@ -37,10 +45,44 @@ public final class RDPVideoToolboxFrameDecoder {
 
         switch frame.videoCodec {
         case .h264:
-            return try h264Decoder.decodeDetailed(frame.encodedVideoData)
+            if frame.avc444SubframeLayout != nil {
+                return try avc444Decoder(for: frame.surfaceID).decodeDetailed(frame)
+            }
+            return try h264Decoder(for: frame.surfaceID).decodeDetailed(frame.encodedVideoData)
         case .hevc:
-            return try hevcDecoder.decodeDetailed(frame.encodedVideoData)
+            return try hevcDecoder(for: frame.surfaceID).decodeDetailed(frame.encodedVideoData)
         }
+    }
+
+    var decoderContextCounts: (h264: Int, avc444: Int, hevc: Int) {
+        (h264Decoders.count, avc444Decoders.count, hevcDecoders.count)
+    }
+
+    private func h264Decoder(for surfaceID: UInt16) -> RDPH264FrameSequenceDecoder {
+        if let decoder = h264Decoders[surfaceID] {
+            return decoder
+        }
+        let decoder = RDPH264FrameSequenceDecoder()
+        h264Decoders[surfaceID] = decoder
+        return decoder
+    }
+
+    private func avc444Decoder(for surfaceID: UInt16) -> RDPAVC444FrameDecoder {
+        if let decoder = avc444Decoders[surfaceID] {
+            return decoder
+        }
+        let decoder = RDPAVC444FrameDecoder()
+        avc444Decoders[surfaceID] = decoder
+        return decoder
+    }
+
+    private func hevcDecoder(for surfaceID: UInt16) -> RDPHEVCFrameSequenceDecoder {
+        if let decoder = hevcDecoders[surfaceID] {
+            return decoder
+        }
+        let decoder = RDPHEVCFrameSequenceDecoder()
+        hevcDecoders[surfaceID] = decoder
+        return decoder
     }
 }
 
@@ -178,17 +220,328 @@ public struct RDPVideoToolboxDecodeResult {
     public var usesHardwareAcceleration: Bool?
 }
 
+private final class RDPAVC444FrameDecoder {
+    private struct MainFrameKey: Hashable {
+        var codecID: UInt16
+        var left: UInt16
+        var top: UInt16
+        var right: UInt16
+        var bottom: UInt16
+    }
+
+    private let h264Decoder = RDPH264FrameSequenceDecoder(
+        outputPixelFormat: kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
+    )
+    private let frameStore = RDPAVC444FrameStore()
+    private var metalDecoder: RDPAVC444MetalDecoder?
+    private var didAttemptMetalDecoderCreation = false
+    private var mainImageBuffers: [MainFrameKey: CVImageBuffer] = [:]
+
+    func reset() {
+        h264Decoder.reset()
+        frameStore.reset()
+        metalDecoder?.reset()
+        mainImageBuffers.removeAll()
+    }
+
+    func decodeDetailed(_ frame: RDPGraphicsFrameSnapshot) throws -> RDPVideoToolboxDecodeResult {
+        guard let layout = frame.avc444SubframeLayout else {
+            throw RDPAVC444DecodeError.missingLumaSubframe
+        }
+
+        let firstResult = try h264Decoder.decodeDetailed(frame.encodedVideoData)
+        var samplePreparationMilliseconds = firstResult.samplePreparationMilliseconds
+        var videoToolboxMilliseconds = firstResult.videoToolboxMilliseconds
+        var usesHardwareAcceleration = firstResult.usesHardwareAcceleration
+        var secondResult: RDPVideoToolboxDecodeResult?
+        if let auxiliaryEncodedVideoData = frame.auxiliaryEncodedVideoData {
+            let decoded = try h264Decoder.decodeDetailed(auxiliaryEncodedVideoData)
+            secondResult = decoded
+            samplePreparationMilliseconds += decoded.samplePreparationMilliseconds
+            videoToolboxMilliseconds += decoded.videoToolboxMilliseconds
+            usesHardwareAcceleration = usesHardwareAcceleration ?? decoded.usesHardwareAcceleration
+        }
+
+        let conversionStartedAt = Date()
+        let chromaRegionRects: [RDPFrameRect] = switch layout {
+        case .yuv420AndChroma420:
+            sourceRegionRects(frame.auxiliaryRegionRects, destinationRect: frame.destinationRect)
+        case .chroma420Only:
+            sourceRegionRects(frame.regionRects, destinationRect: frame.destinationRect)
+        case .yuv420Only:
+            []
+        }
+        let mainFrameKey = MainFrameKey(
+            codecID: frame.codecID,
+            left: frame.destinationRect.left,
+            top: frame.destinationRect.top,
+            right: frame.destinationRect.right,
+            bottom: frame.destinationRect.bottom
+        )
+        if layout != .chroma420Only {
+            mainImageBuffers[mainFrameKey] = firstResult.imageBuffer
+        }
+        if layout == .yuv420Only {
+            return RDPVideoToolboxDecodeResult(
+                imageBuffer: firstResult.imageBuffer,
+                samplePreparationMilliseconds: samplePreparationMilliseconds,
+                videoToolboxMilliseconds: videoToolboxMilliseconds,
+                imageConversionMilliseconds: 0,
+                decodedPixelFormat: firstResult.decodedPixelFormat,
+                usesHardwareAcceleration: usesHardwareAcceleration
+            )
+        }
+        if let metalDecoder = availableMetalDecoder() {
+            do {
+                if layout == .chroma420Only,
+                   let mainImageBuffer = mainImageBuffers[mainFrameKey]
+                {
+                    try metalDecoder.storeMainFrame(
+                        surfaceID: frame.surfaceID,
+                        codecID: frame.codecID,
+                        imageBuffer: mainImageBuffer,
+                        destinationRect: frame.destinationRect
+                    )
+                }
+                let pixelBuffer = try metalDecoder.decode(
+                    surfaceID: frame.surfaceID,
+                    codecID: frame.codecID,
+                    layout: layout,
+                    firstImageBuffer: firstResult.imageBuffer,
+                    secondImageBuffer: secondResult?.imageBuffer,
+                    destinationRect: frame.destinationRect,
+                    chromaRegionRects: chromaRegionRects
+                )
+                return RDPVideoToolboxDecodeResult(
+                    imageBuffer: pixelBuffer,
+                    samplePreparationMilliseconds: samplePreparationMilliseconds,
+                    videoToolboxMilliseconds: videoToolboxMilliseconds,
+                    imageConversionMilliseconds: Date().timeIntervalSince(conversionStartedAt) * 1000,
+                    decodedPixelFormat: kCVPixelFormatType_32BGRA,
+                    usesHardwareAcceleration: usesHardwareAcceleration
+                )
+            } catch is RDPAVC444MetalDecodeError {
+                // Preserve the CPU implementation for devices or buffers Metal cannot use.
+            }
+        }
+
+        let firstFrame = try yuv420Frame(from: firstResult.imageBuffer)
+        let secondFrame = try secondResult.map { try yuv420Frame(from: $0.imageBuffer) }
+        if layout == .chroma420Only,
+           let mainImageBuffer = mainImageBuffers[mainFrameKey]
+        {
+            _ = try frameStore.reconstruct(
+                surfaceID: frame.surfaceID,
+                codecID: frame.codecID,
+                layout: .yuv420Only,
+                firstFrame: yuv420Frame(from: mainImageBuffer),
+                secondFrame: nil,
+                destinationRect: frame.destinationRect
+            )
+        }
+        let reconstructed = try frameStore.reconstruct(
+            surfaceID: frame.surfaceID,
+            codecID: frame.codecID,
+            layout: layout,
+            firstFrame: firstFrame,
+            secondFrame: secondFrame,
+            destinationRect: frame.destinationRect,
+            chromaRegionRects: chromaRegionRects
+        )
+        let pixelBuffer = try makeBGRAImageBuffer(from: reconstructed)
+        let imageConversionMilliseconds = Date().timeIntervalSince(conversionStartedAt) * 1000
+        return RDPVideoToolboxDecodeResult(
+            imageBuffer: pixelBuffer,
+            samplePreparationMilliseconds: samplePreparationMilliseconds,
+            videoToolboxMilliseconds: videoToolboxMilliseconds,
+            imageConversionMilliseconds: imageConversionMilliseconds,
+            decodedPixelFormat: kCVPixelFormatType_32BGRA,
+            usesHardwareAcceleration: usesHardwareAcceleration
+        )
+    }
+
+    private func availableMetalDecoder() -> RDPAVC444MetalDecoder? {
+        if didAttemptMetalDecoderCreation == false {
+            metalDecoder = RDPAVC444MetalDecoder()
+            didAttemptMetalDecoderCreation = true
+        }
+        return metalDecoder
+    }
+
+    private func sourceRegionRects(
+        _ regionRects: [RDPFrameRect],
+        destinationRect: RDPFrameRect
+    ) -> [RDPFrameRect] {
+        let regionsAreRelative = regionRects.allSatisfy {
+            $0.right <= destinationRect.width && $0.bottom <= destinationRect.height
+        }
+        guard !regionsAreRelative else {
+            return regionRects
+        }
+        return regionRects.compactMap { region in
+            let left = max(0, Int(region.left) - Int(destinationRect.left))
+            let top = max(0, Int(region.top) - Int(destinationRect.top))
+            let right = max(0, Int(region.right) - Int(destinationRect.left))
+            let bottom = max(0, Int(region.bottom) - Int(destinationRect.top))
+            guard right > left, bottom > top else {
+                return nil
+            }
+            return RDPFrameRect(
+                left: UInt16(clamping: left),
+                top: UInt16(clamping: top),
+                right: UInt16(clamping: right),
+                bottom: UInt16(clamping: bottom)
+            )
+        }
+    }
+
+    private func yuv420Frame(from imageBuffer: CVImageBuffer) throws -> RDPYUV420Frame {
+        let pixelFormat = CVPixelBufferGetPixelFormatType(imageBuffer)
+        guard pixelFormat == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+                || pixelFormat == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
+        else {
+            throw RDPAVC444DecodeError.unsupportedPixelFormat(pixelFormat)
+        }
+
+        let width = CVPixelBufferGetWidth(imageBuffer)
+        let height = CVPixelBufferGetHeight(imageBuffer)
+        guard width > 0,
+              height > 0,
+              width.isMultiple(of: 2),
+              height.isMultiple(of: 2),
+              CVPixelBufferGetPlaneCount(imageBuffer) == 2
+        else {
+            throw RDPAVC444DecodeError.invalidYUV420Layout
+        }
+
+        CVPixelBufferLockBaseAddress(imageBuffer, .readOnly)
+        defer {
+            CVPixelBufferUnlockBaseAddress(imageBuffer, .readOnly)
+        }
+        guard let yBase = CVPixelBufferGetBaseAddressOfPlane(imageBuffer, 0),
+              let uvBase = CVPixelBufferGetBaseAddressOfPlane(imageBuffer, 1)
+        else {
+            throw RDPAVC444DecodeError.missingPixelBufferPlane
+        }
+
+        let yBytesPerRow = CVPixelBufferGetBytesPerRowOfPlane(imageBuffer, 0)
+        let uvBytesPerRow = CVPixelBufferGetBytesPerRowOfPlane(imageBuffer, 1)
+        var yPlane = [UInt8](repeating: 0, count: width * height)
+        var uPlane = [UInt8](repeating: 0, count: width * height / 4)
+        var vPlane = [UInt8](repeating: 0, count: width * height / 4)
+        yPlane.withUnsafeMutableBufferPointer { yDestination in
+            uPlane.withUnsafeMutableBufferPointer { uDestination in
+                vPlane.withUnsafeMutableBufferPointer { vDestination in
+                    guard let yDestination = yDestination.baseAddress,
+                          let uDestination = uDestination.baseAddress,
+                          let vDestination = vDestination.baseAddress
+                    else {
+                        return
+                    }
+                    RDPYUV420PlaneCopy(
+                        ySource: yBase.assumingMemoryBound(to: UInt8.self),
+                        uvSource: uvBase.assumingMemoryBound(to: UInt8.self),
+                        yDestination: yDestination,
+                        uDestination: uDestination,
+                        vDestination: vDestination,
+                        width: width,
+                        height: height,
+                        yBytesPerRow: yBytesPerRow,
+                        uvBytesPerRow: uvBytesPerRow
+                    ).copy()
+                }
+            }
+        }
+        return try RDPYUV420Frame(width: width, height: height, y: yPlane, u: uPlane, v: vPlane)
+    }
+
+    private func makeBGRAImageBuffer(from frame: RDPAVC444ReconstructedFrame) throws -> CVImageBuffer {
+        var pixelBuffer: CVPixelBuffer?
+        let status = CVPixelBufferCreate(
+            kCFAllocatorDefault,
+            frame.width,
+            frame.height,
+            kCVPixelFormatType_32BGRA,
+            makeVideoDecoderImageBufferAttributes(),
+            &pixelBuffer
+        )
+        guard status == kCVReturnSuccess, let pixelBuffer else {
+            throw RDPAVC444DecodeError.coreVideo(operation: "create AVC444 pixel buffer", status: status)
+        }
+        CVPixelBufferLockBaseAddress(pixelBuffer, [])
+        defer {
+            CVPixelBufferUnlockBaseAddress(pixelBuffer, [])
+        }
+        guard let destination = CVPixelBufferGetBaseAddress(pixelBuffer) else {
+            throw RDPAVC444DecodeError.missingPixelBufferPlane
+        }
+        let destinationBytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
+        frame.bgra.withUnsafeBytes { source in
+            guard let sourceBase = source.baseAddress else {
+                return
+            }
+            for row in 0 ..< frame.height {
+                memcpy(
+                    destination.advanced(by: row * destinationBytesPerRow),
+                    sourceBase.advanced(by: row * frame.width * 4),
+                    frame.width * 4
+                )
+            }
+        }
+        return pixelBuffer
+    }
+}
+
+private struct RDPYUV420PlaneCopy: @unchecked Sendable {
+    var ySource: UnsafePointer<UInt8>
+    var uvSource: UnsafePointer<UInt8>
+    var yDestination: UnsafeMutablePointer<UInt8>
+    var uDestination: UnsafeMutablePointer<UInt8>
+    var vDestination: UnsafeMutablePointer<UInt8>
+    var width: Int
+    var height: Int
+    var yBytesPerRow: Int
+    var uvBytesPerRow: Int
+
+    func copy() {
+        rdpConcurrentlyProcessRows(height: height) { rows in
+            for row in rows {
+                memcpy(
+                    yDestination.advanced(by: row * width),
+                    ySource.advanced(by: row * yBytesPerRow),
+                    width
+                )
+            }
+        }
+        let chromaWidth = width / 2
+        rdpConcurrentlyProcessRows(height: height / 2) { rows in
+            for row in rows {
+                let source = uvSource.advanced(by: row * uvBytesPerRow)
+                let destinationRow = row * chromaWidth
+                for column in 0 ..< chromaWidth {
+                    uDestination[destinationRow + column] = source[column * 2]
+                    vDestination[destinationRow + column] = source[column * 2 + 1]
+                }
+            }
+        }
+    }
+}
+
 private func makeVideoDecoderSpecification() -> CFDictionary {
     [
         kVTVideoDecoderSpecification_EnableHardwareAcceleratedVideoDecoder: kCFBooleanTrue as Any,
     ] as CFDictionary
 }
 
-private func makeVideoDecoderImageBufferAttributes() -> CFDictionary {
-    [
+private func makeVideoDecoderImageBufferAttributes(pixelFormat: OSType? = nil) -> CFDictionary {
+    var attributes: [CFString: Any] = [
         kCVPixelBufferMetalCompatibilityKey: true,
         kCVPixelBufferIOSurfacePropertiesKey: [:],
-    ] as CFDictionary
+    ]
+    if let pixelFormat {
+        attributes[kCVPixelBufferPixelFormatTypeKey] = pixelFormat
+    }
+    return attributes as CFDictionary
 }
 
 private func copyHardwareAccelerationState(from session: VTDecompressionSession) -> Bool? {
@@ -291,6 +644,7 @@ public final class RDPH264FrameSequenceDecoder {
     private var usesHardwareAcceleration: Bool?
     private let output = VideoToolboxDecodeOutput()
     private let imageConverter = RDPVideoToolboxCGImageConverter()
+    private let outputPixelFormat: OSType?
 
     deinit {
         if let session {
@@ -298,7 +652,13 @@ public final class RDPH264FrameSequenceDecoder {
         }
     }
 
-    public init() {}
+    public init() {
+        outputPixelFormat = nil
+    }
+
+    init(outputPixelFormat: OSType) {
+        self.outputPixelFormat = outputPixelFormat
+    }
 
     public func reset() {
         if let session {
@@ -427,7 +787,7 @@ public final class RDPH264FrameSequenceDecoder {
                 allocator: kCFAllocatorDefault,
                 formatDescription: formatDescription,
                 decoderSpecification: makeVideoDecoderSpecification(),
-                imageBufferAttributes: makeVideoDecoderImageBufferAttributes(),
+                imageBufferAttributes: makeVideoDecoderImageBufferAttributes(pixelFormat: outputPixelFormat),
                 outputCallback: &callback,
                 decompressionSessionOut: &session
             ),

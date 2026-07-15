@@ -18,7 +18,6 @@ struct RDPStaticVirtualChannel: Equatable, Sendable {
         options: ChannelOptions.initialized
             | ChannelOptions.encryptRDP
             | ChannelOptions.compressRDP
-            | ChannelOptions.showProtocol
     )
 
     static let cliprdr = RDPStaticVirtualChannel(
@@ -26,21 +25,17 @@ struct RDPStaticVirtualChannel: Equatable, Sendable {
         options: ChannelOptions.initialized
             | ChannelOptions.encryptRDP
             | ChannelOptions.compressRDP
-            | ChannelOptions.showProtocol
     )
 
     static let rdpdr = RDPStaticVirtualChannel(
         name: "rdpdr",
         options: ChannelOptions.initialized
-            | ChannelOptions.encryptRDP
-            | ChannelOptions.compressRDP
     )
 
     static let rdpsnd = RDPStaticVirtualChannel(
         name: "rdpsnd",
         options: ChannelOptions.initialized
             | ChannelOptions.encryptRDP
-            | ChannelOptions.compressRDP
     )
 }
 
@@ -58,31 +53,89 @@ enum ChannelOptions {
     static let remoteControlPersistent: UInt32 = 0x0010_0000
 }
 
+private enum ClientEarlyCapabilityFlags {
+    static let supportErrorInfoPDU: UInt16 = 0x0001
+    static let want32BPPSession: UInt16 = 0x0002
+    static let supportStatusInfoPDU: UInt16 = 0x0004
+    static let strongAsymmetricKeys: UInt16 = 0x0008
+    static let validConnectionType: UInt16 = 0x0020
+    static let supportNetworkAutoDetect: UInt16 = 0x0080
+    static let supportDynamicVirtualChannelGraphics: UInt16 = 0x0100
+    static let base: UInt16 = supportErrorInfoPDU
+        | want32BPPSession
+        | supportStatusInfoPDU
+        | strongAsymmetricKeys
+        | validConnectionType
+        | supportNetworkAutoDetect
+
+    static func flags(for configuration: MCSConnectInitialConfiguration) -> UInt16 {
+        var flags = base
+        if configuration.channels.contains(where: { $0.name == RDPStaticVirtualChannel.drdynvc.name }) {
+            flags |= supportDynamicVirtualChannelGraphics
+        }
+        return flags
+    }
+}
+
+private enum ClientClusterFlags {
+    static let redirectionSupported: UInt32 = 0x0000_0001
+    static let redirectedSessionIDFieldValid: UInt32 = 0x0000_0002
+    static let serverSessionRedirectionVersion4: UInt32 = 0x0000_000C
+
+    static let defaults: UInt32 = redirectionSupported | serverSessionRedirectionVersion4
+
+    static func flags(redirectedSessionID: UInt32?) -> UInt32 {
+        var flags = defaults
+        if redirectedSessionID != nil {
+            flags |= redirectedSessionIDFieldValid
+        }
+        return flags
+    }
+}
+
+private enum ClientConnectionType {
+    static let autodetect: UInt8 = 0x07
+}
+
 struct MCSConnectInitialConfiguration: Equatable, Sendable {
     var desktopWidth: UInt16
     var desktopHeight: UInt16
     var clientName: String
     var selectedProtocol: RDPSecurityProtocols
+    var requestedProtocols: RDPSecurityProtocols
     var channels: [RDPStaticVirtualChannel]
     var advertiseMessageChannel: Bool
+    var audioPlaybackEnabled: Bool
+    var redirectedSessionID: UInt32?
+    var storedClientLicense: RDPStoredClientLicense?
 
     init(
         desktopWidth: UInt16 = 1280,
         desktopHeight: UInt16 = 720,
         clientName: String = "KRDPSWIFT",
         selectedProtocol: RDPSecurityProtocols = .tls,
+        requestedProtocols: RDPSecurityProtocols = [.tls, .credSSP],
         channels: [RDPStaticVirtualChannel] = [.drdynvc],
-        advertiseMessageChannel: Bool = false
+        advertiseMessageChannel: Bool = false,
+        audioPlaybackEnabled: Bool = false,
+        redirectedSessionID: UInt32? = nil,
+        storedClientLicense: RDPStoredClientLicense? = nil
     ) {
         precondition(!channels.isEmpty)
         precondition(channels.count <= 31)
+        precondition(Set(channels.map(\.name)).count == channels.count)
+        precondition(requestedProtocols.canSelect(selectedProtocol))
 
         self.desktopWidth = desktopWidth
         self.desktopHeight = desktopHeight
         self.clientName = clientName
         self.selectedProtocol = selectedProtocol
+        self.requestedProtocols = requestedProtocols
         self.channels = channels
         self.advertiseMessageChannel = advertiseMessageChannel
+        self.audioPlaybackEnabled = audioPlaybackEnabled
+        self.redirectedSessionID = redirectedSessionID
+        self.storedClientLicense = storedClientLicense
     }
 }
 
@@ -143,6 +196,7 @@ struct MCSConnectInitialPDU: Equatable, Sendable {
     }
 
     func encodedClientDataBlocks() -> Data {
+        // GCC user data blocks: core, cluster, security, network, optional message.
         var data = Data()
         data.append(encodedClientCoreData())
         data.append(encodedClientClusterData())
@@ -173,20 +227,32 @@ struct MCSConnectInitialPDU: Equatable, Sendable {
         body.appendLittleEndianUInt32(0)
         body.appendLittleEndianUInt16(24)
         body.appendLittleEndianUInt16(0x000F)
-        body.appendLittleEndianUInt16(0x01AF)
+        let earlyFlags = ClientEarlyCapabilityFlags.flags(for: configuration)
+        body.appendLittleEndianUInt16(earlyFlags)
         body.append(fixedUTF16LE("00000-000-0000000-00000", codeUnitCount: 32))
-        body.appendUInt8(0x06)
+        // MS-RDPBCGR 2.2.1.3.2: when RNS_UD_CS_VALID_CONNECTION_TYPE is set,
+        // connectionType is meaningful. With RNS_UD_CS_SUPPORT_NETCHAR_AUTODETECT,
+        // CONNECTION_TYPE_AUTODETECT (0x07) is the consistent choice.
+        body.appendUInt8(ClientConnectionType.autodetect)
         body.appendUInt8(0x00)
         body.appendLittleEndianUInt32(configuration.selectedProtocol.rawValue)
+        // Optional trailing fields (desktopPhysicalWidth through deviceScaleFactor).
+        // Physical dimensions of 0 are ignored per the same section (< 10 mm).
+        // Including them keeps the core length consistent with a full optional tail.
+        body.appendLittleEndianUInt32(0) // desktopPhysicalWidth
+        body.appendLittleEndianUInt32(0) // desktopPhysicalHeight
+        body.appendLittleEndianUInt16(0) // desktopOrientation
+        body.appendLittleEndianUInt32(100) // desktopScaleFactor (percent)
+        body.appendLittleEndianUInt32(100) // deviceScaleFactor (percent)
 
-        precondition(body.count == 212)
+        precondition(body.count == 230)
         return userDataBlock(type: 0xC001, body: body)
     }
 
     func encodedClientClusterData() -> Data {
         var body = Data()
-        body.appendLittleEndianUInt32(0x0000_000D)
-        body.appendLittleEndianUInt32(0)
+        body.appendLittleEndianUInt32(ClientClusterFlags.flags(redirectedSessionID: configuration.redirectedSessionID))
+        body.appendLittleEndianUInt32(configuration.redirectedSessionID ?? 0)
         return userDataBlock(type: 0xC004, body: body)
     }
 

@@ -25,15 +25,16 @@ struct RDPServerRedirectionPDU: Equatable, Sendable {
     var channelID: UInt16
     var totalLength: UInt16
     var pduSource: UInt16
-    var securityFlags: UInt32
+    var redirectionPacketFlags: UInt16
     var redirectionLength: UInt16
-    var sessionID: UInt16
+    var sessionID: UInt32
     var flags: Flags
     var loadBalanceInfo: Data?
     var targetNetAddress: String?
     var username: String?
     var domain: String?
     var password: String?
+    var encryptedPassword: Data?
     var targetFQDN: String?
     var targetNetBIOSName: String?
     var targetNetAddresses: [String]
@@ -42,7 +43,10 @@ struct RDPServerRedirectionPDU: Equatable, Sendable {
     var targetCertificate: Data?
 
     var routingToken: Data? {
-        loadBalanceInfo
+        guard !flags.contains(.targetNetAddress) else {
+            return nil
+        }
+        return loadBalanceInfo
     }
 
     var targetHost: String? {
@@ -53,7 +57,7 @@ struct RDPServerRedirectionPDU: Equatable, Sendable {
         guard let indication = try? MCSSendDataIndicationPDU.parse(fromTPKT: packet) else {
             return nil
         }
-        guard indication.userData.count >= 22 else {
+        guard indication.userData.count >= 20 else {
             return nil
         }
 
@@ -64,22 +68,36 @@ struct RDPServerRedirectionPDU: Equatable, Sendable {
         guard pduType & 0x000F == 0x000A else {
             return nil
         }
-        guard pduType >> 4 == 0x0001,
+        let pduVersion = pduType >> 4
+        guard (pduVersion == 0 || pduVersion == 1),
+              Int(totalLength) >= 20,
               Int(totalLength) <= indication.userData.count
         else {
             throw RDPDecodeError.invalidShareControlHeader
         }
 
-        let securityFlags = try cursor.readLittleEndianUInt32()
-        let redirectionLength = try cursor.readLittleEndianUInt16()
         _ = try cursor.readLittleEndianUInt16()
-        let sessionID = try cursor.readLittleEndianUInt16()
-        let flags = Flags(rawValue: try cursor.readLittleEndianUInt32())
+        let redirectionPacketFlags = try cursor.readLittleEndianUInt16()
+        let redirectionLength = try cursor.readLittleEndianUInt16()
+        let availableRedirectionBytes = Int(totalLength) - 12
+        let declaredRedirectionBodyBytes = Int(redirectionLength) - 4
+        guard redirectionPacketFlags == 0x0400,
+              redirectionLength >= 12,
+              availableRedirectionBytes >= 8,
+              declaredRedirectionBodyBytes == availableRedirectionBytes
+                  || declaredRedirectionBodyBytes == availableRedirectionBytes + 2
+        else {
+            throw RDPDecodeError.invalidShareControlHeader
+        }
+
+        var redirectionCursor = ByteCursor(try cursor.readData(count: availableRedirectionBytes))
+        let sessionID = try redirectionCursor.readLittleEndianUInt32()
+        let flags = Flags(rawValue: try redirectionCursor.readLittleEndianUInt32())
         var pdu = RDPServerRedirectionPDU(
             channelID: indication.channelID,
             totalLength: totalLength,
             pduSource: pduSource,
-            securityFlags: securityFlags,
+            redirectionPacketFlags: redirectionPacketFlags,
             redirectionLength: redirectionLength,
             sessionID: sessionID,
             flags: flags,
@@ -88,6 +106,7 @@ struct RDPServerRedirectionPDU: Equatable, Sendable {
             username: nil,
             domain: nil,
             password: nil,
+            encryptedPassword: nil,
             targetFQDN: nil,
             targetNetBIOSName: nil,
             targetNetAddresses: [],
@@ -106,37 +125,45 @@ struct RDPServerRedirectionPDU: Equatable, Sendable {
         }
 
         if flags.contains(.targetNetAddress) {
-            pdu.targetNetAddress = try cursor.readLengthPrefixedUTF16String()
+            pdu.targetNetAddress = try redirectionCursor.readLengthPrefixedUTF16String()
         }
         if flags.contains(.loadBalanceInfo) {
-            pdu.loadBalanceInfo = try cursor.readLengthPrefixedBytes()
+            pdu.loadBalanceInfo = try redirectionCursor.readLengthPrefixedBytes()
         }
         if flags.contains(.username) {
-            pdu.username = try cursor.readLengthPrefixedUTF16String()
+            pdu.username = try redirectionCursor.readLengthPrefixedUTF16String()
         }
         if flags.contains(.domain) {
-            pdu.domain = try cursor.readLengthPrefixedUTF16String()
+            pdu.domain = try redirectionCursor.readLengthPrefixedUTF16String()
         }
         if flags.contains(.password) {
-            pdu.password = try cursor.readLengthPrefixedUTF16String()
+            if flags.contains(.passwordIsPKEncrypted) {
+                pdu.encryptedPassword = try redirectionCursor.readLengthPrefixedBytes()
+            } else {
+                pdu.password = try redirectionCursor.readLengthPrefixedUTF16String()
+            }
         }
         if flags.contains(.targetFQDN) {
-            pdu.targetFQDN = try cursor.readLengthPrefixedUTF16String()
+            pdu.targetFQDN = try redirectionCursor.readLengthPrefixedUTF16String()
         }
         if flags.contains(.targetNetBIOSName) {
-            pdu.targetNetBIOSName = try cursor.readLengthPrefixedUTF16String()
-        }
-        if flags.contains(.targetNetAddresses) {
-            pdu.targetNetAddresses = try cursor.readTargetNetAddresses()
+            pdu.targetNetBIOSName = try redirectionCursor.readLengthPrefixedUTF16String()
         }
         if flags.contains(.tsvURL) {
-            pdu.tsvURL = try cursor.readLengthPrefixedUTF16String()
+            pdu.tsvURL = try redirectionCursor.readLengthPrefixedUTF16String()
         }
         if flags.contains(.redirectionGuid) {
-            pdu.redirectionGuid = try cursor.readLengthPrefixedBytes()
+            pdu.redirectionGuid = try redirectionCursor.readLengthPrefixedBytes()
         }
         if flags.contains(.targetCertificate) {
-            pdu.targetCertificate = try cursor.readLengthPrefixedBytes()
+            pdu.targetCertificate = try redirectionCursor.readLengthPrefixedBytes()
+        }
+        if flags.contains(.targetNetAddresses) {
+            pdu.targetNetAddresses = try redirectionCursor.readTargetNetAddresses()
+        }
+
+        guard redirectionCursor.remaining == 0 || redirectionCursor.remaining == 8 else {
+            throw RDPDecodeError.invalidShareControlHeader
         }
 
         return pdu
@@ -184,6 +211,9 @@ private extension ByteCursor {
         var addresses: [String] = []
         for _ in 0 ..< count {
             addresses.append(try addressCursor.readLengthPrefixedUTF16String())
+        }
+        guard addressCursor.remaining == 0 else {
+            throw RDPDecodeError.invalidShareControlHeader
         }
         return addresses
     }

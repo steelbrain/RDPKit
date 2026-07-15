@@ -9,14 +9,18 @@ struct Arguments {
     var passwordEnv: String?
     var timeoutSeconds: Int = 10
     var graphicsFrames: Int = 1
+    var desktopWidth: UInt16 = 1280
+    var desktopHeight: UInt16 = 720
     var graphicsCapabilityProfile: RDPGraphicsCapabilityProfile = .automatic
     var hideCertificateWarnings = false
     var audioPlaybackEnabled = false
+    var earlyUserAuthorizationEnabled = false
     var probeClipboardText: String?
     var probeWindowsClipboardText: String?
     var probeWindowsPasteClipboard = false
     var probeInputText: String?
     var probeInputPointer = false
+    var probeWindowsKey = false
     var probeWindowsAudio = false
     var dryRun = false
     var json = false
@@ -30,6 +34,8 @@ enum CLIError: Error, CustomStringConvertible {
     case invalidPort(String)
     case invalidTimeout(String)
     case invalidGraphicsFrames(String)
+    case invalidDesktopWidth(String)
+    case invalidDesktopHeight(String)
     case invalidGraphicsProfile(String)
     case invalidProbeClipboardText
     case invalidProbeWindowsClipboardText
@@ -50,6 +56,10 @@ enum CLIError: Error, CustomStringConvertible {
             "invalid --timeout-seconds \(value)"
         case let .invalidGraphicsFrames(value):
             "invalid --graphics-frames \(value)"
+        case let .invalidDesktopWidth(value):
+            "invalid --desktop-width \(value); expected 640...8192"
+        case let .invalidDesktopHeight(value):
+            "invalid --desktop-height \(value); expected 480...8192"
         case let .invalidGraphicsProfile(value):
             "invalid --graphics-profile \(value)"
         case .invalidProbeClipboardText:
@@ -100,6 +110,7 @@ final class PreflightProbeRecorder: @unchecked Sendable {
     func sendInputProbeAfterFirstFrame(
         text: String?,
         movePointerToCenter: Bool,
+        toggleWindowsStart: Bool,
         pasteClipboardOnWindows: Bool,
         windowsClipboardText: String?,
         triggerWindowsAudio: Bool
@@ -134,6 +145,13 @@ final class PreflightProbeRecorder: @unchecked Sendable {
             session.send(events)
         }
 
+        if toggleWindowsStart {
+            sendWindowsKeyTimingProbe(on: session)
+            eventNames.append("windows-key:initial")
+            eventNames.append("windows-key:after-500ms")
+            eventNames.append("windows-key:after-2000ms")
+        }
+
         if pasteClipboardOnWindows {
             sendWindowsClipboardPasteProbe(on: session)
             eventNames.append("windows-clipboard-paste")
@@ -159,6 +177,15 @@ final class PreflightProbeRecorder: @unchecked Sendable {
         lock.lock()
         inputProbeEvents.append(contentsOf: eventNames)
         lock.unlock()
+    }
+
+    private func sendWindowsKeyTimingProbe(on session: RDPInputSession) {
+        let leftWindows = RDPKeyboardScancode(code: 0x005B, isExtended: true)
+        session.send(keyStroke(leftWindows))
+        Thread.sleep(forTimeInterval: 0.5)
+        session.send(keyStroke(leftWindows))
+        Thread.sleep(forTimeInterval: 2.0)
+        session.send(keyStroke(leftWindows))
     }
 
     private func sendWindowsClipboardPasteProbe(on session: RDPInputSession) {
@@ -296,6 +323,20 @@ func parseArguments(_ values: [String]) throws -> Arguments {
                 throw CLIError.invalidGraphicsFrames(values[index])
             }
             args.graphicsFrames = frames
+        case "--desktop-width":
+            index += 1
+            guard index < values.count else { throw CLIError.missingValue(value) }
+            guard let width = UInt16(values[index]), (640 ... 8192).contains(width) else {
+                throw CLIError.invalidDesktopWidth(values[index])
+            }
+            args.desktopWidth = width
+        case "--desktop-height":
+            index += 1
+            guard index < values.count else { throw CLIError.missingValue(value) }
+            guard let height = UInt16(values[index]), (480 ... 8192).contains(height) else {
+                throw CLIError.invalidDesktopHeight(values[index])
+            }
+            args.desktopHeight = height
         case "--graphics-profile":
             index += 1
             guard index < values.count else { throw CLIError.missingValue(value) }
@@ -305,6 +346,8 @@ func parseArguments(_ values: [String]) throws -> Arguments {
             args.graphicsCapabilityProfile = profile
         case "--hide-certificate-warnings":
             args.hideCertificateWarnings = true
+        case "--early-user-authorization":
+            args.earlyUserAuthorizationEnabled = true
         case "--audio":
             args.audioPlaybackEnabled = true
         case "--probe-clipboard-text":
@@ -329,6 +372,8 @@ func parseArguments(_ values: [String]) throws -> Arguments {
             args.probeInputText = values[index]
         case "--probe-input-pointer":
             args.probeInputPointer = true
+        case "--probe-windows-key":
+            args.probeWindowsKey = true
         case "--probe-windows-audio":
             args.audioPlaybackEnabled = true
             args.probeWindowsAudio = true
@@ -387,7 +432,7 @@ func passwordIsConfigured(in args: Arguments?) -> Bool {
 
 func printUsage() {
     print("""
-    Usage: RDPPreflight --host <host> [--port 3389] [--username <name>] [--domain <domain>] [--password-env <env>] [--timeout-seconds 10] [--graphics-frames 1] [--graphics-profile automatic|avcThinClient|avc420|legacy] [--hide-certificate-warnings] [--audio] [--probe-clipboard-text <text>] [--probe-windows-paste-clipboard] [--probe-windows-clipboard-text <text>] [--probe-input-text <text>] [--probe-input-pointer] [--probe-windows-audio] [--dry-run] [--json]
+    Usage: RDPPreflight --host <host> [--port 3389] [--username <name>] [--domain <domain>] [--password-env <env>] [--timeout-seconds 10] [--graphics-frames 1] [--desktop-width 1280] [--desktop-height 720] [--graphics-profile automatic|avcThinClient|avc420|legacy] [--hide-certificate-warnings] [--early-user-authorization] [--audio] [--probe-clipboard-text <text>] [--probe-windows-key] [--probe-windows-paste-clipboard] [--probe-windows-clipboard-text <text>] [--probe-input-text <text>] [--probe-input-pointer] [--probe-windows-audio] [--dry-run] [--json]
 
     Sends X.224/RDP negotiation, upgrades to TLS when selected, joins MCS channels, and sends Client Info.
     Credentials are validated now and used by later authentication stages; passwords are never printed.
@@ -585,6 +630,12 @@ func printReport(_ report: RDPPreflightReport, json: Bool) throws {
         }
         if let rdpGraphicsChannelCreateResponseHex = report.rdpGraphicsChannelCreateResponseHex {
             print("rdp graphics channel create response: \(rdpGraphicsChannelCreateResponseHex)")
+        }
+        if let errorInfoName = report.rdpRemoteTerminationErrorInfoName {
+            print("rdp remote termination error info: \(errorInfoName)")
+        }
+        if let disconnectReasonName = report.rdpRemoteTerminationDisconnectReasonName {
+            print("rdp remote termination disconnect reason: \(disconnectReasonName)")
         }
         if let rdpDisplayControlChannelID = report.rdpDisplayControlChannelID {
             print("rdp display control channel id: \(rdpDisplayControlChannelID)")
@@ -834,6 +885,8 @@ func failureReport(args: Arguments?, error: Error) -> RDPPreflightReport {
         host: host,
         port: port,
         credentials: credentials,
+        desktopWidth: args?.desktopWidth ?? 1280,
+        desktopHeight: args?.desktopHeight ?? 720,
         graphicsCapabilityProfile: args?.graphicsCapabilityProfile ?? .automatic
     )
     var report = RDPPreflightClient().dryRun(configuration: configuration)
@@ -859,7 +912,10 @@ do {
         timeoutSeconds: args.timeoutSeconds,
         hideCertificateWarnings: args.hideCertificateWarnings,
         graphicsFrameCaptureLimit: args.graphicsFrames,
+        desktopWidth: args.desktopWidth,
+        desktopHeight: args.desktopHeight,
         audioPlaybackEnabled: args.audioPlaybackEnabled,
+        earlyUserAuthorizationEnabled: args.earlyUserAuthorizationEnabled,
         graphicsCapabilityProfile: args.graphicsCapabilityProfile
     )
     let client = RDPPreflightClient()
@@ -872,6 +928,7 @@ do {
                 probeRecorder.sendInputProbeAfterFirstFrame(
                     text: args.probeInputText,
                     movePointerToCenter: args.probeInputPointer,
+                    toggleWindowsStart: args.probeWindowsKey,
                     pasteClipboardOnWindows: args.probeWindowsPasteClipboard,
                     windowsClipboardText: args.probeWindowsClipboardText,
                     triggerWindowsAudio: args.probeWindowsAudio

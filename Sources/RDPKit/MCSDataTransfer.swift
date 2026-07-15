@@ -9,6 +9,7 @@ struct MCSSendDataRequestPDU: Equatable, Sendable {
 
     init(initiator: UInt16, channelID: UInt16, userData: Data) {
         precondition(initiator >= 1001)
+        precondition(userData.count <= Self.maximumUserDataByteCount)
 
         self.initiator = initiator
         self.channelID = channelID
@@ -20,7 +21,7 @@ struct MCSSendDataRequestPDU: Equatable, Sendable {
         data.appendUInt8(0x64)
         data.appendBigEndianUInt16(initiator - 1001)
         data.appendBigEndianUInt16(channelID)
-        data.appendUInt8(0x70)
+        data.appendUInt8(MCSSendDataFlags.highPriorityBeginEnd)
         data.appendPERLength(userData.count)
         data.append(userData)
         return X224DataTPDU.wrap(data)
@@ -38,18 +39,39 @@ struct MCSSendDataIndicationPDU: Equatable, Sendable {
         guard header == 0x68 else {
             throw RDPDecodeError.invalidMCSSendDataIndication
         }
+        guard cursor.remaining >= 6 else {
+            throw RDPDecodeError.invalidMCSSendDataIndication
+        }
 
         let initiatorOffset = try cursor.readBigEndianUInt16()
         let channelID = try cursor.readBigEndianUInt16()
-        _ = try cursor.readUInt8()
+        let flags = try cursor.readUInt8()
+        guard MCSSendDataFlags.isCompleteSinglePayload(flags) else {
+            throw RDPDecodeError.invalidMCSSendDataIndication
+        }
         let length = try cursor.readPERLength()
         let userData = try cursor.readData(count: length)
+        guard cursor.remaining == 0 else {
+            throw RDPDecodeError.invalidMCSSendDataIndication
+        }
 
         return try MCSSendDataIndicationPDU(
             initiator: mcsUserID(fromOffset: initiatorOffset),
             channelID: channelID,
             userData: userData
         )
+    }
+}
+
+private enum MCSSendDataFlags {
+    static let highPriorityBeginEnd: UInt8 = 0x70
+
+    private static let segmentationMask: UInt8 = 0x30
+    private static let beginEndSegmentation: UInt8 = 0x30
+    private static let paddingMask: UInt8 = 0x0F
+
+    static func isCompleteSinglePayload(_ flags: UInt8) -> Bool {
+        flags & paddingMask == 0 && flags & segmentationMask == beginEndSegmentation
     }
 }
 

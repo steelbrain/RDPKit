@@ -9,6 +9,20 @@ enum RDPAudioDynamicChannel {
     static let name = "AUDIO_PLAYBACK_DVC"
 }
 
+enum RDPAudioInputDynamicChannel {
+    static let name = "AUDIO_INPUT"
+}
+
+enum RDPAudioInputMessageType {
+    static let version: UInt8 = 0x01
+    static let formats: UInt8 = 0x02
+    static let open: UInt8 = 0x03
+    static let openReply: UInt8 = 0x04
+    static let dataIncoming: UInt8 = 0x05
+    static let data: UInt8 = 0x06
+    static let formatChange: UInt8 = 0x07
+}
+
 enum RDPAudioMessageType {
     static let close: UInt8 = 0x01
     static let waveInfo: UInt8 = 0x02
@@ -33,6 +47,7 @@ enum RDPAudioCapabilityFlags {
 
 public enum RDPAudioFormatTag {
     public static let pcm: UInt16 = 0x0001
+    public static let extensible: UInt16 = 0xFFFE
 }
 
 public enum RDPAudioFormatValidationError: Error, Equatable, CustomStringConvertible, Sendable {
@@ -314,6 +329,265 @@ public struct RDPAudioFormat: Encodable, Equatable, Sendable {
     }
 }
 
+struct RDPAudioInputPDU: Equatable, Sendable {
+    var messageType: UInt8
+    var payload: Data
+
+    var typeName: String {
+        switch messageType {
+        case RDPAudioInputMessageType.version:
+            "audio-input-version"
+        case RDPAudioInputMessageType.formats:
+            "audio-input-formats"
+        case RDPAudioInputMessageType.open:
+            "audio-input-open"
+        case RDPAudioInputMessageType.openReply:
+            "audio-input-open-reply"
+        case RDPAudioInputMessageType.dataIncoming:
+            "audio-input-data-incoming"
+        case RDPAudioInputMessageType.data:
+            "audio-input-data"
+        case RDPAudioInputMessageType.formatChange:
+            "audio-input-format-change"
+        default:
+            "audio-input-0x\(String(format: "%02x", messageType))"
+        }
+    }
+
+    init(messageType: UInt8, payload: Data = Data()) {
+        self.messageType = messageType
+        self.payload = payload
+    }
+
+    static func parse(from data: Data) throws -> RDPAudioInputPDU {
+        guard data.isEmpty == false else {
+            throw RDPDecodeError.invalidAudioPDU
+        }
+
+        var cursor = ByteCursor(data)
+        return try RDPAudioInputPDU(
+            messageType: cursor.readUInt8(),
+            payload: cursor.readRemainingData()
+        )
+    }
+
+    func encoded() -> Data {
+        var data = Data()
+        data.appendUInt8(messageType)
+        data.append(payload)
+        return data
+    }
+}
+
+struct RDPAudioInputVersionPDU: Equatable, Sendable {
+    static let maximumSupportedVersion: UInt32 = 2
+
+    var version: UInt32
+
+    init(version: UInt32 = maximumSupportedVersion) {
+        self.version = version
+    }
+
+    init(serverVersion: UInt32) {
+        version = min(max(serverVersion, 1), Self.maximumSupportedVersion)
+    }
+
+    static func parseIfPresent(from pdu: RDPAudioInputPDU) throws -> RDPAudioInputVersionPDU? {
+        guard pdu.messageType == RDPAudioInputMessageType.version else {
+            return nil
+        }
+        guard pdu.payload.count == 4 else {
+            throw RDPDecodeError.invalidAudioPDU
+        }
+
+        var cursor = ByteCursor(pdu.payload)
+        let version = try cursor.readLittleEndianUInt32()
+        guard version >= 1 else {
+            throw RDPDecodeError.invalidAudioPDU
+        }
+        return RDPAudioInputVersionPDU(version: version)
+    }
+
+    func encoded() -> Data {
+        var payload = Data()
+        payload.appendLittleEndianUInt32(version)
+        return RDPAudioInputPDU(
+            messageType: RDPAudioInputMessageType.version,
+            payload: payload
+        ).encoded()
+    }
+}
+
+struct RDPAudioInputFormatsPDU: Equatable, Sendable {
+    var cbSizeFormatsPacket: UInt32
+    var formats: [RDPAudioFormat]
+    var extraData: Data
+
+    init(
+        cbSizeFormatsPacket: UInt32 = 0,
+        formats: [RDPAudioFormat],
+        extraData: Data = Data()
+    ) {
+        precondition(formats.count <= Int(UInt32.max))
+
+        self.cbSizeFormatsPacket = cbSizeFormatsPacket
+        self.formats = formats
+        self.extraData = extraData
+    }
+
+    static func parseIfPresent(from pdu: RDPAudioInputPDU) throws -> RDPAudioInputFormatsPDU? {
+        guard pdu.messageType == RDPAudioInputMessageType.formats else {
+            return nil
+        }
+        guard pdu.payload.count >= 8 else {
+            throw RDPDecodeError.invalidAudioPDU
+        }
+
+        var cursor = ByteCursor(pdu.payload)
+        let formatCount = try Int(cursor.readLittleEndianUInt32())
+        let cbSizeFormatsPacket = try cursor.readLittleEndianUInt32()
+        guard formatCount <= cursor.remaining / 18 else {
+            throw RDPDecodeError.invalidAudioPDU
+        }
+        var formats: [RDPAudioFormat] = []
+        formats.reserveCapacity(formatCount)
+        for _ in 0 ..< formatCount {
+            try formats.append(RDPAudioFormat.parse(from: &cursor))
+        }
+
+        return RDPAudioInputFormatsPDU(
+            cbSizeFormatsPacket: cbSizeFormatsPacket,
+            formats: formats,
+            extraData: cursor.readRemainingData()
+        )
+    }
+
+    func encoded() -> Data {
+        var payload = Data()
+        payload.appendLittleEndianUInt32(UInt32(formats.count))
+        payload.appendLittleEndianUInt32(encodedSizeWithoutExtraData)
+        for format in formats {
+            payload.append(format.encoded())
+        }
+        payload.append(extraData)
+        return RDPAudioInputPDU(
+            messageType: RDPAudioInputMessageType.formats,
+            payload: payload
+        ).encoded()
+    }
+
+    private var encodedSizeWithoutExtraData: UInt32 {
+        UInt32(1 + 4 + 4 + formats.reduce(0) { $0 + $1.encoded().count })
+    }
+}
+
+struct RDPAudioInputOpenPDU: Equatable, Sendable {
+    private static let maximumChannelMask: UInt32 = 0x0003_FFFF
+    private static let pcmSubformat = Data([
+        0x01, 0x00, 0x00, 0x00,
+        0x00, 0x00,
+        0x10, 0x00,
+        0x80, 0x00,
+        0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71,
+    ])
+
+    var framesPerPacket: UInt32
+    var initialFormat: UInt32
+    var format: RDPAudioFormat
+
+    static func parseIfPresent(from pdu: RDPAudioInputPDU) throws -> RDPAudioInputOpenPDU? {
+        guard pdu.messageType == RDPAudioInputMessageType.open else {
+            return nil
+        }
+        guard pdu.payload.count >= 26 else {
+            throw RDPDecodeError.invalidAudioPDU
+        }
+
+        var cursor = ByteCursor(pdu.payload)
+        let framesPerPacket = try cursor.readLittleEndianUInt32()
+        let initialFormat = try cursor.readLittleEndianUInt32()
+        let format = try RDPAudioFormat.parse(from: &cursor)
+        guard cursor.remaining == 0,
+              try isValidExtensibleFormat(format)
+        else {
+            throw RDPDecodeError.invalidAudioPDU
+        }
+
+        return RDPAudioInputOpenPDU(
+            framesPerPacket: framesPerPacket,
+            initialFormat: initialFormat,
+            format: format
+        )
+    }
+
+    private static func isValidExtensibleFormat(_ format: RDPAudioFormat) throws -> Bool {
+        guard format.formatTag == RDPAudioFormatTag.extensible else {
+            return true
+        }
+        guard format.extraData.count == 22 else {
+            return false
+        }
+
+        var cursor = ByteCursor(format.extraData)
+        let validBitsPerSample = try cursor.readLittleEndianUInt16()
+        let channelMask = try cursor.readLittleEndianUInt32()
+        let subformat = try cursor.readData(count: 16)
+        return validBitsPerSample <= format.bitsPerSample
+            && channelMask & ~maximumChannelMask == 0
+            && subformat == pcmSubformat
+    }
+}
+
+struct RDPAudioInputOpenReplyPDU: Equatable, Sendable {
+    static let genericFailure: UInt32 = 0x8000_4005
+
+    var result: UInt32
+
+    init(result: UInt32 = genericFailure) {
+        self.result = result
+    }
+
+    func encoded() -> Data {
+        var payload = Data()
+        payload.appendLittleEndianUInt32(result)
+        return RDPAudioInputPDU(
+            messageType: RDPAudioInputMessageType.openReply,
+            payload: payload
+        ).encoded()
+    }
+}
+
+struct RDPAudioInputIncomingDataPDU: Equatable, Sendable {
+    func encoded() -> Data {
+        RDPAudioInputPDU(messageType: RDPAudioInputMessageType.dataIncoming).encoded()
+    }
+}
+
+struct RDPAudioInputFormatChangePDU: Equatable, Sendable {
+    var newFormat: UInt32
+
+    static func parseIfPresent(from pdu: RDPAudioInputPDU) throws -> RDPAudioInputFormatChangePDU? {
+        guard pdu.messageType == RDPAudioInputMessageType.formatChange else {
+            return nil
+        }
+        guard pdu.payload.count == 4 else {
+            throw RDPDecodeError.invalidAudioPDU
+        }
+
+        var cursor = ByteCursor(pdu.payload)
+        return try RDPAudioInputFormatChangePDU(newFormat: cursor.readLittleEndianUInt32())
+    }
+
+    func encoded() -> Data {
+        var payload = Data()
+        payload.appendLittleEndianUInt32(newFormat)
+        return RDPAudioInputPDU(
+            messageType: RDPAudioInputMessageType.formatChange,
+            payload: payload
+        ).encoded()
+    }
+}
+
 struct RDPAudioWaveInfoPDU: Equatable, Sendable {
     static let byteCountWithoutHeader = 12
 
@@ -327,7 +601,7 @@ struct RDPAudioWaveInfoPDU: Equatable, Sendable {
         guard pdu.header.messageType == RDPAudioMessageType.waveInfo else {
             return nil
         }
-        guard pdu.payload.count >= byteCountWithoutHeader,
+        guard pdu.payload.count == byteCountWithoutHeader,
               Int(pdu.header.bodySize) >= byteCountWithoutHeader
         else {
             throw RDPDecodeError.invalidAudioPDU
@@ -358,7 +632,10 @@ struct RDPAudioWaveDataPDU: Equatable, Sendable {
         }
 
         var cursor = ByteCursor(payload)
-        _ = try cursor.readLittleEndianUInt32()
+        let pad = try cursor.readLittleEndianUInt32()
+        guard pad == 0 else {
+            throw RDPDecodeError.invalidAudioPDU
+        }
         return RDPAudioWaveDataPDU(data: cursor.readRemainingData())
     }
 }
@@ -415,6 +692,38 @@ struct RDPAudioWaveConfirmPDU: Equatable, Sendable {
     }
 }
 
+struct RDPAudioVolumePDU: Equatable, Sendable {
+    var volume: UInt32
+
+    static func parseIfPresent(from pdu: RDPAudioPDU) throws -> RDPAudioVolumePDU? {
+        guard pdu.header.messageType == RDPAudioMessageType.volume else {
+            return nil
+        }
+        guard pdu.payload.count == 4 else {
+            throw RDPDecodeError.invalidAudioPDU
+        }
+
+        var cursor = ByteCursor(pdu.payload)
+        return try RDPAudioVolumePDU(volume: cursor.readLittleEndianUInt32())
+    }
+}
+
+struct RDPAudioPitchPDU: Equatable, Sendable {
+    var pitch: UInt32
+
+    static func parseIfPresent(from pdu: RDPAudioPDU) throws -> RDPAudioPitchPDU? {
+        guard pdu.header.messageType == RDPAudioMessageType.pitch else {
+            return nil
+        }
+        guard pdu.payload.count == 4 else {
+            throw RDPDecodeError.invalidAudioPDU
+        }
+
+        var cursor = ByteCursor(pdu.payload)
+        return try RDPAudioPitchPDU(pitch: cursor.readLittleEndianUInt32())
+    }
+}
+
 struct RDPAudioFormatsPDU: Equatable, Sendable {
     var flags: UInt32
     var volume: UInt32
@@ -466,7 +775,7 @@ struct RDPAudioFormatsPDU: Equatable, Sendable {
             return [exactPCM]
         }
 
-        return serverFormats.first(where: \.isPCM16Bit).map { [$0] } ?? [.pcmStereo48k16Bit]
+        return serverFormats.first(where: \.isPCM16Bit).map { [$0] } ?? []
     }
 
     static func parseIfPresent(from pdu: RDPAudioPDU) throws -> RDPAudioFormatsPDU? {
@@ -486,6 +795,9 @@ struct RDPAudioFormatsPDU: Equatable, Sendable {
         let lastBlockConfirmed = try cursor.readUInt8()
         let version = try cursor.readLittleEndianUInt16()
         _ = try cursor.readUInt8()
+        guard formatCount <= cursor.remaining / 18 else {
+            throw RDPDecodeError.invalidAudioPDU
+        }
 
         var formats: [RDPAudioFormat] = []
         formats.reserveCapacity(formatCount)
@@ -558,10 +870,19 @@ struct RDPAudioTrainingPDU: Equatable, Sendable {
         }
 
         var cursor = ByteCursor(pdu.payload)
-        return try RDPAudioTrainingPDU(
-            timestamp: cursor.readLittleEndianUInt16(),
-            packetSize: cursor.readLittleEndianUInt16()
-        )
+        let timestamp = try cursor.readLittleEndianUInt16()
+        let packetSize = try cursor.readLittleEndianUInt16()
+        let dataByteCount = cursor.remaining
+        let fullPDUByteCount = pdu.payload.count + 4
+        if dataByteCount > 0 {
+            guard fullPDUByteCount <= Int(UInt16.max),
+                  packetSize == UInt16(fullPDUByteCount) || packetSize == UInt16(dataByteCount)
+            else {
+                throw RDPDecodeError.invalidAudioPDU
+            }
+        }
+
+        return RDPAudioTrainingPDU(timestamp: timestamp, packetSize: packetSize)
     }
 
     func confirmEncoded() -> Data {
@@ -639,12 +960,24 @@ public final class RDPAudioSession: @unchecked Sendable {
     func receive(_ pdu: RDPAudioPDU, receivedAt: Date) throws -> RDPAudioSample? {
         if let waveInfo = try RDPAudioWaveInfoPDU.parseIfPresent(from: pdu) {
             lock.lock()
-            pendingWaveInfo = waveInfo
+            let canReceiveWaveInfo = serverVersion < 8
+            if canReceiveWaveInfo {
+                pendingWaveInfo = waveInfo
+            }
             lock.unlock()
+            guard canReceiveWaveInfo else {
+                throw RDPDecodeError.invalidAudioPDU
+            }
             return nil
         }
 
         if let wave2 = try RDPAudioWave2PDU.parseIfPresent(from: pdu) {
+            lock.lock()
+            let canReceiveWave2 = serverVersion >= 8
+            lock.unlock()
+            guard canReceiveWave2 else {
+                throw RDPDecodeError.invalidAudioPDU
+            }
             return try sample(
                 formatNo: wave2.formatNo,
                 timestamp: wave2.timestamp,
@@ -733,24 +1066,69 @@ public final class RDPAudioSession: @unchecked Sendable {
     }
 
     private func send(_ payload: Data) {
-        let channelPayload: Data
-        if let dynamicChannelID {
-            channelPayload = RDPDynamicVirtualChannelDataPDU(
-                channelID: dynamicChannelID,
-                payload: payload
-            ).encoded()
-        } else {
-            channelPayload = payload
-        }
-        let packet = RDPStaticVirtualChannelPDU(payload: channelPayload)
-            .encodedTPKT(initiator: userChannelID, channelID: staticChannelID)
+        let packets = Self.encodedPackets(
+            payload,
+            userChannelID: userChannelID,
+            staticChannelID: staticChannelID,
+            dynamicChannelID: dynamicChannelID
+        )
         channel.eventLoop.execute {
             guard self.channel.isActive else {
                 return
             }
-            var buffer = self.channel.allocator.buffer(capacity: packet.count)
-            buffer.writeBytes(packet)
-            self.channel.writeAndFlush(buffer, promise: nil)
+            for packet in packets {
+                var buffer = self.channel.allocator.buffer(capacity: packet.count)
+                buffer.writeBytes(packet)
+                self.channel.writeAndFlush(buffer, promise: nil)
+            }
         }
+    }
+
+    static func encodedPacket(
+        _ payload: Data,
+        userChannelID: UInt16,
+        staticChannelID: UInt16,
+        dynamicChannelID: UInt32?
+    ) -> Data {
+        if let dynamicChannelID {
+            precondition(payload.count <= RDPDynamicVirtualChannelDataPDU.maximumPayloadByteCount(
+                channelID: dynamicChannelID
+            ))
+        }
+        return encodedPackets(
+            payload,
+            userChannelID: userChannelID,
+            staticChannelID: staticChannelID,
+            dynamicChannelID: dynamicChannelID
+        )[0]
+    }
+
+    static func encodedPackets(
+        _ payload: Data,
+        userChannelID: UInt16,
+        staticChannelID: UInt16,
+        dynamicChannelID: UInt32?
+    ) -> [Data] {
+        let channelPayload: Data
+        let staticChannelFlags: UInt32
+        if let dynamicChannelID {
+            return RDPDynamicVirtualChannelDataPacketizer(
+                channelID: dynamicChannelID,
+                payload: payload
+            ).encodedPDUs().map { dynamicPayload in
+                RDPStaticVirtualChannelPDU(
+                    payload: dynamicPayload,
+                    flags: RDPStaticVirtualChannelFlags.complete
+                ).encodedTPKT(initiator: userChannelID, channelID: staticChannelID)
+            }
+        } else {
+            channelPayload = payload
+            staticChannelFlags = RDPStaticVirtualChannelFlags.complete
+        }
+
+        return [RDPStaticVirtualChannelPDU(
+            payload: channelPayload,
+            flags: staticChannelFlags
+        ).encodedTPKT(initiator: userChannelID, channelID: staticChannelID)]
     }
 }

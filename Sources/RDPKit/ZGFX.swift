@@ -8,6 +8,51 @@ private struct RDPZGFXToken {
     var valueBase: UInt32
 }
 
+private enum RDPZGFXSegmentDescriptor {
+    static let single: UInt8 = 0xE0
+    static let multipart: UInt8 = 0xE1
+}
+
+private enum RDPZGFXBulkEncodedDataHeader {
+    static let compressionTypeMask: UInt8 = 0x0F
+    static let packetCompressed: UInt8 = 0x20
+    static let reservedFlagsMask: UInt8 = 0xF0
+    static let rdp8CompressionType: UInt8 = 0x04
+    static let rdp8LiteCompressionType: UInt8 = 0x06
+}
+
+private enum RDPZGFXCompressionProfile {
+    case rdp8
+    case rdp8Lite
+
+    var compressionType: UInt8 {
+        switch self {
+        case .rdp8:
+            RDPZGFXBulkEncodedDataHeader.rdp8CompressionType
+        case .rdp8Lite:
+            RDPZGFXBulkEncodedDataHeader.rdp8LiteCompressionType
+        }
+    }
+
+    var historyByteCount: Int {
+        switch self {
+        case .rdp8:
+            2_500_000
+        case .rdp8Lite:
+            8_192
+        }
+    }
+
+    var maximumDecodedSegmentByteCount: Int {
+        switch self {
+        case .rdp8:
+            65_535
+        case .rdp8Lite:
+            8_192
+        }
+    }
+}
+
 private struct RDPZGFXBitReader {
     private let bytes: [UInt8]
     private let bitCount: Int
@@ -119,15 +164,32 @@ private final class RDPZGFXHistory {
 }
 
 final class RDPZGFXDecompressor {
-    private let history = RDPZGFXHistory()
+    private let history: RDPZGFXHistory
+    private let profile: RDPZGFXCompressionProfile
+
+    convenience init() {
+        self.init(profile: .rdp8)
+    }
+
+    static func rdp8Lite() -> RDPZGFXDecompressor {
+        RDPZGFXDecompressor(profile: .rdp8Lite)
+    }
+
+    private init(profile: RDPZGFXCompressionProfile) {
+        self.profile = profile
+        history = RDPZGFXHistory(size: profile.historyByteCount)
+    }
 
     func decompress(_ data: Data) throws -> Data {
         var cursor = ByteCursor(data)
         let descriptor = try cursor.readUInt8()
         switch descriptor {
-        case 0xE0:
+        case RDPZGFXSegmentDescriptor.single:
             return try decodeSegment(cursor.readRemainingData())
-        case 0xE1:
+        case RDPZGFXSegmentDescriptor.multipart:
+            guard profile == .rdp8 else {
+                throw RDPDecodeError.invalidRDPGFXPDU
+            }
             return try decodeMultipartSegments(&cursor)
         default:
             throw RDPDecodeError.invalidRDPGFXPDU
@@ -147,29 +209,38 @@ final class RDPZGFXDecompressor {
             try decoded.append(decodeSegment(cursor.readData(count: segmentSize)))
         }
 
-        guard decoded.count == uncompressedSize else {
+        guard decoded.count == uncompressedSize, cursor.remaining == 0 else {
             throw RDPDecodeError.invalidRDPGFXPDU
         }
         return decoded
     }
 
     private func decodeSegment(_ segment: Data) throws -> Data {
-        guard !segment.isEmpty else {
-            return Data()
+        guard segment.isEmpty == false else {
+            throw RDPDecodeError.invalidRDPGFXPDU
         }
 
         var cursor = ByteCursor(segment)
         let typeAndFlags = try cursor.readUInt8()
-        let compressionType = typeAndFlags & 0x0F
-        let compressionFlags = typeAndFlags >> 4
-        guard compressionType == 0x04 else {
+        let compressionType = typeAndFlags & RDPZGFXBulkEncodedDataHeader.compressionTypeMask
+        let compressionFlags = typeAndFlags & RDPZGFXBulkEncodedDataHeader.reservedFlagsMask
+        guard compressionType == profile.compressionType else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+        guard compressionFlags == 0 || compressionFlags == RDPZGFXBulkEncodedDataHeader.packetCompressed else {
             throw RDPDecodeError.invalidRDPGFXPDU
         }
 
         let encodedData = cursor.readRemainingData()
-        guard compressionFlags & 0x02 != 0 else {
+        guard compressionFlags & RDPZGFXBulkEncodedDataHeader.packetCompressed != 0 else {
+            guard encodedData.count <= profile.maximumDecodedSegmentByteCount else {
+                throw RDPDecodeError.invalidRDPGFXPDU
+            }
             history.write(Array(encodedData))
             return encodedData
+        }
+        guard !encodedData.isEmpty else {
+            throw RDPDecodeError.invalidRDPGFXPDU
         }
 
         return try decompressSegment(encodedData)
@@ -189,10 +260,18 @@ final class RDPZGFXDecompressor {
                 try readMatch(token, from: &reader, into: &output)
             } else if token.valueBits == 8 {
                 let literal = try UInt8(reader.readBits(8))
+                guard Self.hasShortLiteralCode(literal) == false,
+                      output.count < profile.maximumDecodedSegmentByteCount
+                else {
+                    throw RDPDecodeError.invalidRDPGFXPDU
+                }
                 output.append(literal)
                 history.write([literal])
             } else {
                 let literal = UInt8(token.valueBase)
+                guard output.count < profile.maximumDecodedSegmentByteCount else {
+                    throw RDPDecodeError.invalidRDPGFXPDU
+                }
                 output.append(literal)
                 history.write([literal])
             }
@@ -237,6 +316,9 @@ final class RDPZGFXDecompressor {
             length = (1 << (lengthTokenSize + 1)) + value
         }
 
+        guard length <= profile.maximumDecodedSegmentByteCount - output.count else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
         let bytes = try history.read(offset: distance, count: length)
         output.append(contentsOf: bytes)
         history.write(bytes)
@@ -247,6 +329,9 @@ final class RDPZGFXDecompressor {
         into output: inout [UInt8]
     ) throws {
         let length = try Int(reader.readBits(15))
+        guard length <= profile.maximumDecodedSegmentByteCount - output.count else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
         if reader.byteBitOffset > 0 {
             try reader.skipBits(8 - reader.byteBitOffset)
         }
@@ -258,6 +343,15 @@ final class RDPZGFXDecompressor {
         }
         output.append(contentsOf: bytes)
         history.write(bytes)
+    }
+
+    private static func hasShortLiteralCode(_ value: UInt8) -> Bool {
+        switch value {
+        case 0x00 ... 0x0C, 0x38 ... 0x40, 0x66, 0x80, 0xFF:
+            true
+        default:
+            false
+        }
     }
 
     private static let tokenTable: [RDPZGFXToken] = [

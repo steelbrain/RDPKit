@@ -34,18 +34,27 @@ enum X224DataTPDU {
 struct X224ConnectionRequest: Equatable, Sendable {
     var routingToken: Data?
     var negotiationRequest: RDPNegotiationRequest
+    var correlationID: Data?
 
     init(
         routingToken: Data? = nil,
-        negotiationRequest: RDPNegotiationRequest = RDPNegotiationRequest()
+        negotiationRequest: RDPNegotiationRequest = RDPNegotiationRequest(),
+        correlationID: Data? = nil
     ) {
         self.routingToken = routingToken
         self.negotiationRequest = negotiationRequest
+        self.correlationID = correlationID
     }
 
     func encodedTPKT() -> Data {
+        var negotiationRequest = negotiationRequest
+        let correlationInfo = encodedCorrelationInfo(correlationID)
+        let routingToken = normalizedRoutingToken(routingToken)
+        if correlationInfo != nil {
+            negotiationRequest.flags |= RDPNegotiationRequestFlags.correlationInfoPresent
+        }
         let negotiation = negotiationRequest.encoded()
-        let trailingByteCount = (routingToken?.count ?? 0) + negotiation.count
+        let trailingByteCount = (routingToken?.count ?? 0) + negotiation.count + (correlationInfo?.count ?? 0)
         precondition(trailingByteCount <= Int(UInt8.max) - 6)
 
         var tpdu = Data()
@@ -58,8 +67,37 @@ struct X224ConnectionRequest: Equatable, Sendable {
             tpdu.append(routingToken)
         }
         tpdu.append(negotiation)
+        if let correlationInfo {
+            tpdu.append(correlationInfo)
+        }
 
         return TPKT.wrap(tpdu)
+    }
+
+    private func normalizedRoutingToken(_ routingToken: Data?) -> Data? {
+        guard var routingToken else {
+            return nil
+        }
+        let terminator = Data([0x0D, 0x0A])
+        if Data(routingToken.suffix(terminator.count)) != terminator {
+            routingToken.append(terminator)
+        }
+        return routingToken
+    }
+
+    private func encodedCorrelationInfo(_ correlationID: Data?) -> Data? {
+        guard let correlationID else {
+            return nil
+        }
+        precondition(correlationID.count == 16)
+
+        var data = Data()
+        data.appendUInt8(0x06)
+        data.appendUInt8(0x00)
+        data.appendLittleEndianUInt16(36)
+        data.append(correlationID)
+        data.append(contentsOf: repeatElement(0, count: 16))
+        return data
     }
 }
 

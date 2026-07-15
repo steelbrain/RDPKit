@@ -8,6 +8,24 @@ import Testing
     #expect(try RDPTransportPacketFraming.packetLength(from: packet) == 7)
 }
 
+@Test func rejectsTPKTTransportPacketWithNonzeroReservedByte() throws {
+    do {
+        _ = try RDPTransportPacketFraming.packetLength(from: Data([0x03, 0x01, 0x00, 0x07]))
+        #expect(Bool(false), "Expected invalid TPKT reserved byte to throw")
+    } catch let error as RDPPreflightError {
+        #expect(error.description == "receive failed: received invalid TPKT reserved byte 1")
+    }
+}
+
+@Test func rejectsTPKTTransportPacketLengthSmallerThanHeader() throws {
+    do {
+        _ = try RDPTransportPacketFraming.packetLength(from: Data([0x03, 0x00, 0x00, 0x03]))
+        #expect(Bool(false), "Expected invalid TPKT length to throw")
+    } catch let error as RDPPreflightError {
+        #expect(error.description == "receive failed: received invalid TPKT length 3")
+    }
+}
+
 @Test func waitsForPartialTPKTTransportPacketHeader() throws {
     let packet = Data([0x03, 0x00, 0x00])
 

@@ -7,6 +7,7 @@ private let remoteSessionMaximumLocalClipboardFileBytes = 32 * 1024 * 1024
 @MainActor
 final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegate {
     private let credentialStore = KeychainCredentialStore()
+    private let clientLicenseStore = ClientLicenseStore()
     private let trustedCertificateStore = TrustedCertificateStore()
     private let sessionID: UUID
     private let sessionDisplayName: String
@@ -586,6 +587,19 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
             username: trimmedUsername,
             domain: trimmedDomain
         )
+        let clientLicenseKey = makeClientLicenseKey(
+            host: target.host,
+            port: target.port,
+            username: trimmedUsername,
+            domain: trimmedDomain
+        )
+        let storedClientLicense: RDPStoredClientLicense?
+        do {
+            storedClientLicense = try clientLicenseStore.license(for: clientLicenseKey)
+        } catch {
+            storedClientLicense = nil
+            keychainMessage = String(describing: error)
+        }
         let credentials: RDPCredentials?
         do {
             credentials = try RDPCredentials.validated(
@@ -613,7 +627,8 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
             desktopSize: requestedDesktopSize,
             clipboardEnabled: clipboardSharingEnabled,
             audioPlaybackEnabled: audioPlaybackEnabled,
-            graphicsCapabilityProfile: graphicsCapabilityProfile
+            graphicsCapabilityProfile: graphicsCapabilityProfile,
+            storedClientLicense: storedClientLicense
         )
 
         let connectionID = UUID()
@@ -628,6 +643,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
 
         let sink = RDPRemoteSessionMainActorSink(controller: self, connectionID: connectionID)
         let credentialStore = credentialStore
+        let clientLicenseStore = clientLicenseStore
         connectionTask = Task.detached(priority: .userInitiated) {
             let decodeQueue = RDPLatestFrameDecodeQueue(
                 shouldCancel: {
@@ -697,10 +713,13 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
             let nextReport = RDPPreflightClient().run(
                 configuration: configuration,
                 onGraphicsFrame: { frame in
-                    guard Task.isCancelled == false else {
-                        return
-                    }
-                    decodeQueue.submit(frame, receivedAt: Date())
+                    try decodeQueue.submitAndWait(
+                        frame,
+                        receivedAt: Date(),
+                        shouldContinue: {
+                            Task.isCancelled == false && cancellation.isCancelled == false
+                        }
+                    ).requireDecoded()
                 },
                 onInputReady: { session in
                     let persistenceResult = persistCredentialsIfNeeded(
@@ -823,6 +842,11 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                 return
             }
             let firstFrameDecodeResult = nextReport.rdpGraphicsFirstFrame.map(decodeReportFirstFrame)
+            let clientLicensePersistenceResult = persistClientLicenseIfNeeded(
+                nextReport.rdpIssuedClientLicense,
+                key: clientLicenseKey,
+                store: clientLicenseStore
+            )
             sink.apply { controller in
                 if let finalWireReceiveSample {
                     controller.renderMetricsStore.recordWireReceive(finalWireReceiveSample)
@@ -830,6 +854,9 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                 controller.flushPendingFramePresentation()
                 controller.publishRenderMetricsSnapshotIfNeeded(force: true)
                 controller.report = nextReport
+                if let clientLicensePersistenceResult {
+                    controller.applyClientLicensePersistenceResult(clientLicensePersistenceResult)
+                }
                 if let certificateTrusted = nextReport.certificateTrusted {
                     controller.serverCertificateInfo = RDPServerCertificateInfo(
                         trusted: certificateTrusted,
@@ -1682,6 +1709,20 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         ))
     }
 
+    private func makeClientLicenseKey(
+        host: String,
+        port: UInt16,
+        username: String,
+        domain: String
+    ) -> ClientLicenseStoreKey {
+        ClientLicenseStoreKey(identity: RDPConnectionIdentity(
+            host: host,
+            port: port,
+            username: username,
+            domain: domain
+        ))
+    }
+
     private func credentialPersistenceRequest(
         key: KeychainCredentialKey?,
         password: String,
@@ -1711,6 +1752,15 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         case .success(.deleted):
             hasRememberedPassword = false
             keychainMessage = "Saved password removed from Keychain."
+        case let .failure(error):
+            keychainMessage = String(describing: error)
+        }
+    }
+
+    private func applyClientLicensePersistenceResult(_ result: Result<ClientLicensePersistenceResult, Error>) {
+        switch result {
+        case .success(.saved):
+            keychainMessage = "Client license saved to Keychain."
         case let .failure(error):
             keychainMessage = String(describing: error)
         }
