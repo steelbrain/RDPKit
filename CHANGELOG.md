@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.3.1
+
 - Raise the minimum deployment targets from 16.0 to 17.0 for iOS, tvOS, and
   Mac Catalyst. The macOS 13.0 and visionOS 1.0 minimums are unchanged.
 
