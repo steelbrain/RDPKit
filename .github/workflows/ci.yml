@@ -3,10 +3,12 @@ name: CI
 on:
   push:
     branches:
-      - master
       - main
   pull_request:
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   macos:
@@ -16,7 +18,7 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install build tools
         run: brew install swiftlint
@@ -25,7 +27,11 @@ jobs:
         run: swiftlint lint --strict
 
       - name: Run RDPKit tests
-        run: swift test
+        timeout-minutes: 10
+        run: swift test --no-parallel
+
+      - name: Run example tests
+        run: swift test --package-path Examples
 
       - name: Build RDPClient app
         run: swift build --package-path Examples --product RDPClient
@@ -35,3 +41,36 @@ jobs:
 
       - name: Build preflight tool
         run: swift build --package-path Examples --product RDPPreflight
+
+      - name: Build frame benchmark tool
+        run: swift build --package-path Examples --product RDPFrameBenchmark
+
+  apple-platforms:
+    name: ${{ matrix.name }} build
+    runs-on: macos-26
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: iOS
+            destination: generic/platform=iOS
+          - name: tvOS
+            destination: generic/platform=tvOS
+          - name: Mac Catalyst
+            destination: generic/platform=macOS,variant=Mac Catalyst
+          - name: visionOS
+            destination: generic/platform=visionOS
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Build RDPKit
+        run: >-
+          xcodebuild
+          -quiet
+          -scheme RDPKit
+          -destination '${{ matrix.destination }}'
+          CODE_SIGNING_ALLOWED=NO
+          build

@@ -5,7 +5,10 @@ included:
   - Tests
   - Examples/RDPClient/Sources
   - Examples/RDPFirstFrameCapture
+  - Examples/RDPFirstFrameCaptureSupport
+  - Examples/RDPFrameBenchmark
   - Examples/RDPPreflight
+  - Examples/Tests
 
 excluded:
   - DerivedData

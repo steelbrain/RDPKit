@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Raise the minimum deployment targets from 16.0 to 17.0 for iOS, tvOS, and
+  Mac Catalyst. The macOS 13.0 and visionOS 1.0 minimums are unchanged.
+
 ## 0.3.0
 
 - Add server-redirection compatibility by following redirection PDUs, reconnecting with server-provided routing tokens, handling connect-time bandwidth detection, and using the required `drdynvc` ShowProtocol framing.

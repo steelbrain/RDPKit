@@ -6,9 +6,9 @@ let package = Package(
     name: "RDPKit",
     platforms: [
         .macOS(.v13),
-        .iOS(.v16),
-        .tvOS(.v16),
-        .macCatalyst(.v16),
+        .iOS(.v17),
+        .tvOS(.v17),
+        .macCatalyst(.v17),
         .visionOS(.v1),
     ],
     products: [

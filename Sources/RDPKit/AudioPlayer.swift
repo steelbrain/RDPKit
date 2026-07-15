@@ -85,9 +85,9 @@ public final class RDPAudioPlayer {
         guard sample.data.count == audioByteCount else {
             throw RDPAudioPlayerError.bufferAllocationFailed
         }
-        let audioBuffers = UnsafeMutableAudioBufferListPointer(buffer.mutableAudioBufferList)
-        guard audioBuffers.count == 1,
-              let destination = audioBuffers[0].mData?.assumingMemoryBound(to: UInt8.self)
+        let audioBufferList = buffer.mutableAudioBufferList
+        guard audioBufferList.pointee.mNumberBuffers == 1,
+              let destination = audioBufferList.pointee.mBuffers.mData?.assumingMemoryBound(to: UInt8.self)
         else {
             throw RDPAudioPlayerError.bufferAllocationFailed
         }
@@ -97,7 +97,7 @@ public final class RDPAudioPlayer {
             }
             destination.update(from: source, count: audioByteCount)
         }
-        audioBuffers[0].mDataByteSize = UInt32(audioByteCount)
+        audioBufferList.pointee.mBuffers.mDataByteSize = UInt32(audioByteCount)
 
         let scheduledFrameCount = AVAudioFramePosition(frameCount)
         queuedFrameCount += scheduledFrameCount
