@@ -2,11 +2,19 @@
 
 ## Unreleased
 
-- Add GNOME Remote Desktop compatibility by following server redirection PDUs, reconnecting with the server-provided routing token, and handling GNOME's connect-time bandwidth auto-detect exchange.
-- Add parsing for RDP server-redirection fields, including load-balance cookies, target host names, redirected credentials, redirection GUIDs, and target certificates, while avoiding redirects when unknown flags make the field layout ambiguous.
-- Improve dynamic virtual channel interoperability by advertising and emitting ShowProtocol framing for `drdynvc` traffic where required by GNOME Remote Desktop.
-- Add `RDPWireTranscript` capture support and a `RDPFirstFrameCapture --capture-transcript` option for recording negotiation traffic up to the first graphics frame.
-- Add a real GNOME Remote Desktop negotiation fixture plus an offline transcript replay server that regression-tests redirect/reconnect, auto-detect, RDPGFX negotiation, and first-frame detection without requiring a live GNOME host.
+- Add server-redirection compatibility by following redirection PDUs, reconnecting with server-provided routing tokens, handling connect-time bandwidth detection, and using the required `drdynvc` ShowProtocol framing.
+- Improve Windows and KDE KRdp activation compatibility across licensing, auto-detect, Confirm Active, finalization, auxiliary dynamic channels, remote termination, and reconnect flows.
+- Add a persistent RDPGFX compositor for mapped and scaled surfaces, partial and multi-surface updates, surface caches, solid fills, alpha bitmaps, graphics resets, and output composition.
+- Add full RemoteFX Progressive decoding, including Reduce-Extrapolate transforms, refinement and sub-band difference passes, shared tile state, change regions, and compatible region envelopes.
+- Add decoded rendering for classic RemoteFX, ClearCodec, NSCodec, RDP 6.0 bitmap compression, and Interleaved RLE surface and bitmap updates.
+- Add AVC444 and AVC444v2 chroma reconstruction with persistent luma and chroma state, reverse filtering, per-surface decoder isolation, and a Metal reconstruction path.
+- Improve H.264 presentation with zero-copy CoreVideo frames, per-surface resynchronization, dependent-frame preservation, bounded decode backlog handling, and acknowledgements sent only after successful decode and presentation.
+- Advertise every supported RDPGFX capability version from 8.0 through 10.7, validate the server-selected version, enforce negotiated cache and fragment limits, and preserve compatibility with server-selected capability flags.
+- Add remote pointer shape and cache handling plus fast-path keyboard, Unicode, pointer, extended-button, and wheel input support.
+- Add RDP client licensing for new, upgraded, and stored licenses, including platform-challenge handling and Keychain-backed license persistence in the macOS example.
+- Expand clipboard, audio input and output, device redirection, display control, CredSSP, NTLM, MCS, fast-path, ZGFX, and graphics PDU validation and interoperability.
+- Add `RDPWireTranscript` capture and offline replay, explicit capture geometry, timed Windows-key probes, richer graphics diagnostics, and latest-frame capture after a configurable settle window.
+- Add captured negotiation fixtures, transcript replay coverage, and expanded mock-server regression tests for Windows and KRdp connection and graphics paths.
 
 ## 0.2.0
 
