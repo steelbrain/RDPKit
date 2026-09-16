@@ -7,16 +7,22 @@ enum RDPClipboardChannel {
 
 enum RDPClipboardFormatID {
     static let unicodeText: UInt32 = 13
+    static let dib: UInt32 = 8   // CF_DIB (standard, no registered name)
 }
 
 enum RDPClipboardRegisteredFormatName {
     static let fileGroupDescriptorW = "FileGroupDescriptorW"
     static let fileContents = "FileContents"
+    static let rtf = "Rich Text Format"
+    static let html = "HTML Format"
 }
 
 enum RDPClipboardLocalFormatID {
     static let fileGroupDescriptorW: UInt32 = 0xC000
     static let fileContents: UInt32 = 0xC001
+    // Client-assigned IDs (>= 0xC000) for registered formats we advertise by name.
+    static let rtf: UInt32 = 0xC002
+    static let html: UInt32 = 0xC003
 }
 
 public enum RDPClipboardFileDescriptorFlags {
@@ -884,6 +890,56 @@ public struct RDPClipboardLocalFile: Equatable, Sendable {
     }
 }
 
+/// One clipboard format the local side offers to the remote (advertised in the Format List,
+/// returned verbatim in the Format Data Response for its `formatID`). `data` is the exact wire
+/// payload for that format - callers use the constructors below so the encoding stays correct.
+public struct RDPClipboardPublishedFormat: Equatable, Sendable {
+    public var formatID: UInt32
+    public var formatName: String?
+    public var data: Data
+
+    public init(formatID: UInt32, formatName: String? = nil, data: Data) {
+        self.formatID = formatID
+        self.formatName = formatName
+        self.data = data
+    }
+
+    /// Plain Unicode text (CF_UNICODETEXT): null-terminated UTF-16LE.
+    public static func unicodeText(_ text: String) -> RDPClipboardPublishedFormat {
+        RDPClipboardPublishedFormat(
+            formatID: RDPClipboardFormatID.unicodeText, data: encodedClipboardUnicodeText(text)
+        )
+    }
+
+    /// Rich Text Format: the RTF byte stream as-is (macOS supplies it on NSPasteboard `.rtf`).
+    public static func richText(_ rtf: Data) -> RDPClipboardPublishedFormat {
+        RDPClipboardPublishedFormat(
+            formatID: RDPClipboardLocalFormatID.rtf,
+            formatName: RDPClipboardRegisteredFormatName.rtf, data: rtf
+        )
+    }
+
+    /// HTML: wrapped into the Windows "HTML Format" (CF_HTML) envelope with byte offsets.
+    public static func html(fragment: String) -> RDPClipboardPublishedFormat {
+        RDPClipboardPublishedFormat(
+            formatID: RDPClipboardLocalFormatID.html,
+            formatName: RDPClipboardRegisteredFormatName.html, data: encodedClipboardCFHTML(fragment)
+        )
+    }
+
+    /// A device-independent bitmap (CF_DIB): a BITMAPINFOHEADER + pixel bytes (no BITMAPFILEHEADER).
+    public static func deviceIndependentBitmap(_ dib: Data) -> RDPClipboardPublishedFormat {
+        RDPClipboardPublishedFormat(formatID: RDPClipboardFormatID.dib, data: dib)
+    }
+}
+
+/// A non-text clipboard format received from the remote, delivered as its raw wire bytes.
+public enum RDPClipboardReceivedFormat: Equatable, Sendable {
+    case richText   // "Rich Text Format" (RTF)
+    case html       // "HTML Format" (CF_HTML)
+    case bitmap     // CF_DIB
+}
+
 public enum RDPClipboardLimits {
     public static let maximumUnicodeTextByteCount = RDPClipboardFormatDataResponsePDU.maximumDataByteCount
 
@@ -1091,13 +1147,21 @@ private func decodeClipboardFileSize(ok: Bool, data: Data) throws -> UInt64 {
 }
 
 public final class RDPClipboardSession: @unchecked Sendable {
+    /// Inbound fragment reassembly for this channel (MS-RDPBCGR 3.1.5.2.1).
+    let inbound = RDPStaticVirtualChannelInbound()
+
     public let staticChannelID: UInt16
     private let userChannelID: UInt16
     private let channel: Channel
     private let sentMessageHandler: RDPClipboardSentMessageHandler?
     private let lock = NSLock()
     private var localContent = RDPClipboardLocalContent.empty
-    private var pendingFormatDataResponse: RDPClipboardRequestedFormatDataResponse?
+    private var formatRequestQueue: [RDPClipboardRequestedFormat] = []
+    private var inFlightFormatRequest: RDPClipboardRequestedFormat?
+    /// Bumped once per remote Format List (i.e. per remote copy). The app keys its local-pasteboard
+    /// batching to this - clear once when the id changes - instead of guessing boundaries by time,
+    /// which is unreliable because a copy's formats are fetched serially, one round-trip apart.
+    private var remoteBatchID = 0
     private var serverGeneralFlags: UInt32 = 0
 
     init(
@@ -1126,6 +1190,25 @@ public final class RDPClipboardSession: @unchecked Sendable {
         } else {
             send(RDPClipboardFormatListPDU.unicodeText().encoded(useLongFormatNames: usesLongFormatNames))
         }
+    }
+
+    /// Offer several clipboard formats at once (e.g. plain text + RTF + HTML for a rich copy). The
+    /// remote requests whichever it prefers; we answer from the matching format's bytes. Formats too
+    /// large for a single Format Data Response are dropped; if none survive, the clipboard is cleared.
+    public func publishLocalFormats(_ formats: [RDPClipboardPublishedFormat]) {
+        let usable = formats.filter { $0.data.count <= RDPClipboardFormatDataResponsePDU.maximumDataByteCount }
+        guard usable.isEmpty == false else {
+            publishLocalUnicodeText(nil)
+            return
+        }
+
+        lock.lock()
+        localContent = .formats(usable)
+        lock.unlock()
+
+        send(RDPClipboardFormatListPDU(entries: usable.map { format in
+            RDPClipboardFormatListEntry(formatID: format.formatID, formatName: format.formatName)
+        }).encoded())
     }
 
     public func publishLocalFiles(_ files: [RDPClipboardLocalFile]) {
@@ -1184,14 +1267,43 @@ public final class RDPClipboardSession: @unchecked Sendable {
         ).encoded())
     }
 
-    func requestUnicodeText() {
-        updatePendingFormatDataResponse(.unicodeText)
-        send(RDPClipboardFormatDataRequestPDU(formatID: RDPClipboardFormatID.unicodeText).encoded())
+    /// Identifies the current remote copy (one Format List). The app clears its pasteboard once when
+    /// this changes, so the serially-fetched formats of one copy accumulate into a single clipboard.
+    public var currentRemoteBatchID: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return remoteBatchID
     }
 
-    func requestFileGroupDescriptorW(formatID: UInt32) {
-        updatePendingFormatDataResponse(.fileGroupDescriptorW(formatID: formatID))
-        send(RDPClipboardFormatDataRequestPDU(formatID: formatID).encoded())
+    /// Mark the start of a new remote copy (called by the dispatcher on each remote Format List).
+    func beginRemoteBatch() {
+        lock.lock()
+        remoteBatchID += 1
+        lock.unlock()
+    }
+
+    /// Queue remote format requests, issued one at a time (a Format Data Request must be answered
+    /// before the next is sent). Starts the first request if the pipe is idle.
+    func enqueueRemoteFormatRequests(_ formats: [RDPClipboardRequestedFormat]) {
+        guard formats.isEmpty == false else { return }
+        lock.lock()
+        formatRequestQueue.append(contentsOf: formats)
+        let idle = inFlightFormatRequest == nil
+        lock.unlock()
+        if idle { sendNextFormatRequest() }
+    }
+
+    /// Issue the next queued Format Data Request (no-op if one is in flight or the queue is empty).
+    func sendNextFormatRequest() {
+        lock.lock()
+        guard inFlightFormatRequest == nil, formatRequestQueue.isEmpty == false else {
+            lock.unlock()
+            return
+        }
+        let next = formatRequestQueue.removeFirst()
+        inFlightFormatRequest = next
+        lock.unlock()
+        send(RDPClipboardFormatDataRequestPDU(formatID: next.formatID).encoded())
     }
 
     public func requestRemoteFileSize(streamID: UInt32, fileIndex: Int32, clipDataID: UInt32? = nil) throws {
@@ -1218,12 +1330,13 @@ public final class RDPClipboardSession: @unchecked Sendable {
         ).encoded())
     }
 
-    func takePendingFormatDataResponse() -> RDPClipboardRequestedFormatDataResponse? {
+    /// The request the current Format Data Response answers (cleared as it's taken).
+    func takeInFlightFormatRequest() -> RDPClipboardRequestedFormat? {
         lock.lock()
         defer { lock.unlock() }
-        let pending = pendingFormatDataResponse
-        pendingFormatDataResponse = nil
-        return pending
+        let request = inFlightFormatRequest
+        inFlightFormatRequest = nil
+        return request
     }
 
     func respondToFormatDataRequest(_ request: RDPClipboardFormatDataRequestPDU) {
@@ -1240,6 +1353,12 @@ public final class RDPClipboardSession: @unchecked Sendable {
                 RDPClipboardFileGroupDescriptorW(descriptors: descriptors)
             )
             send(response.encoded())
+        case let .formats(formats):
+            if let match = formats.first(where: { $0.formatID == request.formatID }) {
+                send(RDPClipboardFormatDataResponsePDU(ok: true, data: match.data).encoded())
+            } else {
+                send(RDPClipboardFormatDataResponsePDU.failure().encoded())
+            }
         case .empty, .unicodeText, .files:
             send(RDPClipboardFormatDataResponsePDU.failure().encoded())
         }
@@ -1286,11 +1405,6 @@ public final class RDPClipboardSession: @unchecked Sendable {
         return localContent
     }
 
-    private func updatePendingFormatDataResponse(_ pending: RDPClipboardRequestedFormatDataResponse) {
-        lock.lock()
-        pendingFormatDataResponse = pending
-        lock.unlock()
-    }
 
     @discardableResult
     private func send(_ payload: Data) -> Bool {
@@ -1326,11 +1440,24 @@ private enum RDPClipboardLocalContent: Equatable, Sendable {
     case empty
     case unicodeText(String)
     case files([RDPClipboardLocalFile])
+    case formats([RDPClipboardPublishedFormat])
 }
 
-enum RDPClipboardRequestedFormatDataResponse: Equatable, Sendable {
+enum RDPClipboardRequestedFormat: Equatable, Sendable {
     case unicodeText
+    case richText(formatID: UInt32)
+    case html(formatID: UInt32)
+    case bitmap
     case fileGroupDescriptorW(formatID: UInt32)
+
+    var formatID: UInt32 {
+        switch self {
+        case .unicodeText: RDPClipboardFormatID.unicodeText
+        case let .richText(formatID), let .html(formatID): formatID
+        case .bitmap: RDPClipboardFormatID.dib
+        case let .fileGroupDescriptorW(formatID): formatID
+        }
+    }
 }
 
 private func encodedClipboardUnicodeText(_ text: String) -> Data {
@@ -1339,6 +1466,36 @@ private func encodedClipboardUnicodeText(_ text: String) -> Data {
         data.appendLittleEndianUInt16(codeUnit)
     }
     data.appendLittleEndianUInt16(0)
+    return data
+}
+
+/// Wrap an HTML fragment in the Windows "HTML Format" (CF_HTML) envelope: a text header carrying
+/// byte offsets into the buffer, then `<html><body>` with StartFragment/EndFragment markers. The
+/// offset fields are fixed 10-digit numbers, so the header's byte length is constant and computable
+/// before the offsets are known. UTF-8 throughout; NUL-terminated by convention.
+private func encodedClipboardCFHTML(_ fragment: String) -> Data {
+    let prefix = "<html><body><!--StartFragment-->"
+    let suffix = "<!--EndFragment--></body></html>"
+    let body = prefix + fragment + suffix
+
+    func field(_ name: String, _ value: Int) -> String { "\(name):\(String(format: "%010d", value))\r\n" }
+    let versionLine = "Version:0.9\r\n"
+    let headerByteCount = versionLine.utf8.count
+        + field("StartHTML", 0).utf8.count + field("EndHTML", 0).utf8.count
+        + field("StartFragment", 0).utf8.count + field("EndFragment", 0).utf8.count
+
+    let startHTML = headerByteCount
+    let startFragment = headerByteCount + prefix.utf8.count
+    let endFragment = startFragment + fragment.utf8.count
+    let endHTML = headerByteCount + body.utf8.count
+
+    let header = versionLine
+        + field("StartHTML", startHTML) + field("EndHTML", endHTML)
+        + field("StartFragment", startFragment) + field("EndFragment", endFragment)
+
+    var data = Data(header.utf8)
+    data.append(contentsOf: body.utf8)
+    data.append(0)
     return data
 }
 

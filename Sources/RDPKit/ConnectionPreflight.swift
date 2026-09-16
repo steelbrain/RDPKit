@@ -16,6 +16,8 @@ public typealias RDPClipboardSessionHandler = @Sendable (RDPClipboardSession) ->
 public typealias RDPClipboardTextHandler = @Sendable (String) -> Void
 public typealias RDPClipboardFileGroupDescriptorHandler = @Sendable (RDPClipboardFileGroupDescriptorW) -> Void
 public typealias RDPClipboardFileContentsHandler = @Sendable (RDPClipboardFileContentsResponse) -> Void
+/// Delivers a non-text remote clipboard format (RTF, CF_HTML, or CF_DIB) as its raw wire bytes.
+public typealias RDPClipboardFormatDataHandler = @Sendable (RDPClipboardReceivedFormat, Data) -> Void
 public typealias RDPAudioSampleHandler = @Sendable (RDPAudioSample) -> Void
 public typealias RDPWireReceiveHandler = @Sendable (RDPWireReceiveSample) -> Void
 
@@ -132,6 +134,19 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
     var redirectionRoutingToken: Data?
     var redirectionSessionID: UInt32?
     var redirectionDepth: Int
+    /// Local folder to share into the session as a redirected drive (rdpdr), or nil to share none.
+    public var driveSharePath: String?
+    /// Name shown for the shared drive in the remote session.
+    public var driveShareLabel: String
+    /// Active input-locale identifier (KLID) advertised at connect, e.g. 0x0409 US, 0x0410 Italian.
+    /// Windows maps client scancodes through this layout, so it should match the local keyboard.
+    public var keyboardLayout: UInt32
+    /// Offer only RSA key-transport cipher suites, for a server whose certificate asserts
+    /// `keyEncipherment` but not `digitalSignature` - BoringSSL refuses ECDHE_RSA against such a
+    /// certificate with KEY_USAGE_BIT_INCORRECT, and Windows self-signed RDP certificates are
+    /// routinely issued that way. Off by default: it trades forward secrecy for reachability, so it
+    /// is a deliberate fallback after that specific failure, never the first attempt.
+    public var legacyKeyUsageCompatibility: Bool
 
     public init(
         host: String,
@@ -146,7 +161,11 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
         audioPlaybackEnabled: Bool = false,
         earlyUserAuthorizationEnabled: Bool = false,
         graphicsCapabilityProfile: RDPGraphicsCapabilityProfile = .automatic,
-        storedClientLicense: RDPStoredClientLicense? = nil
+        storedClientLicense: RDPStoredClientLicense? = nil,
+        driveSharePath: String? = nil,
+        driveShareLabel: String = "Shared",
+        keyboardLayout: UInt32 = 0x0000_0409,
+        legacyKeyUsageCompatibility: Bool = false
     ) {
         self.host = host.trimmingCharacters(in: .whitespacesAndNewlines)
         self.port = port
@@ -164,6 +183,10 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
         self.redirectionRoutingToken = nil
         self.redirectionSessionID = nil
         self.redirectionDepth = 0
+        self.driveSharePath = driveSharePath
+        self.driveShareLabel = driveShareLabel
+        self.keyboardLayout = keyboardLayout
+        self.legacyKeyUsageCompatibility = legacyKeyUsageCompatibility
     }
 
     public init(
@@ -177,7 +200,11 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
         audioPlaybackEnabled: Bool = false,
         earlyUserAuthorizationEnabled: Bool = false,
         graphicsCapabilityProfile: RDPGraphicsCapabilityProfile = .automatic,
-        storedClientLicense: RDPStoredClientLicense? = nil
+        storedClientLicense: RDPStoredClientLicense? = nil,
+        driveSharePath: String? = nil,
+        driveShareLabel: String = "Shared",
+        keyboardLayout: UInt32 = 0x0000_0409,
+        legacyKeyUsageCompatibility: Bool = false
     ) {
         self.init(
             host: target.host,
@@ -192,7 +219,11 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
             audioPlaybackEnabled: audioPlaybackEnabled,
             earlyUserAuthorizationEnabled: earlyUserAuthorizationEnabled,
             graphicsCapabilityProfile: graphicsCapabilityProfile,
-            storedClientLicense: storedClientLicense
+            storedClientLicense: storedClientLicense,
+            driveSharePath: driveSharePath,
+            driveShareLabel: driveShareLabel,
+            keyboardLayout: keyboardLayout,
+            legacyKeyUsageCompatibility: legacyKeyUsageCompatibility
         )
     }
 
@@ -214,8 +245,10 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
         if clipboardEnabled {
             channels.append(.cliprdr)
         }
-        if audioPlaybackEnabled {
+        if audioPlaybackEnabled || driveSharePath != nil {
             channels.append(.rdpdr)
+        }
+        if audioPlaybackEnabled {
             channels.append(.rdpsnd)
         }
         return channels
@@ -1035,6 +1068,7 @@ public struct RDPPreflightClient: Sendable {
         onClipboardText: RDPClipboardTextHandler? = nil,
         onClipboardFileGroupDescriptor: RDPClipboardFileGroupDescriptorHandler? = nil,
         onClipboardFileContents: RDPClipboardFileContentsHandler? = nil,
+        onClipboardFormatData: RDPClipboardFormatDataHandler? = nil,
         onAudioSample: RDPAudioSampleHandler? = nil,
         onCertificate: RDPServerCertificateHandler? = nil,
         onWireReceive: RDPWireReceiveHandler? = nil,
@@ -1053,6 +1087,7 @@ public struct RDPPreflightClient: Sendable {
                 onClipboardText: onClipboardText,
                 onClipboardFileGroupDescriptor: onClipboardFileGroupDescriptor,
                 onClipboardFileContents: onClipboardFileContents,
+                onClipboardFormatData: onClipboardFormatData,
                 onAudioSample: onAudioSample,
                 onCertificate: onCertificate,
                 onWireReceive: onWireReceive,
@@ -1075,6 +1110,7 @@ public struct RDPPreflightClient: Sendable {
         onClipboardText: RDPClipboardTextHandler? = nil,
         onClipboardFileGroupDescriptor: RDPClipboardFileGroupDescriptorHandler? = nil,
         onClipboardFileContents: RDPClipboardFileContentsHandler? = nil,
+        onClipboardFormatData: RDPClipboardFormatDataHandler? = nil,
         onAudioSample: RDPAudioSampleHandler? = nil,
         onCertificate: RDPServerCertificateHandler? = nil,
         onWireReceive: RDPWireReceiveHandler? = nil,
@@ -1161,13 +1197,17 @@ public struct RDPPreflightClient: Sendable {
                         & RDPNegotiationResponseFlags.extendedClientDataSupported != 0,
                     audioPlaybackEnabled: configuration.audioPlaybackEnabled,
                     redirectedSessionID: configuration.redirectionSessionID,
-                    storedClientLicense: configuration.storedClientLicense
+                    storedClientLicense: configuration.storedClientLicense,
+                    driveSharePath: configuration.driveSharePath,
+                    driveShareLabel: configuration.driveShareLabel,
+                    keyboardLayout: configuration.keyboardLayout
                 )
                 let tls = try performTLSHandshake(
                     fd: connection.fd,
                     host: configuration.host,
                     timeoutSeconds: configuration.timeoutSeconds,
                     hideCertificateWarnings: configuration.hideCertificateWarnings,
+                    legacyKeyUsageCompatibility: configuration.legacyKeyUsageCompatibility,
                     credentials: configuration.credentials,
                     credSSPRequired: usesCredSSP,
                     earlyUserAuthorizationRequired: selectedSecurityProtocols == .credSSPWithEarlyUserAuth,
@@ -1182,6 +1222,7 @@ public struct RDPPreflightClient: Sendable {
                     onClipboardText: onClipboardText,
                     onClipboardFileGroupDescriptor: onClipboardFileGroupDescriptor,
                     onClipboardFileContents: onClipboardFileContents,
+                    onClipboardFormatData: onClipboardFormatData,
                     onAudioSample: onAudioSample,
                     onCertificate: onCertificate,
                     onWireReceive: onWireReceive,
@@ -1221,6 +1262,7 @@ public struct RDPPreflightClient: Sendable {
                         onClipboardText: onClipboardText,
                         onClipboardFileGroupDescriptor: onClipboardFileGroupDescriptor,
                         onClipboardFileContents: onClipboardFileContents,
+                        onClipboardFormatData: onClipboardFormatData,
                         onAudioSample: onAudioSample,
                         onCertificate: onCertificate,
                         onWireReceive: onWireReceive,
@@ -2645,6 +2687,7 @@ private func performTLSHandshake(
     host: String,
     timeoutSeconds: Int,
     hideCertificateWarnings: Bool,
+    legacyKeyUsageCompatibility: Bool,
     credentials: RDPCredentials? = nil,
     credSSPRequired: Bool,
     earlyUserAuthorizationRequired: Bool,
@@ -2659,6 +2702,7 @@ private func performTLSHandshake(
     onClipboardText: RDPClipboardTextHandler?,
     onClipboardFileGroupDescriptor: RDPClipboardFileGroupDescriptorHandler?,
     onClipboardFileContents: RDPClipboardFileContentsHandler?,
+    onClipboardFormatData: RDPClipboardFormatDataHandler?,
     onAudioSample: RDPAudioSampleHandler?,
     onCertificate: RDPServerCertificateHandler?,
     onWireReceive: RDPWireReceiveHandler?,
@@ -2702,6 +2746,12 @@ private func performTLSHandshake(
     // Windows RDP can issue RSA certificates without digitalSignature,
     // which BoringSSL rejects on the TLS 1.3 certificate path.
     tlsConfiguration.maximumTLSVersion = .tlsv12
+    if legacyKeyUsageCompatibility {
+        // Such a certificate can still do RSA key transport, which needs only keyEncipherment. Offer
+        // nothing else, because the server picks the suite in TLS 1.2 and would otherwise choose the
+        // ECDHE_RSA that its own certificate can't satisfy.
+        tlsConfiguration.cipherSuites = "AES256-GCM-SHA384:AES128-GCM-SHA256:AES256-SHA256:AES128-SHA256:AES256-SHA:AES128-SHA"
+    }
 
     let tlsContext = try NIOSSLContext(configuration: tlsConfiguration)
     let handshakePromise = channel.eventLoop.makePromise(of: Void.self)
@@ -2786,6 +2836,7 @@ private func performTLSHandshake(
             onClipboardText: onClipboardText,
             onClipboardFileGroupDescriptor: onClipboardFileGroupDescriptor,
             onClipboardFileContents: onClipboardFileContents,
+            onClipboardFormatData: onClipboardFormatData,
             onAudioSample: onAudioSample,
             onWireReceive: onWireReceive,
             wireTranscript: wireTranscript,
@@ -3031,6 +3082,7 @@ private func performMCSConnectionSequence(
     onClipboardText: RDPClipboardTextHandler?,
     onClipboardFileGroupDescriptor: RDPClipboardFileGroupDescriptorHandler?,
     onClipboardFileContents: RDPClipboardFileContentsHandler?,
+    onClipboardFormatData: RDPClipboardFormatDataHandler?,
     onAudioSample: RDPAudioSampleHandler?,
     onWireReceive: RDPWireReceiveHandler?,
     wireTranscript: RDPWireTranscript?,
@@ -3788,12 +3840,18 @@ private func performMCSConnectionSequence(
                         let deviceRedirectionChannelID = connectResponse.staticChannelAssignments.first(
                             where: { $0.name == RDPStaticVirtualChannel.rdpdr.name }
                         )?.channelID
+                        let driveShare = configuration.driveSharePath.map {
+                            RDPDriveShare(path: $0, label: configuration.driveShareLabel)
+                        }
                         let deviceRedirectionSession = deviceRedirectionChannelID.map {
                             RDPDeviceRedirectionSession(
                                 userChannelID: userChannelID,
                                 staticChannelID: $0,
                                 channel: channel,
-                                computerName: configuration.clientName
+                                computerName: configuration.clientName,
+                                driveShare: driveShare,
+                                maximumChunkByteCount: demandActive.serverVirtualChannelChunkSize
+                                    ?? RDPStaticVirtualChannelPDU.maximumPayloadByteCount
                             )
                         }
                         var clipboardMessageData: [Data] = []
@@ -3809,6 +3867,7 @@ private func performMCSConnectionSequence(
                                     onClipboardText: onClipboardText,
                                     onClipboardFileGroupDescriptor: onClipboardFileGroupDescriptor,
                                     onClipboardFileContents: onClipboardFileContents,
+                                    onClipboardFormatData: onClipboardFormatData,
                                     messageData: &clipboardMessageData,
                                     messages: &clipboardMessages
                                 )
@@ -3863,6 +3922,7 @@ private func performMCSConnectionSequence(
                                 onClipboardText: onClipboardText,
                                 onClipboardFileGroupDescriptor: onClipboardFileGroupDescriptor,
                                 onClipboardFileContents: onClipboardFileContents,
+                                onClipboardFormatData: onClipboardFormatData,
                                 onAudioSample: onAudioSample,
                                 deviceRedirectionSession: deviceRedirectionSession,
                                 cancellation: cancellation,
@@ -4313,6 +4373,7 @@ private func performRDPGraphicsDynamicChannelHandshake(
     onClipboardText: RDPClipboardTextHandler?,
     onClipboardFileGroupDescriptor: RDPClipboardFileGroupDescriptorHandler?,
     onClipboardFileContents: RDPClipboardFileContentsHandler?,
+    onClipboardFormatData: RDPClipboardFormatDataHandler?,
     onAudioSample: RDPAudioSampleHandler?,
     deviceRedirectionSession: RDPDeviceRedirectionSession?,
     cancellation: RDPConnectionCancellation?,
@@ -4388,6 +4449,7 @@ private func performRDPGraphicsDynamicChannelHandshake(
                        onClipboardText: onClipboardText,
                        onClipboardFileGroupDescriptor: onClipboardFileGroupDescriptor,
                        onClipboardFileContents: onClipboardFileContents,
+                       onClipboardFormatData: onClipboardFormatData,
                        messageData: &result.clipboardMessageData,
                        messages: &result.clipboardMessages
                    )
@@ -4609,6 +4671,7 @@ private func performRDPGraphicsDynamicChannelHandshake(
                     onClipboardText: onClipboardText,
                     onClipboardFileGroupDescriptor: onClipboardFileGroupDescriptor,
                     onClipboardFileContents: onClipboardFileContents,
+                    onClipboardFormatData: onClipboardFormatData,
                     onAudioSample: onAudioSample,
                     dynamicAudioSession: dynamicAudioSession,
                     deviceRedirectionSession: deviceRedirectionSession,
@@ -4664,6 +4727,7 @@ private func performRDPGraphicsDynamicChannelHandshake(
                         onClipboardText: onClipboardText,
                         onClipboardFileGroupDescriptor: onClipboardFileGroupDescriptor,
                         onClipboardFileContents: onClipboardFileContents,
+                        onClipboardFormatData: onClipboardFormatData,
                         onAudioSample: onAudioSample,
                         dynamicAudioSession: dynamicAudioSession,
                         deviceRedirectionSession: deviceRedirectionSession,
@@ -4768,6 +4832,7 @@ private func performRDPGraphicsDynamicChannelHandshake(
                     onClipboardText: onClipboardText,
                     onClipboardFileGroupDescriptor: onClipboardFileGroupDescriptor,
                     onClipboardFileContents: onClipboardFileContents,
+                    onClipboardFormatData: onClipboardFormatData,
                     onAudioSample: onAudioSample,
                     dynamicAudioSession: dynamicAudioSession,
                     deviceRedirectionSession: deviceRedirectionSession,
@@ -4874,6 +4939,8 @@ private func handleInitialGraphicsPayload(
     onClipboardText: RDPClipboardTextHandler?,
     onClipboardFileGroupDescriptor: RDPClipboardFileGroupDescriptorHandler?,
     onClipboardFileContents: RDPClipboardFileContentsHandler?,
+    /// Fork addition: non-text clipboard formats (RTF/HTML/CF_DIB) pulled from the remote.
+    onClipboardFormatData: RDPClipboardFormatDataHandler?,
     onAudioSample: RDPAudioSampleHandler?,
     dynamicAudioSession: RDPAudioSession?,
     deviceRedirectionSession: RDPDeviceRedirectionSession?,
@@ -4932,6 +4999,7 @@ private func handleInitialGraphicsPayload(
         onClipboardText: onClipboardText,
         onClipboardFileGroupDescriptor: onClipboardFileGroupDescriptor,
         onClipboardFileContents: onClipboardFileContents,
+        onClipboardFormatData: onClipboardFormatData,
         onAudioSample: onAudioSample,
         dynamicAudioSession: dynamicAudioSession,
         deviceRedirectionSession: deviceRedirectionSession,
@@ -5349,20 +5417,24 @@ private func handleClipboardPacket(
     onClipboardText: RDPClipboardTextHandler?,
     onClipboardFileGroupDescriptor: RDPClipboardFileGroupDescriptorHandler?,
     onClipboardFileContents: RDPClipboardFileContentsHandler?,
+    onClipboardFormatData: RDPClipboardFormatDataHandler?,
     messageData: inout [Data],
     messages: inout [RDPClipboardMessageSummary]
 ) throws -> Bool {
     guard let staticPDU = try RDPStaticVirtualChannelPDU.parseIfPresent(
         fromTPKT: packet,
-        channelID: session.staticChannelID
+        channelID: session.staticChannelID,
+        maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumNegotiatedChunkByteCount,
+        requiresShowProtocol: false
     ) else {
         return false
     }
-    guard staticPDU.canDispatchPayload else {
-        if staticPDU.isFlowControl {
-            return true
-        }
-        throw RDPDecodeError.invalidStaticVirtualChannelPDU
+    // A message larger than one chunk arrives as fragments; hold them until the last one.
+    // Previously any fragmented message threw out of the receive loop and tore down the session.
+    guard let staticPDU = try session.inbound.accept(
+        staticPDU, maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumNegotiatedChunkByteCount
+    ) else {
+        return true
     }
 
     let clipboardPDU = try RDPClipboardPDU.parse(from: staticPDU.payload)
@@ -5385,11 +5457,28 @@ private func handleClipboardPacket(
         useLongFormatNames: session.usesLongFormatNames
     ) {
         session.sendFormatListResponse(ok: true)
+        session.beginRemoteBatch()   // a new remote copy - the app clears its pasteboard once for it
+        var requests: [RDPClipboardRequestedFormat] = []
         if let fileGroupDescriptorWFormatID = formatList.fileGroupDescriptorWFormatID {
-            session.requestFileGroupDescriptorW(formatID: fileGroupDescriptorWFormatID)
-        } else if formatList.formatIDs.contains(RDPClipboardFormatID.unicodeText) {
-            session.requestUnicodeText()
+            // A file copy: fetch the descriptor; the app pulls contents on demand.
+            requests.append(.fileGroupDescriptorW(formatID: fileGroupDescriptorWFormatID))
+        } else {
+            // Non-file: request every format we can consume (rich first), so the app can assemble
+            // the local clipboard preferring the richest available.
+            if let id = formatList.formatID(named: RDPClipboardRegisteredFormatName.rtf) {
+                requests.append(.richText(formatID: id))
+            }
+            if let id = formatList.formatID(named: RDPClipboardRegisteredFormatName.html) {
+                requests.append(.html(formatID: id))
+            }
+            if formatList.formatIDs.contains(RDPClipboardFormatID.dib) {
+                requests.append(.bitmap)
+            }
+            if formatList.formatIDs.contains(RDPClipboardFormatID.unicodeText) {
+                requests.append(.unicodeText)
+            }
         }
+        session.enqueueRemoteFormatRequests(requests)
         return true
     }
 
@@ -5409,15 +5498,22 @@ private func handleClipboardPacket(
     }
 
     if let response = try RDPClipboardFormatDataResponsePDU.parseIfPresent(from: clipboardPDU) {
-        let pendingResponse = session.takePendingFormatDataResponse()
-        if response.ok {
-            switch pendingResponse ?? .unicodeText {
+        let request = session.takeInFlightFormatRequest()
+        if response.ok, let request {
+            switch request {
             case .unicodeText:
                 try onClipboardText?(response.decodedUnicodeText())
+            case .richText:
+                onClipboardFormatData?(.richText, response.data)
+            case .html:
+                onClipboardFormatData?(.html, response.data)
+            case .bitmap:
+                onClipboardFormatData?(.bitmap, response.data)
             case .fileGroupDescriptorW:
                 try onClipboardFileGroupDescriptor?(response.decodedFileGroupDescriptorW())
             }
         }
+        session.sendNextFormatRequest()   // advance to the next queued format request
         return true
     }
 
@@ -5433,15 +5529,18 @@ private func handleAudioPacket(
 ) throws -> Bool {
     guard let staticPDU = try RDPStaticVirtualChannelPDU.parseIfPresent(
         fromTPKT: packet,
-        channelID: session.staticChannelID
+        channelID: session.staticChannelID,
+        maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumNegotiatedChunkByteCount,
+        requiresShowProtocol: false
     ) else {
         return false
     }
-    guard staticPDU.canDispatchPayload else {
-        if staticPDU.isFlowControl {
-            return true
-        }
-        throw RDPDecodeError.invalidStaticVirtualChannelPDU
+    // A message larger than one chunk arrives as fragments; hold them until the last one.
+    // Previously any fragmented message threw out of the receive loop and tore down the session.
+    guard let staticPDU = try session.inbound.accept(
+        staticPDU, maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumNegotiatedChunkByteCount
+    ) else {
+        return true
     }
 
     try handleAudioPayload(
@@ -5521,15 +5620,18 @@ private func handleDeviceRedirectionPacket(
 ) throws -> Bool {
     guard let staticPDU = try RDPStaticVirtualChannelPDU.parseIfPresent(
         fromTPKT: packet,
-        channelID: session.staticChannelID
+        channelID: session.staticChannelID,
+        maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumNegotiatedChunkByteCount,
+        requiresShowProtocol: false
     ) else {
         return false
     }
-    guard staticPDU.canDispatchPayload else {
-        if staticPDU.isFlowControl {
-            return true
-        }
-        throw RDPDecodeError.invalidStaticVirtualChannelPDU
+    // A message larger than one chunk arrives as fragments; hold them until the last one.
+    // Previously any fragmented message threw out of the receive loop and tore down the session.
+    guard let staticPDU = try session.inbound.accept(
+        staticPDU, maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumNegotiatedChunkByteCount
+    ) else {
+        return true
     }
 
     let deviceRedirectionPDU = try RDPDeviceRedirectionPDU.parse(from: staticPDU.payload)
@@ -5587,6 +5689,7 @@ private func receiveRDPGraphicsUpdateBatch(
     onClipboardText: RDPClipboardTextHandler?,
     onClipboardFileGroupDescriptor: RDPClipboardFileGroupDescriptorHandler?,
     onClipboardFileContents: RDPClipboardFileContentsHandler?,
+    onClipboardFormatData: RDPClipboardFormatDataHandler?,
     onAudioSample: RDPAudioSampleHandler?,
     dynamicAudioSession initialDynamicAudioSession: RDPAudioSession?,
     deviceRedirectionSession: RDPDeviceRedirectionSession?,
@@ -5897,6 +6000,7 @@ private func receiveRDPGraphicsUpdateBatch(
                    onClipboardText: onClipboardText,
                    onClipboardFileGroupDescriptor: onClipboardFileGroupDescriptor,
                    onClipboardFileContents: onClipboardFileContents,
+                   onClipboardFormatData: onClipboardFormatData,
                    messageData: &result.clipboardMessageData,
                    messages: &result.clipboardMessages
                )

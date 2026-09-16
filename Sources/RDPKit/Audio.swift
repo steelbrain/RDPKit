@@ -897,6 +897,9 @@ struct RDPAudioTrainingPDU: Equatable, Sendable {
 }
 
 public final class RDPAudioSession: @unchecked Sendable {
+    /// Inbound fragment reassembly for this channel (MS-RDPBCGR 3.1.5.2.1).
+    let inbound = RDPStaticVirtualChannelInbound()
+
     public let staticChannelID: UInt16
     private let userChannelID: UInt16
     private let channel: Channel

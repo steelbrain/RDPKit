@@ -131,15 +131,19 @@ import Testing
     """)
 }
 
-@Test func deviceRedirectionClientCapabilitiesEncodeGeneralNoDeviceSet() {
+/// The client advertises GENERAL + DRIVE. Dropping DRIVE is not a cosmetic omission: a server
+/// silently refuses a redirected filesystem from a client that never claimed to support one, and
+/// Explorer then shows an empty `\\tsclient` - looking exactly like an unconfigured share.
+@Test func deviceRedirectionClientCapabilitiesAdvertiseGeneralAndDrive() {
     let encoded = RDPDeviceRedirectionClientCapabilities(
         minorVersion: RDPDeviceRedirectionVersion.minorRDP6
     ).encoded()
 
     #expect(encoded.rdpHexString == """
-    72 44 50 43 01 00 00 00 01 00 2c 00 02 00 00 00 \
+    72 44 50 43 02 00 00 00 01 00 2c 00 02 00 00 00 \
     00 00 00 00 00 00 00 00 01 00 0c 00 ff ff 00 00 \
-    00 00 00 00 07 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+    00 00 00 00 07 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 \
+    04 00 08 00 02 00 00 00
     """)
 }
 

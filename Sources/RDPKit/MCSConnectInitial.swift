@@ -108,6 +108,11 @@ struct MCSConnectInitialConfiguration: Equatable, Sendable {
     var audioPlaybackEnabled: Bool
     var redirectedSessionID: UInt32?
     var storedClientLicense: RDPStoredClientLicense?
+    var driveSharePath: String?
+    var driveShareLabel: String
+    /// Active input-locale identifier (KLID) sent in TS_UD_CS_CORE, e.g. 0x0409 US, 0x0410 Italian.
+    /// Windows maps our scancodes through this layout, so it must match the local keyboard.
+    var keyboardLayout: UInt32
 
     init(
         desktopWidth: UInt16 = 1280,
@@ -119,7 +124,10 @@ struct MCSConnectInitialConfiguration: Equatable, Sendable {
         advertiseMessageChannel: Bool = false,
         audioPlaybackEnabled: Bool = false,
         redirectedSessionID: UInt32? = nil,
-        storedClientLicense: RDPStoredClientLicense? = nil
+        storedClientLicense: RDPStoredClientLicense? = nil,
+        driveSharePath: String? = nil,
+        driveShareLabel: String = "Shared",
+        keyboardLayout: UInt32 = 0x0000_0409
     ) {
         precondition(!channels.isEmpty)
         precondition(channels.count <= 31)
@@ -136,6 +144,9 @@ struct MCSConnectInitialConfiguration: Equatable, Sendable {
         self.audioPlaybackEnabled = audioPlaybackEnabled
         self.redirectedSessionID = redirectedSessionID
         self.storedClientLicense = storedClientLicense
+        self.driveSharePath = driveSharePath
+        self.driveShareLabel = driveShareLabel
+        self.keyboardLayout = keyboardLayout
     }
 }
 
@@ -215,7 +226,7 @@ struct MCSConnectInitialPDU: Equatable, Sendable {
         body.appendLittleEndianUInt16(configuration.desktopHeight)
         body.appendLittleEndianUInt16(0xCA01)
         body.appendLittleEndianUInt16(0xAA03)
-        body.appendLittleEndianUInt32(0x0000_0409)
+        body.appendLittleEndianUInt32(configuration.keyboardLayout)   // keyboardLayout (KLID)
         body.appendLittleEndianUInt32(3790)
         body.append(fixedUTF16LE(configuration.clientName, codeUnitCount: 16))
         body.appendLittleEndianUInt32(4)
