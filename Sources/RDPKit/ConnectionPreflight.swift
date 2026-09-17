@@ -3796,6 +3796,8 @@ private func performMCSConnectionSequence(
                                 computerName: configuration.clientName
                             )
                         }
+                        let staticVirtualChannelChunkSize = demandActive.serverVirtualChannelChunkSize
+                            ?? RDPStaticVirtualChannelPDU.maximumPayloadByteCount
                         var clipboardMessageData: [Data] = []
                         var clipboardMessages: [RDPClipboardMessageSummary] = []
                         var audioMessageData: [Data] = []
@@ -3809,6 +3811,7 @@ private func performMCSConnectionSequence(
                                     onClipboardText: onClipboardText,
                                     onClipboardFileGroupDescriptor: onClipboardFileGroupDescriptor,
                                     onClipboardFileContents: onClipboardFileContents,
+                                    maximumStaticVirtualChannelChunkSize: staticVirtualChannelChunkSize,
                                     messageData: &clipboardMessageData,
                                     messages: &clipboardMessages
                                 )
@@ -3820,6 +3823,7 @@ private func performMCSConnectionSequence(
                                     packet,
                                     session: audioSession,
                                     onAudioSample: onAudioSample,
+                                    maximumStaticVirtualChannelChunkSize: staticVirtualChannelChunkSize,
                                     messageData: &audioMessageData,
                                     messages: &audioMessages
                                 )
@@ -3829,7 +3833,8 @@ private func performMCSConnectionSequence(
                             for packet in finalizationResult.responseData {
                                 _ = try handleDeviceRedirectionPacket(
                                     packet,
-                                    session: deviceRedirectionSession
+                                    session: deviceRedirectionSession,
+                                    maximumStaticVirtualChannelChunkSize: staticVirtualChannelChunkSize
                                 )
                             }
                         }
@@ -3846,8 +3851,7 @@ private func performMCSConnectionSequence(
                                 userChannelID: userChannelID,
                                 ioChannelID: ioChannelID,
                                 staticChannelID: dynamicChannelID,
-                                maximumStaticVirtualChannelChunkSize: demandActive.serverVirtualChannelChunkSize
-                                    ?? RDPStaticVirtualChannelPDU.maximumPayloadByteCount,
+                                maximumStaticVirtualChannelChunkSize: staticVirtualChannelChunkSize,
                                 maximumFastPathFragmentByteCount: confirmActive.multifragmentUpdateMaxRequestSize,
                                 on: channel,
                                 reader: tpktReader,
@@ -4388,6 +4392,7 @@ private func performRDPGraphicsDynamicChannelHandshake(
                        onClipboardText: onClipboardText,
                        onClipboardFileGroupDescriptor: onClipboardFileGroupDescriptor,
                        onClipboardFileContents: onClipboardFileContents,
+                       maximumStaticVirtualChannelChunkSize: maximumStaticVirtualChannelChunkSize,
                        messageData: &result.clipboardMessageData,
                        messages: &result.clipboardMessages
                    )
@@ -4399,6 +4404,7 @@ private func performRDPGraphicsDynamicChannelHandshake(
                        packet,
                        session: audioSession,
                        onAudioSample: onAudioSample,
+                       maximumStaticVirtualChannelChunkSize: maximumStaticVirtualChannelChunkSize,
                        messageData: &result.audioMessageData,
                        messages: &result.audioMessages
                    )
@@ -4408,7 +4414,8 @@ private func performRDPGraphicsDynamicChannelHandshake(
                 if let deviceRedirectionSession,
                    try handleDeviceRedirectionPacket(
                        packet,
-                       session: deviceRedirectionSession
+                       session: deviceRedirectionSession,
+                       maximumStaticVirtualChannelChunkSize: maximumStaticVirtualChannelChunkSize
                    )
                 {
                     continue
@@ -5349,23 +5356,25 @@ private func handleClipboardPacket(
     onClipboardText: RDPClipboardTextHandler?,
     onClipboardFileGroupDescriptor: RDPClipboardFileGroupDescriptorHandler?,
     onClipboardFileContents: RDPClipboardFileContentsHandler?,
+    maximumStaticVirtualChannelChunkSize: Int,
     messageData: inout [Data],
     messages: inout [RDPClipboardMessageSummary]
 ) throws -> Bool {
     guard let staticPDU = try RDPStaticVirtualChannelPDU.parseIfPresent(
         fromTPKT: packet,
-        channelID: session.staticChannelID
+        channelID: session.staticChannelID,
+        maximumChunkByteCount: maximumStaticVirtualChannelChunkSize
     ) else {
         return false
     }
-    guard staticPDU.canDispatchPayload else {
-        if staticPDU.isFlowControl {
-            return true
-        }
-        throw RDPDecodeError.invalidStaticVirtualChannelPDU
+    guard let message = try session.staticChannelInbound.receive(
+        staticPDU,
+        maximumChunkByteCount: maximumStaticVirtualChannelChunkSize
+    ) else {
+        return true
     }
 
-    let clipboardPDU = try RDPClipboardPDU.parse(from: staticPDU.payload)
+    let clipboardPDU = try RDPClipboardPDU.parse(from: message.payload)
     messageData.append(packet)
     messages.append(.summarize(clipboardPDU))
 
@@ -5428,24 +5437,26 @@ private func handleAudioPacket(
     _ packet: Data,
     session: RDPAudioSession,
     onAudioSample: RDPAudioSampleHandler?,
+    maximumStaticVirtualChannelChunkSize: Int,
     messageData: inout [Data],
     messages: inout [RDPAudioMessageSummary]
 ) throws -> Bool {
     guard let staticPDU = try RDPStaticVirtualChannelPDU.parseIfPresent(
         fromTPKT: packet,
-        channelID: session.staticChannelID
+        channelID: session.staticChannelID,
+        maximumChunkByteCount: maximumStaticVirtualChannelChunkSize
     ) else {
         return false
     }
-    guard staticPDU.canDispatchPayload else {
-        if staticPDU.isFlowControl {
-            return true
-        }
-        throw RDPDecodeError.invalidStaticVirtualChannelPDU
+    guard let message = try session.staticChannelInbound.receive(
+        staticPDU,
+        maximumChunkByteCount: maximumStaticVirtualChannelChunkSize
+    ) else {
+        return true
     }
 
     try handleAudioPayload(
-        staticPDU.payload,
+        message.payload,
         packet: packet,
         session: session,
         onAudioSample: onAudioSample,
@@ -5517,22 +5528,24 @@ private func handleAudioPayload(
 
 private func handleDeviceRedirectionPacket(
     _ packet: Data,
-    session: RDPDeviceRedirectionSession
+    session: RDPDeviceRedirectionSession,
+    maximumStaticVirtualChannelChunkSize: Int
 ) throws -> Bool {
     guard let staticPDU = try RDPStaticVirtualChannelPDU.parseIfPresent(
         fromTPKT: packet,
-        channelID: session.staticChannelID
+        channelID: session.staticChannelID,
+        maximumChunkByteCount: maximumStaticVirtualChannelChunkSize
     ) else {
         return false
     }
-    guard staticPDU.canDispatchPayload else {
-        if staticPDU.isFlowControl {
-            return true
-        }
-        throw RDPDecodeError.invalidStaticVirtualChannelPDU
+    guard let message = try session.staticChannelInbound.receive(
+        staticPDU,
+        maximumChunkByteCount: maximumStaticVirtualChannelChunkSize
+    ) else {
+        return true
     }
 
-    let deviceRedirectionPDU = try RDPDeviceRedirectionPDU.parse(from: staticPDU.payload)
+    let deviceRedirectionPDU = try RDPDeviceRedirectionPDU.parse(from: message.payload)
     try session.receive(deviceRedirectionPDU)
     return true
 }
@@ -5897,6 +5910,7 @@ private func receiveRDPGraphicsUpdateBatch(
                    onClipboardText: onClipboardText,
                    onClipboardFileGroupDescriptor: onClipboardFileGroupDescriptor,
                    onClipboardFileContents: onClipboardFileContents,
+                   maximumStaticVirtualChannelChunkSize: maximumStaticVirtualChannelChunkSize,
                    messageData: &result.clipboardMessageData,
                    messages: &result.clipboardMessages
                )
@@ -5908,6 +5922,7 @@ private func receiveRDPGraphicsUpdateBatch(
                    packet,
                    session: audioSession,
                    onAudioSample: onAudioSample,
+                   maximumStaticVirtualChannelChunkSize: maximumStaticVirtualChannelChunkSize,
                    messageData: &result.audioMessageData,
                    messages: &result.audioMessages
                )
@@ -5917,7 +5932,8 @@ private func receiveRDPGraphicsUpdateBatch(
             if let deviceRedirectionSession,
                try handleDeviceRedirectionPacket(
                    packet,
-                   session: deviceRedirectionSession
+                   session: deviceRedirectionSession,
+                   maximumStaticVirtualChannelChunkSize: maximumStaticVirtualChannelChunkSize
                )
             {
                 continue

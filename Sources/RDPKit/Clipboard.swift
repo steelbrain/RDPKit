@@ -1092,6 +1092,7 @@ private func decodeClipboardFileSize(ok: Bool, data: Data) throws -> UInt64 {
 
 public final class RDPClipboardSession: @unchecked Sendable {
     public let staticChannelID: UInt16
+    let staticChannelInbound = RDPStaticVirtualChannelInbound()
     private let userChannelID: UInt16
     private let channel: Channel
     private let sentMessageHandler: RDPClipboardSentMessageHandler?

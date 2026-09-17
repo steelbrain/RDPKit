@@ -1612,7 +1612,9 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
         }
         if let request = try RDPClipboardFormatDataRequestPDU.parseIfPresent(from: clipboardPDU) {
             let response = clipboardFormatDataResponse(for: request)
-            writePacket(MockKRDPFixtures.clipboardPacket(response.encoded()), context: context)
+            for responsePacket in MockKRDPFixtures.clipboardPackets(response.encoded()) {
+                writePacket(responsePacket, context: context)
+            }
             return true
         }
 
@@ -2469,6 +2471,18 @@ private enum MockKRDPFixtures {
         staticVirtualChannelPacket(payload, channelID: MockKRDPConstants.clipboardChannelID)
     }
 
+    static func clipboardPackets(_ payload: Data) -> [Data] {
+        let chunkByteCount = RDPStaticVirtualChannelPDU.maximumPayloadByteCount
+        guard payload.count > chunkByteCount else {
+            return [clipboardPacket(payload)]
+        }
+        return fragmentedStaticVirtualChannelPackets(
+            payload,
+            chunkSizes: stride(from: 0, to: payload.count, by: chunkByteCount).map { _ in chunkByteCount },
+            channelID: MockKRDPConstants.clipboardChannelID
+        )
+    }
+
     static func graphicsCreateRequest() -> Data {
         staticVirtualChannelPacket(graphicsCreateRequestPayload())
     }
@@ -3150,7 +3164,7 @@ private enum MockKRDPFixtures {
         while offset < payload.count {
             let requestedSize = chunkIndex < chunkSizes.count ? chunkSizes[chunkIndex] : payload.count - offset
             let chunkSize = min(requestedSize, payload.count - offset)
-            var flags = RDPStaticVirtualChannelFlags.showProtocol
+            var flags: UInt32 = 0
             if offset == 0 {
                 flags |= RDPStaticVirtualChannelFlags.first
             }

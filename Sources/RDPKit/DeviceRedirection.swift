@@ -415,6 +415,7 @@ struct RDPDeviceRedirectionDeviceListAnnounce: Equatable, Sendable {
 
 final class RDPDeviceRedirectionSession: @unchecked Sendable {
     let staticChannelID: UInt16
+    let staticChannelInbound = RDPStaticVirtualChannelInbound()
     private let userChannelID: UInt16
     private let channel: Channel
     private let computerName: String
