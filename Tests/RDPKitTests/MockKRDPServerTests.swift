@@ -1981,6 +1981,37 @@ private enum MockGraphicsFrameHandlerError: Error, CustomStringConvertible {
     #expect(report.error == nil)
 }
 
+@Test func preflightReassemblesChunkedRemoteClipboardText() throws {
+    let remoteClipboardText = String(repeating: "chunked-clipboard-", count: 256)
+    let server = try MockKRDPServer.start(remoteClipboardText: remoteClipboardText)
+    defer { server.stop() }
+
+    let observed = MockKRDPObservedEvents()
+    let report = RDPPreflightClient().run(
+        configuration: RDPConnectionConfiguration(
+            host: "127.0.0.1",
+            port: server.port,
+            credentials: RDPCredentials(username: "rdp-user", password: "secret"),
+            timeoutSeconds: 5,
+            hideCertificateWarnings: true,
+            graphicsFrameCaptureLimit: 1,
+            desktopWidth: 1280,
+            desktopHeight: 720,
+            clipboardEnabled: true
+        ),
+        onClipboardText: { text in
+            observed.recordClipboardText(text)
+        }
+    )
+
+    #expect(remoteClipboardText.utf16.count * 2 > RDPStaticVirtualChannelPDU.maximumPayloadByteCount)
+    #expect(report.status == "success")
+    #expect(report.rdpClipboardMessages?.map(\.typeName).contains("clipboard-format-data-response") == true)
+    #expect(observed.clipboardTexts == [remoteClipboardText])
+    #expect(observed.clipboardErrors.isEmpty)
+    #expect(report.error == nil)
+}
+
 @Test func preflightVerifiesWindowsCompatibilityBehaviorsWithMockServer() throws {
     let localClipboardText = "mock_local_clip"
     let remoteClipboardText = "mock_remote_clip"

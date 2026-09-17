@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Reassemble chunked static virtual channel data that follows MS-RDPBCGR 2.2.6.1.1 without requiring `CHANNEL_FLAG_SHOW_PROTOCOL`, and route clipboard, audio, and device-redirection traffic through reassembly so messages larger than the negotiated chunk size no longer fail the session.
+
 ## 0.3.1
 
 - Raise the minimum deployment targets from 16.0 to 17.0 for iOS, tvOS, and

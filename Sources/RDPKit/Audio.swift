@@ -898,6 +898,7 @@ struct RDPAudioTrainingPDU: Equatable, Sendable {
 
 public final class RDPAudioSession: @unchecked Sendable {
     public let staticChannelID: UInt16
+    let staticChannelInbound = RDPStaticVirtualChannelInbound()
     private let userChannelID: UInt16
     private let channel: Channel
     private let dynamicChannelID: UInt32?
