@@ -108,8 +108,9 @@ struct RDPClientInfoPDU: Equatable, Sendable {
         return data
     }
 
+    /// Throws when a redirection cookie leaves no room in one MCS PDU.
     func encodedTPKT(userChannelID: UInt16, ioChannelID: UInt16) throws -> Data {
-        try MCSSendDataRequestPDU(
+        try MCSSendDataRequestPDU.checked(
             initiator: userChannelID,
             channelID: ioChannelID,
             userData: encodedPDUData()

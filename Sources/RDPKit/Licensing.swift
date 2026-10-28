@@ -262,10 +262,10 @@ struct RDPClientNewLicenseRequestPDU: Equatable, Sendable {
     }
 
     func encodedTPKT(userChannelID: UInt16) throws -> Data {
-        MCSSendDataRequestPDU(
+        try MCSSendDataRequestPDU.checked(
             initiator: userChannelID,
             channelID: channelID,
-            userData: try encodedUserData()
+            userData: encodedUserData()
         ).encodedTPKT()
     }
 
@@ -354,10 +354,10 @@ struct RDPClientLicenseInformationPDU: Equatable, Sendable {
     }
 
     func encodedTPKT(userChannelID: UInt16) throws -> Data {
-        MCSSendDataRequestPDU(
+        try MCSSendDataRequestPDU.checked(
             initiator: userChannelID,
             channelID: channelID,
-            userData: try encodedUserData()
+            userData: encodedUserData()
         ).encodedTPKT()
     }
 
@@ -414,10 +414,10 @@ struct RDPClientPlatformChallengeResponsePDU: Equatable, Sendable {
     }
 
     func encodedTPKT(userChannelID: UInt16) throws -> Data {
-        MCSSendDataRequestPDU(
+        try MCSSendDataRequestPDU.checked(
             initiator: userChannelID,
             channelID: channelID,
-            userData: try encodedUserData()
+            userData: encodedUserData()
         ).encodedTPKT()
     }
 

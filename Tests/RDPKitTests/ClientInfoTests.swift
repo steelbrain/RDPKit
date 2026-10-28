@@ -98,6 +98,18 @@ import Testing
     #expect(pduData.range(of: cookie + Data([0, 0])) != nil)
 }
 
+/// A redirection PDU fits one 16 KB server PDU, so its cookie can leave no
+/// room for the rest of the Client Info: that throws instead of trapping.
+@Test func clientInfoRejectsRedirectionCookieTooLargeForOneMCSPDU() throws {
+    let fits = RDPClientInfoPDU(credentials: nil, passwordCookie: Data(repeating: 0xA5, count: 15000))
+    #expect(try fits.encodedTPKT(userChannelID: 1007, ioChannelID: 1003).count > 15000)
+
+    let tooLarge = RDPClientInfoPDU(credentials: nil, passwordCookie: Data(repeating: 0xA5, count: 16200))
+    #expect(throws: MCSUserDataTooLongError.self) {
+        try tooLarge.encodedTPKT(userChannelID: 1007, ioChannelID: 1003)
+    }
+}
+
 @Test func clientInfoUsesBasicSecurityHeaderForEnhancedSecurity() throws {
     let pduData = try RDPClientInfoPDU(credentials: nil).encodedPDUData()
     let securityFlags = pduData.littleEndianUInt16(at: 0)

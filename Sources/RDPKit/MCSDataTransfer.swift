@@ -16,6 +16,15 @@ struct MCSSendDataRequestPDU: Equatable, Sendable {
         self.userData = userData
     }
 
+    /// For user data whose size the server or the caller controls: throws
+    /// where the initializer would trap.
+    static func checked(initiator: UInt16, channelID: UInt16, userData: Data) throws -> MCSSendDataRequestPDU {
+        guard userData.count <= maximumUserDataByteCount else {
+            throw MCSUserDataTooLongError(byteCount: userData.count)
+        }
+        return MCSSendDataRequestPDU(initiator: initiator, channelID: channelID, userData: userData)
+    }
+
     func encodedTPKT() -> Data {
         var data = Data()
         data.appendUInt8(0x64)
@@ -25,6 +34,16 @@ struct MCSSendDataRequestPDU: Equatable, Sendable {
         data.appendPERLength(userData.count)
         data.append(userData)
         return X224DataTPDU.wrap(data)
+    }
+}
+
+/// User data larger than one Send Data Request carries: an unfragmented PER
+/// length determinant stops at 0x3FFF (ITU-T X.691).
+struct MCSUserDataTooLongError: Error, Equatable, CustomStringConvertible {
+    var byteCount: Int
+
+    var description: String {
+        "\(byteCount)-byte PDU exceeds the \(MCSSendDataRequestPDU.maximumUserDataByteCount)-byte MCS user data limit"
     }
 }
 

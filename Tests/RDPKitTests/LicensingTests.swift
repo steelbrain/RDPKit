@@ -365,6 +365,42 @@ import Testing
     }
 }
 
+/// Server-sized license data that fits its blob but not one MCS PDU throws
+/// instead of trapping: a platform challenge and a stored (server-issued) license.
+@Test func clientLicenseEncodersRejectServerDataLargerThanOneMCSPDU() throws {
+    let keys = try RDPLicenseKeys.derive(
+        clientRandom: Data(repeating: 0x11, count: 32),
+        serverRandom: Data(repeating: 0x22, count: 32),
+        premasterSecret: Data(repeating: 0x33, count: 48)
+    )
+    let challengeResponse = try RDPClientPlatformChallengeResponsePDU(
+        channelID: 1003,
+        platformChallenge: Data(repeating: 0xAA, count: 16340),
+        keys: keys
+    )
+    let licenseInformation = RDPClientLicenseInformationPDU(
+        channelID: 1003,
+        clientRandom: Data(repeating: 0x11, count: 32),
+        encryptedPremasterSecret: Data([0xE6, 0x0A]),
+        storedLicense: RDPStoredClientLicense(
+            version: 0x0006_0001,
+            scope: "localhost",
+            companyName: "Microsoft Corporation",
+            productID: "A02",
+            licenseInfo: Data(repeating: 0x30, count: 16340)
+        ),
+        encryptedHardwareID: Data([0xAA]),
+        mac: Data(repeating: 0x55, count: 16)
+    )
+
+    #expect(throws: MCSUserDataTooLongError.self) {
+        try challengeResponse.encodedTPKT(userChannelID: 1007)
+    }
+    #expect(throws: MCSUserDataTooLongError.self) {
+        try licenseInformation.encodedTPKT(userChannelID: 1007)
+    }
+}
+
 @Test func parsesNewLicenseInformationFields() throws {
     let licenseInfo = try RDPServerNewLicenseInformation.parse(newLicenseInformationData())
 
