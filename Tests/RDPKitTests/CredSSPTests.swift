@@ -59,16 +59,16 @@ import Testing
     #expect(step.outputToken == sspiRSNegotiateToken())
 }
 
-@Test func spnegoWrapsAndExtractsNTLMNegotiateToken() throws {
-    let token = sspiRSNegotiateToken()
-    let spnego = RDPSPNEGO.negTokenInit(mechToken: token)
+@Test func spnegoRejectsInitiatorTokenFromServer() {
+    let ntlmOID = Data([0x06, 0x0A, 0x2B, 0x06, 0x01, 0x04, 0x01, 0x82, 0x37, 0x02, 0x02, 0x0A])
+    let spnegoOID = Data([0x06, 0x06, 0x2B, 0x06, 0x01, 0x05, 0x05, 0x02])
+    let negTokenInit = context(0, sequence(
+        context(0, sequence(ntlmOID)) + context(2, octetString(Data("NTLMSSP\u{0}".utf8)))
+    ))
 
-    #expect(spnego.prefix(2) == Data([0x60, 0x48]))
-    #expect(spnego.dropFirst(2).prefix(8) == Data([
-        0x06, 0x06,
-        0x2B, 0x06, 0x01, 0x05, 0x05, 0x02,
-    ]))
-    #expect(try RDPSPNEGO.mechanismToken(from: spnego) == token)
+    #expect(throws: RDPDecodeError.self) {
+        try RDPSPNEGO.mechanismToken(from: wrap(tag: 0x60, spnegoOID + negTokenInit))
+    }
 }
 
 @Test func spnegoWrapsAndExtractsNTLMResponseToken() throws {
@@ -527,10 +527,10 @@ import Testing
 }
 
 @Test func credSSPTSRequestRejectsVersionBelowProtocolMinimum() {
-    let encoded = sequence(context(0, integer(1)))
-
-    #expect(throws: RDPDecodeError.invalidCredSSPMessage) {
-        try RDPCredSSPTSRequest.parse(encoded)
+    for version in [Data([0x02, 0x01, 0x01]), Data([0x02, 0x01, 0xFF])] {
+        #expect(throws: RDPDecodeError.invalidCredSSPMessage) {
+            try RDPCredSSPTSRequest.parse(sequence(context(0, version)))
+        }
     }
 }
 
@@ -565,6 +565,23 @@ import Testing
         context(0, integer(6))
             + context(5, octetString(Data(repeating: 0xAA, count: 31)))
     )
+
+    #expect(throws: RDPDecodeError.invalidCredSSPMessage) {
+        try RDPCredSSPTSRequest.parse(encoded)
+    }
+}
+
+@Test func credSSPTSRequestParsesNegativeNTStatusErrorCode() throws {
+    let signed = sequence(context(0, integer(6)) + context(4, Data([0x02, 0x04, 0xC0, 0x00, 0x00, 0x6D])))
+    let unsigned = sequence(context(0, integer(6)) + context(4, Data([0x02, 0x05, 0x00, 0xC0, 0x00, 0x00, 0x6D])))
+
+    #expect(try RDPCredSSPTSRequest.parse(signed).errorCode == 0xC000_006D)
+    #expect(try RDPCredSSPTSRequest.parse(unsigned).errorCode == 0xC000_006D)
+    #expect(RDPCredSSPTSRequest(errorCode: 0xC000_006D).encoded() == signed)
+}
+
+@Test func credSSPTSRequestRejectsNonMinimalNegativeDERInteger() {
+    let encoded = sequence(context(0, integer(6)) + context(4, Data([0x02, 0x02, 0xFF, 0x80])))
 
     #expect(throws: RDPDecodeError.invalidCredSSPMessage) {
         try RDPCredSSPTSRequest.parse(encoded)
