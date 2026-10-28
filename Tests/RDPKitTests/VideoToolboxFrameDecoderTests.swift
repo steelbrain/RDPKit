@@ -165,6 +165,15 @@ func avc420FixtureFramesPresentAsFullRangeBT709(fixture: String, x: Int, y: Int,
     #expect(Double(difference) / Double(count) < 1.5)
 }
 
+@Test func sequenceDecoderFallsBackToOriginalSPSWhenRewriteIsRejected() throws {
+    let accessUnits = try encodeH264AnnexB(frames: [(luma: 60, chroma: 128)])
+    let decoder = RDPVideoToolboxSequenceDecoder(codec: .h264) { _ in hexData("67 64") }
+
+    let result = try decoder.decodeDetailed(accessUnits[0])
+
+    #expect(CVPixelBufferGetWidth(result.imageBuffer) == 64)
+}
+
 @Test func sequenceDecoderRecreatesInvalidatedSession() throws {
     let accessUnits = try encodeH264AnnexB(frames: [(luma: 60, chroma: 128)])
     let decoder = RDPVideoToolboxSequenceDecoder(codec: .h264)

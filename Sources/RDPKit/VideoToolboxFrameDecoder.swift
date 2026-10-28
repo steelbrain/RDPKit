@@ -236,6 +236,7 @@ public enum RDPH264DecodedFrameImage {
 final class RDPVideoToolboxSequenceDecoder {
     private let codec: RDPVideoCodec
     private let preservesCodedSamples: Bool
+    private let sequenceParameterSetRewrite: (Data) -> Data?
     /// SPS and PPS for H.264; VPS, SPS, and PPS for HEVC.
     private var parameterSets: [Data?]
     private var formatDescription: CMVideoFormatDescription?
@@ -245,9 +246,14 @@ final class RDPVideoToolboxSequenceDecoder {
 
     /// With `preservesCodedSamples`, output is 8-bit NV12 holding the decoded sample values
     /// unchanged, as AVC444 reconstruction requires.
-    init(codec: RDPVideoCodec, preservesCodedSamples: Bool = false) {
+    init(
+        codec: RDPVideoCodec,
+        preservesCodedSamples: Bool = false,
+        sequenceParameterSetRewrite: @escaping (Data) -> Data? = RDPH264SequenceParameterSet.signalingFullRangeBT709
+    ) {
         self.codec = codec
         self.preservesCodedSamples = preservesCodedSamples
+        self.sequenceParameterSetRewrite = sequenceParameterSetRewrite
         parameterSets = Array(repeating: nil, count: codec == .h264 ? 2 : 3)
     }
 
@@ -353,20 +359,26 @@ final class RDPVideoToolboxSequenceDecoder {
     }
 
     private func rebuildSession() throws {
-        var parameterSets = parameterSets.compactMap { $0 }
+        let parameterSets = parameterSets.compactMap { $0 }
         guard parameterSets.count == self.parameterSets.count else {
             throw RDPVideoDecodeError.missingParameterSets(codec)
         }
+        invalidateSession()
+        let formatDescription: CMVideoFormatDescription
         // MS-RDPEGFX 2.2.4.4 and 3.3.8.3.1 define RDPGFX H.264 samples as full-range BT.709
         // whatever the VUI says. GNOME Remote Desktop and KRdp encode full range but send no
-        // video signal type, which H.264 E.2.1 infers as limited range.
+        // video signal type, which H.264 E.2.1 infers as limited range. If CoreMedia rejects
+        // the rewritten SPS, the original still decodes, only with the signalled range.
         if codec == .h264,
-           let sequenceParameterSet = RDPH264SequenceParameterSet.signalingFullRangeBT709(parameterSets[0])
+           let sequenceParameterSet = sequenceParameterSetRewrite(parameterSets[0]),
+           let fullRangeFormatDescription = try? makeFormatDescription(
+               parameterSets: [sequenceParameterSet] + parameterSets.dropFirst()
+           )
         {
-            parameterSets[0] = sequenceParameterSet
+            formatDescription = fullRangeFormatDescription
+        } else {
+            formatDescription = try makeFormatDescription(parameterSets: parameterSets)
         }
-        invalidateSession()
-        let formatDescription = try makeFormatDescription(parameterSets: parameterSets)
         self.formatDescription = formatDescription
 
         var callback = VTDecompressionOutputCallbackRecord(
