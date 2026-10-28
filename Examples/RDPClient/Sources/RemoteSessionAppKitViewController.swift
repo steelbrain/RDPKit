@@ -783,8 +783,9 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                 onCertificate: { certificateInfo in
                     sink.apply { controller in
                         controller.serverCertificateInfo = certificateInfo
+                        // After a server redirection, the certificate belongs to the redirection target.
                         controller.certificateTrustedByApp = controller.trustedCertificateStore.isTrusted(
-                            host: target.host,
+                            host: certificateInfo.host,
                             port: target.port,
                             sha256: certificateInfo.sha256
                         )
@@ -817,16 +818,18 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                 if let clientLicensePersistenceResult {
                     controller.applyClientLicensePersistenceResult(clientLicensePersistenceResult)
                 }
+                let certificateHost = controller.serverCertificateInfo?.host ?? target.host
                 if let certificateTrusted = nextReport.certificateTrusted {
                     controller.serverCertificateInfo = RDPServerCertificateInfo(
                         trusted: certificateTrusted,
                         sha256: nextReport.certificateSHA256,
-                        warnings: nextReport.warnings
+                        warnings: nextReport.warnings,
+                        host: certificateHost
                     )
                 }
                 controller.sessionEndReason = RDPSessionEndReason(report: nextReport)
                 controller.certificateTrustedByApp = controller.trustedCertificateStore.isTrusted(
-                    host: target.host,
+                    host: certificateHost,
                     port: target.port,
                     sha256: nextReport.certificateSHA256
                 )
@@ -1194,7 +1197,11 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         else {
             return nil
         }
-        return RDPServerCertificateTrustKey(host: target.host, port: target.port, sha256: certificateSHA256)
+        return RDPServerCertificateTrustKey(
+            host: serverCertificateInfo?.host ?? target.host,
+            port: target.port,
+            sha256: certificateSHA256
+        )
     }
 
     private var credentialLookupSignature: String {
