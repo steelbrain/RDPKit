@@ -52,13 +52,6 @@ import Testing
         0x0C, 0x00,
         0x78, 0x56, 0x34, 0x12,
     ]))
-    let invalidMinor = try RDPDeviceRedirectionPDU.parse(from: Data([
-        0x72, 0x44,
-        0x6E, 0x49,
-        0x01, 0x00,
-        0x03, 0x00,
-        0x78, 0x56, 0x34, 0x12,
-    ]))
 
     #expect(throws: RDPDecodeError.invalidStaticVirtualChannelPDU) {
         try RDPDeviceRedirectionVersionAndID.parse(from: trailingData)
@@ -66,9 +59,21 @@ import Testing
     #expect(throws: RDPDecodeError.invalidStaticVirtualChannelPDU) {
         try RDPDeviceRedirectionVersionAndID.parse(from: invalidMajor)
     }
-    #expect(throws: RDPDecodeError.invalidStaticVirtualChannelPDU) {
-        try RDPDeviceRedirectionVersionAndID.parse(from: invalidMinor)
-    }
+}
+
+@Test func deviceRedirectionAnswersNewerServerMinorVersionWithOwnVersion() throws {
+    let serverAnnounce = try RDPDeviceRedirectionPDU.parse(from: Data([
+        0x72, 0x44,
+        0x6E, 0x49,
+        0x01, 0x00,
+        0x0E, 0x00,
+        0x78, 0x56, 0x34, 0x12,
+    ]))
+    let announce = try #require(try RDPDeviceRedirectionVersionAndID.parse(from: serverAnnounce))
+
+    #expect(announce.clientAnnounceReplyEncoded(clientID: announce.clientIDForReply { 0 }).rdpHexString == """
+    72 44 43 43 01 00 0c 00 78 56 34 12
+    """)
 }
 
 @Test func deviceRedirectionClientAnnounceReplyGeneratesClientIDForLegacyServers() throws {

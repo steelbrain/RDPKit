@@ -17,20 +17,7 @@ enum RDPDeviceRedirectionPacketID {
 
 enum RDPDeviceRedirectionVersion {
     static let major: UInt16 = 0x0001
-    static let minorRDP5: UInt16 = 0x0002
-    static let minorRDP51: UInt16 = 0x0005
-    static let minorRDP52: UInt16 = 0x000A
     static let minorRDP6: UInt16 = 0x000C
-    static let minorRDP61: UInt16 = 0x000D
-
-    static func isValidMinor(_ minor: UInt16) -> Bool {
-        switch minor {
-        case minorRDP5, minorRDP51, minorRDP52, minorRDP6, minorRDP61:
-            true
-        default:
-            false
-        }
-    }
 }
 
 /// GENERAL_CAPS_SET values the client sends ([MS-RDPEFS] 2.2.2.7.1).
@@ -134,9 +121,9 @@ struct RDPDeviceRedirectionVersionAndID: Equatable, Sendable {
             minor: cursor.readLittleEndianUInt16(),
             clientID: cursor.readLittleEndianUInt32()
         )
-        guard versionAndID.major == RDPDeviceRedirectionVersion.major,
-              RDPDeviceRedirectionVersion.isValidMinor(versionAndID.minor)
-        else {
+        // Any server minor version is accepted: the client replies with its own version
+        // (MS-RDPEFS 3.2.5.1.3), and Appendix A lists values beyond those in 2.2.2.2.
+        guard versionAndID.major == RDPDeviceRedirectionVersion.major else {
             throw RDPDecodeError.invalidStaticVirtualChannelPDU
         }
         return versionAndID
