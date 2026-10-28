@@ -1,14 +1,11 @@
 import Foundation
 
-/// Decoder for the bitmap stream defined by MS-RDPNSC 3.1.8.
+/// Decoder for the NSCodec bitmap stream (MS-RDPNSC 2.2.2, 3.1.8.4). Returns
+/// BGRA pixels, `width * 4` bytes per row.
 enum RDPNSCodecDecoder {
     static func decode(_ data: Data, width: Int, height: Int) throws -> Data {
-        guard width > 0,
-              height > 0,
-              width <= Int.max - 7,
-              height <= Int.max - 1,
-              width <= Int.max / height,
-              width * height <= Int.max / 4
+        guard (1 ... Int(UInt16.max)).contains(width),
+              (1 ... Int(UInt16.max)).contains(height)
         else {
             throw RDPDecodeError.invalidGraphicsUpdatePDU
         }
@@ -17,25 +14,20 @@ enum RDPNSCodecDecoder {
         guard cursor.remaining >= 20 else {
             throw RDPDecodeError.invalidGraphicsUpdatePDU
         }
-        let yByteCount = try readPlaneByteCount(from: &cursor)
-        let coByteCount = try readPlaneByteCount(from: &cursor)
-        let cgByteCount = try readPlaneByteCount(from: &cursor)
+        let yByteCount = try Int(cursor.readLittleEndianUInt32())
+        let coByteCount = try Int(cursor.readLittleEndianUInt32())
+        let cgByteCount = try Int(cursor.readLittleEndianUInt32())
         let alphaByteCount = try Int(cursor.readLittleEndianUInt32())
         let colorLossLevel = try Int(cursor.readUInt8())
         let chromaSubsamplingLevel = try cursor.readUInt8()
-        let reserved = try cursor.readLittleEndianUInt16()
-        guard (1 ... 7).contains(colorLossLevel),
+        _ = try cursor.readLittleEndianUInt16()
+        guard yByteCount > 0,
+              coByteCount > 0,
+              cgByteCount > 0,
+              (1 ... 7).contains(colorLossLevel),
               chromaSubsamplingLevel <= 1,
-              reserved == 0
+              cursor.remaining == yByteCount + coByteCount + cgByteCount + alphaByteCount
         else {
-            throw RDPDecodeError.invalidGraphicsUpdatePDU
-        }
-
-        let yData = try cursor.readData(count: yByteCount)
-        let coData = try cursor.readData(count: coByteCount)
-        let cgData = try cursor.readData(count: cgByteCount)
-        let alphaData = try cursor.readData(count: alphaByteCount)
-        guard cursor.remaining == 0 else {
             throw RDPDecodeError.invalidGraphicsUpdatePDU
         }
 
@@ -43,76 +35,57 @@ enum RDPNSCodecDecoder {
         let yWidth = usesSubsampling ? roundedUp(width, toMultipleOf: 8) : width
         let chromaWidth = usesSubsampling ? yWidth / 2 : width
         let chromaHeight = usesSubsampling ? roundedUp(height, toMultipleOf: 2) / 2 : height
-        let pixelCount = width * height
-        let yPlane = try decodePlane(yData, expectedByteCount: yWidth * height, permitsEmpty: false)
-        let coPlane = try decodePlane(
-            coData,
-            expectedByteCount: chromaWidth * chromaHeight,
-            permitsEmpty: false
-        )
-        let cgPlane = try decodePlane(
-            cgData,
-            expectedByteCount: chromaWidth * chromaHeight,
-            permitsEmpty: false
-        )
-        let alphaPlane = try decodePlane(alphaData, expectedByteCount: pixelCount, permitsEmpty: true)
+        let yPlane = try decodePlane(cursor.readData(count: yByteCount), byteCount: yWidth * height)
+        let coPlane = try decodePlane(cursor.readData(count: coByteCount), byteCount: chromaWidth * chromaHeight)
+        let cgPlane = try decodePlane(cursor.readData(count: cgByteCount), byteCount: chromaWidth * chromaHeight)
+        let alphaPlane = alphaByteCount == 0
+            ? nil
+            : try decodePlane(cursor.readData(count: alphaByteCount), byteCount: width * height)
         let chromaShift = colorLossLevel - 1
 
-        var result = Data(capacity: pixelCount * 4)
-        for row in 0 ..< height {
-            for column in 0 ..< width {
-                let pixelIndex = row * width + column
-                let yIndex = row * yWidth + column
-                let chromaIndex = usesSubsampling
-                    ? (row / 2) * chromaWidth + column / 2
-                    : pixelIndex
-                let luminance = Int(yPlane[yIndex])
-                let orangeChroma = decodeChroma(coPlane[chromaIndex], shift: chromaShift)
-                let greenChroma = decodeChroma(cgPlane[chromaIndex], shift: chromaShift)
-                let temporary = luminance - greenChroma
-                result.append(clamp(temporary - orangeChroma))
-                result.append(clamp(luminance + greenChroma))
-                result.append(clamp(temporary + orangeChroma))
-                result.append(alphaPlane[pixelIndex])
+        var result = Data(count: width * height * 4)
+        result.withUnsafeMutableBytes { output in
+            var pixelIndex = 0
+            for row in 0 ..< height {
+                let yRowStart = row * yWidth
+                let chromaRowStart = (usesSubsampling ? row / 2 : row) * chromaWidth
+                for column in 0 ..< width {
+                    let chromaIndex = chromaRowStart + (usesSubsampling ? column / 2 : column)
+                    let luma = Int(yPlane[yRowStart + column])
+                    let orange = decodeChroma(coPlane[chromaIndex], shift: chromaShift)
+                    let green = decodeChroma(cgPlane[chromaIndex], shift: chromaShift)
+                    let lumaMinusGreen = luma - green
+                    let offset = pixelIndex * 4
+                    output[offset] = clamp(lumaMinusGreen - orange)
+                    output[offset + 1] = clamp(luma + green)
+                    output[offset + 2] = clamp(lumaMinusGreen + orange)
+                    output[offset + 3] = alphaPlane?[pixelIndex] ?? 0xFF
+                    pixelIndex += 1
+                }
             }
         }
         return result
     }
 
-    private static func readPlaneByteCount(from cursor: inout ByteCursor) throws -> Int {
-        let count = try Int(cursor.readLittleEndianUInt32())
-        guard count > 0 else {
+    /// A plane is raw when its byte count equals the plane size; otherwise it is
+    /// NSCODEC_RLE_SEGMENTS followed by the plane's last four raw bytes
+    /// (MS-RDPNSC 2.2.2, 2.2.2.1).
+    private static func decodePlane(_ data: Data, byteCount: Int) throws -> [UInt8] {
+        guard data.count <= byteCount else {
             throw RDPDecodeError.invalidGraphicsUpdatePDU
         }
-        return count
-    }
-
-    private static func decodePlane(
-        _ data: Data,
-        expectedByteCount: Int,
-        permitsEmpty: Bool
-    ) throws -> [UInt8] {
-        guard expectedByteCount > 0,
-              data.count <= expectedByteCount,
-              permitsEmpty || !data.isEmpty
-        else {
-            throw RDPDecodeError.invalidGraphicsUpdatePDU
-        }
-        if data.isEmpty {
-            return Array(repeating: 0xFF, count: expectedByteCount)
-        }
-        if data.count == expectedByteCount {
+        if data.count == byteCount {
             return Array(data)
         }
-        guard expectedByteCount > 4, data.count >= 4 else {
+        guard data.count >= 4 else {
             throw RDPDecodeError.invalidGraphicsUpdatePDU
         }
 
         let encoded = Array(data)
         let encodedBodyEnd = encoded.count - 4
-        let decodedBodyByteCount = expectedByteCount - 4
+        let decodedBodyByteCount = byteCount - 4
         var decoded: [UInt8] = []
-        decoded.reserveCapacity(expectedByteCount)
+        decoded.reserveCapacity(byteCount)
         var index = 0
         while index < encodedBodyEnd {
             let value = encoded[index]
@@ -129,19 +102,17 @@ enum RDPNSCodecDecoder {
                     guard index + 4 <= encodedBodyEnd else {
                         throw RDPDecodeError.invalidGraphicsUpdatePDU
                     }
-                    let length = UInt32(encoded[index])
-                        | UInt32(encoded[index + 1]) << 8
-                        | UInt32(encoded[index + 2]) << 16
-                        | UInt32(encoded[index + 3]) << 24
-                    guard length >= 2 else {
-                        throw RDPDecodeError.invalidGraphicsUpdatePDU
-                    }
-                    runLength = Int(length)
+                    runLength = Int(encoded[index])
+                        | Int(encoded[index + 1]) << 8
+                        | Int(encoded[index + 2]) << 16
+                        | Int(encoded[index + 3]) << 24
                     index += 4
                 } else {
                     runLength = Int(factor) + 2
                 }
-                guard runLength <= decodedBodyByteCount - decoded.count else {
+                guard runLength >= 2,
+                      runLength <= decodedBodyByteCount - decoded.count
+                else {
                     throw RDPDecodeError.invalidGraphicsUpdatePDU
                 }
                 decoded.append(contentsOf: repeatElement(value, count: runLength))
@@ -163,8 +134,9 @@ enum RDPNSCodecDecoder {
         (value + multiple - 1) / multiple * multiple
     }
 
+    /// Undoes color loss reduction and the YCoCg chroma halving (MS-RDPEGDI 3.1.9.1.2, 3.1.9.1.4).
     private static func decodeChroma(_ value: UInt8, shift: Int) -> Int {
-        Int(Int8(bitPattern: UInt8(truncatingIfNeeded: UInt16(value) << shift)))
+        Int(Int8(bitPattern: value << shift))
     }
 
     private static func clamp(_ value: Int) -> UInt8 {

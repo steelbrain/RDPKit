@@ -54,6 +54,27 @@ import Testing
     #expect(stride(from: 3, to: decoded.count, by: 4).allSatisfy { decoded[$0] == 0xFF })
 }
 
+@Test func decodesNSCodecRunSegmentsAndDefaultsMissingAlphaToOpaque() throws {
+    // 8x4 luma: a short run, a 0xFF-escaped long run, four literals, then EndData.
+    let y = Data([
+        0x10, 0x10, 0x02,
+        0x20, 0x20, 0xFF, 0x14, 0x00, 0x00, 0x00,
+        0x25, 0x26, 0x27, 0x28,
+        0x30, 0x31, 0x32, 0x33,
+    ])
+    let chroma = Data(repeating: 0, count: 32)
+
+    let decoded = try RDPNSCodecDecoder.decode(
+        nsCodecStream(y: y, co: chroma, cg: chroma, alpha: Data(), reserved: 0xBEEF),
+        width: 8,
+        height: 4
+    )
+
+    let luma: [UInt8] = Array(repeating: 0x10, count: 4) + Array(repeating: 0x20, count: 20)
+        + [0x25, 0x26, 0x27, 0x28, 0x30, 0x31, 0x32, 0x33]
+    #expect(decoded == Data(luma.flatMap { [$0, $0, $0, 0xFF] }))
+}
+
 @Test func rejectsMalformedNSCodecStreams() {
     let malformed = [
         Data(),
@@ -61,6 +82,7 @@ import Testing
         nsCodecStream(y: Data([0]), co: Data([0]), cg: Data([0]), alpha: Data(), colorLoss: 0),
         nsCodecStream(y: Data([0]), co: Data([0]), cg: Data([0]), alpha: Data(), subsampling: 2),
         nsCodecStream(y: Data([0, 0, 0]), co: Data([0]), cg: Data([0]), alpha: Data()),
+        nsCodecStream(y: Data([0]), co: Data([0]), cg: Data([0]), alpha: Data()).dropLast(),
     ]
 
     for stream in malformed {
@@ -76,14 +98,16 @@ private func nsCodecStream(
     cg: Data,
     alpha: Data,
     colorLoss: UInt8 = 1,
-    subsampling: UInt8 = 0
+    subsampling: UInt8 = 0,
+    reserved: UInt16 = 0
 ) -> Data {
     var stream = Data()
     stream.appendLittleEndianUInt32(UInt32(y.count))
     stream.appendLittleEndianUInt32(UInt32(co.count))
     stream.appendLittleEndianUInt32(UInt32(cg.count))
     stream.appendLittleEndianUInt32(UInt32(alpha.count))
-    stream.append(contentsOf: [colorLoss, subsampling, 0, 0])
+    stream.append(contentsOf: [colorLoss, subsampling])
+    stream.appendLittleEndianUInt16(reserved)
     stream.append(y)
     stream.append(co)
     stream.append(cg)
