@@ -190,6 +190,32 @@ import Testing
     """))
 }
 
+@Test func wheelRotationsBeyondOneEventSplitIntoSeveralEvents() {
+    #expect(RDPSlowPathInputEvent.verticalWheel(rotation: -600, x: 1, y: 2).wheelEventsSplit == [
+        .verticalWheel(rotation: -255, x: 1, y: 2),
+        .verticalWheel(rotation: -255, x: 1, y: 2),
+        .verticalWheel(rotation: -90, x: 1, y: 2),
+    ])
+    #expect(RDPSlowPathInputEvent.horizontalWheel(rotation: 255, x: 1, y: 2).wheelEventsSplit == [
+        .horizontalWheel(rotation: 255, x: 1, y: 2),
+    ])
+    #expect(RDPSlowPathInputEvent.verticalWheel(rotation: .max, x: 1, y: 2).wheelEventsSplit.count == 32)
+    #expect(RDPSlowPathInputEvent.pointerMove(x: 1, y: 2).wheelEventsSplit == [.pointerMove(x: 1, y: 2)])
+}
+
+@Test func scrollWheelAccumulatorCarriesFractionalRotations() {
+    var accumulator = RDPScrollWheelAccumulator()
+    let point = RDPRemotePoint(x: 10, y: 20)
+
+    #expect(accumulator.events(vertical: 0.6, horizontal: 0, at: point).isEmpty)
+    #expect(accumulator.events(vertical: 0.6, horizontal: -600, at: point) == [
+        .verticalWheel(rotation: 1, x: 10, y: 20),
+        .horizontalWheel(rotation: -600, x: 10, y: 20),
+    ])
+    #expect(accumulator.events(vertical: .nan, horizontal: .infinity, at: point).isEmpty)
+    #expect(accumulator.events(vertical: 0.8, horizontal: 0, at: point) == [.verticalWheel(rotation: 1, x: 10, y: 20)])
+}
+
 @Test func inputSessionDropsHorizontalWheelWithoutServerCapability() {
     let events: [RDPSlowPathInputEvent] = [
         .verticalWheel(rotation: 120, x: 20, y: 30),

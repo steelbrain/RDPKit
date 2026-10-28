@@ -76,33 +76,10 @@ import Testing
     #expect(MacRDPKeyboardMapping.toggleFlags(for: [.capsLock, .shift]) == [.numLock, .capsLock])
 }
 
-@Test func horizontalScrollUsesRDPRightPositiveDirection() {
-    var accumulator = RDPScrollWheelAccumulator()
-    let point = RDPRemotePoint(x: 10, y: 20)
+@Test func scrollDeltasConvertToRDPRotationUnits() {
+    let lines = MacRDPScrollWheel.rotationUnits(deltaX: 1, deltaY: 1, hasPreciseScrollingDeltas: false)
+    let points = MacRDPScrollWheel.rotationUnits(deltaX: -0.5, deltaY: 2, hasPreciseScrollingDeltas: true)
 
-    #expect(accumulator.events(deltaX: 1, deltaY: 1, hasPreciseScrollingDeltas: false, at: point) == [
-        .verticalWheel(rotation: 120, x: 10, y: 20),
-        .horizontalWheel(rotation: -120, x: 10, y: 20),
-    ])
-}
-
-@Test func preciseScrollAccumulatesFractionalDeltas() {
-    var accumulator = RDPScrollWheelAccumulator()
-    let point = RDPRemotePoint(x: 0, y: 0)
-
-    #expect(accumulator.events(deltaX: 0, deltaY: 0.06, hasPreciseScrollingDeltas: true, at: point).isEmpty)
-    #expect(accumulator.events(deltaX: 0, deltaY: 0.06, hasPreciseScrollingDeltas: true, at: point) == [
-        .verticalWheel(rotation: 1, x: 0, y: 0),
-    ])
-}
-
-@Test func largeScrollDeltasSplitIntoEncodableRotations() {
-    var accumulator = RDPScrollWheelAccumulator()
-    let point = RDPRemotePoint(x: 0, y: 0)
-
-    #expect(accumulator.events(deltaX: 0, deltaY: -5, hasPreciseScrollingDeltas: false, at: point) == [
-        .verticalWheel(rotation: -255, x: 0, y: 0),
-        .verticalWheel(rotation: -255, x: 0, y: 0),
-        .verticalWheel(rotation: -90, x: 0, y: 0),
-    ])
+    #expect(lines.vertical == 120 && lines.horizontal == -120)
+    #expect(points.vertical == 20 && points.horizontal == 5)
 }

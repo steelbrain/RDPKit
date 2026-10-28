@@ -188,9 +188,71 @@ public enum RDPSlowPathInputEvent: Equatable, Sendable {
     }
 
     // The rotation is a 9-bit two's complement value (WheelRotationMask with PTRFLAGS_WHEEL_NEGATIVE).
+    // `wheelEventsSplit` keeps sent rotations in range; the clamp only guards direct encoding.
     private static func wheelFlags(rotation: Int, baseFlag: UInt16) -> UInt16 {
         let clamped = min(255, max(-256, rotation))
         return baseFlag | (UInt16(bitPattern: Int16(clamped)) & RDPPointerFlags.wheelRotationMask)
+    }
+
+    private static let maximumWheelRotation = 255
+    /// Bounds the events one absurd rotation can produce (about 68 notches).
+    private static let maximumSplitWheelEventCount = 32
+
+    /// A wheel rotation one event cannot hold, split into several events; other events unchanged.
+    var wheelEventsSplit: [RDPSlowPathInputEvent] {
+        switch self {
+        case let .verticalWheel(rotation, x, y):
+            Self.splitWheelRotation(rotation).map { .verticalWheel(rotation: $0, x: x, y: y) }
+        case let .horizontalWheel(rotation, x, y):
+            Self.splitWheelRotation(rotation).map { .horizontalWheel(rotation: $0, x: x, y: y) }
+        default:
+            [self]
+        }
+    }
+
+    private static func splitWheelRotation(_ rotation: Int) -> [Int] {
+        let limit = maximumWheelRotation * maximumSplitWheelEventCount
+        var remaining = min(limit, max(-limit, rotation))
+        var rotations: [Int] = []
+        repeat {
+            let next = min(maximumWheelRotation, max(-maximumWheelRotation, remaining))
+            rotations.append(next)
+            remaining -= next
+        } while remaining != 0
+        return rotations
+    }
+}
+
+/// Turns scroll deltas into wheel events, carrying fractions of a rotation unit over to the next
+/// call so small trackpad deltas add up. One wheel notch is `unitsPerNotch` rotation units.
+public struct RDPScrollWheelAccumulator: Sendable {
+    public static let unitsPerNotch = 120.0
+
+    private var verticalRemainder = 0.0
+    private var horizontalRemainder = 0.0
+
+    public init() {}
+
+    /// `vertical` is positive for scrolling up and `horizontal` positive for scrolling right, both
+    /// in rotation units. `RDPInputSession` splits rotations larger than one event can hold.
+    public mutating func events(vertical: Double, horizontal: Double, at point: RDPRemotePoint) -> [RDPSlowPathInputEvent] {
+        var events: [RDPSlowPathInputEvent] = []
+        if let rotation = Self.wholeRotation(vertical, remainder: &verticalRemainder) {
+            events.append(.verticalWheel(rotation: rotation, x: point.x, y: point.y))
+        }
+        if let rotation = Self.wholeRotation(horizontal, remainder: &horizontalRemainder) {
+            events.append(.horizontalWheel(rotation: rotation, x: point.x, y: point.y))
+        }
+        return events
+    }
+
+    private static func wholeRotation(_ units: Double, remainder: inout Double) -> Int? {
+        let total = remainder + units
+        guard let whole = Int(exactly: total.rounded(.towardZero)) else {
+            return nil
+        }
+        remainder = total - Double(whole)
+        return whole == 0 ? nil : whole
     }
 }
 
@@ -402,7 +464,7 @@ public final class RDPInputSession: Sendable {
     /// Drops events the server's Input Capability Set does not allow and uses fast-path input when advertised
     /// (MS-RDPBCGR 2.2.7.1.6, INPUT_FLAG_FASTPATH_INPUT/INPUT_FLAG_FASTPATH_INPUT2).
     public func send(_ events: [RDPSlowPathInputEvent]) {
-        let supportedEvents = Self.supportedEvents(events, serverInputFlags: serverInputFlags)
+        let supportedEvents = Self.supportedEvents(events.flatMap(\.wheelEventsSplit), serverInputFlags: serverInputFlags)
         let fastPathFlags = RDPInputCapabilityFlags.fastPathInput | RDPInputCapabilityFlags.fastPathInput2
         guard serverInputFlags & fastPathFlags != 0 else {
             sendSlowPath(supportedEvents)

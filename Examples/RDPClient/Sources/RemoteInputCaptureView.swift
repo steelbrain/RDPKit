@@ -123,12 +123,12 @@ final class RemoteInputCaptureNSView: NSView {
             return
         }
         inputState.updatePointerLocation(point)
-        let events = wheelAccumulator.events(
+        let units = MacRDPScrollWheel.rotationUnits(
             deltaX: event.scrollingDeltaX,
             deltaY: event.scrollingDeltaY,
-            hasPreciseScrollingDeltas: event.hasPreciseScrollingDeltas,
-            at: point
+            hasPreciseScrollingDeltas: event.hasPreciseScrollingDeltas
         )
+        let events = wheelAccumulator.events(vertical: units.vertical, horizontal: units.horizontal, at: point)
         guard events.isEmpty == false else {
             return
         }
@@ -289,46 +289,20 @@ final class RemoteInputCaptureNSView: NSView {
     }
 }
 
-/// Converts AppKit scroll deltas into RDP wheel rotations (120 units per wheel notch).
-struct RDPScrollWheelAccumulator {
-    private static let unitsPerLine = 120.0
+/// Converts AppKit scroll deltas into RDP wheel rotation units: a line (one wheel notch) is
+/// 120 units and a precise (trackpad) point 10.
+enum MacRDPScrollWheel {
     private static let unitsPerPoint = 10.0
-    // MS-RDPBCGR 2.2.8.1.1.3.1.1.3: the rotation is a 9-bit two's complement value.
-    private static let maximumRotation = 255
-
-    private var verticalRemainder = 0.0
-    private var horizontalRemainder = 0.0
 
     /// AppKit reports positive `deltaX` for scrolling left, while RDP horizontal rotation is
     /// positive to the right, so the horizontal axis is negated.
-    mutating func events(
+    static func rotationUnits(
         deltaX: CGFloat,
         deltaY: CGFloat,
-        hasPreciseScrollingDeltas: Bool,
-        at point: RDPRemotePoint
-    ) -> [RDPSlowPathInputEvent] {
-        let scale = hasPreciseScrollingDeltas ? Self.unitsPerPoint : Self.unitsPerLine
-        let vertical = Self.rotations(Double(deltaY) * scale, remainder: &verticalRemainder)
-            .map { RDPSlowPathInputEvent.verticalWheel(rotation: $0, x: point.x, y: point.y) }
-        let horizontal = Self.rotations(-Double(deltaX) * scale, remainder: &horizontalRemainder)
-            .map { RDPSlowPathInputEvent.horizontalWheel(rotation: $0, x: point.x, y: point.y) }
-        return vertical + horizontal
-    }
-
-    private static func rotations(_ units: Double, remainder: inout Double) -> [Int] {
-        guard units.isFinite else {
-            return []
-        }
-        let total = remainder + units
-        var whole = Int(total.rounded(.towardZero))
-        remainder = total - Double(whole)
-        var rotations: [Int] = []
-        while whole != 0 {
-            let rotation = max(-maximumRotation, min(maximumRotation, whole))
-            rotations.append(rotation)
-            whole -= rotation
-        }
-        return rotations
+        hasPreciseScrollingDeltas: Bool
+    ) -> (vertical: Double, horizontal: Double) {
+        let scale = hasPreciseScrollingDeltas ? unitsPerPoint : RDPScrollWheelAccumulator.unitsPerNotch
+        return (Double(deltaY) * scale, -Double(deltaX) * scale)
     }
 }
 
