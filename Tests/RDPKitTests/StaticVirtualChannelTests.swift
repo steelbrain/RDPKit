@@ -246,6 +246,11 @@ import Testing
         try mismatchedLength.append(try chunk(totalLength: 5, flags: .last, payload: [3, 4]))
     }
 
+    var capped = RDPStaticVirtualChannelReassembler(maximumTotalLength: 8)
+    #expect(throws: RDPDecodeError.invalidStaticVirtualChannelPDU) {
+        try capped.append(try chunk(totalLength: 9, flags: .first, payload: [1, 2]))
+    }
+
     var shortFinal = RDPStaticVirtualChannelReassembler()
     _ = try shortFinal.append(try chunk(totalLength: 5, flags: .first, payload: [1, 2]))
     #expect(throws: RDPDecodeError.invalidStaticVirtualChannelPDU) {

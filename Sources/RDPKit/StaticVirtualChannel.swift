@@ -145,8 +145,17 @@ struct RDPStaticVirtualChannelPDU: Equatable, Sendable {
 /// Reassembles chunked virtual channel data from the FIRST and LAST flags
 /// ([MS-RDPBCGR] 3.1.5.2.2.1).
 struct RDPStaticVirtualChannelReassembler: Sendable {
+    /// Upper bound on a server-declared message length, so a hostile length
+    /// cannot make the client buffer an unbounded stream of chunks.
+    static let defaultMaximumTotalLength = 64 * 1_024 * 1_024
+
+    private let maximumTotalLength: Int
     private var totalLength: UInt32?
     private var payload = Data()
+
+    init(maximumTotalLength: Int = defaultMaximumTotalLength) {
+        self.maximumTotalLength = maximumTotalLength
+    }
 
     mutating func append(
         _ pdu: RDPStaticVirtualChannelPDU,
@@ -166,6 +175,9 @@ struct RDPStaticVirtualChannelReassembler: Sendable {
             }
             if pdu.isLast {
                 return pdu
+            }
+            guard Int(pdu.totalLength) <= maximumTotalLength else {
+                throw RDPDecodeError.invalidStaticVirtualChannelPDU
             }
             totalLength = pdu.totalLength
             payload = pdu.payload
