@@ -249,10 +249,12 @@ enum RDPWindowsAuxiliaryDynamicChannel {
     static let mouseCursorName = RDPMouseCursorChannel.name
     static let audioInputName = RDPAudioInputDynamicChannel.name
 
+    /// Core input ([MS-RDPECI]) and mouse cursor ([MS-RDPEMSC]) move input and
+    /// pointer updates onto their own DVCs; [MS-RDPEMSC] 1.3 replaces the
+    /// fast-path pointer updates. The client implements neither, so it declines
+    /// both and keeps fast-path input and pointer updates.
     static let acceptedNames: Set<String> = [
         inputName,
-        coreInputName,
-        mouseCursorName,
         audioInputName,
     ]
 

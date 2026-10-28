@@ -434,10 +434,13 @@ import Testing
 
 @Test func acceptsWindowsAuxiliaryDynamicChannelNames() {
     #expect(RDPWindowsAuxiliaryDynamicChannel.isAcceptedNoOp(RDPInputDynamicChannel.name))
-    #expect(RDPWindowsAuxiliaryDynamicChannel.isAcceptedNoOp(RDPCoreInputChannel.name))
-    #expect(RDPWindowsAuxiliaryDynamicChannel.isAcceptedNoOp(RDPMouseCursorChannel.name))
     #expect(RDPWindowsAuxiliaryDynamicChannel.isAcceptedNoOp(RDPAudioInputDynamicChannel.name))
     #expect(!RDPWindowsAuxiliaryDynamicChannel.isAcceptedNoOp(RDPGFXChannel.name))
+}
+
+@Test func declinesDynamicChannelsThatReplaceFastPathInputAndPointerUpdates() {
+    #expect(!RDPWindowsAuxiliaryDynamicChannel.isAcceptedNoOp(RDPCoreInputChannel.name))
+    #expect(!RDPWindowsAuxiliaryDynamicChannel.isAcceptedNoOp(RDPMouseCursorChannel.name))
 }
 
 @Test func encodesMouseCursorCapsAdvertisePDU() {
