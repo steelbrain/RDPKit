@@ -26,7 +26,6 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
     private var hideCertificateWarnings = false
     private var timeoutSeconds = 10.0
     private var isConnecting = false
-    private var connectionTask: Task<Void, Never>?
     private var activeConnectionID: UUID?
     private var activeCancellation: RDPConnectionCancellation?
     private var sessionEndReason: RDPSessionEndReason?
@@ -539,9 +538,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
 
     private func startPreflight() {
         activeCancellation?.cancel()
-        connectionTask?.cancel()
         cancelPendingDisplayResize(resetLastRequestedSize: true)
-        connectionTask = nil
         activeConnectionID = nil
         activeCancellation = nil
         sessionEndReason = nil
@@ -644,7 +641,9 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         let sink = RDPRemoteSessionMainActorSink(controller: self, connectionID: connectionID)
         let credentialStore = credentialStore
         let clientLicenseStore = clientLicenseStore
-        connectionTask = Task.detached(priority: .userInitiated) {
+        // RDPPreflightClient.run blocks for the whole session, so it gets its own thread
+        // rather than holding a Swift concurrency worker.
+        let sessionThread = Thread {
             let decodeQueue = RDPLatestFrameDecodeQueue(
                 shouldCancel: {
                     cancellation.isCancelled
@@ -694,7 +693,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
             )
             let wireReceiveCoalescer = RDPWireReceiveMetricsCoalescer(
                 shouldCancel: {
-                    Task.isCancelled || cancellation.isCancelled
+                    cancellation.isCancelled
                 },
                 onFlush: { sample in
                     sink.apply { controller in
@@ -717,7 +716,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                         frame,
                         receivedAt: Date(),
                         shouldContinue: {
-                            Task.isCancelled == false && cancellation.isCancelled == false
+                            cancellation.isCancelled == false
                         }
                     ).requireDecoded()
                 },
@@ -788,34 +787,25 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                     }
                 },
                 onAudioSample: { sample in
-                    guard Task.isCancelled == false else {
-                        return
-                    }
                     sink.apply { controller in
                         guard controller.audioPlaybackEnabled else {
                             return
                         }
+                        let nextMessage: String
                         do {
-                            let queued = try controller.remoteAudioPlayer.enqueue(sample)
-                            let nextMessage = queued
+                            nextMessage = try controller.remoteAudioPlayer.enqueue(sample)
                                 ? controller.remoteAudioPlayer.statusMessage
                                 : "Dropping delayed audio."
-                            if controller.audioMessage != nextMessage {
-                                controller.audioMessage = nextMessage
-                            }
                         } catch {
-                            let nextMessage = String(describing: error)
-                            if controller.audioMessage != nextMessage {
-                                controller.audioMessage = nextMessage
-                            }
+                            nextMessage = String(describing: error)
                         }
-                        controller.render()
+                        if controller.audioMessage != nextMessage {
+                            controller.audioMessage = nextMessage
+                            controller.render()
+                        }
                     }
                 },
                 onCertificate: { certificateInfo in
-                    guard Task.isCancelled == false else {
-                        return
-                    }
                     sink.apply { controller in
                         controller.serverCertificateInfo = certificateInfo
                         controller.certificateTrustedByApp = controller.trustedCertificateStore.isTrusted(
@@ -827,26 +817,21 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                     }
                 },
                 onWireReceive: { sample in
-                    guard Task.isCancelled == false else {
-                        return
-                    }
                     wireReceiveCoalescer.record(sample)
                 },
-                cancellation: cancellation,
-                shouldCancel: {
-                    Task.isCancelled || cancellation.isCancelled
-                }
+                cancellation: cancellation
             )
-            let finalWireReceiveSample = wireReceiveCoalescer.takePendingSample()
-            guard Task.isCancelled == false else {
-                return
-            }
-            let firstFrameDecodeResult = nextReport.rdpGraphicsFirstFrame.map(decodeReportFirstFrame)
+            // A license the server issued stays valid even when the user ends the session.
             let clientLicensePersistenceResult = persistClientLicenseIfNeeded(
                 nextReport.rdpIssuedClientLicense,
                 key: clientLicenseKey,
                 store: clientLicenseStore
             )
+            guard cancellation.isCancelled == false else {
+                return
+            }
+            let finalWireReceiveSample = wireReceiveCoalescer.takePendingSample()
+            let firstFrameDecodeResult = nextReport.rdpGraphicsFirstFrame.map(decodeReportFirstFrame)
             sink.apply { controller in
                 if let finalWireReceiveSample {
                     controller.renderMetricsStore.recordWireReceive(finalWireReceiveSample)
@@ -898,11 +883,13 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                 controller.isConnecting = false
                 controller.activeConnectionID = nil
                 controller.activeCancellation = nil
-                controller.connectionTask = nil
                 controller.remoteAudioPlayer.reset()
                 controller.render()
             }
         }
+        sessionThread.name = "RDPClient session"
+        sessionThread.qualityOfService = .userInitiated
+        sessionThread.start()
     }
 
     @discardableResult
@@ -1023,14 +1010,11 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
     }
 
     private func cancelConnection(shouldRecordCancellation: Bool = true) {
-        let shouldRecordCancellation = shouldRecordCancellation
-            && (isConnecting || activeConnectionID != nil || connectionTask != nil)
+        let shouldRecordCancellation = shouldRecordCancellation && (isConnecting || activeConnectionID != nil)
         activeCancellation?.cancel()
-        connectionTask?.cancel()
         cancelPendingDisplayResize(resetLastRequestedSize: true)
         resetFramePresentationState()
         activeCancellation = nil
-        connectionTask = nil
         activeConnectionID = nil
         inputSession = nil
         displayControlSession = nil
@@ -2128,15 +2112,18 @@ private final class RDPRemoteSessionMainActorSink: @unchecked Sendable {
         self.connectionID = connectionID
     }
 
+    /// Runs `operation` on the main queue in submission order, so frames and audio stay ordered.
     func apply(_ operation: @escaping @MainActor (RDPRemoteSessionViewController) -> Void) {
-        Task { @MainActor [weak self] in
-            guard let self,
-                  let controller,
-                  controller.acceptsConnectionEvent(id: connectionID)
-            else {
-                return
+        DispatchQueue.main.async { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self,
+                      let controller = self.controller,
+                      controller.acceptsConnectionEvent(id: self.connectionID)
+                else {
+                    return
+                }
+                operation(controller)
             }
-            operation(controller)
         }
     }
 }
