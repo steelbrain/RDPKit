@@ -273,6 +273,83 @@ import Testing
     #expect(try bgraPixel(atX: 0, y: 0, in: presentation.imageBuffer) == [0x00, 0x00, 0x00, 0x00])
 }
 
+/// Windows mixed mode draws text with other codecs over a video surface; the text shows
+/// only inside its regions, and later video keeps it until an update covers the surface.
+@Test func decodedVideoCompositorKeepsTextDrawnOverVideo() throws {
+    let compositor = RDPDecodedVideoSurfaceCompositor()
+    let outputRect = RDPFrameRect(left: 0, top: 0, right: 4, bottom: 4)
+    let text: [UInt8] = [0xA0, 0xB0, 0xC0, 0xFF]
+    let firstVideo: [UInt8] = [0x10, 0x20, 0x30, 0xFF]
+    _ = try compositor.presentation(
+        for: videoFrame(
+            id: 1,
+            graphicsOutputRect: outputRect,
+            surfaceRect: outputRect,
+            destinationRect: outputRect,
+            regionRects: [outputRect]
+        ),
+        decodedImageBuffer: try bgraPixelBuffer(width: 4, height: 4, pixel: firstVideo)
+    )
+
+    var textFrame = bitmapFrame(id: 2, width: 4, height: 4, pixel: text, graphicsOutputRect: outputRect)
+    textFrame.surfaceRect = outputRect
+    textFrame.regionRects = [RDPFrameRect(left: 1, top: 1, right: 3, bottom: 2)]
+    let textPresentation = try compositor.presentation(for: textFrame, decodedImageBuffer: bgraPixelBuffer(
+        width: 1,
+        height: 1,
+        pixel: [0, 0, 0, 0]
+    ))
+    #expect(try bgraPixel(atX: 1, y: 1, in: textPresentation.imageBuffer) == text)
+    #expect(try bgraPixel(atX: 0, y: 0, in: textPresentation.imageBuffer) == firstVideo)
+    #expect(try bgraPixel(atX: 3, y: 3, in: textPresentation.imageBuffer) == firstVideo)
+
+    // A full-surface picture that changed only its lower half.
+    let secondVideo: [UInt8] = [0x11, 0x21, 0x31, 0xFF]
+    let partialPresentation = try compositor.presentation(
+        for: videoFrame(
+            id: 3,
+            graphicsOutputRect: outputRect,
+            surfaceRect: outputRect,
+            destinationRect: outputRect,
+            regionRects: [RDPFrameRect(left: 0, top: 2, right: 4, bottom: 4)],
+            nalUnitTypes: [1]
+        ),
+        decodedImageBuffer: try bgraPixelBuffer(width: 4, height: 4, pixel: secondVideo)
+    )
+    #expect(try bgraPixel(atX: 1, y: 1, in: partialPresentation.imageBuffer) == text)
+    #expect(try bgraPixel(atX: 0, y: 0, in: partialPresentation.imageBuffer) == firstVideo)
+    #expect(try bgraPixel(atX: 0, y: 3, in: partialPresentation.imageBuffer) == secondVideo)
+
+    let thirdVideo: [UInt8] = [0x12, 0x22, 0x32, 0xFF]
+    let resyncPresentation = try compositor.presentation(
+        for: videoFrame(
+            id: 4,
+            graphicsOutputRect: outputRect,
+            surfaceRect: outputRect,
+            destinationRect: outputRect,
+            regionRects: [RDPFrameRect(left: 3, top: 0, right: 4, bottom: 4)]
+        ),
+        decodedImageBuffer: try bgraPixelBuffer(width: 4, height: 4, pixel: thirdVideo)
+    )
+    #expect(try bgraPixel(atX: 1, y: 1, in: resyncPresentation.imageBuffer) == text)
+    #expect(try bgraPixel(atX: 3, y: 0, in: resyncPresentation.imageBuffer) == thirdVideo)
+
+    let coveringVideo: [UInt8] = [0x13, 0x23, 0x33, 0xFF]
+    let coveringBuffer = try bgraPixelBuffer(width: 4, height: 4, pixel: coveringVideo)
+    let coveringPresentation = try compositor.presentation(
+        for: videoFrame(
+            id: 5,
+            graphicsOutputRect: outputRect,
+            surfaceRect: outputRect,
+            destinationRect: outputRect,
+            regionRects: [outputRect],
+            nalUnitTypes: [1]
+        ),
+        decodedImageBuffer: coveringBuffer
+    )
+    #expect(coveringPresentation.imageBuffer === coveringBuffer)
+}
+
 @Test func decodedVideoCompositorClearsStaleSurfaceOnFullResyncFrame() throws {
     let compositor = RDPDecodedVideoSurfaceCompositor()
     _ = try compositor.presentation(

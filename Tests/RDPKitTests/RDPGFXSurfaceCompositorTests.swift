@@ -229,7 +229,9 @@ import Testing
     #expect(Array(xrgbData) == [0x01, 0x02, 0x03, 0xFF])
 }
 
-@Test func compositorDropsExcludedVideoSurfaceUpdatesWithoutDroppingOtherDirtySurfaces() throws {
+/// Windows mixed mode draws text beside video on one surface. The snapshot keeps only what
+/// other codecs drew last, so the decoded video is not painted over from this compositor.
+@Test func compositorLeavesAreasVideoWroteLastOutOfItsSnapshots() throws {
     let compositor = RDPGFXSurfaceCompositor()
     let clearCodec = RDPClearCodecDecoder()
     for surfaceID: UInt16 in [1, 2] {
@@ -251,10 +253,58 @@ import Testing
         )
     }
 
-    let frames = compositor.makeFrames(frameID: 29, excludingSurfaceIDs: [1])
+    compositor.noteVideo(RDPGraphicsFrameSnapshot(
+        frameID: 29,
+        surfaceID: 1,
+        codecID: RDPGFXCodecID.avc420,
+        codecName: "avc420",
+        pixelFormat: RDPGFXPixelFormat.xrgb8888,
+        destinationRect: RDPFrameRect(left: 0, top: 0, right: 2, bottom: 2),
+        regionRects: [RDPFrameRect(left: 0, top: 0, right: 1, bottom: 2)],
+        encodedVideoData: Data([0x00, 0x00, 0x01, 0x65])
+    ))
+    let frames = compositor.makeFrames(frameID: 29)
 
-    #expect(frames.map(\.surfaceID) == [2])
+    #expect(frames.map(\.surfaceID) == [1, 2])
+    #expect(frames.map(\.regionRects) == [
+        [RDPFrameRect(left: 1, top: 0, right: 2, bottom: 2)],
+        [RDPFrameRect(left: 0, top: 0, right: 2, bottom: 2)],
+    ])
     #expect(compositor.makeFrames(frameID: 30).isEmpty)
+}
+
+/// Video regions are relative to the update's destination; the area around them stays dirty.
+@Test func compositorKeepsTextAroundVideoDrawnInsideIt() throws {
+    let compositor = RDPGFXSurfaceCompositor()
+    let clearCodec = RDPClearCodecDecoder()
+    try compositor.process(try createSurfaceMessage(surfaceID: 1, width: 4, height: 4), clearCodec: clearCodec)
+    try compositor.process(try mapSurfaceToOutputMessage(surfaceID: 1, x: 0, y: 0), clearCodec: clearCodec)
+    try compositor.process(
+        try solidFillMessage(
+            surfaceID: 1,
+            color: [0x01, 0x02, 0x03, 0xFF],
+            rects: [RDPGFXRect16(left: 0, top: 0, right: 4, bottom: 4)]
+        ),
+        clearCodec: clearCodec
+    )
+
+    compositor.noteVideo(RDPGraphicsFrameSnapshot(
+        frameID: 1,
+        surfaceID: 1,
+        codecID: RDPGFXCodecID.avc420,
+        codecName: "avc420",
+        pixelFormat: RDPGFXPixelFormat.xrgb8888,
+        destinationRect: RDPFrameRect(left: 1, top: 1, right: 3, bottom: 3),
+        regionRects: [RDPFrameRect(left: 0, top: 0, right: 2, bottom: 2)],
+        encodedVideoData: Data([0x00, 0x00, 0x01, 0x65])
+    ))
+
+    #expect(compositor.makeFrames(frameID: 1).map(\.regionRects) == [[
+        RDPFrameRect(left: 0, top: 0, right: 4, bottom: 1),
+        RDPFrameRect(left: 0, top: 3, right: 4, bottom: 4),
+        RDPFrameRect(left: 0, top: 1, right: 1, bottom: 3),
+        RDPFrameRect(left: 3, top: 1, right: 4, bottom: 3),
+    ]])
 }
 
 /// gnome-remote-desktop encodes AVC420 into unmapped surface 1 and copies it
@@ -286,10 +336,11 @@ import Testing
     )
     try compositor.process(copy, clearCodec: clearCodec)
 
-    // EndFrame as the client handles it: the copied video excludes surface 0.
+    // As the client handles the copy: the copied video wrote all of surface 0 last.
     let copied = copiedVideoFrames([video], using: try RDPGFXSurfaceToSurfacePDU.parse(from: copy))
     #expect(copied.map(\.surfaceID) == [0])
-    #expect(compositor.makeFrames(frameID: 1, excludingSurfaceIDs: Set(copied.map(\.surfaceID))).isEmpty)
+    copied.forEach(compositor.noteVideo)
+    #expect(compositor.makeFrames(frameID: 1).isEmpty)
     // The next frame has no updates.
     #expect(compositor.makeFrames(frameID: 2).isEmpty)
 }

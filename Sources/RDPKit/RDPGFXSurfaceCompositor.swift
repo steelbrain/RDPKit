@@ -168,11 +168,39 @@ final class RDPGFXSurfaceCompositor {
             guard let rect = clipped(rect) else {
                 return
             }
-            guard dirtyRects.count >= Self.maximumDirtyRectCount else {
-                dirtyRects.append(rect)
+            dirtyRects.append(rect)
+            collapseDirtyRectsIfNeeded()
+        }
+
+        /// Removes `rect` from the changed area: video wrote it last, and this surface does
+        /// not hold decoded video, so its pixels there must not be painted over the video.
+        mutating func markWrittenByVideo(_ rect: RDPGFXRect16) {
+            var remaining: [RDPGFXRect16] = []
+            for dirty in dirtyRects {
+                guard dirty.left < rect.right, rect.left < dirty.right, dirty.top < rect.bottom, rect.top < dirty.bottom
+                else {
+                    remaining.append(dirty)
+                    continue
+                }
+                let top = max(dirty.top, rect.top)
+                let bottom = min(dirty.bottom, rect.bottom)
+                let pieces = [
+                    RDPGFXRect16(left: dirty.left, top: dirty.top, right: dirty.right, bottom: top),
+                    RDPGFXRect16(left: dirty.left, top: bottom, right: dirty.right, bottom: dirty.bottom),
+                    RDPGFXRect16(left: dirty.left, top: top, right: min(rect.left, dirty.right), bottom: bottom),
+                    RDPGFXRect16(left: max(rect.right, dirty.left), top: top, right: dirty.right, bottom: bottom),
+                ]
+                remaining += pieces.filter { $0.right > $0.left && $0.bottom > $0.top }
+            }
+            dirtyRects = remaining
+            collapseDirtyRectsIfNeeded()
+        }
+
+        private mutating func collapseDirtyRectsIfNeeded() {
+            guard dirtyRects.count > Self.maximumDirtyRectCount, let first = dirtyRects.first else {
                 return
             }
-            dirtyRects = [dirtyRects.reduce(rect) { bounds, dirtyRect in
+            dirtyRects = [dirtyRects.reduce(first) { bounds, dirtyRect in
                 RDPGFXRect16(
                     left: min(bounds.left, dirtyRect.left),
                     top: min(bounds.top, dirtyRect.top),
@@ -265,22 +293,29 @@ final class RDPGFXSurfaceCompositor {
         makeFrames(frameID: frameID).first
     }
 
+    /// Notes that `frame`, a video update or a copy of one, wrote its regions last. The
+    /// compositor does not decode video, so those areas leave its dirty rectangles.
+    func noteVideo(_ frame: RDPGraphicsFrameSnapshot) {
+        guard let index = surfaces.index(forKey: frame.surfaceID) else {
+            return
+        }
+        for region in frame.videoSurfaceRegions {
+            surfaces.values[index].markWrittenByVideo(RDPGFXRect16(
+                left: region.left,
+                top: region.top,
+                right: region.right,
+                bottom: region.bottom
+            ))
+        }
+    }
+
     /// Snapshots every mapped surface with dirty rectangles. Unmapped surfaces, and surfaces
-    /// outside the output space, keep their dirty rectangles for a later frame.
-    ///
-    /// Excluded surfaces carry video this frame. The compositor does not hold decoded AVC pixels,
-    /// so their dirty rectangles are dropped: a later snapshot would paint black over the video.
-    /// Known limitation: non-video updates on a video surface in a mixed-codec frame are lost.
-    func makeFrames(
-        frameID: UInt32?,
-        excludingSurfaceIDs: Set<UInt16> = []
-    ) -> [RDPGraphicsFrameSnapshot] {
+    /// outside the output space, keep their dirty rectangles for a later frame. On a surface
+    /// that also carries video the snapshot holds only what other codecs drew; its region
+    /// rectangles say where, and the decoded video stays everywhere else.
+    func makeFrames(frameID: UInt32?) -> [RDPGraphicsFrameSnapshot] {
         var frames: [RDPGraphicsFrameSnapshot] = []
         for surfaceID in surfaces.keys.sorted() {
-            guard !excludingSurfaceIDs.contains(surfaceID) else {
-                surfaces[surfaceID]?.dirtyRects.removeAll()
-                continue
-            }
             guard let surface = surfaces[surfaceID],
                   !surface.dirtyRects.isEmpty,
                   let frame = makeFrame(frameID: frameID, surface: surface)

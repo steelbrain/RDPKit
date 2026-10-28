@@ -94,6 +94,12 @@
   that recreates surfaces no longer keeps a decoder per old surface, and a
   surface recreated with the same ID starts empty. Video queued for a surface
   deleted later in the frame is dropped.
+- Keep text and other non-video updates that Windows mixed mode draws on a
+  video surface. Before, those updates were dropped whenever the same frame also
+  carried video. Now the surface snapshot carries only the areas other codecs
+  drew last. `RDPFrameDecodeQueue` merges those areas over the decoded video and
+  keeps them through later partial video updates. Surfaces mapped to scaled
+  output still replace their video with the snapshot.
 - Acknowledge every RDPGFX EndFrame and every surface frame marker, including
   after an update that fails to decode, and ignore cosmetic RDPGFX and DVC
   fields instead of ending the session.

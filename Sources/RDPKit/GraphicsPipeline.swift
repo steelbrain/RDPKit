@@ -109,6 +109,7 @@ extension RDPClientConnection {
             if let frame = try videoFrame(RDPGFXWireToSurface1PDU.parse(from: message), compositor: compositor) {
                 try checkPendingVideoRoom(for: 1)
                 pendingGraphicsFrames.append(frame)
+                compositor.noteVideo(frame)
             }
         case RDPGFXCommandID.deleteSurface:
             // Video already queued for the surface has nowhere to go, and a surface
@@ -122,6 +123,7 @@ extension RDPClientConnection {
             let copies = try copiedVideoFrames(pendingGraphicsFrames, using: RDPGFXSurfaceToSurfacePDU.parse(from: message))
             try checkPendingVideoRoom(for: copies.count)
             pendingVideoCopies += copies
+            copies.forEach(compositor.noteVideo)
         case RDPGFXCommandID.endFrame:
             let endFrame = try RDPGFXEndFramePDU.parse(from: message)
             // Video for a surface deleted within the frame has nowhere to go.
@@ -137,10 +139,8 @@ extension RDPClientConnection {
                 mapped.mappedOutputRect = compositor.mappedOutputRect(surfaceID: frame.surfaceID)
                 return mapped
             }
-            pendingGraphicsFrames = videoFrames + compositor.makeFrames(
-                frameID: endFrame.frameID,
-                excludingSurfaceIDs: Set(videoFrames.map(\.surfaceID))
-            )
+            // Other codecs' updates follow the video they were drawn over.
+            pendingGraphicsFrames = videoFrames + compositor.makeFrames(frameID: endFrame.frameID)
             return endFrame.frameID
         default:
             break

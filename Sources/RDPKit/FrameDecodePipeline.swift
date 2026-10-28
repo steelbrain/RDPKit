@@ -125,6 +125,9 @@ final class RDPDecodedVideoSurfaceCompositor {
     private var surfaces: [UInt16: Surface] = [:]
     private var directSurfaces: [UInt16: DirectSurface] = [:]
     private var chromaEnhancedAVC444Surfaces = Set<UInt16>()
+    /// Surfaces holding pixels other codecs drew beside their video, as in Windows mixed
+    /// mode. Their decoded video is valid only inside each update's regions.
+    private var surfacesWithBitmapContent = Set<UInt16>()
     private var graphicsOutput: Surface?
     private let imageConverter = RDPDecodedImageBufferConverter()
 
@@ -136,6 +139,7 @@ final class RDPDecodedVideoSurfaceCompositor {
             surfaces[surfaceID] = nil
             directSurfaces[surfaceID] = nil
             chromaEnhancedAVC444Surfaces.remove(surfaceID)
+            surfacesWithBitmapContent.remove(surfaceID)
         }
         guard frame.contentKind == .video else {
             if let outputRect = frame.graphicsOutputRect {
@@ -144,8 +148,14 @@ final class RDPDecodedVideoSurfaceCompositor {
                     excludingSurfaceID: frame.surfaceID
                 )
             }
-            directSurfaces[frame.surfaceID] = nil
             let bitmap = bitmapSurface(from: frame)
+            if frame.mappedOutputRect == nil, frame.graphicsOutputRect != nil, let bitmap, let surfaceRect = frame.surfaceRect {
+                try materializeDirectSurface(surfaceID: frame.surfaceID)
+                let surface = merge(bitmap, regionRects: frame.regionRects, surfaceRect: surfaceRect, into: frame.surfaceID)
+                surfacesWithBitmapContent.insert(frame.surfaceID)
+                return try graphicsOutputPresentation(from: frame, displayedSurface: surface)
+            }
+            directSurfaces[frame.surfaceID] = nil
             surfaces[frame.surfaceID] = frame.mappedOutputRect == nil ? bitmap : nil
             if frame.graphicsOutputRect != nil, let bitmap {
                 return try graphicsOutputPresentation(from: frame, displayedSurface: bitmap)
@@ -161,20 +171,25 @@ final class RDPDecodedVideoSurfaceCompositor {
             return RDPDecodedFramePresentation(frame: frame, imageBuffer: decodedImageBuffer)
         }
 
-        if frame.isVideoResyncFrame,
-           updateRect.left == 0,
-           updateRect.top == 0
-        {
-            surfaces[frame.surfaceID] = nil
-            directSurfaces[frame.surfaceID] = nil
-            chromaEnhancedAVC444Surfaces.remove(frame.surfaceID)
-        }
         let surfaceRect = frame.surfaceRect ?? RDPFrameRect(
             left: 0,
             top: 0,
             right: UInt16(clamping: surfaceWidth),
             bottom: UInt16(clamping: surfaceHeight)
         )
+        if updateCoversSurface(frame, surfaceRect: surfaceRect) {
+            surfacesWithBitmapContent.remove(frame.surfaceID)
+        }
+        // A resync replaces the surface, except what other codecs drew outside its regions.
+        if frame.isVideoResyncFrame,
+           updateRect.left == 0,
+           updateRect.top == 0,
+           !surfacesWithBitmapContent.contains(frame.surfaceID)
+        {
+            surfaces[frame.surfaceID] = nil
+            directSurfaces[frame.surfaceID] = nil
+            chromaEnhancedAVC444Surfaces.remove(frame.surfaceID)
+        }
         let canPresentDirectly = canPresentDirectly(frame, surfaceRect: surfaceRect)
         recordAVC444ChromaUpdate(frame)
         if canPresentDirectly,
@@ -232,6 +247,10 @@ final class RDPDecodedVideoSurfaceCompositor {
         _ frame: RDPGraphicsFrameSnapshot,
         surfaceRect: RDPFrameRect
     ) -> Bool {
+        // The whole decoded picture would cover what other codecs drew outside the regions.
+        guard !surfacesWithBitmapContent.contains(frame.surfaceID) else {
+            return false
+        }
         guard frame.codecID == RDPGFXCodecID.avc444 || frame.codecID == RDPGFXCodecID.avc444v2 else {
             return true
         }
@@ -247,6 +266,58 @@ final class RDPDecodedVideoSurfaceCompositor {
         case nil:
             return false
         }
+    }
+
+    /// Whether the update writes the whole surface; no regions means its whole update rectangle.
+    private func updateCoversSurface(_ frame: RDPGraphicsFrameSnapshot, surfaceRect: RDPFrameRect) -> Bool {
+        let regions = frame.regionRects + frame.auxiliaryRegionRects
+        guard !regions.isEmpty else {
+            return frame.destinationRect.left == 0
+                && frame.destinationRect.top == 0
+                && frame.destinationRect.width >= surfaceRect.width
+                && frame.destinationRect.height >= surfaceRect.height
+        }
+        return regionsCoverSurface(regions, frame: frame, surfaceRect: surfaceRect)
+    }
+
+    /// Copies `bitmap`'s pixels inside `regionRects` (output coordinates) into the surface and
+    /// keeps its decoded video everywhere else. A surface with no pixels yet takes the bitmap.
+    private func merge(
+        _ bitmap: Surface,
+        regionRects: [RDPFrameRect],
+        surfaceRect: RDPFrameRect,
+        into surfaceID: UInt16
+    ) -> Surface {
+        guard surfaces[surfaceID] != nil else {
+            surfaces[surfaceID] = bitmap
+            return bitmap
+        }
+        var surface = surface(for: surfaceID, width: bitmap.width, height: bitmap.height)
+        // Leaves `surface` the only owner of its pixels, so the copies below need no full copy.
+        surfaces[surfaceID] = nil
+        for region in regionRects {
+            let left = max(Int(region.left) - Int(surfaceRect.left), 0)
+            let top = max(Int(region.top) - Int(surfaceRect.top), 0)
+            let right = min(Int(region.right) - Int(surfaceRect.left), bitmap.width)
+            let bottom = min(Int(region.bottom) - Int(surfaceRect.top), bitmap.height)
+            guard right > left, bottom > top else {
+                continue
+            }
+            copy(
+                source: bitmap.data,
+                sourceBytesPerRow: bitmap.bytesPerRow,
+                destination: &surface.data,
+                destinationBytesPerRow: surface.bytesPerRow,
+                sourceX: left,
+                sourceY: top,
+                destinationX: left,
+                destinationY: top,
+                width: right - left,
+                height: bottom - top
+            )
+        }
+        surfaces[surfaceID] = surface
+        return surface
     }
 
     private func regionsCoverSurface(

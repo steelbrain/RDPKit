@@ -201,3 +201,27 @@ public struct RDPGraphicsFrameSnapshot: Encodable, Equatable, Sendable {
         try container.encodeIfPresent(decodedBitmapBytesPerRow, forKey: .decodedBitmapBytesPerRow)
     }
 }
+
+extension RDPGraphicsFrameSnapshot {
+    /// The surface areas a video update writes: its region rectangles, which servers send
+    /// relative to the destination rectangle or in surface coordinates (all of them fitting
+    /// the destination's size reads as relative), or the whole destination when it lists none.
+    var videoSurfaceRegions: [RDPFrameRect] {
+        let regions = regionRects + auxiliaryRegionRects
+        guard !regions.isEmpty else {
+            return [destinationRect]
+        }
+        let areRelative = regions.allSatisfy { $0.right <= destinationRect.width && $0.bottom <= destinationRect.height }
+        guard areRelative else {
+            return regions
+        }
+        return regions.map {
+            RDPFrameRect(
+                left: destinationRect.left &+ $0.left,
+                top: destinationRect.top &+ $0.top,
+                right: destinationRect.left &+ $0.right,
+                bottom: destinationRect.top &+ $0.bottom
+            )
+        }
+    }
+}

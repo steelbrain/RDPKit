@@ -925,7 +925,9 @@ struct MockKRDPServerTests {
         #expect(observed.value.frames == report.rdpGraphicsFrames)
     }
 
-    @Test func clientDoesNotReplaceAVCFrameWithIncompleteSurfaceFrame() throws {
+    /// ClearCodec drawn over AVC on the same surface in one frame (Windows mixed mode) follows
+    /// the video as a snapshot whose regions are only what ClearCodec drew.
+    @Test func clientDeliversTextDrawnOverVideoAsItsRegionOnly() throws {
         let observed = Locked(Observed())
         let report = try runMock(.init(graphicsBehavior: .sendVideoBeforeBitmapCompositionFrame), client: {
             RDPSessionClient().run(configuration: $0, onGraphicsFrame: { frame in
@@ -934,10 +936,9 @@ struct MockKRDPServerTests {
         }).report
 
         #expect(report.status == "success")
-        #expect(report.rdpGraphicsFrames?.map(\.codecName) == ["avc420"])
-        #expect(report.rdpGraphicsFrames?.map(\.contentKind) == [.video])
-        #expect(observed.value.frames.map(\.codecName) == ["avc420"])
-        #expect(observed.value.frames.map(\.contentKind) == [.video])
+        #expect(observed.value.frames.map(\.codecName) == ["avc420", "surface-bgra"])
+        #expect(observed.value.frames.map(\.contentKind) == [.video, .bitmap])
+        #expect(observed.value.frames.last?.regionRects == [RDPFrameRect(left: 1, top: 1, right: 3, bottom: 2)])
         #expect(report.error == nil)
     }
 
