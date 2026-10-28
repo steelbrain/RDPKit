@@ -12,6 +12,19 @@ struct KeychainCredentialKey: Equatable, Sendable {
         self.identity = identity
     }
 
+    /// The key for the connection form's fields, or nil when the target or username is incomplete.
+    init?(host: String, portText: String, username: String, domain: String) {
+        guard let target = try? RDPConnectionTarget(host: host, portText: portText) else {
+            return nil
+        }
+        self.init(identity: RDPConnectionIdentity(
+            host: target.host,
+            port: target.port,
+            username: username,
+            domain: domain
+        ))
+    }
+
     var account: String {
         guard let account = identity.credentialAccountName else {
             preconditionFailure("KeychainCredentialKey requires a credential account identity.")

@@ -365,7 +365,7 @@ struct ConnectionManagerView: View {
     }
 
     private func loadRememberedPasswordIfAvailable() {
-        guard let key = currentCredentialKey() else {
+        guard let key = KeychainCredentialKey(host: host, portText: port, username: username, domain: domain) else {
             keychainMessage = nil
             hasRememberedPassword = false
             return
@@ -393,53 +393,17 @@ struct ConnectionManagerView: View {
 
     private func profilePassword(for profile: ConnectionProfile) throws -> String {
         guard profile.rememberPassword,
-              let key = makeCredentialKey(
-                  host: profile.host,
-                  port: profile.port,
-                  username: profile.username,
-                  domain: profile.domain
-              )
+              let key = KeychainCredentialKey(identity: profile.identity)
         else {
             return ""
         }
         return try credentialStore.password(for: key) ?? ""
     }
 
-    private func currentCredentialKey() -> KeychainCredentialKey? {
-        guard let target = try? RDPConnectionTarget(host: host, portText: port) else {
-            return nil
-        }
-        return makeCredentialKey(
-            host: target.host,
-            port: target.port,
-            username: username.trimmingCharacters(in: .whitespacesAndNewlines),
-            domain: domain.trimmingCharacters(in: .whitespacesAndNewlines)
-        )
-    }
-
-    private func makeCredentialKey(
-        host: String,
-        port: UInt16,
-        username: String,
-        domain: String
-    ) -> KeychainCredentialKey? {
-        KeychainCredentialKey(identity: RDPConnectionIdentity(
-            host: host,
-            port: port,
-            username: username,
-            domain: domain
-        ))
-    }
-
     private func credentialPersistenceRequest(
         for profile: ConnectionProfile
     ) throws -> CredentialPersistenceRequest? {
-        guard let key = makeCredentialKey(
-            host: profile.host,
-            port: profile.port,
-            username: profile.username,
-            domain: profile.domain
-        ) else {
+        guard let key = KeychainCredentialKey(identity: profile.identity) else {
             return nil
         }
 
@@ -468,12 +432,7 @@ struct ConnectionManagerView: View {
 
     @discardableResult
     private func deleteStoredCredentials(for profile: ConnectionProfile) throws -> Bool {
-        guard let key = makeCredentialKey(
-            host: profile.host,
-            port: profile.port,
-            username: profile.username,
-            domain: profile.domain
-        ) else {
+        guard let key = KeychainCredentialKey(identity: profile.identity) else {
             return false
         }
         let hadStoredPassword = try credentialStore.password(for: key) != nil

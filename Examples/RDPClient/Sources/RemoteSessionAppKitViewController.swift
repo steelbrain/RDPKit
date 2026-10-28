@@ -586,18 +586,14 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
 
         let trimmedUsername = username.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedDomain = domain.trimmingCharacters(in: .whitespacesAndNewlines)
-        let credentialKey = makeCredentialKey(
+        let identity = RDPConnectionIdentity(
             host: target.host,
             port: target.port,
             username: trimmedUsername,
             domain: trimmedDomain
         )
-        let clientLicenseKey = makeClientLicenseKey(
-            host: target.host,
-            port: target.port,
-            username: trimmedUsername,
-            domain: trimmedDomain
-        )
+        let credentialKey = KeychainCredentialKey(identity: identity)
+        let clientLicenseKey = ClientLicenseStoreKey(identity: identity)
         let storedClientLicense: RDPStoredClientLicense?
         do {
             storedClientLicense = try clientLicenseStore.license(for: clientLicenseKey)
@@ -1230,7 +1226,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
 
     private func loadRememberedPasswordIfAvailable() {
         guard !isConnecting,
-              let key = currentCredentialKey()
+              let key = KeychainCredentialKey(host: host, portText: port, username: username, domain: domain)
         else {
             keychainMessage = nil
             hasRememberedPassword = false
@@ -1255,46 +1251,6 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
             hasRememberedPassword = false
             keychainMessage = String(describing: error)
         }
-    }
-
-    private func currentCredentialKey() -> KeychainCredentialKey? {
-        guard let target = try? RDPConnectionTarget(host: host, portText: port) else {
-            return nil
-        }
-        return makeCredentialKey(
-            host: target.host,
-            port: target.port,
-            username: username.trimmingCharacters(in: .whitespacesAndNewlines),
-            domain: domain.trimmingCharacters(in: .whitespacesAndNewlines)
-        )
-    }
-
-    private func makeCredentialKey(
-        host: String,
-        port: UInt16,
-        username: String,
-        domain: String
-    ) -> KeychainCredentialKey? {
-        KeychainCredentialKey(identity: RDPConnectionIdentity(
-            host: host,
-            port: port,
-            username: username,
-            domain: domain
-        ))
-    }
-
-    private func makeClientLicenseKey(
-        host: String,
-        port: UInt16,
-        username: String,
-        domain: String
-    ) -> ClientLicenseStoreKey {
-        ClientLicenseStoreKey(identity: RDPConnectionIdentity(
-            host: host,
-            port: port,
-            username: username,
-            domain: domain
-        ))
     }
 
     private func credentialPersistenceRequest(
