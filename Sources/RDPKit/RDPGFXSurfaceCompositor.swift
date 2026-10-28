@@ -11,23 +11,181 @@ final class RDPGFXSurfaceCompositor {
         var y: UInt32
         var targetWidth: UInt32? = nil
         var targetHeight: UInt32? = nil
+
+        /// The target rectangle of a scaled mapping, or nil for an unscaled one.
+        func scaledRect() throws -> RDPFrameRect? {
+            guard let targetWidth, let targetHeight else {
+                return nil
+            }
+            guard targetWidth > 0,
+                  targetHeight > 0,
+                  let right = UInt16(exactly: UInt64(x) + UInt64(targetWidth)),
+                  let bottom = UInt16(exactly: UInt64(y) + UInt64(targetHeight))
+            else {
+                throw RDPDecodeError.invalidRDPGFXPDU
+            }
+            return RDPFrameRect(left: UInt16(x), top: UInt16(y), right: right, bottom: bottom)
+        }
     }
 
+    /// An offscreen surface (MS-RDPEGFX 3.3.1.6) holding packed BGRA pixels.
     private struct Surface {
+        static let maximumDirtyRectCount = 1_024
+
         var surfaceID: UInt16
         var width: Int
         var height: Int
         var pixelFormat: UInt8
-        var bytesPerRow: Int
         var data: Data
         var outputMapping: OutputMapping?
         var dirtyRects: [RDPGFXRect16] = []
+
+        var bytesPerRow: Int {
+            width * 4
+        }
+
+        /// The unscaled output rectangle; nil when unmapped or outside the 16-bit output space.
+        var outputRect: RDPFrameRect? {
+            guard let outputMapping,
+                  let right = UInt16(exactly: UInt64(outputMapping.x) + UInt64(width)),
+                  let bottom = UInt16(exactly: UInt64(outputMapping.y) + UInt64(height))
+            else {
+                return nil
+            }
+            return RDPFrameRect(left: UInt16(outputMapping.x), top: UInt16(outputMapping.y), right: right, bottom: bottom)
+        }
+
+        func contains(x: Int, y: Int, width: Int, height: Int) -> Bool {
+            x >= 0 && y >= 0 && width >= 0 && height >= 0 && x + width <= self.width && y + height <= self.height
+        }
+
+        /// `rect` clipped to the surface; nil when nothing remains. RDPGFX_RECT16 right and bottom are exclusive.
+        func clipped(_ rect: RDPGFXRect16) -> RDPGFXRect16? {
+            let right = min(Int(rect.right), width)
+            let bottom = min(Int(rect.bottom), height)
+            guard right > Int(rect.left), bottom > Int(rect.top) else {
+                return nil
+            }
+            return RDPGFXRect16(left: rect.left, top: rect.top, right: UInt16(right), bottom: UInt16(bottom))
+        }
+
+        /// A packed copy of the pixels in `rect`, which must be non-empty and inside the surface.
+        func pixels(in rect: RDPGFXRect16) throws -> Data {
+            guard clipped(rect) == rect else {
+                throw RDPDecodeError.invalidRDPGFXPDU
+            }
+            let width = Int(rect.width)
+            let height = Int(rect.height)
+            var pixels = Data(count: width * height * 4)
+            copyPixels(
+                from: data,
+                sourceBytesPerRow: bytesPerRow,
+                sourceX: Int(rect.left),
+                sourceY: Int(rect.top),
+                to: &pixels,
+                destinationBytesPerRow: width * 4,
+                destinationX: 0,
+                destinationY: 0,
+                width: width,
+                height: height
+            )
+            return pixels
+        }
+
+        /// Copies a `width` x `height` BGRA block at (`sourceX`, `sourceY`) of `source` to (`x`, `y`).
+        mutating func write(
+            _ source: Data,
+            bytesPerRow sourceBytesPerRow: Int,
+            sourceX: Int = 0,
+            sourceY: Int = 0,
+            width: Int,
+            height: Int,
+            x: Int,
+            y: Int
+        ) throws {
+            guard contains(x: x, y: y, width: width, height: height),
+                  sourceX >= 0,
+                  sourceY >= 0,
+                  sourceBytesPerRow >= (sourceX + width) * 4,
+                  source.count >= sourceBytesPerRow * (sourceY + height)
+            else {
+                throw RDPDecodeError.invalidRDPGFXPDU
+            }
+            let bytesPerRow = bytesPerRow
+            copyPixels(
+                from: source,
+                sourceBytesPerRow: sourceBytesPerRow,
+                sourceX: sourceX,
+                sourceY: sourceY,
+                to: &data,
+                destinationBytesPerRow: bytesPerRow,
+                destinationX: x,
+                destinationY: y,
+                width: width,
+                height: height
+            )
+        }
+
+        /// Fills `rect`, clipped to the surface; the fill alpha applies only to ARGB surfaces.
+        mutating func fill(_ rect: RDPGFXRect16, color: RDPGFXColor32) {
+            guard let rect = clipped(rect) else {
+                return
+            }
+            let alpha = pixelFormat == RDPGFXPixelFormat.argb8888 ? color.alpha : 0xFF
+            let pixel = UInt32(color.blue) | UInt32(color.green) << 8 | UInt32(color.red) << 16 | UInt32(alpha) << 24
+            let bytesPerRow = bytesPerRow
+            data.withUnsafeMutableBytes { buffer in
+                for row in Int(rect.top) ..< Int(rect.bottom) {
+                    for column in Int(rect.left) ..< Int(rect.right) {
+                        buffer.storeBytes(of: pixel.littleEndian, toByteOffset: row * bytesPerRow + column * 4, as: UInt32.self)
+                    }
+                }
+            }
+        }
+
+        /// Replaces the alpha channel of a `width` x `height` block at (`x`, `y`).
+        mutating func setAlpha(_ alphaValues: Data, x: Int, y: Int, width: Int, height: Int) throws {
+            guard contains(x: x, y: y, width: width, height: height),
+                  alphaValues.count == width * height
+            else {
+                throw RDPDecodeError.invalidRDPGFXPDU
+            }
+            let bytesPerRow = bytesPerRow
+            alphaValues.withUnsafeBytes { alphaBuffer in
+                data.withUnsafeMutableBytes { buffer in
+                    for row in 0 ..< height {
+                        for column in 0 ..< width {
+                            buffer[(y + row) * bytesPerRow + (x + column) * 4 + 3] = alphaBuffer[row * width + column]
+                        }
+                    }
+                }
+            }
+        }
+
+        /// Records a changed area. Past `maximumDirtyRectCount` rectangles the list collapses into its
+        /// bounding box, which bounds it for surfaces whose updates are held back.
+        mutating func markDirty(_ rect: RDPGFXRect16) {
+            guard let rect = clipped(rect) else {
+                return
+            }
+            guard dirtyRects.count >= Self.maximumDirtyRectCount else {
+                dirtyRects.append(rect)
+                return
+            }
+            dirtyRects = [dirtyRects.reduce(rect) { bounds, dirtyRect in
+                RDPGFXRect16(
+                    left: min(bounds.left, dirtyRect.left),
+                    top: min(bounds.top, dirtyRect.top),
+                    right: max(bounds.right, dirtyRect.right),
+                    bottom: max(bounds.bottom, dirtyRect.bottom)
+                )
+            }]
+        }
     }
 
     private struct CacheEntry {
         var width: Int
         var height: Int
-        var bytesPerRow: Int
         var data: Data
     }
 
@@ -106,85 +264,67 @@ final class RDPGFXSurfaceCompositor {
         makeFrames(frameID: frameID).first
     }
 
+    /// Snapshots every mapped surface with dirty rectangles. Surfaces that are excluded, unmapped,
+    /// or outside the output space keep their dirty rectangles for a later frame, so updates to
+    /// them (such as ClearCodec text on a surface that also receives AVC) are not lost.
     func makeFrames(
         frameID: UInt32?,
         excludingSurfaceIDs: Set<UInt16> = []
     ) -> [RDPGraphicsFrameSnapshot] {
-        let dirtySurfaceIDs = surfaces.keys.sorted().filter { surfaceID in
-            excludingSurfaceIDs.contains(surfaceID) == false
-                && surfaces[surfaceID]?.outputMapping != nil
-                && surfaces[surfaceID]?.dirtyRects.isEmpty == false
+        var frames: [RDPGraphicsFrameSnapshot] = []
+        for surfaceID in surfaces.keys.sorted() where !excludingSurfaceIDs.contains(surfaceID) {
+            guard let surface = surfaces[surfaceID],
+                  !surface.dirtyRects.isEmpty,
+                  let frame = makeFrame(frameID: frameID, surface: surface)
+            else {
+                continue
+            }
+            frames.append(frame)
+            surfaces[surfaceID]?.dirtyRects.removeAll()
         }
-        let frames = dirtySurfaceIDs.compactMap { surfaceID in
-            surfaces[surfaceID].flatMap { makeFrame(frameID: frameID, surface: $0) }
-        }
-        clearDirtyRects()
         return frames
     }
 
     private func makeFrame(frameID: UInt32?, surface: Surface) -> RDPGraphicsFrameSnapshot? {
-        guard let mapping = surface.outputMapping else {
-            return nil
-        }
-        let maximumCoordinate = UInt32(UInt16.max)
-        let surfaceWidth = UInt32(surface.width)
-        let surfaceHeight = UInt32(surface.height)
-        guard surfaceWidth <= maximumCoordinate,
-              surfaceHeight <= maximumCoordinate,
-              mapping.x <= maximumCoordinate - surfaceWidth,
-              mapping.y <= maximumCoordinate - surfaceHeight
+        guard let mapping = surface.outputMapping,
+              let surfaceRect = surface.outputRect
         else {
             return nil
         }
-
-        let outputLeft = UInt16(mapping.x)
-        let outputTop = UInt16(mapping.y)
-        let unscaledSurfaceRect = RDPFrameRect(
-            left: outputLeft,
-            top: outputTop,
-            right: outputLeft + UInt16(surface.width),
-            bottom: outputTop + UInt16(surface.height)
-        )
         let mappedOutputRect: RDPFrameRect?
         do {
-            mappedOutputRect = try scaledOutputRect(mapping, outputLeft: outputLeft, outputTop: outputTop)
+            mappedOutputRect = try mapping.scaledRect()
         } catch {
             return nil
         }
-        let destinationRect = mappedOutputRect ?? unscaledSurfaceRect
-        let bitmap: (data: Data, bytesPerRow: Int)
-        if let targetWidth = mapping.targetWidth,
-           let targetHeight = mapping.targetHeight {
-            let targetWidth = Int(targetWidth)
-            let targetHeight = Int(targetHeight)
-            bitmap = (
-                scaleBGRA(
-                    surface.data,
-                    sourceWidth: surface.width,
-                    sourceHeight: surface.height,
-                    sourceBytesPerRow: surface.bytesPerRow,
-                    targetWidth: targetWidth,
-                    targetHeight: targetHeight
-                ),
-                targetWidth * 4
+
+        let bitmapData: Data
+        let bitmapBytesPerRow: Int
+        let regionRects: [RDPFrameRect]
+        if let mappedOutputRect {
+            let targetWidth = Int(mappedOutputRect.width)
+            bitmapData = Self.scaleBGRA(
+                surface.data,
+                sourceWidth: surface.width,
+                sourceHeight: surface.height,
+                targetWidth: targetWidth,
+                targetHeight: Int(mappedOutputRect.height)
             )
+            bitmapBytesPerRow = targetWidth * 4
+            regionRects = surface.dirtyRects.map {
+                scaledRegionRect($0, sourceWidth: surface.width, sourceHeight: surface.height, targetRect: mappedOutputRect)
+            }
         } else {
-            bitmap = (surface.data, surface.bytesPerRow)
-        }
-        let regionRects = surface.dirtyRects.map { rect in
-            mappedOutputRect.map {
-                scaledRegionRect(
-                    rect,
-                    sourceWidth: surface.width,
-                    sourceHeight: surface.height,
-                    targetRect: $0
+            bitmapData = surface.data
+            bitmapBytesPerRow = surface.bytesPerRow
+            regionRects = surface.dirtyRects.map {
+                RDPFrameRect(
+                    left: surfaceRect.left + $0.left,
+                    top: surfaceRect.top + $0.top,
+                    right: surfaceRect.left + $0.right,
+                    bottom: surfaceRect.top + $0.bottom
                 )
-            } ?? RDPFrameRect(
-                left: outputLeft + rect.left,
-                top: outputTop + rect.top,
-                right: outputLeft + rect.right,
-                bottom: outputTop + rect.bottom
-            )
+            }
         }
         return RDPGraphicsFrameSnapshot(
             frameID: frameID,
@@ -193,60 +333,41 @@ final class RDPGFXSurfaceCompositor {
             codecName: "surface-bgra",
             pixelFormat: surface.pixelFormat,
             graphicsOutputRect: graphicsOutputRect,
-            surfaceRect: unscaledSurfaceRect,
+            surfaceRect: surfaceRect,
             mappedOutputRect: mappedOutputRect,
-            destinationRect: destinationRect,
+            destinationRect: mappedOutputRect ?? surfaceRect,
             regionRects: regionRects,
             encodedVideoData: Data(),
             contentKind: .bitmap,
-            decodedBitmapData: bitmap.data,
-            decodedBitmapBytesPerRow: bitmap.bytesPerRow
+            decodedBitmapData: bitmapData,
+            decodedBitmapBytesPerRow: bitmapBytesPerRow
         )
     }
 
     func surfaceRect(surfaceID: UInt16) -> RDPFrameRect? {
-        guard let surface = surfaces[surfaceID],
-              let mapping = surface.outputMapping
-        else {
-            return nil
-        }
-        let maximumCoordinate = UInt32(UInt16.max)
-        let surfaceWidth = UInt32(surface.width)
-        let surfaceHeight = UInt32(surface.height)
-        guard surfaceWidth <= maximumCoordinate,
-              surfaceHeight <= maximumCoordinate,
-              mapping.x <= maximumCoordinate - surfaceWidth,
-              mapping.y <= maximumCoordinate - surfaceHeight
-        else {
-            return nil
-        }
-        let outputLeft = UInt16(mapping.x)
-        let outputTop = UInt16(mapping.y)
-        return RDPFrameRect(
-            left: outputLeft,
-            top: outputTop,
-            right: outputLeft + UInt16(surface.width),
-            bottom: outputTop + UInt16(surface.height)
-        )
+        surfaces[surfaceID]?.outputRect
     }
 
     func mappedOutputRect(surfaceID: UInt16) -> RDPFrameRect? {
-        guard let surface = surfaces[surfaceID],
-              let mapping = surface.outputMapping,
-              mapping.x <= UInt32(UInt16.max),
-              mapping.y <= UInt32(UInt16.max)
-        else {
+        guard let mapping = surfaces[surfaceID]?.outputMapping else {
             return nil
         }
-        return try? scaledOutputRect(
-            mapping,
-            outputLeft: UInt16(mapping.x),
-            outputTop: UInt16(mapping.y)
-        )
+        return try? mapping.scaledRect()
     }
 
     func outputRect() -> RDPFrameRect? {
         graphicsOutputRect
+    }
+
+    /// Mutates a surface in place; copying it out and back would duplicate its pixels on every write.
+    private func modifySurface<Result>(
+        _ surfaceID: UInt16,
+        _ body: (inout Surface) throws -> Result
+    ) throws -> Result {
+        guard let index = surfaces.index(forKey: surfaceID) else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+        return try body(&surfaces.values[index])
     }
 
     private func resetGraphics(_ pdu: RDPGFXResetGraphicsPDU) {
@@ -262,16 +383,12 @@ final class RDPGFXSurfaceCompositor {
         guard surfaces[pdu.surfaceID] == nil else {
             throw RDPDecodeError.invalidRDPGFXPDU
         }
-        let width = Int(pdu.width)
-        let height = Int(pdu.height)
-        let bytesPerRow = width * 4
         surfaces[pdu.surfaceID] = Surface(
             surfaceID: pdu.surfaceID,
-            width: width,
-            height: height,
+            width: Int(pdu.width),
+            height: Int(pdu.height),
             pixelFormat: pdu.pixelFormat,
-            bytesPerRow: bytesPerRow,
-            data: Data(repeating: 0, count: bytesPerRow * height)
+            data: Data(count: Int(pdu.width) * Int(pdu.height) * 4)
         )
     }
 
@@ -279,7 +396,7 @@ final class RDPGFXSurfaceCompositor {
         guard surfaces.removeValue(forKey: pdu.surfaceID) != nil else {
             throw RDPDecodeError.invalidRDPGFXPDU
         }
-        codecContexts = Set(codecContexts.filter { $0.surfaceID != pdu.surfaceID })
+        codecContexts = codecContexts.filter { $0.surfaceID != pdu.surfaceID }
         remoteFX.removeProgressiveState(surfaceID: pdu.surfaceID)
     }
 
@@ -297,164 +414,122 @@ final class RDPGFXSurfaceCompositor {
     }
 
     private func mapSurfaceToOutput(_ pdu: RDPGFXMapSurfaceToOutputPDU) throws {
-        guard var surface = surfaces[pdu.surfaceID] else {
-            throw RDPDecodeError.invalidRDPGFXPDU
+        try modifySurface(pdu.surfaceID) {
+            $0.outputMapping = OutputMapping(x: pdu.outputOriginX, y: pdu.outputOriginY)
         }
-        surface.outputMapping = OutputMapping(x: pdu.outputOriginX, y: pdu.outputOriginY)
-        surfaces[pdu.surfaceID] = surface
     }
 
     private func mapSurfaceToScaledOutput(_ pdu: RDPGFXMapSurfaceToScaledOutputPDU) throws {
-        guard var surface = surfaces[pdu.surfaceID] else {
-            throw RDPDecodeError.invalidRDPGFXPDU
+        try modifySurface(pdu.surfaceID) {
+            $0.outputMapping = OutputMapping(
+                x: pdu.outputOriginX,
+                y: pdu.outputOriginY,
+                targetWidth: pdu.targetWidth,
+                targetHeight: pdu.targetHeight
+            )
         }
-        surface.outputMapping = OutputMapping(
-            x: pdu.outputOriginX,
-            y: pdu.outputOriginY,
-            targetWidth: pdu.targetWidth,
-            targetHeight: pdu.targetHeight
-        )
-        surfaces[pdu.surfaceID] = surface
     }
 
     private func wireToSurface(_ pdu: RDPGFXWireToSurface1PDU, clearCodec: RDPClearCodecDecoder) throws {
-        guard let surface = surfaces[pdu.surfaceID],
-              pdu.destinationRect.right >= pdu.destinationRect.left,
-              pdu.destinationRect.bottom >= pdu.destinationRect.top
+        let rect = pdu.destinationRect
+        let x = Int(rect.left)
+        let y = Int(rect.top)
+        let width = Int(rect.width)
+        let height = Int(rect.height)
+        // CAVIDEO tiles are clipped to the surface; every other codec fills destRect exactly, so
+        // destRect is validated before decoding sizes any buffer from it.
+        guard let containsRect = surfaces[pdu.surfaceID]?.contains(x: x, y: y, width: width, height: height),
+              rect.right >= rect.left,
+              rect.bottom >= rect.top,
+              containsRect || pdu.codecID == RDPGFXCodecID.cavideo
         else {
             throw RDPDecodeError.invalidRDPGFXPDU
         }
-        if pdu.codecID == RDPGFXCodecID.avc420
-            || pdu.codecID == RDPGFXCodecID.avc444
-            || pdu.codecID == RDPGFXCodecID.avc444v2
-        {
-            guard Int(pdu.destinationRect.left) <= surface.width,
-                  Int(pdu.destinationRect.top) <= surface.height,
-                  Int(pdu.destinationRect.right) <= surface.width,
-                  Int(pdu.destinationRect.bottom) <= surface.height
-            else {
+
+        switch pdu.codecID {
+        case RDPGFXCodecID.uncompressed:
+            guard pdu.bitmapData.count == width * height * 4 else {
                 throw RDPDecodeError.invalidRDPGFXPDU
             }
-        }
-
-        if pdu.codecID == RDPGFXCodecID.alpha {
-            let alphaStream = try RDPGFXAlphaBitmapStream.parse(
-                from: pdu.bitmapData,
-                pixelCount: Int(pdu.destinationRect.width) * Int(pdu.destinationRect.height)
-            )
-            try updateAlpha(
-                alphaStream.alphaValues,
-                width: Int(pdu.destinationRect.width),
-                height: Int(pdu.destinationRect.height),
-                surfaceID: pdu.surfaceID,
-                x: Int(pdu.destinationRect.left),
-                y: Int(pdu.destinationRect.top)
-            )
-            markDirty(pdu.destinationRect, surfaceID: pdu.surfaceID)
+            var pixels = pdu.bitmapData
+            pixels.withUnsafeMutableBytes { buffer in
+                for alphaOffset in stride(from: 3, to: buffer.count, by: 4) {
+                    buffer[alphaOffset] = 0xFF
+                }
+            }
+            try modifySurface(pdu.surfaceID) {
+                try $0.write(pixels, bytesPerRow: width * 4, width: width, height: height, x: x, y: y)
+            }
+        case RDPGFXCodecID.planar:
+            let pixels = try RDP6BitmapDecoder.decode(pdu.bitmapData, width: width, height: height)
+            try modifySurface(pdu.surfaceID) {
+                try $0.write(pixels, bytesPerRow: width * 4, width: width, height: height, x: x, y: y)
+            }
+        case RDPGFXCodecID.clearCodec:
+            let destination = try surfaces[pdu.surfaceID]?.pixels(in: rect)
+            let bitmap = try clearCodec.decode(pdu.bitmapData, width: width, height: height, destination: destination)
+            try modifySurface(pdu.surfaceID) {
+                try $0.write(
+                    bitmap.bgraData,
+                    bytesPerRow: bitmap.bytesPerRow,
+                    width: bitmap.width,
+                    height: bitmap.height,
+                    x: x,
+                    y: y
+                )
+            }
+        case RDPGFXCodecID.alpha:
+            let alphaStream = try RDPGFXAlphaBitmapStream.parse(from: pdu.bitmapData, pixelCount: width * height)
+            try modifySurface(pdu.surfaceID) {
+                try $0.setAlpha(alphaStream.alphaValues, x: x, y: y, width: width, height: height)
+            }
+        case RDPGFXCodecID.cavideo:
+            try writeRemoteFXTiles(pdu)
+            return
+        default:
+            // AVC420 and AVC444 bitmaps are decoded from the PDU by the caller.
             return
         }
+        surfaces[pdu.surfaceID]?.markDirty(rect)
+    }
 
-        if pdu.codecID == RDPGFXCodecID.uncompressed {
-            let bitmap = try decodeUncompressedBitmap(pdu)
-            try blit(
-                bitmap.data,
-                sourceBytesPerRow: bitmap.bytesPerRow,
-                width: bitmap.width,
-                height: bitmap.height,
-                to: pdu.surfaceID,
-                x: Int(pdu.destinationRect.left),
-                y: Int(pdu.destinationRect.top)
-            )
-            markDirty(pdu.destinationRect, surfaceID: pdu.surfaceID)
-            return
-        }
-
-        if pdu.codecID == RDPGFXCodecID.planar {
-            let width = Int(pdu.destinationRect.width)
-            let height = Int(pdu.destinationRect.height)
-            let data = try RDP6BitmapDecoder.decode(pdu.bitmapData, width: width, height: height)
-            try blit(
-                data,
-                sourceBytesPerRow: width * 4,
-                width: width,
-                height: height,
-                to: pdu.surfaceID,
-                x: Int(pdu.destinationRect.left),
-                y: Int(pdu.destinationRect.top)
-            )
-            markDirty(pdu.destinationRect, surfaceID: pdu.surfaceID)
-            return
-        }
-
-        if pdu.codecID == RDPGFXCodecID.cavideo {
-            let frame = try remoteFX.decode(pdu.bitmapData)
+    private func writeRemoteFXTiles(_ pdu: RDPGFXWireToSurface1PDU) throws {
+        let frame = try remoteFX.decode(pdu.bitmapData)
+        let originX = Int(pdu.destinationRect.left)
+        let originY = Int(pdu.destinationRect.top)
+        let clipWidth = Int(pdu.destinationRect.width)
+        let clipHeight = Int(pdu.destinationRect.height)
+        try modifySurface(pdu.surfaceID) { surface in
             for tile in frame.tiles {
                 for region in frame.regionRects {
-                    guard let surface = surfaces[pdu.surfaceID] else {
-                        continue
-                    }
                     let left = max(tile.x, Int(region.left))
                     let top = max(tile.y, Int(region.top))
-                    let right = min(
-                        tile.x + 64,
-                        Int(region.right),
-                        Int(pdu.destinationRect.width),
-                        surface.width - Int(pdu.destinationRect.left)
-                    )
-                    let bottom = min(
-                        tile.y + 64,
-                        Int(region.bottom),
-                        Int(pdu.destinationRect.height),
-                        surface.height - Int(pdu.destinationRect.top)
-                    )
+                    let right = min(tile.x + 64, Int(region.right), clipWidth, surface.width - originX)
+                    let bottom = min(tile.y + 64, Int(region.bottom), clipHeight, surface.height - originY)
                     guard right > left, bottom > top else {
                         continue
                     }
-                    let x = Int(pdu.destinationRect.left) + left
-                    let y = Int(pdu.destinationRect.top) + top
-                    try blit(
+                    let x = originX + left
+                    let y = originY + top
+                    try surface.write(
                         tile.bgraData,
-                        sourceBytesPerRow: tile.bytesPerRow,
+                        bytesPerRow: tile.bytesPerRow,
                         sourceX: left - tile.x,
                         sourceY: top - tile.y,
                         width: right - left,
                         height: bottom - top,
-                        to: pdu.surfaceID,
                         x: x,
                         y: y
                     )
-                    markDirty(
-                        RDPGFXRect16(
-                            left: UInt16(x),
-                            top: UInt16(y),
-                            right: UInt16(x + right - left),
-                            bottom: UInt16(y + bottom - top)
-                        ),
-                        surfaceID: pdu.surfaceID
-                    )
+                    surface.markDirty(RDPGFXRect16(
+                        left: UInt16(x),
+                        top: UInt16(y),
+                        right: UInt16(x + right - left),
+                        bottom: UInt16(y + bottom - top)
+                    ))
                 }
             }
-            return
         }
-
-        guard pdu.codecID == RDPGFXCodecID.clearCodec else {
-            return
-        }
-        let bitmap = try clearCodec.decode(
-            pdu.bitmapData,
-            width: Int(pdu.destinationRect.width),
-            height: Int(pdu.destinationRect.height)
-        )
-        try blit(
-            bitmap.bgraData,
-            sourceBytesPerRow: bitmap.bytesPerRow,
-            width: bitmap.width,
-            height: bitmap.height,
-            to: pdu.surfaceID,
-            x: Int(pdu.destinationRect.left),
-            y: Int(pdu.destinationRect.top)
-        )
-        markDirty(pdu.destinationRect, surfaceID: pdu.surfaceID)
     }
 
     private func wireToSurface(_ pdu: RDPGFXWireToSurface2PDU) throws {
@@ -472,237 +547,86 @@ final class RDPGFXSurfaceCompositor {
             permitsUpgrade: codecContexts.contains(contextKey)
         )
         codecContexts.insert(contextKey)
-        for tile in frame.tiles {
-            let x = tile.x
-            let y = tile.y
-            guard let surface = surfaces[pdu.surfaceID],
-                  x < surface.width,
-                  y < surface.height
-            else {
-                continue
+        try modifySurface(pdu.surfaceID) { surface in
+            for tile in frame.tiles where tile.x < surface.width && tile.y < surface.height {
+                try surface.write(
+                    tile.bgraData,
+                    bytesPerRow: tile.bytesPerRow,
+                    width: min(64, surface.width - tile.x),
+                    height: min(64, surface.height - tile.y),
+                    x: tile.x,
+                    y: tile.y
+                )
             }
-            let width = min(64, surface.width - x)
-            let height = min(64, surface.height - y)
-            try blit(
-                tile.bgraData,
-                sourceBytesPerRow: tile.bytesPerRow,
-                width: width,
-                height: height,
-                to: pdu.surfaceID,
-                x: x,
-                y: y
-            )
-        }
-        guard let surface = surfaces[pdu.surfaceID] else {
-            return
-        }
-        for region in frame.regionRects {
-            let rect = RDPGFXRect16(
-                left: region.left,
-                top: region.top,
-                right: region.right,
-                bottom: region.bottom
-            )
-            if let clipped = clipped(rect, width: surface.width, height: surface.height) {
-                markDirty(clipped, surfaceID: pdu.surfaceID)
+            for region in frame.regionRects {
+                surface.markDirty(RDPGFXRect16(
+                    left: region.left,
+                    top: region.top,
+                    right: region.right,
+                    bottom: region.bottom
+                ))
             }
         }
-    }
-
-    private func decodeUncompressedBitmap(_ pdu: RDPGFXWireToSurface1PDU) throws -> (
-        data: Data,
-        bytesPerRow: Int,
-        width: Int,
-        height: Int
-    ) {
-        let width = Int(pdu.destinationRect.width)
-        let height = Int(pdu.destinationRect.height)
-        let bytesPerRow = width * 4
-        guard pdu.bitmapData.count == bytesPerRow * height else {
-            throw RDPDecodeError.invalidRDPGFXPDU
-        }
-
-        var data = pdu.bitmapData
-        let byteCount = data.count
-        data.withUnsafeMutableBytes { buffer in
-            guard let baseAddress = buffer.baseAddress else {
-                return
-            }
-            for pixelOffset in stride(from: 3, to: byteCount, by: 4) {
-                baseAddress.advanced(by: pixelOffset).assumingMemoryBound(to: UInt8.self).pointee = 0xFF
-            }
-        }
-        return (data, bytesPerRow, width, height)
-    }
-
-    private func updateAlpha(
-        _ alphaValues: Data,
-        width: Int,
-        height: Int,
-        surfaceID: UInt16,
-        x: Int,
-        y: Int
-    ) throws {
-        guard var surface = surfaces[surfaceID],
-              width >= 0,
-              height >= 0,
-              x >= 0,
-              y >= 0,
-              x + width <= surface.width,
-              y + height <= surface.height,
-              alphaValues.count == width * height
-        else {
-            throw RDPDecodeError.invalidRDPGFXPDU
-        }
-
-        for row in 0 ..< height {
-            for column in 0 ..< width {
-                let sourceOffset = row * width + column
-                let destinationOffset = (y + row) * surface.bytesPerRow + (x + column) * 4 + 3
-                surface.data[destinationOffset] = alphaValues[sourceOffset]
-            }
-        }
-        surfaces[surfaceID] = surface
     }
 
     private func solidFill(_ pdu: RDPGFXSolidFillPDU) throws {
-        guard surfaces[pdu.surfaceID] != nil else {
-            throw RDPDecodeError.invalidRDPGFXPDU
-        }
-        for rect in pdu.fillRects {
-            try fill(rect, color: pdu.fillPixel, surfaceID: pdu.surfaceID)
-            markDirty(rect, surfaceID: pdu.surfaceID)
+        try modifySurface(pdu.surfaceID) { surface in
+            for rect in pdu.fillRects {
+                surface.fill(rect, color: pdu.fillPixel)
+                surface.markDirty(rect)
+            }
         }
     }
 
     private func surfaceToSurface(_ pdu: RDPGFXSurfaceToSurfacePDU) throws {
-        guard let sourceSurface = surfaces[pdu.sourceSurfaceID],
-              surfaces[pdu.destinationSurfaceID] != nil
+        guard surfaces[pdu.destinationSurfaceID] != nil,
+              let pixels = try surfaces[pdu.sourceSurfaceID]?.pixels(in: pdu.sourceRect)
         else {
             throw RDPDecodeError.invalidRDPGFXPDU
         }
-        let sourceRect = try containedSourceRect(pdu.sourceRect, width: sourceSurface.width, height: sourceSurface.height)
-
-        let width = Int(sourceRect.width)
-        let height = Int(sourceRect.height)
-        let bytesPerRow = width * 4
-        var data = Data(repeating: 0, count: bytesPerRow * height)
-        copy(
-            source: sourceSurface.data,
-            sourceBytesPerRow: sourceSurface.bytesPerRow,
-            sourceX: Int(sourceRect.left),
-            sourceY: Int(sourceRect.top),
-            destination: &data,
-            destinationBytesPerRow: bytesPerRow,
-            destinationX: 0,
-            destinationY: 0,
-            width: width,
-            height: height
+        // `pixels` is a snapshot of the source, so copies within one surface may overlap.
+        try copy(
+            pixels,
+            width: Int(pdu.sourceRect.width),
+            height: Int(pdu.sourceRect.height),
+            to: pdu.destinationPoints,
+            surfaceID: pdu.destinationSurfaceID
         )
-
-        for point in pdu.destinationPoints {
-            let destinationX = Int(point.x)
-            let destinationY = Int(point.y)
-            guard destinationX >= 0,
-                  destinationY >= 0
-            else {
-                throw RDPDecodeError.invalidRDPGFXPDU
-            }
-            try blit(
-                data,
-                sourceBytesPerRow: bytesPerRow,
-                width: width,
-                height: height,
-                to: pdu.destinationSurfaceID,
-                x: destinationX,
-                y: destinationY
-            )
-            markDirty(
-                RDPGFXRect16(
-                    left: UInt16(destinationX),
-                    top: UInt16(destinationY),
-                    right: UInt16(destinationX + width),
-                    bottom: UInt16(destinationY + height)
-                ),
-                surfaceID: pdu.destinationSurfaceID
-            )
-        }
     }
 
     private func surfaceToCache(_ pdu: RDPGFXSurfaceToCachePDU) throws {
         guard pdu.cacheSlot <= maximumCacheSlot,
-              let surface = surfaces[pdu.surfaceID]
+              let pixels = try surfaces[pdu.surfaceID]?.pixels(in: pdu.sourceRect)
         else {
             throw RDPDecodeError.invalidRDPGFXPDU
         }
-        let rect = try containedSourceRect(pdu.sourceRect, width: surface.width, height: surface.height)
-
-        let width = Int(rect.width)
-        let height = Int(rect.height)
-        let bytesPerRow = width * 4
-        let byteCount = bytesPerRow * height
         let replacedByteCount = cacheSlots[pdu.cacheSlot]?.data.count ?? 0
-        guard byteCount <= maximumCacheByteCount,
-              cachedByteCount - replacedByteCount <= maximumCacheByteCount - byteCount
+        guard pixels.count <= maximumCacheByteCount,
+              cachedByteCount - replacedByteCount <= maximumCacheByteCount - pixels.count
         else {
             throw RDPDecodeError.invalidRDPGFXPDU
         }
-        var data = Data(repeating: 0, count: byteCount)
-        copy(
-            source: surface.data,
-            sourceBytesPerRow: surface.bytesPerRow,
-            sourceX: Int(rect.left),
-            sourceY: Int(rect.top),
-            destination: &data,
-            destinationBytesPerRow: bytesPerRow,
-            destinationX: 0,
-            destinationY: 0,
-            width: width,
-            height: height
-        )
         cacheSlots[pdu.cacheSlot] = CacheEntry(
-            width: width,
-            height: height,
-            bytesPerRow: bytesPerRow,
-            data: data
+            width: Int(pdu.sourceRect.width),
+            height: Int(pdu.sourceRect.height),
+            data: pixels
         )
-        cachedByteCount += byteCount - replacedByteCount
+        cachedByteCount += pixels.count - replacedByteCount
     }
 
     private func cacheToSurface(_ pdu: RDPGFXCacheToSurfacePDU) throws {
         guard pdu.cacheSlot <= maximumCacheSlot,
-              let cacheEntry = cacheSlots[pdu.cacheSlot],
-              surfaces[pdu.surfaceID] != nil
+              let cacheEntry = cacheSlots[pdu.cacheSlot]
         else {
             throw RDPDecodeError.invalidRDPGFXPDU
         }
-        for point in pdu.destinationPoints {
-            let destinationX = Int(point.x)
-            let destinationY = Int(point.y)
-            guard destinationX >= 0,
-                  destinationY >= 0
-            else {
-                throw RDPDecodeError.invalidRDPGFXPDU
-            }
-            try blit(
-                cacheEntry.data,
-                sourceBytesPerRow: cacheEntry.bytesPerRow,
-                width: cacheEntry.width,
-                height: cacheEntry.height,
-                to: pdu.surfaceID,
-                x: destinationX,
-                y: destinationY
-            )
-            markDirty(
-                RDPGFXRect16(
-                    left: UInt16(destinationX),
-                    top: UInt16(destinationY),
-                    right: UInt16(destinationX + cacheEntry.width),
-                    bottom: UInt16(destinationY + cacheEntry.height)
-                ),
-                surfaceID: pdu.surfaceID
-            )
-        }
+        try copy(
+            cacheEntry.data,
+            width: cacheEntry.width,
+            height: cacheEntry.height,
+            to: pdu.destinationPoints,
+            surfaceID: pdu.surfaceID
+        )
     }
 
     private func evictCacheEntry(_ pdu: RDPGFXEvictCacheEntryPDU) throws {
@@ -714,31 +638,27 @@ final class RDPGFXSurfaceCompositor {
         cachedByteCount -= entry.data.count
     }
 
-    private func scaledOutputRect(
-        _ mapping: OutputMapping,
-        outputLeft: UInt16,
-        outputTop: UInt16
-    ) throws -> RDPFrameRect? {
-        guard let targetWidth = mapping.targetWidth,
-              let targetHeight = mapping.targetHeight
-        else {
-            return nil
+    /// Copies a packed `width` x `height` BGRA bitmap to each destination point of a surface.
+    private func copy(
+        _ pixels: Data,
+        width: Int,
+        height: Int,
+        to points: [RDPGFXPoint16],
+        surfaceID: UInt16
+    ) throws {
+        try modifySurface(surfaceID) { surface in
+            for point in points {
+                let x = Int(point.x)
+                let y = Int(point.y)
+                try surface.write(pixels, bytesPerRow: width * 4, width: width, height: height, x: x, y: y)
+                surface.markDirty(RDPGFXRect16(
+                    left: UInt16(x),
+                    top: UInt16(y),
+                    right: UInt16(x + width),
+                    bottom: UInt16(y + height)
+                ))
+            }
         }
-        guard targetWidth > 0,
-              targetHeight > 0,
-              targetWidth <= UInt32(UInt16.max),
-              targetHeight <= UInt32(UInt16.max),
-              mapping.x <= UInt32(UInt16.max) - targetWidth,
-              mapping.y <= UInt32(UInt16.max) - targetHeight
-        else {
-            throw RDPDecodeError.invalidRDPGFXPDU
-        }
-        return RDPFrameRect(
-            left: outputLeft,
-            top: outputTop,
-            right: outputLeft + UInt16(targetWidth),
-            bottom: outputTop + UInt16(targetHeight)
-        )
     }
 
     private func scaledRegionRect(
@@ -761,164 +681,66 @@ final class RDPGFXSurfaceCompositor {
         )
     }
 
-    private func scaleBGRA(
+    /// Nearest-neighbor scales a packed BGRA bitmap.
+    private static func scaleBGRA(
         _ source: Data,
         sourceWidth: Int,
         sourceHeight: Int,
-        sourceBytesPerRow: Int,
         targetWidth: Int,
         targetHeight: Int
     ) -> Data {
-        if sourceWidth == targetWidth,
-           sourceHeight == targetHeight {
+        guard sourceWidth != targetWidth || sourceHeight != targetHeight else {
             return source
         }
 
-        var destination = Data(repeating: 0, count: targetWidth * targetHeight * 4)
-        for targetY in 0 ..< targetHeight {
-            let sourceY = min(sourceHeight - 1, targetY * sourceHeight / targetHeight)
-            for targetX in 0 ..< targetWidth {
-                let sourceX = min(sourceWidth - 1, targetX * sourceWidth / targetWidth)
-                let sourceOffset = sourceY * sourceBytesPerRow + sourceX * 4
-                let destinationOffset = (targetY * targetWidth + targetX) * 4
-                destination[destinationOffset] = source[sourceOffset]
-                destination[destinationOffset + 1] = source[sourceOffset + 1]
-                destination[destinationOffset + 2] = source[sourceOffset + 2]
-                destination[destinationOffset + 3] = source[sourceOffset + 3]
+        var destination = Data(count: targetWidth * targetHeight * 4)
+        source.withUnsafeBytes { sourceBuffer in
+            destination.withUnsafeMutableBytes { destinationBuffer in
+                for targetY in 0 ..< targetHeight {
+                    let sourceRowOffset = min(sourceHeight - 1, targetY * sourceHeight / targetHeight) * sourceWidth * 4
+                    for targetX in 0 ..< targetWidth {
+                        let sourceX = min(sourceWidth - 1, targetX * sourceWidth / targetWidth)
+                        let pixel = sourceBuffer.loadUnaligned(fromByteOffset: sourceRowOffset + sourceX * 4, as: UInt32.self)
+                        destinationBuffer.storeBytes(
+                            of: pixel,
+                            toByteOffset: (targetY * targetWidth + targetX) * 4,
+                            as: UInt32.self
+                        )
+                    }
+                }
             }
         }
         return destination
     }
+}
 
-    private func fill(_ rect: RDPGFXRect16, color: RDPGFXColor32, surfaceID: UInt16) throws {
-        guard var surface = surfaces[surfaceID],
-              let rect = clipped(rect, width: surface.width, height: surface.height)
-        else {
-            return
-        }
-        let alpha = surface.pixelFormat == RDPGFXPixelFormat.argb8888 ? color.alpha : 0xFF
-
-        for row in Int(rect.top) ..< Int(rect.bottom) {
-            for column in Int(rect.left) ..< Int(rect.right) {
-                let offset = row * surface.bytesPerRow + column * 4
-                surface.data[offset] = color.blue
-                surface.data[offset + 1] = color.green
-                surface.data[offset + 2] = color.red
-                surface.data[offset + 3] = alpha
+/// Copies a `width` x `height` block of 4-byte pixels between row-major buffers.
+private func copyPixels(
+    from source: Data,
+    sourceBytesPerRow: Int,
+    sourceX: Int,
+    sourceY: Int,
+    to destination: inout Data,
+    destinationBytesPerRow: Int,
+    destinationX: Int,
+    destinationY: Int,
+    width: Int,
+    height: Int
+) {
+    source.withUnsafeBytes { sourceBuffer in
+        destination.withUnsafeMutableBytes { destinationBuffer in
+            guard let sourceBase = sourceBuffer.baseAddress,
+                  let destinationBase = destinationBuffer.baseAddress
+            else {
+                return
             }
-        }
-        surfaces[surfaceID] = surface
-    }
-
-    private func blit(
-        _ source: Data,
-        sourceBytesPerRow: Int,
-        sourceX: Int = 0,
-        sourceY: Int = 0,
-        width: Int,
-        height: Int,
-        to surfaceID: UInt16,
-        x: Int,
-        y: Int
-    ) throws {
-        guard var surface = surfaces[surfaceID],
-              width >= 0,
-              height >= 0,
-              sourceX >= 0,
-              sourceY >= 0,
-              x >= 0,
-              y >= 0,
-              sourceBytesPerRow >= (sourceX + width) * 4,
-              x + width <= surface.width,
-              y + height <= surface.height,
-              source.count >= sourceBytesPerRow * (sourceY + height)
-        else {
-            throw RDPDecodeError.invalidRDPGFXPDU
-        }
-
-        copy(
-            source: source,
-            sourceBytesPerRow: sourceBytesPerRow,
-            sourceX: sourceX,
-            sourceY: sourceY,
-            destination: &surface.data,
-            destinationBytesPerRow: surface.bytesPerRow,
-            destinationX: x,
-            destinationY: y,
-            width: width,
-            height: height
-        )
-        surfaces[surfaceID] = surface
-    }
-
-    private func copy(
-        source: Data,
-        sourceBytesPerRow: Int,
-        sourceX: Int,
-        sourceY: Int,
-        destination: inout Data,
-        destinationBytesPerRow: Int,
-        destinationX: Int,
-        destinationY: Int,
-        width: Int,
-        height: Int
-    ) {
-        source.withUnsafeBytes { sourceBuffer in
-            destination.withUnsafeMutableBytes { destinationBuffer in
-                guard let sourceBase = sourceBuffer.baseAddress,
-                      let destinationBase = destinationBuffer.baseAddress
-                else {
-                    return
-                }
-                for row in 0 ..< height {
-                    let sourceRow = sourceBase.advanced(by: (sourceY + row) * sourceBytesPerRow + sourceX * 4)
-                    let destinationRow = destinationBase.advanced(
-                        by: (destinationY + row) * destinationBytesPerRow + destinationX * 4
-                    )
-                    memcpy(destinationRow, sourceRow, width * 4)
-                }
+            for row in 0 ..< height {
+                memcpy(
+                    destinationBase + (destinationY + row) * destinationBytesPerRow + destinationX * 4,
+                    sourceBase + (sourceY + row) * sourceBytesPerRow + sourceX * 4,
+                    width * 4
+                )
             }
-        }
-    }
-
-    private func clipped(_ rect: RDPGFXRect16, width: Int, height: Int) -> RDPGFXRect16? {
-        let left = min(Int(rect.left), width)
-        let top = min(Int(rect.top), height)
-        let right = min(Int(rect.right), width)
-        let bottom = min(Int(rect.bottom), height)
-        guard right > left, bottom > top else {
-            return nil
-        }
-        return RDPGFXRect16(
-            left: UInt16(left),
-            top: UInt16(top),
-            right: UInt16(right),
-            bottom: UInt16(bottom)
-        )
-    }
-
-    private func containedSourceRect(_ rect: RDPGFXRect16, width: Int, height: Int) throws -> RDPGFXRect16 {
-        guard let clippedRect = clipped(rect, width: width, height: height),
-              clippedRect == rect
-        else {
-            throw RDPDecodeError.invalidRDPGFXPDU
-        }
-        return clippedRect
-    }
-
-    private func markDirty(_ rect: RDPGFXRect16, surfaceID: UInt16) {
-        guard var surface = surfaces[surfaceID],
-              let rect = clipped(rect, width: surface.width, height: surface.height)
-        else {
-            return
-        }
-        surface.dirtyRects.append(rect)
-        surfaces[surfaceID] = surface
-    }
-
-    private func clearDirtyRects() {
-        for surfaceID in surfaces.keys {
-            surfaces[surfaceID]?.dirtyRects.removeAll()
         }
     }
 }
