@@ -132,7 +132,9 @@ public struct RDPPreflightClient: Sendable {
                 return connection.finishReport()
             }
             let report = connection.runSession()
-            guard let redirection = connection.redirection,
+            // A run cancelled during the redirect returns the session that ran.
+            guard !callbacks.isCancelled,
+                  let redirection = connection.redirection,
                   configuration.redirectionDepth < 2,
                   let redirected = configuration.redirected(by: redirection)
             else {
