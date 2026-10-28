@@ -53,7 +53,7 @@ extension RDPClientConnection {
             return
         }
         if indication.channelID == messageChannelID {
-            try handleMessageChannel(message)
+            try handleMessageChannel(indication)
             return
         }
         autoDetectMeter.countReceivedBytes(message.count)
@@ -92,7 +92,7 @@ extension RDPClientConnection {
 
         switch shareControl.type {
         case 0x1:
-            guard let demandActive = try RDPDemandActivePDU.parseIfPresent(fromTPKT: message) else {
+            guard let demandActive = try RDPDemandActivePDU.parseIfPresent(from: indication) else {
                 return
             }
             try activate(demandActive)
@@ -103,8 +103,15 @@ extension RDPClientConnection {
                 try handleShareData(shareData, packet: message)
             }
         case 0xA:
-            guard let redirection = try RDPServerRedirectionPDU.parseIfPresent(fromTPKT: message, channelID: ioChannelID)
-            else {
+            guard let redirection = try RDPServerRedirectionPDU.parseIfPresent(from: indication) else {
+                return
+            }
+            // LB_NOREDIRECT: informational only, no redirection is required ([MS-RDPBCGR] 2.2.13.1).
+            guard !redirection.flags.contains(.noRedirect) else {
+                appendWarning(
+                    code: "informational-redirection",
+                    message: "server sent an informational redirection" + (redirection.targetHost.map { " for \($0)" } ?? "")
+                )
                 return
             }
             self.redirection = redirection
@@ -226,10 +233,16 @@ extension RDPClientConnection {
 
     // MARK: Message channel ([MS-RDPBCGR] 2.2.14)
 
-    private func handleMessageChannel(_ message: Data) throws {
-        guard let request = try RDPServerAutoDetectRequest.parseIfPresent(fromTPKT: message),
-              let messageChannelID
-        else {
+    /// A malformed request is recorded and skipped: auto-detection is advisory.
+    private func handleMessageChannel(_ indication: MCSSendDataIndicationPDU) throws {
+        let request: RDPServerAutoDetectRequest
+        do {
+            guard let parsed = try RDPServerAutoDetectRequest.parseIfPresent(from: indication) else {
+                return
+            }
+            request = parsed
+        } catch {
+            appendWarning(code: "auto-detect-error", message: String(describing: error))
             return
         }
         let isConnectTime = share == nil
@@ -246,7 +259,7 @@ extension RDPClientConnection {
         guard let response = autoDetectMeter.response(to: request) else {
             return
         }
-        let packet = response.encodedTPKT(userChannelID: userChannelID, messageChannelID: messageChannelID)
+        let packet = response.encodedTPKT(userChannelID: userChannelID, messageChannelID: indication.channelID)
         if isConnectTime {
             report.rdpAutoDetectResponseHex = packet.rdpHexString
         }

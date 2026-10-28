@@ -65,13 +65,9 @@ struct RDPServerRedirectionPDU: Equatable, Sendable {
         return passwordCookie.map(decodeUTF16LEString)
     }
 
-    /// Parses a Server Redirection PDU from an MCS Send Data Indication, or returns nil
-    /// for other packets, including any not sent on `channelID` (the I/O channel) when given.
-    static func parseIfPresent(fromTPKT packet: Data, channelID: UInt16? = nil) throws -> RDPServerRedirectionPDU? {
-        guard let indication = try? MCSSendDataIndicationPDU.parse(fromTPKT: packet),
-              channelID == nil || channelID == indication.channelID,
-              indication.userData.count >= 20
-        else {
+    /// Parses a Server Redirection PDU, or returns nil for other PDUs.
+    static func parseIfPresent(from indication: MCSSendDataIndicationPDU) throws -> RDPServerRedirectionPDU? {
+        guard indication.userData.count >= 20 else {
             return nil
         }
 

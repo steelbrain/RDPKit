@@ -324,3 +324,35 @@ func meterResponse(to request: RDPServerAutoDetectRequest) -> RDPClientAutoDetec
     var meter = RDPAutoDetectBandwidthMeter()
     return meter.response(to: request)
 }
+
+@Test func unknownAutoDetectRequestTypeParsesWithoutResponse() throws {
+    var pdu = Data()
+    pdu.appendUInt8(0x68)
+    pdu.appendBigEndianUInt16(5)
+    pdu.appendBigEndianUInt16(1005)
+    pdu.appendUInt8(0x70)
+    pdu.appendUInt8(0x0C)
+    pdu.append(contentsOf: [
+        0x00, 0x10, 0x00, 0x00,
+        0x08, 0x00,
+        0x23, 0x00,
+        0x77, 0x77,
+        0x01, 0x02,
+    ])
+
+    let request = try #require(try RDPServerAutoDetectRequest.parseIfPresent(fromTPKT: X224DataTPDU.wrap(pdu)))
+    var meter = RDPAutoDetectBandwidthMeter()
+    #expect(request.requestType == 0x7777)
+    #expect(meter.response(to: request) == nil)
+}
+
+// TPKT entry point for tests; the client parses the indication routed from
+// the message channel.
+extension RDPServerAutoDetectRequest {
+    static func parseIfPresent(fromTPKT packet: Data) throws -> RDPServerAutoDetectRequest? {
+        guard let indication = try? MCSSendDataIndicationPDU.parse(fromTPKT: packet) else {
+            return nil
+        }
+        return try parseIfPresent(from: indication)
+    }
+}

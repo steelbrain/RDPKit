@@ -480,3 +480,28 @@ private func targetNetAddresses(_ addresses: [Data]) -> Data {
     }
     return out
 }
+
+/// LB_NOREDIRECT marks the PDU informational: nothing to reconnect to
+/// ([MS-RDPBCGR] 2.2.13.1).
+@Test func informationalRedirectionNamesNoReconnectTarget() {
+    let configuration = RDPConnectionConfiguration(host: "broker.example")
+    var redirection = RDPServerRedirectionPDU(channelID: 1003, sessionID: 7, flags: [.loadBalanceInfo, .noRedirect])
+    redirection.loadBalanceInfo = Data("Cookie: msts=1\r\n".utf8)
+    #expect(configuration.redirected(by: redirection) == nil)
+
+    redirection.flags.remove(.noRedirect)
+    #expect(configuration.redirected(by: redirection)?.redirectionRoutingToken == redirection.loadBalanceInfo)
+}
+
+// TPKT entry point for tests; the client parses the indication routed from
+// the I/O channel.
+extension RDPServerRedirectionPDU {
+    static func parseIfPresent(fromTPKT packet: Data, channelID: UInt16? = nil) throws -> RDPServerRedirectionPDU? {
+        guard let indication = try? MCSSendDataIndicationPDU.parse(fromTPKT: packet),
+              channelID.map({ indication.channelID == $0 }) ?? true
+        else {
+            return nil
+        }
+        return try parseIfPresent(from: indication)
+    }
+}

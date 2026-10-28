@@ -378,3 +378,13 @@ private extension RDPClientConfirmActivePDU {
         return capabilities
     }
 }
+
+// TPKT entry point for tests; the client parses the routed indication.
+extension RDPDemandActivePDU {
+    static func parseIfPresent(fromTPKT packet: Data) throws -> RDPDemandActivePDU? {
+        guard let indication = try? MCSSendDataIndicationPDU.parse(fromTPKT: packet) else {
+            return nil
+        }
+        return try parseIfPresent(from: indication)
+    }
+}

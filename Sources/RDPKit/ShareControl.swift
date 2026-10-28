@@ -522,11 +522,8 @@ struct RDPShareDataPDU: Equatable, Sendable {
                 return .malformedPointer(error)
             }
         case 0x26:
-            do {
-                return try .saveSessionInfo(RDPSaveSessionInfoPDU.parsePayload(payload))
-            } catch {
-                throw RDPDecodeError.invalidShareDataHeader
-            }
+            // The client only stores Save Session Info, so a malformed one is ignored.
+            return (try? RDPSaveSessionInfoPDU.parsePayload(payload)).map { .saveSessionInfo($0) }
         default:
             return nil
         }

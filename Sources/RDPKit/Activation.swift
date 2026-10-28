@@ -26,10 +26,7 @@ struct RDPDemandActivePDU: Equatable, Sendable {
         String(data: sourceDescriptor, encoding: .ascii) ?? sourceDescriptor.rdpHexString
     }
 
-    static func parseIfPresent(fromTPKT packet: Data) throws -> RDPDemandActivePDU? {
-        guard let indication = try? MCSSendDataIndicationPDU.parse(fromTPKT: packet) else {
-            return nil
-        }
+    static func parseIfPresent(from indication: MCSSendDataIndicationPDU) throws -> RDPDemandActivePDU? {
         guard indication.userData.count >= 18 else {
             return nil
         }

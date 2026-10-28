@@ -394,34 +394,28 @@ import Testing
     payload.append(Data(repeating: 0, count: 32))
     payload.append(0x01)
 
-    #expect(throws: RDPDecodeError.invalidShareDataHeader) {
-        try RDPShareDataPDU.parseIfPresent(fromTPKT: shareDataPacket(
-            type: 0x26,
-            payload: payload
-        ))
+    #expect(throws: (any Error).self) {
+        try RDPSaveSessionInfoPDU.parsePayload(payload)
     }
+    // The Share Data PDU still parses: a malformed Save Session Info is ignored.
+    let pdu = try #require(try RDPShareDataPDU.parseIfPresent(fromTPKT: shareDataPacket(type: 0x26, payload: payload)))
+    #expect(pdu.saveSessionInfo == nil)
 }
 
 @Test func shareDataRejectsSaveSessionInfoLogonStringsWithoutTerminators() throws {
-    #expect(throws: RDPDecodeError.invalidShareDataHeader) {
-        try RDPShareDataPDU.parseIfPresent(fromTPKT: shareDataPacket(
-            type: 0x26,
-            payload: saveSessionInfoLogonVersion1Payload(
-                domain: "LAB",
-                userName: "rdp-user",
-                includeUserNameTerminator: false
-            )
+    #expect(throws: (any Error).self) {
+        try RDPSaveSessionInfoPDU.parsePayload(saveSessionInfoLogonVersion1Payload(
+            domain: "LAB",
+            userName: "rdp-user",
+            includeUserNameTerminator: false
         ))
     }
 
-    #expect(throws: RDPDecodeError.invalidShareDataHeader) {
-        try RDPShareDataPDU.parseIfPresent(fromTPKT: shareDataPacket(
-            type: 0x26,
-            payload: saveSessionInfoLogonVersion2Payload(
-                domain: "LAB",
-                userName: "rdp-user",
-                includeDomainTerminator: false
-            )
+    #expect(throws: (any Error).self) {
+        try RDPSaveSessionInfoPDU.parsePayload(saveSessionInfoLogonVersion2Payload(
+            domain: "LAB",
+            userName: "rdp-user",
+            includeDomainTerminator: false
         ))
     }
 }
@@ -535,19 +529,14 @@ import Testing
             payload: Data(repeating: 0, count: 6)
         ))
     }
-    #expect(throws: RDPDecodeError.invalidShareDataHeader) {
-        try RDPShareDataPDU.parseIfPresent(fromTPKT: shareDataPacket(
-            type: 0x26,
-            payload: Data()
-        ))
+    // A malformed Save Session Info is rejected by its parser but ignored in the Share Data PDU.
+    #expect(throws: (any Error).self) {
+        try RDPSaveSessionInfoPDU.parsePayload(Data())
     }
-    #expect(throws: RDPDecodeError.invalidShareDataHeader) {
-        try RDPShareDataPDU.parseIfPresent(fromTPKT: shareDataPacket(
-            type: 0x26,
-            payload: Data([0x02, 0x00, 0x00, 0x00])
-        ))
+    #expect(throws: (any Error).self) {
+        try RDPSaveSessionInfoPDU.parsePayload(Data([0x02, 0x00, 0x00, 0x00]))
     }
-    #expect(throws: RDPDecodeError.invalidShareDataHeader) {
+    #expect(throws: (any Error).self) {
         var payload = Data()
         payload.appendLittleEndianUInt32(0x0000_0003)
         payload.appendLittleEndianUInt16(38)
@@ -557,11 +546,10 @@ import Testing
         payload.appendLittleEndianUInt32(1)
         payload.appendLittleEndianUInt32(2)
         payload.append(Data(repeating: 0, count: 16))
-        _ = try RDPShareDataPDU.parseIfPresent(fromTPKT: shareDataPacket(
-            type: 0x26,
-            payload: payload
-        ))
+        _ = try RDPSaveSessionInfoPDU.parsePayload(payload)
     }
+    #expect(try RDPShareDataPDU.parseIfPresent(fromTPKT: shareDataPacket(type: 0x26, payload: Data()))?
+        .saveSessionInfo == nil)
     #expect(throws: RDPDecodeError.invalidShareDataHeader) {
         try RDPShareDataPDU.parseIfPresent(fromTPKT: shareDataPacket(
             type: 0x29,

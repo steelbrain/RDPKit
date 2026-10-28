@@ -80,10 +80,7 @@ struct RDPServerAutoDetectRequest: Equatable, Sendable {
         )
     }
 
-    static func parseIfPresent(fromTPKT packet: Data) throws -> RDPServerAutoDetectRequest? {
-        guard let indication = try? MCSSendDataIndicationPDU.parse(fromTPKT: packet) else {
-            return nil
-        }
+    static func parseIfPresent(from indication: MCSSendDataIndicationPDU) throws -> RDPServerAutoDetectRequest? {
         guard indication.userData.count >= 10 else {
             return nil
         }
@@ -201,7 +198,9 @@ private extension ByteCursor {
             return 0
 
         default:
-            throw RDPDecodeError.invalidAutoDetectRequest
+            // A request type this client does not know gets no response.
+            _ = readRemainingData()
+            return 0
         }
     }
 

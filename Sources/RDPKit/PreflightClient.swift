@@ -141,7 +141,9 @@ extension RDPConnectionConfiguration {
     /// The configuration for reconnecting where a Server Redirection PDU
     /// points, or nil when it names no target ([MS-RDPBCGR] 2.2.13.1).
     func redirected(by redirection: RDPServerRedirectionPDU) -> RDPConnectionConfiguration? {
-        guard redirection.routingToken != nil || redirection.targetHost != nil else {
+        guard !redirection.flags.contains(.noRedirect),
+              redirection.routingToken != nil || redirection.targetHost != nil
+        else {
             return nil
         }
         var redirected = self

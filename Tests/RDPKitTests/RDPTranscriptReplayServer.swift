@@ -37,9 +37,12 @@ final class RDPTranscriptReplayServer {
         self.channel = channel
     }
 
+    /// `onSegmentEnd` runs on the event loop once a connection's recorded
+    /// server events are all sent, so a test can script what follows.
     static func start(
         transcript: [RDPWireEvent],
-        credentials: RDPCredentials
+        credentials: RDPCredentials,
+        onSegmentEnd: (@Sendable (Channel) -> Void)? = nil
     ) throws -> RDPTranscriptReplayServer {
         let segments = segment(transcript)
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
@@ -55,7 +58,8 @@ final class RDPTranscriptReplayServer {
                         credentials: credentials,
                         segments: segments,
                         connectionCount: connectionCount,
-                        clientPackets: clientPackets
+                        clientPackets: clientPackets,
+                        onSegmentEnd: onSegmentEnd
                     ))
                 }
                 .bind(host: "127.0.0.1", port: 0)
@@ -135,6 +139,7 @@ private final class RDPTranscriptReplayHandler: ChannelInboundHandler {
     private let segments: [RDPTranscriptReplayServer.ConnectionSegment]
     private let connectionCount: Locked<Int>
     private let clientPackets: Locked<[Data]>
+    private let onSegmentEnd: (@Sendable (Channel) -> Void)?
 
     private var segment: RDPTranscriptReplayServer.ConnectionSegment?
     private var stage = Stage.x224
@@ -160,13 +165,15 @@ private final class RDPTranscriptReplayHandler: ChannelInboundHandler {
         credentials: RDPCredentials,
         segments: [RDPTranscriptReplayServer.ConnectionSegment],
         connectionCount: Locked<Int>,
-        clientPackets: Locked<[Data]>
+        clientPackets: Locked<[Data]>,
+        onSegmentEnd: (@Sendable (Channel) -> Void)?
     ) {
         self.tlsContext = tlsContext
         self.credentials = credentials
         self.segments = segments
         self.connectionCount = connectionCount
         self.clientPackets = clientPackets
+        self.onSegmentEnd = onSegmentEnd
     }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
@@ -279,6 +286,7 @@ private final class RDPTranscriptReplayHandler: ChannelInboundHandler {
         }
         if appIndex >= segment.appEvents.count {
             stage = .done
+            onSegmentEnd?(context.channel)
         }
     }
 
