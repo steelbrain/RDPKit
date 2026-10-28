@@ -88,9 +88,9 @@ public struct RDPStoredClientLicense: Codable, Equatable, Sendable {
         self.licenseInfo = licenseInfo
     }
 
-    func matches(_ request: RDPServerLicensePDU) -> Bool {
+    func matches(_ request: RDPServerLicenseRequest) -> Bool {
         guard request.productVersion == version,
-              request.productCompanyName == companyName,
+              request.companyName == companyName,
               request.productID == productID,
               !licenseInfo.isEmpty else {
             return false
@@ -126,12 +126,11 @@ struct RDPLicenseErrorAlert: Equatable, Sendable, CustomStringConvertible {
     }
 }
 
+/// A licensing PDU on the I/O channel: a security header with
+/// SEC_LICENSE_PKT, a preamble and one server message ([MS-RDPBCGR] 2.2.1.12).
 struct RDPServerLicensePDU: Equatable, Sendable {
-    var channelID: UInt16
-    var securityFlags: UInt16
-    var messageType: UInt8
-    var flags: UInt8
-    var messageSize: UInt16
+    private static let serverMessageTypes: Set<UInt8> = [0x01, 0x02, 0x03, 0x04, 0xFF]
+
     var message: RDPServerLicenseMessage
 
     var typeName: String {
@@ -151,116 +150,45 @@ struct RDPServerLicensePDU: Equatable, Sendable {
         }
     }
 
-    var errorAlert: RDPLicenseErrorAlert? {
-        guard case let .errorAlert(alert) = message else {
-            return nil
-        }
-        return alert
-    }
-
-    var licenseRequest: RDPServerLicenseRequest? {
-        guard case let .licenseRequest(request) = message else {
-            return nil
-        }
-        return request
-    }
-
-    var errorCode: UInt32? { errorAlert?.errorCode }
-    var stateTransition: UInt32? { errorAlert?.stateTransition }
-    var serverRandom: Data? { licenseRequest?.serverRandom }
-    var productVersion: UInt32? { licenseRequest?.productVersion }
-    var productCompanyName: String? { licenseRequest?.companyName }
-    var productID: String? { licenseRequest?.productID }
-    var keyExchangeAlgorithms: [UInt32] { licenseRequest?.keyExchangeAlgorithms ?? [] }
-    var certificateByteCount: Int? { licenseRequest?.certificateByteCount }
-    var serverCertificatePublicKey: RDPRSAPublicKey? { licenseRequest?.serverCertificatePublicKey }
-    var scopeCount: UInt32? { licenseRequest?.scopeCount }
-    var scopes: [String] { licenseRequest?.scopes ?? [] }
-
-    var encryptedPlatformChallenge: Data? {
-        guard case let .platformChallenge(challenge) = message else {
-            return nil
-        }
-        return challenge.encryptedChallenge
-    }
-
-    var platformChallengeMAC: Data? {
-        guard case let .platformChallenge(challenge) = message else {
-            return nil
-        }
-        return challenge.mac
-    }
-
-    var encryptedLicense: RDPServerEncryptedLicense? {
-        switch message {
-        case let .newLicense(license), let .upgradeLicense(license):
-            license
-        default:
-            nil
-        }
-    }
-
-    var encryptedLicenseInfo: Data? { encryptedLicense?.encryptedLicenseInfo }
-    var licenseInfoMAC: Data? { encryptedLicense?.mac }
-
-    static func parseIfPresent(fromTPKT packet: Data) throws -> RDPServerLicensePDU? {
-        guard let indication = try? MCSSendDataIndicationPDU.parse(fromTPKT: packet) else {
-            return nil
-        }
-        guard indication.userData.count >= 4 else {
-            return nil
-        }
-
+    /// Returns nil unless `indication` starts with a licensing security header
+    /// and a server preamble (message type, version 2 or 3, size). A Share
+    /// Control totalLength can have the SEC_LICENSE_PKT bit set, so the caller
+    /// only tries this while licensing is in progress. Throws for a malformed
+    /// message once the preamble matches.
+    static func parseIfPresent(from indication: MCSSendDataIndicationPDU) throws -> RDPServerLicensePDU? {
         var cursor = ByteCursor(indication.userData)
+        guard cursor.remaining >= 8 else {
+            return nil
+        }
         let securityFlags = try cursor.readLittleEndianUInt16()
+        // flagsHi is unused and may hold any value ([MS-RDPBCGR] 2.2.8.1.1.2.1, 4.1.11).
         _ = try cursor.readLittleEndianUInt16()
-        guard securityFlags & RDPLicenseSecurityFlags.licensePacket != 0 else {
+        let messageType = try cursor.readUInt8()
+        let flags = try cursor.readUInt8()
+        let messageSize = try cursor.readLittleEndianUInt16()
+        guard securityFlags & RDPLicenseSecurityFlags.licensePacket != 0,
+              serverMessageTypes.contains(messageType),
+              licensePreambleFlagsAreValid(flags),
+              Int(messageSize) == cursor.remaining + 4
+        else {
             return nil
         }
         guard securityFlags & RDPLicenseSecurityFlags.encrypted == 0 else {
             throw RDPDecodeError.invalidLicensePDU
         }
-        guard cursor.remaining >= 4 else {
-            throw RDPDecodeError.invalidLicensePDU
-        }
+        let messageBody = try cursor.readData(count: cursor.remaining)
 
-        let messageType = try cursor.readUInt8()
-        let flags = try cursor.readUInt8()
-        let messageSize = try cursor.readLittleEndianUInt16()
-        guard licensePreambleFlagsAreValid(flags),
-              messageSize >= 4,
-              Int(messageSize) == cursor.remaining + 4
-        else {
-            throw RDPDecodeError.invalidLicensePDU
+        let message: RDPServerLicenseMessage = switch messageType {
+        case 0x01: try .licenseRequest(RDPServerLicenseRequest.parse(messageBody))
+        case 0x02: try .platformChallenge(RDPServerPlatformChallenge.parse(messageBody))
+        case 0x03: try .newLicense(RDPServerEncryptedLicense.parse(messageBody))
+        case 0x04: try .upgradeLicense(RDPServerEncryptedLicense.parse(messageBody))
+        default: try .errorAlert(parseErrorAlert(messageBody))
         }
-        let messageBody = try cursor.readData(count: Int(messageSize) - 4)
-
-        let message: RDPServerLicenseMessage
-        switch messageType {
-        case 0x01:
-            message = try .licenseRequest(RDPServerLicenseRequest.parse(messageBody))
-        case 0x02:
-            message = try .platformChallenge(RDPServerPlatformChallenge.parse(messageBody))
-        case 0x03:
-            message = try .newLicense(RDPServerEncryptedLicense.parse(messageBody))
-        case 0x04:
-            message = try .upgradeLicense(RDPServerEncryptedLicense.parse(messageBody))
-        case 0xFF:
-            message = try .errorAlert(parseErrorAlert(messageBody))
-        default:
-            throw RDPDecodeError.invalidLicensePDU
-        }
-
-        return RDPServerLicensePDU(
-            channelID: indication.channelID,
-            securityFlags: securityFlags,
-            messageType: messageType,
-            flags: flags,
-            messageSize: messageSize,
-            message: message
-        )
+        return RDPServerLicensePDU(message: message)
     }
 
+    /// Any error code or state transition is kept so a failure can name it.
     private static func parseErrorAlert(_ body: Data) throws -> RDPLicenseErrorAlert {
         var cursor = ByteCursor(body)
         guard cursor.remaining >= 12 else {
@@ -270,20 +198,12 @@ struct RDPServerLicensePDU: Equatable, Sendable {
             errorCode: cursor.readLittleEndianUInt32(),
             stateTransition: cursor.readLittleEndianUInt32()
         )
-        guard serverLicenseErrorCodeIsValid(alert.errorCode),
-              licenseStateTransitionIsValid(alert.stateTransition)
-        else {
-            throw RDPDecodeError.invalidLicensePDU
-        }
         let blobType = try cursor.readLittleEndianUInt16()
         let blobLength = try cursor.readLittleEndianUInt16()
-        guard blobType == RDPLicenseBinaryBlobType.error,
+        // wBlobType SHOULD be ignored when wBlobLen is 0 ([MS-RDPBCGR] 2.2.1.12.1.2).
+        guard blobLength == 0 || blobType == RDPLicenseBinaryBlobType.error,
               Int(blobLength) == cursor.remaining
         else {
-            throw RDPDecodeError.invalidLicensePDU
-        }
-        if alert.errorCode == RDPLicenseErrorCode.validClient,
-           !alert.isValidClient || blobLength != 0 {
             throw RDPDecodeError.invalidLicensePDU
         }
         return alert
@@ -685,33 +605,6 @@ struct RDPServerEncryptedLicense: Equatable, Sendable {
             encryptedLicenseInfo: encryptedLicenseInfo.data,
             mac: try cursor.readData(count: 16)
         )
-    }
-}
-
-private func serverLicenseErrorCodeIsValid(_ errorCode: UInt32) -> Bool {
-    switch errorCode {
-    case RDPLicenseErrorCode.invalidMAC,
-         RDPLicenseErrorCode.invalidScope,
-         RDPLicenseErrorCode.noLicenseServer,
-         RDPLicenseErrorCode.validClient,
-         RDPLicenseErrorCode.invalidClient,
-         RDPLicenseErrorCode.invalidProductID,
-         RDPLicenseErrorCode.invalidMessageLength:
-        return true
-    default:
-        return false
-    }
-}
-
-private func licenseStateTransitionIsValid(_ stateTransition: UInt32) -> Bool {
-    switch stateTransition {
-    case RDPLicenseStateTransition.totalAbort,
-         RDPLicenseStateTransition.noTransition,
-         RDPLicenseStateTransition.resetPhaseToStart,
-         RDPLicenseStateTransition.resendLastMessage:
-        return true
-    default:
-        return false
     }
 }
 

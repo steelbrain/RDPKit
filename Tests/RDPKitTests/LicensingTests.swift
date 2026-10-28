@@ -3,27 +3,25 @@ import Foundation
 import Testing
 
 @Test func parsesServerLicenseRequest() throws {
-    let license = try #require(try RDPServerLicensePDU.parseIfPresent(fromTPKT: mcsSendDataIndication(
+    let license = try #require(try parseServerLicense(mcsSendDataIndication(
         channelID: 1003,
         userData: serverLicenseRequestUserData()
     )))
 
     #expect(license.typeName == "license-request")
-    #expect(license.channelID == 1003)
-    #expect(license.securityFlags == 0x0080)
-    #expect(license.messageType == 0x01)
-    #expect(license.serverRandom == Data(0 ..< 32))
-    #expect(license.productVersion == 0x0006_0001)
-    #expect(license.productCompanyName == "Microsoft Corporation")
-    #expect(license.productID == "A02")
-    #expect(license.keyExchangeAlgorithms == [0x0000_0001])
-    #expect(license.certificateByteCount == 0)
-    #expect(license.scopeCount == 1)
-    #expect(license.scopes == ["localhost"])
+    let request = try #require(license.request)
+    #expect(request.serverRandom == Data(0 ..< 32))
+    #expect(request.productVersion == 0x0006_0001)
+    #expect(request.companyName == "Microsoft Corporation")
+    #expect(request.productID == "A02")
+    #expect(request.keyExchangeAlgorithms == [0x0000_0001])
+    #expect(request.certificateByteCount == 0)
+    #expect(request.scopeCount == 1)
+    #expect(request.scopes == ["localhost"])
 }
 
 @Test func parsesLicenseErrorValidClientFromServerPacket() throws {
-    let license = try #require(try RDPServerLicensePDU.parseIfPresent(fromTPKT: mcsSendDataIndication(
+    let license = try #require(try parseServerLicense(mcsSendDataIndication(
         channelID: 1003,
         userData: Data([
             0x80, 0x00, 0x00, 0x00,
@@ -34,18 +32,13 @@ import Testing
         ])
     )))
 
-    #expect(license.channelID == 1003)
-    #expect(license.securityFlags == 0x0080)
-    #expect(license.messageType == 0xFF)
-    #expect(license.messageSize == 16)
-    #expect(license.errorCode == 0x0000_0007)
-    #expect(license.stateTransition == 0x0000_0002)
+    #expect(license.alert == RDPLicenseErrorAlert(errorCode: 0x0000_0007, stateTransition: 0x0000_0002))
     #expect(license.typeName == "license-error-valid-client")
 }
 
 @Test func rejectsServerLicenseRequestWithInvalidProductString() throws {
     #expect(throws: RDPDecodeError.invalidLicensePDU) {
-        try RDPServerLicensePDU.parseIfPresent(fromTPKT: mcsSendDataIndication(
+        try parseServerLicense(mcsSendDataIndication(
             channelID: 1003,
             userData: serverLicenseRequestUserData(companyName: Data([0x4D, 0x00]))
         ))
@@ -54,7 +47,7 @@ import Testing
 
 @Test func rejectsServerLicenseRequestWithoutRSAKeyExchange() throws {
     #expect(throws: RDPDecodeError.invalidLicensePDU) {
-        try RDPServerLicensePDU.parseIfPresent(fromTPKT: mcsSendDataIndication(
+        try parseServerLicense(mcsSendDataIndication(
             channelID: 1003,
             userData: serverLicenseRequestUserData(keyExchangeAlgorithms: [0x0000_0002])
         ))
@@ -62,7 +55,7 @@ import Testing
 }
 
 @Test func acceptsEmptyServerLicenseRequestBlobsWithIgnoredTypes() throws {
-    let license = try #require(try RDPServerLicensePDU.parseIfPresent(fromTPKT: mcsSendDataIndication(
+    let license = try #require(try parseServerLicense(mcsSendDataIndication(
         channelID: 1003,
         userData: serverLicenseRequestUserData(
             certificateType: 0x1234,
@@ -72,13 +65,13 @@ import Testing
     )))
 
     #expect(license.typeName == "license-request")
-    #expect(license.certificateByteCount == 0)
-    #expect(license.scopeCount == 1)
+    #expect(license.request?.certificateByteCount == 0)
+    #expect(license.request?.scopeCount == 1)
 }
 
 @Test func rejectsServerLicenseRequestWithImpossibleScopeCount() {
     #expect(throws: RDPDecodeError.invalidLicensePDU) {
-        try RDPServerLicensePDU.parseIfPresent(fromTPKT: mcsSendDataIndication(
+        try parseServerLicense(mcsSendDataIndication(
             channelID: 1003,
             userData: serverLicenseRequestUserData(scopeCount: UInt32.max, scopePayload: nil)
         ))
@@ -87,25 +80,25 @@ import Testing
 
 @Test func parsesServerLicenseRequestWithCertificate() throws {
     let certificate = proprietaryServerCertificate()
-    let license = try #require(try RDPServerLicensePDU.parseIfPresent(fromTPKT: mcsSendDataIndication(
+    let license = try #require(try parseServerLicense(mcsSendDataIndication(
         channelID: 1003,
         userData: serverLicenseRequestUserData(certificatePayload: certificate)
     )))
 
     #expect(license.typeName == "license-request")
-    #expect(license.certificateByteCount == certificate.count)
+    #expect(license.request?.certificateByteCount == certificate.count)
 }
 
 @Test func parsesServerLicenseRequestWithX509CertificateChain() throws {
     let certificate = try MockKRDPTLS.rdpX509CertificateChain()
-    let license = try #require(try RDPServerLicensePDU.parseIfPresent(fromTPKT: mcsSendDataIndication(
+    let license = try #require(try parseServerLicense(mcsSendDataIndication(
         channelID: 1003,
         userData: serverLicenseRequestUserData(certificatePayload: certificate)
     )))
-    let publicKey = try #require(license.serverCertificatePublicKey)
+    let publicKey = try #require(license.request?.serverCertificatePublicKey)
 
     #expect(license.typeName == "license-request")
-    #expect(license.certificateByteCount == certificate.count)
+    #expect(license.request?.certificateByteCount == certificate.count)
     #expect(publicKey.publicExponent == 0x0001_0001)
     #expect(publicKey.modulus.count == 256)
     #expect(publicKey.keyByteCount == 264)
@@ -116,7 +109,7 @@ import Testing
     certificate[certificate.index(certificate.startIndex, offsetBy: 16)] = 0
 
     #expect(throws: RDPDecodeError.invalidLicensePDU) {
-        try RDPServerLicensePDU.parseIfPresent(fromTPKT: mcsSendDataIndication(
+        try parseServerLicense(mcsSendDataIndication(
             channelID: 1003,
             userData: serverLicenseRequestUserData(certificatePayload: certificate)
         ))
@@ -195,7 +188,7 @@ import Testing
 }
 
 @Test func storedClientLicenseMatchesServerLicenseRequestProductAndScope() throws {
-    let license = try #require(try RDPServerLicensePDU.parseIfPresent(fromTPKT: mcsSendDataIndication(
+    let license = try #require(try parseServerLicense(mcsSendDataIndication(
         channelID: 1003,
         userData: serverLicenseRequestUserData()
     )))
@@ -207,14 +200,15 @@ import Testing
         licenseInfo: Data([0x30, 0x82])
     )
 
-    #expect(storedLicense.matches(license))
+    let request = try #require(license.request)
+    #expect(storedLicense.matches(request))
     #expect(RDPStoredClientLicense(
         version: 0x0006_0001,
         scope: "other",
         companyName: "Microsoft Corporation",
         productID: "A02",
         licenseInfo: Data([0x30, 0x82])
-    ).matches(license) == false)
+    ).matches(request) == false)
 }
 
 @Test func clientLicenseInformationEncodesSpecFieldsAndHardwareMAC() throws {
@@ -396,7 +390,7 @@ import Testing
 @Test func serverNewLicenseExposesEncryptedLicenseInfoAndMac() throws {
     let encryptedLicenseInfo = Data([0xAA, 0xBB, 0xCC])
     let mac = Data(repeating: 0x55, count: 16)
-    let license = try #require(try RDPServerLicensePDU.parseIfPresent(fromTPKT: mcsSendDataIndication(
+    let license = try #require(try parseServerLicense(mcsSendDataIndication(
         channelID: 1003,
         userData: encryptedLicenseUserData(
             messageType: 0x03,
@@ -406,9 +400,7 @@ import Testing
         )
     )))
 
-    #expect(license.typeName == "license-new-license")
-    #expect(license.encryptedLicenseInfo == encryptedLicenseInfo)
-    #expect(license.licenseInfoMAC == mac)
+    #expect(license.message == .newLicense(RDPServerEncryptedLicense(encryptedLicenseInfo: encryptedLicenseInfo, mac: mac)))
 }
 
 @Test func rejectsNonEmptyServerLicenseRequestBlobsWithWrongTypes() throws {
@@ -422,92 +414,86 @@ import Testing
     )
 
     #expect(throws: RDPDecodeError.invalidLicensePDU) {
-        try RDPServerLicensePDU.parseIfPresent(fromTPKT: mcsSendDataIndication(
+        try parseServerLicense(mcsSendDataIndication(
             channelID: 1003,
             userData: nonCertificate
         ))
     }
     #expect(throws: RDPDecodeError.invalidLicensePDU) {
-        try RDPServerLicensePDU.parseIfPresent(fromTPKT: mcsSendDataIndication(
+        try parseServerLicense(mcsSendDataIndication(
             channelID: 1003,
             userData: nonScope
         ))
     }
 }
 
-@Test func rejectsLicensePDUWhenMessageSizeDoesNotConsumePayload() throws {
-    let packet = mcsSendDataIndication(
+@Test func ignoresIOChannelDataWithoutAServerLicensingPreamble() throws {
+    let header: [UInt8] = [0x80, 0x00, 0x00, 0x00]
+    let validClientBody: [UInt8] = [0x07, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00]
+    let notLicensing: [[UInt8]] = [
+        // wMsgSize does not cover the payload.
+        header + [0xFF, 0x03, 0x10, 0x00] + validClientBody + [0x00],
+        // Truncated preamble.
+        header + [0xFF, 0x03, 0x10],
+        // Preamble version 4.
+        header + [0xFF, 0x04, 0x10, 0x00] + validClientBody,
+        // A client-only message type (Client New License Request).
+        header + [0x13, 0x03, 0x04, 0x00],
+        // GRD's Demand Active: totalLength 0x0196 has the SEC_LICENSE_PKT bit.
+        [0x96, 0x01, 0x11, 0x00, 0xEE, 0x03, 0xEE, 0x03, 0x01, 0x00, 0x04, 0x00],
+    ]
+
+    for userData in notLicensing {
+        #expect(try parseServerLicense(mcsSendDataIndication(channelID: 1003, userData: Data(userData))) == nil)
+    }
+}
+
+@Test func licenseErrorIgnoresTheBlobTypeOfAnEmptyBlob() throws {
+    // [MS-RDPBCGR] 2.2.1.12.1.2: wBlobType SHOULD be ignored when wBlobLen is 0.
+    let license = try #require(try parseServerLicense(mcsSendDataIndication(
         channelID: 1003,
         userData: Data([
             0x80, 0x00, 0x00, 0x00,
             0xFF, 0x03, 0x10, 0x00,
             0x07, 0x00, 0x00, 0x00,
             0x02, 0x00, 0x00, 0x00,
-            0x04, 0x00, 0x00, 0x00,
-            0x00,
+            0x00, 0x00, 0x00, 0x00,
         ])
-    )
+    )))
 
-    #expect(throws: RDPDecodeError.invalidLicensePDU) {
-        try RDPServerLicensePDU.parseIfPresent(fromTPKT: packet)
-    }
+    #expect(license.alert?.isValidClient == true)
 }
 
-@Test func rejectsLicensePDUWithTruncatedPreamble() throws {
-    let packet = mcsSendDataIndication(
+@Test func parsesWindowsValidClientLicenseErrorWithUnusedFlagsHi() throws {
+    // [MS-RDPBCGR] 4.1.11: flagsHi carries arbitrary bytes. Read as a Share
+    // Control header, 0x0080/0x0302 would not match the PDU length.
+    let indication = try MCSSendDataIndicationPDU.parse(fromTPKT: mcsSendDataIndication(
         channelID: 1003,
         userData: Data([
-            0x80, 0x00, 0x00, 0x00,
-            0xFF, 0x03, 0x10,
-        ])
-    )
-
-    #expect(throws: RDPDecodeError.invalidLicensePDU) {
-        try RDPServerLicensePDU.parseIfPresent(fromTPKT: packet)
-    }
-}
-
-@Test func rejectsLicensePDUWithInvalidPreambleFlags() throws {
-    let packet = mcsSendDataIndication(
-        channelID: 1003,
-        userData: Data([
-            0x80, 0x00, 0x00, 0x00,
-            0xFF, 0x04, 0x10, 0x00,
-            0x07, 0x00, 0x00, 0x00,
-            0x02, 0x00, 0x00, 0x00,
-            0x04, 0x00, 0x00, 0x00,
-        ])
-    )
-
-    #expect(throws: RDPDecodeError.invalidLicensePDU) {
-        try RDPServerLicensePDU.parseIfPresent(fromTPKT: packet)
-    }
-}
-
-@Test func rejectsClientOnlyLicenseMessageTypeFromServer() throws {
-    let packet = mcsSendDataIndication(
-        channelID: 1003,
-        userData: Data([
-            0x80, 0x00, 0x00, 0x00,
-            0x13, 0x03, 0x04, 0x00,
-        ])
-    )
-
-    #expect(throws: RDPDecodeError.invalidLicensePDU) {
-        try RDPServerLicensePDU.parseIfPresent(fromTPKT: packet)
-    }
-}
-
-@Test func rejectsLicenseErrorWithInvalidBlobTypeOrLength() throws {
-    let invalidBlobType = mcsSendDataIndication(
-        channelID: 1003,
-        userData: Data([
-            0x80, 0x00, 0x00, 0x00,
+            0x80, 0x00, 0x02, 0x03,
             0xFF, 0x03, 0x10, 0x00,
             0x07, 0x00, 0x00, 0x00,
             0x02, 0x00, 0x00, 0x00,
-            0x01, 0x00, 0x00, 0x00,
+            0x04, 0x00, 0x00, 0x00,
         ])
+    ))
+
+    guard case let .license(license) = try RDPIOChannelPDU.parse(indication, licensing: true) else {
+        Issue.record("expected a licensing PDU")
+        return
+    }
+    #expect(license.alert?.isValidClient == true)
+}
+
+@Test func rejectsLicenseErrorWithWrongBlobTypeOrLength() throws {
+    let wrongBlobType = mcsSendDataIndication(
+        channelID: 1003,
+        userData: licenseErrorUserData(
+            errorCode: 0x0000_0006,
+            stateTransition: 0x0000_0001,
+            errorBlobType: 0x0001,
+            errorBlob: Data([0x01])
+        )
     )
     let invalidBlobLength = mcsSendDataIndication(
         channelID: 1003,
@@ -521,64 +507,41 @@ import Testing
     )
 
     #expect(throws: RDPDecodeError.invalidLicensePDU) {
-        try RDPServerLicensePDU.parseIfPresent(fromTPKT: invalidBlobType)
+        try parseServerLicense(wrongBlobType)
     }
     #expect(throws: RDPDecodeError.invalidLicensePDU) {
-        try RDPServerLicensePDU.parseIfPresent(fromTPKT: invalidBlobLength)
+        try parseServerLicense(invalidBlobLength)
     }
 }
 
-@Test func rejectsLicenseErrorWithInvalidServerErrorCodeOrStateTransition() throws {
-    let clientOnlyErrorCode = licenseErrorUserData(
-        errorCode: 0x0000_0001,
-        stateTransition: 0x0000_0001
-    )
-    let invalidStateTransition = licenseErrorUserData(
-        errorCode: 0x0000_0006,
-        stateTransition: 0x0000_0005
-    )
+@Test func licenseErrorKeepsUnknownCodesAndTransitionsForTheFailureMessage() throws {
+    let unknownCode = try #require(try parseServerLicense(mcsSendDataIndication(
+        channelID: 1003,
+        userData: licenseErrorUserData(errorCode: 0x0000_0001, stateTransition: 0x0000_0001)
+    )))
+    let unknownTransition = try #require(try parseServerLicense(mcsSendDataIndication(
+        channelID: 1003,
+        userData: licenseErrorUserData(errorCode: 0x0000_0006, stateTransition: 0x0000_0005)
+    )))
 
-    #expect(throws: RDPDecodeError.invalidLicensePDU) {
-        try RDPServerLicensePDU.parseIfPresent(fromTPKT: mcsSendDataIndication(
-            channelID: 1003,
-            userData: clientOnlyErrorCode
-        ))
-    }
-    #expect(throws: RDPDecodeError.invalidLicensePDU) {
-        try RDPServerLicensePDU.parseIfPresent(fromTPKT: mcsSendDataIndication(
-            channelID: 1003,
-            userData: invalidStateTransition
-        ))
-    }
+    #expect(unknownCode.alert?.description == "license error (0x00000001), ST_TOTAL_ABORT")
+    #expect(unknownTransition.alert?.description
+        == "ERR_NO_LICENSE_SERVER (0x00000006), state transition 0x00000005")
 }
 
-@Test func rejectsValidClientLicenseErrorWithNonFinalTransitionOrBlobData() throws {
-    let nonFinalTransition = licenseErrorUserData(
-        errorCode: 0x0000_0007,
-        stateTransition: 0x0000_0003
-    )
-    let nonEmptyErrorBlob = licenseErrorUserData(
-        errorCode: 0x0000_0007,
-        stateTransition: 0x0000_0002,
-        errorBlob: Data([0x01])
-    )
+@Test func validClientNeedsNoTransition() throws {
+    let nonFinalTransition = try #require(try parseServerLicense(mcsSendDataIndication(
+        channelID: 1003,
+        userData: licenseErrorUserData(errorCode: 0x0000_0007, stateTransition: 0x0000_0003)
+    )))
 
-    #expect(throws: RDPDecodeError.invalidLicensePDU) {
-        try RDPServerLicensePDU.parseIfPresent(fromTPKT: mcsSendDataIndication(
-            channelID: 1003,
-            userData: nonFinalTransition
-        ))
-    }
-    #expect(throws: RDPDecodeError.invalidLicensePDU) {
-        try RDPServerLicensePDU.parseIfPresent(fromTPKT: mcsSendDataIndication(
-            channelID: 1003,
-            userData: nonEmptyErrorBlob
-        ))
-    }
+    #expect(nonFinalTransition.alert?.isValidClient == false)
+    #expect(nonFinalTransition.typeName == "license-error-0x00000007")
+    #expect(nonFinalTransition.alert?.description == "STATUS_VALID_CLIENT (0x00000007), ST_RESET_PHASE_TO_START")
 }
 
 @Test func parsesNonValidClientLicenseErrorWithBlobData() throws {
-    let license = try #require(try RDPServerLicensePDU.parseIfPresent(fromTPKT: mcsSendDataIndication(
+    let license = try #require(try parseServerLicense(mcsSendDataIndication(
         channelID: 1003,
         userData: licenseErrorUserData(
             errorCode: 0x0000_0006,
@@ -588,10 +551,8 @@ import Testing
     )))
 
     #expect(license.typeName == "license-error-0x00000006")
-    #expect(license.errorCode == 0x0000_0006)
-    #expect(license.stateTransition == 0x0000_0001)
-    let alert = try #require(license.errorAlert)
-    #expect(license.message == .errorAlert(alert))
+    let alert = try #require(license.alert)
+    #expect(alert == RDPLicenseErrorAlert(errorCode: 0x0000_0006, stateTransition: 0x0000_0001))
     #expect(alert.isValidClient == false)
     #expect(alert.description == "ERR_NO_LICENSE_SERVER (0x00000006), ST_TOTAL_ABORT")
 }
@@ -612,15 +573,15 @@ import Testing
 }
 
 @Test func parsesOpaqueServerPlatformChallengeAndLicenseMessages() throws {
-    let platformChallenge = try #require(try RDPServerLicensePDU.parseIfPresent(fromTPKT: mcsSendDataIndication(
+    let platformChallenge = try #require(try parseServerLicense(mcsSendDataIndication(
         channelID: 1003,
         userData: platformChallengeUserData(encryptedBlobType: 0x1234)
     )))
-    let newLicense = try #require(try RDPServerLicensePDU.parseIfPresent(fromTPKT: mcsSendDataIndication(
+    let newLicense = try #require(try parseServerLicense(mcsSendDataIndication(
         channelID: 1003,
         userData: encryptedLicenseUserData(messageType: 0x03)
     )))
-    let upgradeLicense = try #require(try RDPServerLicensePDU.parseIfPresent(fromTPKT: mcsSendDataIndication(
+    let upgradeLicense = try #require(try parseServerLicense(mcsSendDataIndication(
         channelID: 1003,
         userData: encryptedLicenseUserData(messageType: 0x04)
     )))
@@ -632,25 +593,25 @@ import Testing
 
 @Test func rejectsMalformedOpaqueServerLicenseMessages() throws {
     #expect(throws: RDPDecodeError.invalidLicensePDU) {
-        try RDPServerLicensePDU.parseIfPresent(fromTPKT: mcsSendDataIndication(
+        try parseServerLicense(mcsSendDataIndication(
             channelID: 1003,
             userData: platformChallengeUserData(encryptedBlob: Data())
         ))
     }
     #expect(throws: RDPDecodeError.invalidLicensePDU) {
-        try RDPServerLicensePDU.parseIfPresent(fromTPKT: mcsSendDataIndication(
+        try parseServerLicense(mcsSendDataIndication(
             channelID: 1003,
             userData: platformChallengeUserData(mac: Data(repeating: 0, count: 15))
         ))
     }
     #expect(throws: RDPDecodeError.invalidLicensePDU) {
-        try RDPServerLicensePDU.parseIfPresent(fromTPKT: mcsSendDataIndication(
+        try parseServerLicense(mcsSendDataIndication(
             channelID: 1003,
             userData: encryptedLicenseUserData(messageType: 0x03, encryptedBlob: Data())
         ))
     }
     #expect(throws: RDPDecodeError.invalidLicensePDU) {
-        try RDPServerLicensePDU.parseIfPresent(fromTPKT: mcsSendDataIndication(
+        try parseServerLicense(mcsSendDataIndication(
             channelID: 1003,
             userData: encryptedLicenseUserData(messageType: 0x04, suffix: Data([0x00]))
         ))
@@ -658,7 +619,7 @@ import Testing
 }
 
 @Test func ignoresNonLicensePackets() throws {
-    #expect(try RDPServerLicensePDU.parseIfPresent(fromTPKT: Data([
+    #expect(try parseServerLicense(Data([
         0x03, 0x00, 0x00, 0x19,
         0x02, 0xF0, 0x80,
         0x68, 0x00, 0x05, 0x03, 0xED, 0x70, 0x80, 0x0A,
@@ -678,9 +639,30 @@ private func mcsSendDataIndication(channelID: UInt16, userData: Data) -> Data {
     return X224DataTPDU.wrap(data)
 }
 
+private func parseServerLicense(_ packet: Data) throws -> RDPServerLicensePDU? {
+    try RDPServerLicensePDU.parseIfPresent(from: MCSSendDataIndicationPDU.parse(fromTPKT: packet))
+}
+
+private extension RDPServerLicensePDU {
+    var request: RDPServerLicenseRequest? {
+        guard case let .licenseRequest(request) = message else {
+            return nil
+        }
+        return request
+    }
+
+    var alert: RDPLicenseErrorAlert? {
+        guard case let .errorAlert(alert) = message else {
+            return nil
+        }
+        return alert
+    }
+}
+
 private func licenseErrorUserData(
     errorCode: UInt32,
     stateTransition: UInt32,
+    errorBlobType: UInt16 = 0x0004,
     errorBlob: Data = Data()
 ) -> Data {
     var payload = Data()
@@ -691,7 +673,7 @@ private func licenseErrorUserData(
     payload.appendLittleEndianUInt16(UInt16(16 + errorBlob.count))
     payload.appendLittleEndianUInt32(errorCode)
     payload.appendLittleEndianUInt32(stateTransition)
-    payload.appendLittleEndianUInt16(0x0004)
+    payload.appendLittleEndianUInt16(errorBlobType)
     payload.appendLittleEndianUInt16(UInt16(errorBlob.count))
     payload.append(errorBlob)
     return payload

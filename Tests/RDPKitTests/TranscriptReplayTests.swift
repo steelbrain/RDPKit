@@ -83,6 +83,49 @@ import Testing
     #expect(report.rdpGraphicsFirstFrame.map { Array($0.videoNalUnitTypes.prefix(3)) } == [7, 8, 6])
 }
 
+/// Every server PDU on the I/O channel of both captures, classified the way
+/// the client does: licensing first while it is in progress, Share Control
+/// after. GRD's Demand Active length (0x0196) has the SEC_LICENSE_PKT bit set.
+@Test func classifiesEveryIOChannelServerPDUInBothCaptures() throws {
+    for (name, expected) in [
+        ("gnome-negotiation-transcript", [
+            "license-error-valid-client", "server-demand-active", "server-synchronize", "control-cooperate",
+            "control-granted-control", "font-map", "server-redirection",
+            "license-error-valid-client", "server-demand-active", "server-synchronize", "control-cooperate",
+            "control-granted-control", "font-map",
+        ]),
+        ("krdp-negotiation-transcript", [
+            "license-error-valid-client", "server-demand-active", "server-synchronize", "control-cooperate",
+            "control-granted-control", "font-map",
+        ]),
+    ] {
+        var classified: [String] = []
+        for segment in RDPTranscriptReplayServer.segment(try loadTranscriptFixture(name)) {
+            var licensing = true
+            for event in segment.appEvents where event.direction == .serverToClient {
+                guard let bytes = event.bytes,
+                      let indication = try? MCSSendDataIndicationPDU.parse(fromTPKT: bytes),
+                      indication.channelID == 1003
+                else {
+                    continue
+                }
+                switch try RDPIOChannelPDU.parse(indication, licensing: licensing) {
+                case let .license(license):
+                    classified.append(license.typeName)
+                    licensing = !(license.typeName == "license-error-valid-client")
+                case let .shareControl(shareControl):
+                    let shareData = try RDPShareDataPDU.parseIfPresent(from: indication)
+                    classified.append(shareData?.typeName ?? shareControl.typeName)
+                    licensing = false
+                case nil:
+                    classified.append("unclassified")
+                }
+            }
+        }
+        #expect(classified == expected, "\(name)")
+    }
+}
+
 private func loadTranscriptFixture(_ name: String) throws -> [RDPWireEvent] {
     let url = try #require(Bundle.module.url(
         forResource: name,

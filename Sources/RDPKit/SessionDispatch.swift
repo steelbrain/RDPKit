@@ -67,15 +67,15 @@ extension RDPClientConnection {
     // MARK: I/O channel
 
     private func handleIOChannel(_ message: Data, indication: MCSSendDataIndicationPDU) throws {
-        let shareControl = try RDPShareControlPDU.parseIfPresent(from: indication)
-        if shareControl == nil, !licensingComplete,
-           let license = try RDPServerLicensePDU.parseIfPresent(fromTPKT: message)
-        {
+        let shareControl: RDPShareControlPDU
+        switch try RDPIOChannelPDU.parse(indication, licensing: !licensingComplete) {
+        case let .license(license):
             recordPostAutoDetectResponse(message, type: nil)
             try handleLicense(license)
             return
-        }
-        guard let shareControl else {
+        case let .shareControl(pdu):
+            shareControl = pdu
+        case nil:
             return
         }
         recordPostAutoDetectResponse(message, type: shareControl.typeName)
@@ -156,7 +156,9 @@ extension RDPClientConnection {
         stage = .licensing
         if report.rdpLicensingResponseType == nil {
             report.rdpLicensingResponseType = license.typeName
-            report.rdpLicensingErrorCode = license.errorCode
+            if case let .errorAlert(alert) = license.message {
+                report.rdpLicensingErrorCode = alert.errorCode
+            }
         }
         switch license.message {
         case let .errorAlert(alert):
@@ -165,7 +167,7 @@ extension RDPClientConnection {
             }
             licensingComplete = true
         case let .licenseRequest(request):
-            try answerLicenseRequest(request, pdu: license)
+            try answerLicenseRequest(request)
         case let .platformChallenge(challenge):
             guard let licenseKeys else {
                 throw RDPDecodeError.invalidLicensePDU
@@ -188,14 +190,14 @@ extension RDPClientConnection {
 
     /// Presents the stored license when it matches the server's product,
     /// otherwise asks for a new one.
-    private func answerLicenseRequest(_ request: RDPServerLicenseRequest, pdu: RDPServerLicensePDU) throws {
+    private func answerLicenseRequest(_ request: RDPServerLicenseRequest) throws {
         guard let serverPublicKey = request.serverCertificatePublicKey ?? serverCertificatePublicKey else {
             throw RDPPreflightError.protocolViolation("server did not provide a usable licensing public key")
         }
         let packet: Data
         let clientRandom: Data
         let premasterSecret: Data?
-        if let storedLicense = configuration.storedClientLicense, storedLicense.matches(pdu) {
+        if let storedLicense = configuration.storedClientLicense, storedLicense.matches(request) {
             let information = try RDPClientLicenseInformationPDU(
                 channelID: ioChannelID,
                 serverPublicKey: serverPublicKey,
@@ -412,5 +414,23 @@ extension RDPClientConnection {
 
     private var hasPartialGraphicsData: Bool {
         fastPathReassembler.isActive || graphicsChannelID.map { dynamicChannelFragments[$0] != nil } == true
+    }
+}
+
+/// A server PDU on the I/O channel. Licensing PDUs come before the first
+/// Demand Active and never after ([MS-RDPBCGR] 1.3.1.1), and the two headers
+/// can be mistaken for each other: a Share Control totalLength can have the
+/// SEC_LICENSE_PKT bit set, and a licensing flagsHi can read as a Share
+/// Control type (4.1.11). So licensing is tried first, and only while it is
+/// in progress.
+enum RDPIOChannelPDU {
+    case license(RDPServerLicensePDU)
+    case shareControl(RDPShareControlPDU)
+
+    static func parse(_ indication: MCSSendDataIndicationPDU, licensing: Bool) throws -> RDPIOChannelPDU? {
+        if licensing, let license = try RDPServerLicensePDU.parseIfPresent(from: indication) {
+            return .license(license)
+        }
+        return try RDPShareControlPDU.parseIfPresent(from: indication).map { .shareControl($0) }
     }
 }
