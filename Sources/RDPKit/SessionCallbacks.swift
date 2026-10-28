@@ -1,10 +1,6 @@
 import Foundation
 
-// Threading: `RDPPreflightClient.run`/`connect` block the calling thread for
-// the whole session; call them from a dedicated thread, never from an event
-// loop or a Swift concurrency executor. Every handler below runs synchronously
-// on that thread, except `RDPWireReceiveHandler`, which runs on the NIO event
-// loop and must not block. A slow handler delays every channel.
+// Threading: see `RDPPreflightClient`.
 
 /// Receives each decoded graphics frame. Throwing ends the session with
 /// `RDPPreflightError.graphicsFrameHandler`; the frame is not acknowledged.

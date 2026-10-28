@@ -2,11 +2,15 @@ import Foundation
 
 /// Connects to an RDP server and runs a session.
 ///
-/// `run` and `connect` block the calling thread until the session ends; see
-/// SessionCallbacks.swift for the thread each handler runs on. `onCertificate`
-/// runs after the TLS handshake and before any credential is sent: cancelling
-/// `cancellation` (or returning true from `shouldCancel`) from it rejects the
-/// server.
+/// `run` and `connect` block the calling thread for the whole session; call
+/// them from a dedicated thread, never from an event loop or a Swift
+/// concurrency executor. Every handler runs synchronously on that thread,
+/// except `onWireReceive`, which runs on the NIO event loop and must not block.
+/// A slow handler delays every channel.
+///
+/// `onCertificate` runs after the TLS handshake and before any credential is
+/// sent: cancelling `cancellation` (or returning true from `shouldCancel`)
+/// from it rejects the server.
 public struct RDPPreflightClient: Sendable {
     public init() {}
 
@@ -67,8 +71,10 @@ public struct RDPPreflightClient: Sendable {
     }
 
     /// Runs a session and returns its report. Throws when no RDP connection
-    /// could be set up: the address, TCP connect or X.224 negotiation failed,
-    /// or the run was cancelled before that.
+    /// could be set up: the address could not be resolved, the TCP connection
+    /// failed, the X.224 exchange could not be completed, or the run was
+    /// cancelled before that. A negotiation the server refuses (RDP_NEG_FAILURE)
+    /// or settles on a protocol RDPKit does not support returns a failure report.
     public func connect(
         configuration: RDPConnectionConfiguration,
         onGraphicsFrame: RDPGraphicsFrameHandler? = nil,
