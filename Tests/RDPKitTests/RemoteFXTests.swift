@@ -90,6 +90,39 @@ func rlgrDecodesSpecEncoderOutput(algorithm: RDPRemoteFXDecoder.EntropyAlgorithm
     #expect(passes.last?.bgraData == expected.bgraData)
 }
 
+@Test func caprogressiveKeepsRefinementStateOfRecentCodecContextsOnly() throws {
+    let quantTables = [Data([50] + Array(repeating: UInt8(0x22), count: 15))]
+    let firstPass = caprogressiveRemoteFXGrayTilesStream(
+        progressiveQuantTables: quantTables,
+        tiles: [CAPROGRESSIVERemoteFXGrayTile(blockType: 0xCCC6, xIndex: 0, yIndex: 0, progressiveQuality: 0)]
+    )
+    let zeroLL3RawBits = Data(repeating: 0, count: 21)
+    let upgrade = caprogressiveRemoteFXGrayTilesStream(
+        progressiveQuantTables: quantTables,
+        tiles: [CAPROGRESSIVERemoteFXGrayTile(
+            blockType: 0xCCC7,
+            xIndex: 0,
+            yIndex: 0,
+            progressiveQuality: 0xFF,
+            ySrlData: srlAllZeroComponent(count: 4015),
+            yRawData: zeroLL3RawBits,
+            cbSrlData: srlAllZeroComponent(count: 4015),
+            cbRawData: zeroLL3RawBits,
+            crSrlData: srlAllZeroComponent(count: 4015),
+            crRawData: zeroLL3RawBits
+        )]
+    )
+    let decoder = RDPRemoteFXDecoder()
+    for codecContextID in UInt32(1) ... 5 {
+        _ = try decoder.decodeProgressive(firstPass, codecContextID: codecContextID)
+    }
+
+    #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
+        _ = try decoder.decodeProgressive(upgrade, codecContextID: 1)
+    }
+    #expect(try decoder.decodeProgressive(upgrade, codecContextID: 2).tiles.count == 1)
+}
+
 @Test func caprogressiveDequantizesWithCombinedShift() throws {
     // A zero LL3 quantization value is valid (MS-RDPEGFX 2.2.4.2.1.5.2); with a
     // progressive bit position of 1 the LL3 shift is 0 + 1 - 1 = 0.

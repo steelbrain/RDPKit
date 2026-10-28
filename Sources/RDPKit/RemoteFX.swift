@@ -32,6 +32,11 @@ private struct RDPProgressiveComponentState {
 /// difference tiles refine whatever the surface last showed there; refinement
 /// state (Y, Cb, Cr) belongs to the codec context rendering the tile progressively.
 private final class RDPProgressiveTileStore: @unchecked Sendable {
+    /// A server that cycles codec context IDs without DeleteEncodingContext would otherwise grow
+    /// refinement state without bound; the least recently used context of a surface is dropped.
+    /// FreeRDP keeps a single progressive state per surface.
+    static let maximumCodecContextsPerSurface = 4
+
     struct Key: Hashable {
         var surfaceID: UInt16
         var codecContextID: UInt32
@@ -54,6 +59,8 @@ private final class RDPProgressiveTileStore: @unchecked Sendable {
     private let lock = NSLock()
     private var coefficients: [SurfaceTileKey: RDPProgressiveCoefficients] = [:]
     private var refinements: [Key: [RDPProgressiveComponentState]] = [:]
+    /// Codec context IDs with refinement state, per surface, least recently used first.
+    private var codecContextIDs: [UInt16: [UInt32]] = [:]
 
     /// Stores a simple or first-pass tile, adding it to the surface tile's previous
     /// coefficients when it is a difference tile, and returns the stored tile.
@@ -81,7 +88,7 @@ private final class RDPProgressiveTileStore: @unchecked Sendable {
             }
         }
         coefficients[SurfaceTileKey(key)] = stored
-        refinements[key] = refinement
+        setRefinement(refinement, for: key)
         return stored
     }
 
@@ -103,7 +110,7 @@ private final class RDPProgressiveTileStore: @unchecked Sendable {
     ) {
         lock.lock()
         coefficients[SurfaceTileKey(key)] = tile
-        refinements[key] = refinement
+        setRefinement(refinement, for: key)
         lock.unlock()
     }
 
@@ -111,15 +118,34 @@ private final class RDPProgressiveTileStore: @unchecked Sendable {
         lock.lock()
         coefficients = coefficients.filter { $0.key.surfaceID != surfaceID }
         refinements = refinements.filter { $0.key.surfaceID != surfaceID }
+        codecContextIDs[surfaceID] = nil
         lock.unlock()
     }
 
     func remove(surfaceID: UInt16, codecContextID: UInt32) {
         lock.lock()
+        removeRefinements(surfaceID: surfaceID, codecContextID: codecContextID)
+        codecContextIDs[surfaceID]?.removeAll { $0 == codecContextID }
+        lock.unlock()
+    }
+
+    /// Call with `lock` held.
+    private func setRefinement(_ refinement: [RDPProgressiveComponentState]?, for key: Key) {
+        refinements[key] = refinement
+        var contextIDs = codecContextIDs[key.surfaceID, default: []]
+        contextIDs.removeAll { $0 == key.codecContextID }
+        contextIDs.append(key.codecContextID)
+        if contextIDs.count > Self.maximumCodecContextsPerSurface {
+            removeRefinements(surfaceID: key.surfaceID, codecContextID: contextIDs.removeFirst())
+        }
+        codecContextIDs[key.surfaceID] = contextIDs
+    }
+
+    /// Call with `lock` held.
+    private func removeRefinements(surfaceID: UInt16, codecContextID: UInt32) {
         refinements = refinements.filter {
             $0.key.surfaceID != surfaceID || $0.key.codecContextID != codecContextID
         }
-        lock.unlock()
     }
 }
 
