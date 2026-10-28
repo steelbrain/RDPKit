@@ -315,6 +315,14 @@ private extension RDPAVC444MetalDecoder {
         return int(round(clamp(value, 0.0f, 1.0f) * 255.0f));
     }
 
+    inline int2 reverseFiltered(int2 filtered, int2 recovered) {
+        int2 reversed = clamp(recovered, 0, 255);
+        return int2(
+            abs(reversed.x - filtered.x) < 30 ? filtered.x : reversed.x,
+            abs(reversed.y - filtered.y) < 30 ? filtered.y : reversed.y
+        );
+    }
+
     inline int2 mainChroma(texture2d<float, access::read> uv, uint2 position) {
         float2 value = uv.read(position / 2).rg;
         return int2(byteValue(value.r), byteValue(value.g));
@@ -338,11 +346,7 @@ private extension RDPAVC444MetalDecoder {
                 byteValue(auxiliaryY.read(uint2(p.x + 1, auxiliaryRow)).r),
                 byteValue(auxiliaryY.read(uint2(p.x + 1, auxiliaryRow + 8)).r)
             );
-            int2 recovered = 4 * filtered - right - below - belowRight;
-            return int2(
-                abs(filtered.x - recovered.x) > 30 ? clamp(recovered.x, 0, 255) : filtered.x,
-                abs(filtered.y - recovered.y) > 30 ? clamp(recovered.y, 0, 255) : filtered.y
-            );
+            return reverseFiltered(filtered, 4 * filtered - right - below - belowRight);
         }
         if ((p.y & 1) == 0) {
             float2 value = auxiliaryUV.read(p / 2).rg;
@@ -386,11 +390,7 @@ private extension RDPAVC444MetalDecoder {
             int2 right = v2PackedChroma(uint2(p.x + 1, p.y), auxiliaryY, auxiliaryUV);
             int2 below = v2PackedChroma(uint2(p.x, p.y + 1), auxiliaryY, auxiliaryUV);
             int2 belowRight = v2PackedChroma(uint2(p.x + 1, p.y + 1), auxiliaryY, auxiliaryUV);
-            int2 recovered = 4 * filtered - right - below - belowRight;
-            return int2(
-                abs(filtered.x - recovered.x) > 30 ? clamp(recovered.x, 0, 255) : filtered.x,
-                abs(filtered.y - recovered.y) > 30 ? clamp(recovered.y, 0, 255) : filtered.y
-            );
+            return reverseFiltered(filtered, 4 * filtered - right - below - belowRight);
         }
         return v2PackedChroma(p, auxiliaryY, auxiliaryUV);
     }

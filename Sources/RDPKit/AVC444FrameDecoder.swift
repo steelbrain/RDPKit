@@ -373,8 +373,8 @@ private func recoveredAVC444Chroma(
             )
         }
         return (
-            filteredValue(filteredU, recovered: 4 * filteredU - right.0 - below.0 - belowRight.0),
-            filteredValue(filteredV, recovered: 4 * filteredV - right.1 - below.1 - belowRight.1)
+            reverseFilteredValue(filteredU, recovered: 4 * filteredU - right.0 - below.0 - belowRight.0),
+            reverseFilteredValue(filteredV, recovered: 4 * filteredV - right.1 - below.1 - belowRight.1)
         )
     }
     if usesV2Layout {
@@ -419,8 +419,11 @@ private func writeBGRAPixel(y: Int, u: Int, v: Int, to output: UnsafeMutablePoin
     output[3] = 255
 }
 
-private func filteredValue(_ filtered: Int, recovered: Int) -> Int {
-    abs(filtered - recovered) > 30 ? clampedByte(recovered) : filtered
+/// MS-RDPEGFX 3.3.8.3.2: keep the main-view value when the reverse filter changes it by
+/// less than 30.
+private func reverseFilteredValue(_ filtered: Int, recovered: Int) -> Int {
+    let reversed = clampedByte(recovered)
+    return abs(reversed - filtered) < 30 ? filtered : reversed
 }
 
 private func clampedByte(_ value: Int) -> Int {

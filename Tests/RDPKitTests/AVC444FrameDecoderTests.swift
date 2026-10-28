@@ -67,6 +67,24 @@ import Testing
     #expect(pixel(x: 0, y: 0, in: reconstructed) == bgra(y: 128, u: 210, v: 70))
 }
 
+@Test func AVC444ReverseFilterAppliesAtThresholdOfThirty() throws {
+    // U: 4 * 100 - 3 * 90 = 130 changes the main value by exactly 30, so MS-RDPEGFX
+    // 3.3.8.3.2 uses the reversed value; only changes below 30 keep the main value.
+    let main = try yuv420Frame(y: 128, u: 100, v: 150)
+    let auxiliary = try yuv420Frame(y: 90, u: 90, v: 90)
+
+    let reconstructed = try RDPAVC444FrameStore().reconstruct(
+        surfaceID: 1,
+        codecID: RDPGFXCodecID.avc444,
+        layout: .yuv420AndChroma420,
+        firstFrame: main,
+        secondFrame: auxiliary,
+        chromaRegionRects: [RDPFrameRect(left: 0, top: 0, right: 16, bottom: 16)]
+    )
+
+    #expect(pixel(x: 0, y: 0, in: reconstructed) == bgra(y: 128, u: 130, v: 255))
+}
+
 @Test func AVC444UsesChromaOnlyInsideChromaRegions() throws {
     let main = try yuv420Frame(y: 128, u: 100, v: 150)
     let auxiliary = try yuv420Frame(y: 40, u: 50, v: 190)
@@ -207,32 +225,37 @@ import Testing
 @Test func MetalAVC444ReconstructionMatchesCPUFallback() throws {
     let metalDecoder = try #require(RDPAVC444MetalDecoder())
     let main = try yuv420Frame(y: 128, u: 100, v: 150)
-    let auxiliary = try yuv420Frame(y: 40, u: 50, v: 190)
     let destinationRect = RDPFrameRect(left: 0, top: 0, right: 16, bottom: 16)
     let regions = [RDPFrameRect(left: 4, top: 2, right: 14, bottom: 13)]
+    let auxiliaries = [
+        try yuv420Frame(y: 40, u: 50, v: 190),
+        try yuv420Frame(y: 90, u: 90, v: 90),
+    ]
 
     for codecID in [RDPGFXCodecID.avc444, RDPGFXCodecID.avc444v2] {
         for chromaRegions in [[], regions] {
-            let expected = try RDPAVC444FrameStore().reconstruct(
-                surfaceID: 1,
-                codecID: codecID,
-                layout: .yuv420AndChroma420,
-                firstFrame: main,
-                secondFrame: auxiliary,
-                destinationRect: destinationRect,
-                chromaRegionRects: chromaRegions
-            )
-            let actual = try metalDecoder.decode(
-                surfaceID: 1,
-                codecID: codecID,
-                layout: .yuv420AndChroma420,
-                firstImageBuffer: try nv12PixelBuffer(from: main),
-                secondImageBuffer: try nv12PixelBuffer(from: auxiliary),
-                destinationRect: destinationRect,
-                chromaRegionRects: chromaRegions
-            )
+            for auxiliary in auxiliaries {
+                let expected = try RDPAVC444FrameStore().reconstruct(
+                    surfaceID: 1,
+                    codecID: codecID,
+                    layout: .yuv420AndChroma420,
+                    firstFrame: main,
+                    secondFrame: auxiliary,
+                    destinationRect: destinationRect,
+                    chromaRegionRects: chromaRegions
+                )
+                let actual = try metalDecoder.decode(
+                    surfaceID: 1,
+                    codecID: codecID,
+                    layout: .yuv420AndChroma420,
+                    firstImageBuffer: try nv12PixelBuffer(from: main),
+                    secondImageBuffer: try nv12PixelBuffer(from: auxiliary),
+                    destinationRect: destinationRect,
+                    chromaRegionRects: chromaRegions
+                )
 
-            #expect(try bgraData(from: actual) == expected.bgra)
+                #expect(try bgraData(from: actual) == expected.bgra)
+            }
         }
     }
 }
