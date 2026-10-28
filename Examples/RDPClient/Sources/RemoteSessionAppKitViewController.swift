@@ -1556,11 +1556,12 @@ private final class RDPRemoteSessionMainActorSink: @unchecked Sendable {
     }
 
     /// Runs `operation` on the main queue in submission order, so frames and audio stay ordered.
+    /// The block keeps the sink alive: the session thread releases it right after submitting
+    /// the final update. The sink holds the controller weakly, so this forms no cycle.
     func apply(_ operation: @escaping @MainActor (RDPRemoteSessionViewController) -> Void) {
-        DispatchQueue.main.async { [weak self] in
+        DispatchQueue.main.async {
             MainActor.assumeIsolated {
-                guard let self,
-                      let controller = self.controller,
+                guard let controller = self.controller,
                       controller.acceptsConnectionEvent(id: self.connectionID)
                 else {
                     return
