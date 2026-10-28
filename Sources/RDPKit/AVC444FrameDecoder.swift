@@ -27,7 +27,6 @@ final class RDPAVC444FrameDecoder {
         let (main, auxiliary) = try views.resolve(
             layout: layout,
             codecID: frame.codecID,
-            destinationRect: frame.destinationRect,
             first: firstImageBuffer,
             second: secondImageBuffer
         )
@@ -101,15 +100,16 @@ final class RDPAVC444FrameDecoder {
     }
 }
 
-/// Pairs each update with the main view it combines with. A chroma-only update uses the last
-/// main view decoded for the same rectangle and codec (MS-RDPEGFX 3.3.8.3.2).
+/// Pairs each update with the main view it combines with. A chroma-only update (LC 0x2) is
+/// combined with the AVC stream decoded so far (MS-RDPEGFX 2.2.4.5): the surface's last main
+/// view of the same codec, whatever rectangle it updated. `rdpAVC444FrameSize` rejects a
+/// main view of another size.
 struct RDPAVC444Views {
-    private var lastMain: (codecID: UInt16, destinationRect: RDPFrameRect, imageBuffer: CVImageBuffer)?
+    private var lastMain: (codecID: UInt16, imageBuffer: CVImageBuffer)?
 
     mutating func resolve(
         layout: RDPAVC444SubframeLayout,
         codecID: UInt16,
-        destinationRect: RDPFrameRect,
         first: CVImageBuffer,
         second: CVImageBuffer?
     ) throws -> (main: CVImageBuffer, auxiliary: CVImageBuffer?) {
@@ -118,16 +118,13 @@ struct RDPAVC444Views {
             guard let second else {
                 throw RDPAVC444DecodeError.missingChromaSubframe
             }
-            lastMain = (codecID, destinationRect, first)
+            lastMain = (codecID, first)
             return (first, second)
         case .yuv420Only:
-            lastMain = (codecID, destinationRect, first)
+            lastMain = (codecID, first)
             return (first, nil)
         case .chroma420Only:
-            guard let lastMain,
-                  lastMain.codecID == codecID,
-                  lastMain.destinationRect == destinationRect
-            else {
+            guard let lastMain, lastMain.codecID == codecID else {
                 throw RDPAVC444DecodeError.missingLumaSubframe
             }
             return (lastMain.imageBuffer, first)

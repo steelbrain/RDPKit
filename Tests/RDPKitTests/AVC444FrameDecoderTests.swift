@@ -108,7 +108,6 @@ private let fullFrame = [RDPFrameRect(left: 0, top: 0, right: 16, bottom: 16)]
     let lumaViews = try views.resolve(
         layout: .yuv420Only,
         codecID: RDPGFXCodecID.avc444,
-        destinationRect: fullFrame[0],
         first: luma,
         second: nil
     )
@@ -119,7 +118,6 @@ private let fullFrame = [RDPFrameRect(left: 0, top: 0, right: 16, bottom: 16)]
     let chromaViews = try views.resolve(
         layout: .chroma420Only,
         codecID: RDPGFXCodecID.avc444,
-        destinationRect: fullFrame[0],
         first: chroma,
         second: nil
     )
@@ -134,7 +132,6 @@ private let fullFrame = [RDPFrameRect(left: 0, top: 0, right: 16, bottom: 16)]
         try views.resolve(
             layout: .chroma420Only,
             codecID: RDPGFXCodecID.avc444,
-            destinationRect: fullFrame[0],
             first: chroma,
             second: nil
         )
@@ -143,25 +140,14 @@ private let fullFrame = [RDPFrameRect(left: 0, top: 0, right: 16, bottom: 16)]
     _ = try views.resolve(
         layout: .yuv420Only,
         codecID: RDPGFXCodecID.avc444,
-        destinationRect: fullFrame[0],
         first: try flatNV12PixelBuffer(y: 90, u: 100, v: 150),
         second: nil
     )
-    // Another packing mode or another rectangle does not reuse the stored luma view.
+    // Another packing mode does not reuse the stored luma view.
     #expect(throws: RDPAVC444DecodeError.missingLumaSubframe) {
         try views.resolve(
             layout: .chroma420Only,
             codecID: RDPGFXCodecID.avc444v2,
-            destinationRect: fullFrame[0],
-            first: chroma,
-            second: nil
-        )
-    }
-    #expect(throws: RDPAVC444DecodeError.missingLumaSubframe) {
-        try views.resolve(
-            layout: .chroma420Only,
-            codecID: RDPGFXCodecID.avc444,
-            destinationRect: RDPFrameRect(left: 16, top: 0, right: 32, bottom: 16),
             first: chroma,
             second: nil
         )
@@ -238,6 +224,31 @@ private let fullFrame = [RDPFrameRect(left: 0, top: 0, right: 16, bottom: 16)]
     let result = try decoder.decodeDetailed(frame)
 
     #expect(CVPixelBufferGetPixelFormatType(result.imageBuffer) == kCVPixelFormatType_32BGRA)
+    let pixel = try bgraPixel(x: 10, y: 10, in: result.imageBuffer)
+    #expect(pixel.prefix(3).allSatisfy { abs(Int($0) - 20) <= 3 })
+}
+
+@Test func AVC444ChromaOnlyUpdateCombinesWithLumaOfAnotherRectangle() throws {
+    let accessUnits = try encodeH264AnnexB(frames: [(luma: 20, chroma: 128), (luma: 128, chroma: 128)])
+    let decoder = RDPVideoToolboxFrameDecoder()
+    func frame(_ layout: RDPAVC444SubframeLayout, left: UInt16, data: Data) -> RDPGraphicsFrameSnapshot {
+        let destinationRect = RDPFrameRect(left: left, top: 0, right: left + 64, bottom: 64)
+        return RDPGraphicsFrameSnapshot(
+            frameID: 1,
+            surfaceID: 1,
+            codecID: RDPGFXCodecID.avc444,
+            codecName: "avc444",
+            pixelFormat: 32,
+            destinationRect: destinationRect,
+            regionRects: [destinationRect],
+            encodedVideoData: data,
+            avc444SubframeLayout: layout
+        )
+    }
+
+    _ = try decoder.decodeDetailed(frame(.yuv420Only, left: 0, data: accessUnits[0]))
+    let result = try decoder.decodeDetailed(frame(.chroma420Only, left: 64, data: accessUnits[1]))
+
     let pixel = try bgraPixel(x: 10, y: 10, in: result.imageBuffer)
     #expect(pixel.prefix(3).allSatisfy { abs(Int($0) - 20) <= 3 })
 }
