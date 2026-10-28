@@ -116,6 +116,28 @@ private let tpkt = Data([0x03, 0x00, 0x00, 0x07, 0x02, 0xF0, 0x80])
     }
 }
 
+/// A receive's timeout that fires after the receive completed must not fail the next one.
+@Test func readerTimeoutAbandonsOnlyItsOwnReceive() throws {
+    let (channel, reader, _) = try readerChannel()
+    let first = channel.eventLoop.makePromise(of: Data.self)
+    reader.next(first)
+    try channel.writeInbound(buffer(tpkt))
+    #expect(try first.futureResult.wait() == tpkt)
+
+    let second = channel.eventLoop.makePromise(of: Data.self)
+    reader.next(second)
+    reader.abandon(first, error: RDPTransportError.timedOut)
+    try channel.writeInbound(buffer(tpkt))
+    #expect(try second.futureResult.wait() == tpkt)
+
+    let third = channel.eventLoop.makePromise(of: Data.self)
+    reader.next(third)
+    reader.abandon(third, error: RDPTransportError.timedOut)
+    #expect(throws: RDPTransportError.self) {
+        try third.futureResult.wait()
+    }
+}
+
 /// Counts the socket reads the transport reader lets through.
 private final class ReadCounter: ChannelOutboundHandler, @unchecked Sendable {
     typealias OutboundIn = Never

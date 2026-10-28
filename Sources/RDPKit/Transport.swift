@@ -172,10 +172,14 @@ final class RDPTransportReader: ChannelDuplexHandler, RemovableChannelHandler {
         }
     }
 
-    /// Fails only the pending receive; queued and later messages are kept.
-    func abandonWaiter(_ error: Error) {
-        waiter?.fail(error)
-        waiter = nil
+    /// Fails `promise` if it still waits; queued and later messages are kept.
+    /// A timeout that fires after its receive completed leaves the next one alone.
+    func abandon(_ promise: EventLoopPromise<Data>, error: Error) {
+        guard let waiter, waiter.futureResult === promise.futureResult else {
+            return
+        }
+        self.waiter = nil
+        waiter.fail(error)
     }
 
     func awaitHandshake(_ promise: EventLoopPromise<Void>) {
@@ -454,7 +458,7 @@ final class RDPTransport {
         }
         if let deadline {
             let timeout = eventLoop.scheduleTask(deadline: deadline) {
-                reader.value.abandonWaiter(RDPTransportError.timedOut)
+                reader.value.abandon(promise, error: RDPTransportError.timedOut)
             }
             promise.futureResult.whenComplete { _ in
                 timeout.cancel()
