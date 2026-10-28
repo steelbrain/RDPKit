@@ -99,10 +99,25 @@ import Testing
 }
 
 @Test func functionKeysAlwaysSendScancodesWhileCharactersUseUnicode() {
-    #expect(MacRDPKeyboardMapping.shouldSendScancode(forKeyCode: UInt16(kVK_F2), modifierFlags: []))
-    #expect(MacRDPKeyboardMapping.shouldSendScancode(forKeyCode: UInt16(kVK_F4), modifierFlags: []))
-    #expect(MacRDPKeyboardMapping.shouldSendScancode(forKeyCode: UInt16(kVK_ANSI_A), modifierFlags: []) == false)
-    #expect(MacRDPKeyboardMapping.shouldSendScancode(forKeyCode: UInt16(kVK_ANSI_A), modifierFlags: .option))
+    func sendsScancode(_ keyCode: Int, _ modifierFlags: NSEvent.ModifierFlags) -> Bool {
+        MacRDPKeyboardMapping.shouldSendScancode(
+            forKeyCode: UInt16(keyCode),
+            modifierFlags: modifierFlags,
+            isHeldAsScancode: false
+        )
+    }
+    #expect(sendsScancode(kVK_F2, []))
+    #expect(sendsScancode(kVK_F4, []))
+    #expect(sendsScancode(kVK_ANSI_A, []) == false)
+    #expect(sendsScancode(kVK_ANSI_A, .option))
+}
+
+@Test func aKeyHeldAsAScancodeRepeatsAsThatScancodeAfterItsModifierIsReleased() {
+    #expect(MacRDPKeyboardMapping.shouldSendScancode(
+        forKeyCode: UInt16(kVK_ANSI_C),
+        modifierFlags: [],
+        isHeldAsScancode: true
+    ))
 }
 
 @Test func unicodeEventsSkipAppKitFunctionKeyCharacters() {
