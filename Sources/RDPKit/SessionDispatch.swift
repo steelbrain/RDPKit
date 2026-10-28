@@ -27,7 +27,7 @@ extension RDPClientConnection {
         } catch let error as RDPPreflightError {
             throw error
         } catch {
-            try handleConnectionClosed()
+            try handleConnectionEnd(error)
             return
         }
         if report.rdpClientInfoResponseHex == nil {
@@ -398,11 +398,16 @@ extension RDPClientConnection {
         throw RDPPreflightError.protocolViolation(termination.description)
     }
 
-    private func handleConnectionClosed() throws {
+    /// A close after the server announced the end is that end; otherwise only
+    /// a close, never a lost connection, can end a live session normally.
+    private func handleConnectionEnd(_ error: Error) throws {
         try callbacks.throwIfCancelled()
         if let termination {
             try endSession(by: termination)
             return
+        }
+        guard isConnectionClose(error) else {
+            throw RDPPreflightError.receive("connection lost: \(connectionErrorDescription(error))")
         }
         if isDeactivated {
             throw RDPPreflightError.protocolViolation(deactivatedMessage)

@@ -264,6 +264,11 @@ final class RDPClientConnection {
             throw error
         } catch {
             try callbacks.throwIfCancelled()
+            guard isConnectionClose(error) else {
+                throw RDPPreflightError.receive(
+                    "connection lost before receiving \(description): \(connectionErrorDescription(error))"
+                )
+            }
             throw RDPPreflightError.receive("connection closed before receiving \(description)")
         }
     }

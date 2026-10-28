@@ -100,6 +100,30 @@ enum RDPTransportError: Error {
     case timedOut
 }
 
+/// Whether a connection error is the peer closing the connection: a TCP
+/// close, or one without TLS close_notify, as RDP servers commonly do.
+/// Anything else (a reset, a TLS error, a keepalive timeout) is a lost connection.
+func isConnectionClose(_ error: Error) -> Bool {
+    switch error {
+    case RDPTransportError.closed, NIOSSLError.uncleanShutdown:
+        true
+    default:
+        false
+    }
+}
+
+/// A short reason for a network error, such as "Connection reset by peer".
+func connectionErrorDescription(_ error: Error) -> String {
+    switch error {
+    case let error as IOError:
+        String(cString: strerror(error.errnoCode))
+    case let error as SocketAddressError.UnknownHost:
+        error.errorDescription
+    default:
+        String(describing: error)
+    }
+}
+
 /// The one inbound handler of a connection. It splits the stream according to
 /// the current framing, queues complete messages for the connection thread, and
 /// stops reading from the socket while that queue is full.

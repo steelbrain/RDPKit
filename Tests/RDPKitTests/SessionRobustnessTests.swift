@@ -168,6 +168,32 @@ func chattyServerStillMissesTheMilestoneDeadline(prefix: Int, error: String) thr
     #expect(run.report.error == error)
 }
 
+/// How a live session's connection ends decides the outcome: a close, with
+/// or without TLS close_notify, is a normal end; a reset or a broken TLS
+/// record is a lost connection.
+@Test(arguments: [
+    (KRdpCapture.ConnectionEnd.close, nil),
+    (KRdpCapture.ConnectionEnd.reset, "receive failed: connection lost: Connection reset by peer"),
+    (KRdpCapture.ConnectionEnd.corruptTLSRecord, "receive failed: connection lost:"),
+] as [(KRdpCapture.ConnectionEnd, String?)])
+func liveSessionReportsALostConnectionAsAFailure(end: KRdpCapture.ConnectionEnd, error: String?) throws {
+    let run = try KRdpCapture.run(frameCaptureLimit: nil) { channel in
+        // After the client has the frame.
+        channel.eventLoop.scheduleTask(in: .milliseconds(300)) {
+            KRdpCapture.endConnection(channel, end)
+        }
+    }
+
+    #expect(run.report.rdpGraphicsFirstFrame != nil)
+    if let error {
+        #expect(run.report.status == "failure")
+        #expect(run.report.error?.hasPrefix(error) == true)
+    } else {
+        #expect(run.report.status == "success")
+        #expect(run.report.error == nil)
+    }
+}
+
 // MARK: - KRdp capture harness
 
 /// The KRdp capture's channels: I/O 1003, drdynvc 1004, message 1005, and
@@ -227,7 +253,7 @@ enum KRdpCapture {
         defer { server.stop() }
 
         let cancellation = RDPConnectionCancellation()
-        DispatchQueue.global().asyncAfter(deadline: .now() + guardSeconds) {
+        DispatchQueue(label: "KRdpCapture.guard").asyncAfter(deadline: .now() + guardSeconds) {
             cancellation.cancel()
         }
         let report = RDPPreflightClient().run(
@@ -433,6 +459,34 @@ enum KRdpCapture {
             offset += uint16(offset + 2)
         }
         return nil
+    }
+
+    enum ConnectionEnd: Sendable {
+        /// TCP close without TLS close_notify.
+        case close
+        /// TCP reset.
+        case reset
+        /// Bytes that are not a TLS record.
+        case corruptTLSRecord
+    }
+
+    /// Ends the connection below TLS, on the event loop.
+    static func endConnection(_ channel: Channel, _ end: ConnectionEnd) {
+        guard let tls = try? channel.pipeline.syncOperations.context(handlerType: NIOSSLServerHandler.self) else {
+            return
+        }
+        switch end {
+        case .close:
+            tls.close(promise: nil)
+        case .reset:
+            (channel as? SocketOptionProvider)?.setSoLinger(linger(l_onoff: 1, l_linger: 0)).whenComplete { _ in
+                endConnection(channel, .close)
+            }
+        case .corruptTLSRecord:
+            var buffer = channel.allocator.buffer(capacity: 37)
+            buffer.writeBytes(Data(repeating: 0x5A, count: 37))
+            tls.writeAndFlush(NIOAny(buffer), promise: nil)
+        }
     }
 
     /// A fast-path hidden-pointer update: traffic that advances no milestone.
