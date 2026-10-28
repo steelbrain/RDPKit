@@ -10,9 +10,11 @@ import Testing
     04 00 00 00 00 20 00 00 00 20 00 00
     """)))
 
-    #expect(caps.maxNumMonitors == 4)
-    #expect(caps.maxMonitorAreaFactorA == 8192)
-    #expect(caps.maxMonitorAreaFactorB == 8192)
+    #expect(caps.capabilities == RDPDisplayControlCapabilities(
+        maxNumMonitors: 4,
+        maxMonitorAreaFactorA: 8192,
+        maxMonitorAreaFactorB: 8192
+    ))
 }
 
 @Test func ignoresNonCapsDisplayControlPDU() throws {

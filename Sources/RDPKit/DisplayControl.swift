@@ -19,11 +19,6 @@ struct RDPDisplayControlHeader: Equatable, Sendable {
     var type: UInt32
     var length: UInt32
 
-    init(type: UInt32, length: UInt32) {
-        self.type = type
-        self.length = length
-    }
-
     static func parse(from cursor: inout ByteCursor) throws -> RDPDisplayControlHeader {
         try RDPDisplayControlHeader(
             type: cursor.readLittleEndianUInt32(),
@@ -55,18 +50,8 @@ public struct RDPDisplayControlCapabilities: Encodable, Equatable, Sendable {
     }
 }
 
-struct RDPDisplayControlCapsPDU: Encodable, Equatable, Sendable {
-    var maxNumMonitors: UInt32
-    var maxMonitorAreaFactorA: UInt32
-    var maxMonitorAreaFactorB: UInt32
-
-    var capabilities: RDPDisplayControlCapabilities {
-        RDPDisplayControlCapabilities(
-            maxNumMonitors: maxNumMonitors,
-            maxMonitorAreaFactorA: maxMonitorAreaFactorA,
-            maxMonitorAreaFactorB: maxMonitorAreaFactorB
-        )
-    }
+struct RDPDisplayControlCapsPDU: Equatable, Sendable {
+    var capabilities: RDPDisplayControlCapabilities
 
     static func parseIfPresent(from data: Data) throws -> RDPDisplayControlCapsPDU? {
         guard data.count >= 8 else {
@@ -84,11 +69,11 @@ struct RDPDisplayControlCapsPDU: Encodable, Equatable, Sendable {
             throw RDPDecodeError.invalidDynamicVirtualChannelPDU
         }
 
-        return try RDPDisplayControlCapsPDU(
+        return try RDPDisplayControlCapsPDU(capabilities: RDPDisplayControlCapabilities(
             maxNumMonitors: cursor.readLittleEndianUInt32(),
             maxMonitorAreaFactorA: cursor.readLittleEndianUInt32(),
             maxMonitorAreaFactorB: cursor.readLittleEndianUInt32()
-        )
+        ))
     }
 }
 
