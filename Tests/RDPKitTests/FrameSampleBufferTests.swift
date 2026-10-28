@@ -61,6 +61,25 @@ import Testing
     #expect(factory.willChangeDisplayFormat(for: presentation))
 }
 
+@Test func frameSampleBufferFactoryRebuildsFormatWhenPixelFormatChangesAtSameSize() throws {
+    let factory = RDPFrameSampleBufferFactory()
+    let frame = graphicsFrame(width: 16, height: 16)
+    let videoPresentation = RDPDecodedFramePresentation(
+        frame: frame,
+        imageBuffer: try makePixelBuffer(width: 16, height: 16, pixelFormat: kCVPixelFormatType_420YpCbCr8BiPlanarFullRange)
+    )
+    let composedPresentation = RDPDecodedFramePresentation(
+        frame: frame,
+        imageBuffer: try makePixelBuffer(width: 16, height: 16)
+    )
+
+    _ = try factory.makeSampleBuffer(for: videoPresentation)
+    #expect(factory.willChangeDisplayFormat(for: composedPresentation))
+    let sampleBuffer = try factory.makeSampleBuffer(for: composedPresentation)
+
+    #expect(CMSampleBufferGetImageBuffer(sampleBuffer) === composedPresentation.imageBuffer)
+}
+
 private func graphicsFrame(width: UInt16, height: UInt16) -> RDPGraphicsFrameSnapshot {
     RDPGraphicsFrameSnapshot(
         frameID: 1,
@@ -74,13 +93,17 @@ private func graphicsFrame(width: UInt16, height: UInt16) -> RDPGraphicsFrameSna
     )
 }
 
-private func makePixelBuffer(width: Int, height: Int) throws -> CVPixelBuffer {
+private func makePixelBuffer(
+    width: Int,
+    height: Int,
+    pixelFormat: OSType = kCVPixelFormatType_32BGRA
+) throws -> CVPixelBuffer {
     var imageBuffer: CVPixelBuffer?
     let status = CVPixelBufferCreate(
         kCFAllocatorDefault,
         width,
         height,
-        kCVPixelFormatType_32BGRA,
+        pixelFormat,
         nil,
         &imageBuffer
     )
