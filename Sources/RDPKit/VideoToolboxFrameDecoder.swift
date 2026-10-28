@@ -210,25 +210,15 @@ public enum RDPH264DecodedFrameImage {
         let destinationWidth = Int(frame.width)
         let destinationHeight = Int(frame.height)
         guard destinationWidth > 0,
-              destinationHeight > 0
-        else {
-            return image
-        }
-        guard image.width != destinationWidth || image.height != destinationHeight else {
-            return image
-        }
-        guard image.width >= destinationWidth,
-              image.height >= destinationHeight
+              destinationHeight > 0,
+              image.width >= destinationWidth,
+              image.height >= destinationHeight,
+              image.width != destinationWidth || image.height != destinationHeight
         else {
             return image
         }
         guard let croppedImage = image.cropping(
-            to: CGRect(
-                x: 0,
-                y: 0,
-                width: destinationWidth,
-                height: destinationHeight
-            )
+            to: CGRect(x: 0, y: 0, width: destinationWidth, height: destinationHeight)
         ) else {
             throw RDPVideoDecodeError.imageCropFailed(
                 sourceWidth: image.width,
