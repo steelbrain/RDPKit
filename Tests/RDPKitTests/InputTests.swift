@@ -114,7 +114,7 @@ import Testing
         count: maximumEventsPerPDU + 1
     )
 
-    let chunks = RDPClientInputPDU.eventChunks(events)
+    let chunks = events.chunked(maximumCount: maximumEventsPerPDU)
 
     #expect(chunks.map(\.count) == [maximumEventsPerPDU, 1])
     for chunk in chunks {
@@ -125,7 +125,7 @@ import Testing
 }
 
 @Test func inputPDUChunksEmptyEventBatchesToNoPDUs() {
-    #expect(RDPClientInputPDU.eventChunks([]).isEmpty)
+    #expect([RDPSlowPathInputEvent]().chunked(maximumCount: RDPClientInputPDU.maximumEventsPerPDU).isEmpty)
 }
 
 @Test func pointerButtonInputPDUEncodesDownAndReleaseEvents() {
@@ -197,7 +197,7 @@ import Testing
         .pointerMove(x: 21, y: 31),
     ]
 
-    #expect(RDPInputSession.supportedEvents(events, serverInputFlags: nil) == [
+    #expect(RDPInputSession.supportedEvents(events, serverInputFlags: 0) == [
         .verticalWheel(rotation: 120, x: 20, y: 30),
         .pointerMove(x: 21, y: 31),
     ])
@@ -216,7 +216,7 @@ import Testing
         .pointerButton(button: .extended1, isDown: true, x: 20, y: 30),
     ]
 
-    #expect(RDPInputSession.supportedEvents(events, serverInputFlags: nil) == [
+    #expect(RDPInputSession.supportedEvents(events, serverInputFlags: 0) == [
         .keyboard(scancode: RDPKeyboardScancode(code: 0x001C), isReleased: false),
         .pointerButton(button: .left, isDown: true, x: 20, y: 30),
     ])
@@ -299,7 +299,7 @@ import Testing
     #expect(data.suffix(12) == hexData("""
     00 00 00 00 04 00 00 40 1e 00 00 00
     """))
-    #expect(tracker.releasePressedScancodes() == [
+    #expect(tracker.releasePressedInputs() == [
         .keyboard(scancode: scancode, isReleased: true),
     ])
 }
@@ -336,8 +336,8 @@ import Testing
 
     #expect(tracker.releasePressedInputs() == [
         .pointerButton(button: .left, isDown: false, x: 40, y: 50),
-        .pointerButton(button: .middle, isDown: false, x: 40, y: 50),
         .pointerButton(button: .right, isDown: false, x: 40, y: 50),
+        .pointerButton(button: .middle, isDown: false, x: 40, y: 50),
         .keyboard(scancode: RDPKeyboardScancode(code: 0x001C), isReleased: true),
         .keyboard(scancode: RDPKeyboardScancode(code: 0x004B, isExtended: true), isReleased: true),
     ])
@@ -352,7 +352,7 @@ import Testing
     _ = tracker.keyboard(scancode: scancode, isReleased: false, isRepeat: true)
 
     #expect(tracker.isScancodePressed(scancode))
-    #expect(tracker.releasePressedScancodes() == [
+    #expect(tracker.releasePressedInputs() == [
         .keyboard(scancode: scancode, isReleased: true),
     ])
     #expect(tracker.isScancodePressed(scancode) == false)
@@ -374,6 +374,37 @@ import Testing
         .keyboard(scancode: RDPKeyboardScancode(code: 0x001C), isReleased: false),
         .keyboard(scancode: RDPKeyboardScancode(code: 0x004B, isExtended: true), isReleased: false),
     ])
+}
+
+@Test func fastPathInputPDUEncodesSignedWheelRotation() throws {
+    let packet = try #require(RDPFastPathInputPDU(events: [
+        .verticalWheel(rotation: 120, x: 20, y: 30),
+        .horizontalWheel(rotation: -120, x: 20, y: 30),
+    ]).encoded())
+
+    #expect(packet == hexData("""
+    08 10
+    20 78 02 14 00 1e 00
+    20 88 05 14 00 1e 00
+    """))
+}
+
+@Test func inputSessionFallsBackToSlowPathForEventsWithoutFastPathForm() throws {
+    let channel = EmbeddedChannel()
+    try channel.connect(to: SocketAddress(ipAddress: "127.0.0.1", port: 3389)).wait()
+    let session = RDPInputSession(
+        shareID: 1,
+        userChannelID: 1001,
+        ioChannelID: 1003,
+        channel: channel,
+        serverInputFlags: 0x0008
+    )
+
+    session.send(.scancode(code: 0x0100, flags: 0))
+    channel.embeddedEventLoop.run()
+    var buffer = try #require(try channel.readOutbound(as: ByteBuffer.self))
+
+    #expect(buffer.readInteger(as: UInt8.self) == 0x03)
 }
 
 private func hexData(_ value: String) -> Data {
