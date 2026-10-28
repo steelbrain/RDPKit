@@ -138,6 +138,25 @@ private let tpkt = Data([0x03, 0x00, 0x00, 0x07, 0x02, 0xF0, 0x80])
     }
 }
 
+/// After the CredSSP credentials the server either moves on to the next
+/// layer or rejects them with a TSRequest errorCode ([MS-CSSP] 2.2.1).
+@Test func readerReportsACredSSPErrorAnsweringTheCredentials() throws {
+    let (channel, reader, _) = try readerChannel()
+    reader.setFraming(.credSSPResult(then: .rdp))
+    try channel.writeInbound(buffer(RDPCredSSPTSRequest(errorCode: 0xC000_006D).encoded()))
+
+    let error = #expect(throws: RDPCredSSPError.self) {
+        try nextMessage(reader, channel)
+    }
+    #expect(error.map(String.init(describing:)) == "CredSSP server returned NTSTATUS 0xc000006d")
+
+    let (accepted, acceptedReader, _) = try readerChannel()
+    acceptedReader.setFraming(.credSSPResult(then: .rdp))
+    try accepted.writeInbound(buffer(tpkt + tpkt))
+    #expect(try nextMessage(acceptedReader, accepted) == tpkt)
+    #expect(try nextMessage(acceptedReader, accepted) == tpkt)
+}
+
 /// Counts the socket reads the transport reader lets through.
 private final class ReadCounter: ChannelOutboundHandler, @unchecked Sendable {
     typealias OutboundIn = Never

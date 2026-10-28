@@ -112,8 +112,8 @@ extension RDPClientConnection {
         }
 
         let authInfo = try ntlm.wrap(RDPCredSSPCredentials.passwordCredentials(credentials))
-        // The server answers the credentials in the next layer's format.
-        try transport.setFraming(nextFraming)
+        // The server answers the credentials in the next layer's format, or rejects them.
+        try transport.setFraming(.credSSPResult(then: nextFraming))
         try transport.send(RDPCredSSPTSRequest(
             version: version,
             authInfo: authInfo,

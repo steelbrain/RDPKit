@@ -262,6 +262,9 @@ final class RDPClientConnection {
             )
         } catch let error as RDPPreflightError {
             throw error
+        } catch let error as RDPCredSSPError {
+            // The server rejected the CredSSP credentials.
+            throw error
         } catch {
             try callbacks.throwIfCancelled()
             guard isConnectionClose(error) else {

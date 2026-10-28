@@ -13,6 +13,10 @@ enum RDPTransportFraming: Equatable, Sendable {
     case credSSP
     /// The 4-byte Early User Authorization Result PDU ([MS-RDPBCGR] 2.2.10.2).
     case earlyUserAuthorizationResult
+    /// The answer to the CredSSP credentials: the next layer's messages, unless
+    /// the server rejects them with a TSRequest errorCode ([MS-CSSP] 2.2.1, 3.1.5).
+    /// Neither a TPKT, a fast-path header nor an EUA result starts with its 0x30 tag.
+    indirect case credSSPResult(then: RDPTransportFraming)
 }
 
 enum RDPTransportPacketFraming {
@@ -229,6 +233,10 @@ final class RDPTransportReader: ChannelDuplexHandler, RemovableChannelHandler {
     private func parseReceivedMessages() {
         while failure == nil, let length = nextMessageLength(), let message = received?.readBytes(length: length) {
             let data = Data(message)
+            if case .credSSPResult = framing {
+                failWithCredSSPResult(data)
+                return
+            }
             onWireReceive?(RDPWireReceiveSample(byteCount: data.count, receivedAt: Date()))
             if let recordedLayer {
                 transcript?.record(direction: .serverToClient, layer: recordedLayer, bytes: data, capturePayload: true)
@@ -253,11 +261,14 @@ final class RDPTransportReader: ChannelDuplexHandler, RemovableChannelHandler {
         }
         let readable = received.readableBytes
         let byteAt: (Int) -> UInt8 = { received.getInteger(at: received.readerIndex + $0) ?? 0 }
+        if case let .credSSPResult(next) = framing, readable > 0, byteAt(0) != 0x30 {
+            framing = next
+        }
         do {
             let length: Int? = switch framing {
             case .rdp:
                 try RDPTransportPacketFraming.packetLength(readableByteCount: readable, byteAt: byteAt)
-            case .credSSP:
+            case .credSSP, .credSSPResult:
                 try RDPTransportPacketFraming.credSSPMessageLength(readableByteCount: readable, byteAt: byteAt)
             case .earlyUserAuthorizationResult:
                 4
@@ -271,6 +282,13 @@ final class RDPTransportReader: ChannelDuplexHandler, RemovableChannelHandler {
             context?.close(promise: nil)
             return nil
         }
+    }
+
+    private func failWithCredSSPResult(_ message: Data) {
+        let errorCode = (try? RDPCredSSPTSRequest.parse(message))?.errorCode
+        fail(errorCode.map { RDPCredSSPError.serverError($0) }
+            ?? RDPPreflightError.protocolViolation("server answered the CredSSP credentials with a TSRequest"))
+        context?.close(promise: nil)
     }
 
     private func resumeReadingIfNeeded() {
