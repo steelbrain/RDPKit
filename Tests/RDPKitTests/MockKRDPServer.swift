@@ -88,8 +88,16 @@ final class MockKRDPServer {
 
     func stop() {
         try? channel.close().wait()
-        try? group.syncShutdownGracefully()
+        // Not syncShutdownGracefully: it completes on a global queue, which
+        // test threads blocked here can starve of workers.
+        let shutDown = DispatchSemaphore(value: 0)
+        group.shutdownGracefully(queue: Self.shutdownQueue) { _ in
+            shutDown.signal()
+        }
+        shutDown.wait()
     }
+
+    private static let shutdownQueue = DispatchQueue(label: "MockKRDPServer.shutdown")
 }
 
 enum MockKRDPSecurityProtocol {
