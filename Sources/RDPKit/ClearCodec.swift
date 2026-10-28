@@ -32,7 +32,8 @@ final class RDPClearCodecDecoder {
     }
 
     private static let maximumGlyphIndex: UInt16 = 3_999
-    /// MS-RDPEGFX 2.2.4.1 and 3.3.1.9: glyph storage slots hold bitmaps of at most 1,024 square pixels.
+    /// MS-RDPEGFX 2.2.4.1 and 3.3.1.9: glyph storage slots hold bitmaps of at most 1,024 square
+    /// pixels. Larger glyphs are decoded but not stored, which bounds the storage at 16 MB.
     private static let maximumGlyphPixelCount = 1_024
     private static let maximumBandHeight = 52
     private static let vBarStorageSize = 32_768
@@ -65,9 +66,7 @@ final class RDPClearCodecDecoder {
 
         var cursor = ByteCursor(data)
         let header = try Self.readHeader(&cursor)
-        guard header.sequenceNumber == expectedSequenceNumber,
-              header.glyphIndex == nil || width * height <= Self.maximumGlyphPixelCount
-        else {
+        guard header.sequenceNumber == expectedSequenceNumber else {
             throw RDPDecodeError.invalidRDPGFXPDU
         }
 
@@ -94,7 +93,7 @@ final class RDPClearCodecDecoder {
             )
             try decodeCompositePayload(&cursor, into: &decoded)
             if let glyphIndex = header.glyphIndex {
-                glyphCache[glyphIndex] = decoded
+                glyphCache[glyphIndex] = width * height <= Self.maximumGlyphPixelCount ? decoded : nil
             }
             bitmap = decoded
         }

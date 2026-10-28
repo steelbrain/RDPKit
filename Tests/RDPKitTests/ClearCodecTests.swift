@@ -270,24 +270,21 @@ import Testing
     }
 }
 
-@Test func rejectsOversizedClearCodecGlyphsBeforeAllocation() {
-    #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
-        try RDPClearCodecDecoder().decode(
-            clearCodecGlyphMissStream(glyphIndex: 0),
-            width: 1_025,
-            height: 1_024
-        )
-    }
-}
-
-@Test func limitsClearCodecGlyphsToSpecifiedArea() throws {
+@Test func decodesButDoesNotStoreClearCodecGlyphsOverSpecifiedArea() throws {
     let decoder = RDPClearCodecDecoder()
     _ = try decoder.decode(clearCodecGlyphMissStream(glyphIndex: 0), width: 32, height: 32)
+    var hit = Data([0x03, 0x01])
+    hit.appendLittleEndianUInt16(0)
+    #expect(try decoder.decode(hit, width: 32, height: 32).width == 32)
 
-    var oversized = clearCodecGlyphMissStream(glyphIndex: 1)
-    oversized[1] = 1
+    // A larger glyph also drops what the slot held, so a later hit fails instead of drawing it.
+    var oversized = clearCodecGlyphMissStream(glyphIndex: 0)
+    oversized[1] = 2
+    let bitmap = try decoder.decode(oversized, width: 33, height: 32)
+    #expect(bitmap.width == 33)
+    hit[1] = 3
     #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
-        try decoder.decode(oversized, width: 33, height: 32)
+        try decoder.decode(hit, width: 33, height: 32)
     }
 }
 
