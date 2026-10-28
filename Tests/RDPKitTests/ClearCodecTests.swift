@@ -110,19 +110,7 @@ import Testing
     let summary = try RDPClearCodecDecoder.summarize(stream)
     let bitmap = try RDPClearCodecDecoder().decode(stream, width: 2, height: 1)
 
-    #expect(summary.subcodecRegions == [
-        RDPClearCodecSubcodecSummary(
-            rect: RDPFrameRect(left: 0, top: 0, right: 2, bottom: 1),
-            byteCount: UInt32(nsCodec.count),
-            codecID: 0x01,
-            nsCodecYByteCount: 2,
-            nsCodecCoByteCount: 2,
-            nsCodecCgByteCount: 2,
-            nsCodecAlphaByteCount: 2,
-            nsCodecColorLossLevel: 1,
-            nsCodecChromaSubsamplingLevel: 0
-        ),
-    ])
+    #expect(summary.subcodecByteCount == UInt32(subcodec.count))
     #expect(bitmap.bgraData == Data([
         0x00, 0x00, 0xFE, 0xFF,
         0x00, 0xFE, 0x00, 0xFF,
@@ -151,10 +139,8 @@ import Testing
     stream.appendLittleEndianUInt32(UInt32(subcodec.count))
     stream.append(subcodec)
 
-    let summary = try RDPClearCodecDecoder.summarize(stream)
     let bitmap = try RDPClearCodecDecoder().decode(stream, width: 2, height: 1)
 
-    #expect(summary.subcodecRegions.first?.nsCodecAlphaByteCount == 0)
     #expect(bitmap.bgraData == Data([
         0x7F, 0x7F, 0x7F, 0xFF,
         0x7F, 0x7F, 0x7F, 0xFF,

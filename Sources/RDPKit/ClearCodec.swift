@@ -14,19 +14,6 @@ struct RDPClearCodecStreamSummary: Equatable, Sendable {
     var residualByteCount: UInt32?
     var bandsByteCount: UInt32?
     var subcodecByteCount: UInt32?
-    var subcodecRegions: [RDPClearCodecSubcodecSummary] = []
-}
-
-struct RDPClearCodecSubcodecSummary: Equatable, Sendable {
-    var rect: RDPFrameRect
-    var byteCount: UInt32
-    var codecID: UInt8
-    var nsCodecYByteCount: UInt32? = nil
-    var nsCodecCoByteCount: UInt32? = nil
-    var nsCodecCgByteCount: UInt32? = nil
-    var nsCodecAlphaByteCount: UInt32? = nil
-    var nsCodecColorLossLevel: UInt8? = nil
-    var nsCodecChromaSubsamplingLevel: UInt8? = nil
 }
 
 /// Decoder for the ClearCodec bitmap stream defined by MS-RDPEGFX 2.2.4.1.
@@ -142,7 +129,6 @@ final class RDPClearCodecDecoder {
         summary.residualByteCount = residualByteCount
         summary.bandsByteCount = bandsByteCount
         summary.subcodecByteCount = subcodecByteCount
-        summary.subcodecRegions = try summarizeSubcodecs(data.suffix(Int(subcodecByteCount)))
         return summary
     }
 
@@ -157,90 +143,6 @@ final class RDPClearCodecDecoder {
             throw RDPDecodeError.invalidRDPGFXPDU
         }
         return Header(flags: flags, sequenceNumber: sequenceNumber, glyphIndex: glyphIndex)
-    }
-
-    private static func summarizeSubcodecs(_ data: Data) throws -> [RDPClearCodecSubcodecSummary] {
-        var cursor = ByteCursor(data)
-        var summaries: [RDPClearCodecSubcodecSummary] = []
-        while cursor.remaining > 0 {
-            guard cursor.remaining >= 13 else {
-                throw RDPDecodeError.invalidRDPGFXPDU
-            }
-
-            let x = try cursor.readLittleEndianUInt16()
-            let y = try cursor.readLittleEndianUInt16()
-            let width = try cursor.readLittleEndianUInt16()
-            let height = try cursor.readLittleEndianUInt16()
-            let byteCount = try cursor.readLittleEndianUInt32()
-            let codecID = try cursor.readUInt8()
-            guard width > 0,
-                  height > 0,
-                  x <= UInt16.max - width,
-                  y <= UInt16.max - height
-            else {
-                throw RDPDecodeError.invalidRDPGFXPDU
-            }
-            let bitmapData = try cursor.readData(count: Int(byteCount))
-            let nsCodec = codecID == 0x01
-                ? try summarizeNSCodecSubcodec(bitmapData)
-                : nil
-            summaries.append(RDPClearCodecSubcodecSummary(
-                rect: RDPFrameRect(
-                    left: x,
-                    top: y,
-                    right: x + width,
-                    bottom: y + height
-                ),
-                byteCount: byteCount,
-                codecID: codecID,
-                nsCodecYByteCount: nsCodec?.yByteCount,
-                nsCodecCoByteCount: nsCodec?.coByteCount,
-                nsCodecCgByteCount: nsCodec?.cgByteCount,
-                nsCodecAlphaByteCount: nsCodec?.alphaByteCount,
-                nsCodecColorLossLevel: nsCodec?.colorLossLevel,
-                nsCodecChromaSubsamplingLevel: nsCodec?.chromaSubsamplingLevel
-            ))
-        }
-        return summaries
-    }
-
-    private struct NSCodecSummary {
-        var yByteCount: UInt32
-        var coByteCount: UInt32
-        var cgByteCount: UInt32
-        var alphaByteCount: UInt32
-        var colorLossLevel: UInt8
-        var chromaSubsamplingLevel: UInt8
-    }
-
-    private static func summarizeNSCodecSubcodec(_ data: Data) throws -> NSCodecSummary {
-        var cursor = ByteCursor(data)
-        guard cursor.remaining >= 20 else {
-            throw RDPDecodeError.invalidRDPGFXPDU
-        }
-        let yByteCount = try cursor.readLittleEndianUInt32()
-        let coByteCount = try cursor.readLittleEndianUInt32()
-        let cgByteCount = try cursor.readLittleEndianUInt32()
-        let alphaByteCount = try cursor.readLittleEndianUInt32()
-        let colorLossLevel = try cursor.readUInt8()
-        let chromaSubsamplingLevel = try cursor.readUInt8()
-        let reserved0 = try cursor.readUInt8()
-        let reserved1 = try cursor.readUInt8()
-        guard reserved0 == 0,
-              reserved1 == 0,
-              UInt64(yByteCount) + UInt64(coByteCount) + UInt64(cgByteCount) + UInt64(alphaByteCount)
-              == UInt64(cursor.remaining)
-        else {
-            throw RDPDecodeError.invalidRDPGFXPDU
-        }
-        return NSCodecSummary(
-            yByteCount: yByteCount,
-            coByteCount: coByteCount,
-            cgByteCount: cgByteCount,
-            alphaByteCount: alphaByteCount,
-            colorLossLevel: colorLossLevel,
-            chromaSubsamplingLevel: chromaSubsamplingLevel
-        )
     }
 
     private func decodeCompositePayload(_ cursor: inout ByteCursor, into bitmap: inout RDPClearCodecBitmap) throws {
