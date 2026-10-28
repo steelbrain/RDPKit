@@ -7,12 +7,10 @@ public enum RDPDecodeError: Error, Equatable, CustomStringConvertible {
     case invalidTPKTLength(declared: Int, actual: Int)
     case invalidX224Length(declared: Int, actual: Int)
     case invalidX224Type(UInt8)
-    case invalidX224ClassAndOptions(UInt8)
     case invalidNegotiationType(UInt8)
     case invalidNegotiationLength(UInt16)
     case invalidNegotiationFlags(UInt8)
     case invalidNegotiationProtocol(UInt32)
-    case invalidNegotiationFailureCode(UInt32)
     case invalidX224DataTPDU
     case invalidMCSConnectResponseHeader
     case invalidMCSAttachUserConfirm
@@ -50,8 +48,6 @@ public enum RDPDecodeError: Error, Equatable, CustomStringConvertible {
             "invalid X.224 length \(declared), actual \(actual)"
         case let .invalidX224Type(type):
             "invalid X.224 TPDU type 0x\(String(type, radix: 16))"
-        case let .invalidX224ClassAndOptions(value):
-            "invalid X.224 class and options 0x\(String(value, radix: 16))"
         case let .invalidNegotiationType(type):
             "invalid RDP negotiation type \(type)"
         case let .invalidNegotiationLength(length):
@@ -60,8 +56,6 @@ public enum RDPDecodeError: Error, Equatable, CustomStringConvertible {
             "invalid RDP negotiation flags 0x\(String(flags, radix: 16))"
         case let .invalidNegotiationProtocol(protocols):
             "invalid RDP negotiation protocol 0x\(String(protocols, radix: 16))"
-        case let .invalidNegotiationFailureCode(code):
-            "invalid RDP negotiation failure code 0x\(String(code, radix: 16))"
         case .invalidX224DataTPDU:
             "invalid X.224 Data TPDU"
         case .invalidMCSConnectResponseHeader:
