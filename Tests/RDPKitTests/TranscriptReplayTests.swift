@@ -81,6 +81,36 @@ import Testing
     #expect(report.rdpGraphicsFirstFrame?.width == 3840)
     #expect(report.rdpGraphicsFirstFrame?.height == 2400)
     #expect(report.rdpGraphicsFirstFrame.map { Array($0.videoNalUnitTypes.prefix(3)) } == [7, 8, 6])
+
+    // KRdp runs auto-detect after activation (events 31, 38, 43, 44): RTT
+    // requests get RTT responses, and the continuous Bandwidth Measure Stop
+    // gets results counting the session traffic since the Start
+    // ([MS-RDPBCGR] 1.3.9, 2.2.14.2).
+    let responses = server.clientPackets.packets.compactMap(autoDetectResponse)
+    #expect(responses.filter { $0.type == 0x0000 }.map(\.sequenceNumber) == [0x0023, 0x0001, 0x0002])
+    let bandwidth = try #require(responses.first { $0.type == 0x000B })
+    #expect(bandwidth.sequenceNumber == 0)
+    #expect(bandwidth.byteCount > 0)
+}
+
+/// The client's auto-detect response in `packet` (security header
+/// SEC_AUTODETECT_RSP, [MS-RDPBCGR] 2.2.14.4), if it holds one.
+private func autoDetectResponse(
+    _ packet: Data
+) -> (sequenceNumber: UInt16, type: UInt16, byteCount: UInt32)? {
+    let bytes = [UInt8](packet)
+    // TPKT (4), X.224 Data (3), Send Data Request header (6), PER length (1).
+    guard bytes.count >= 24, bytes[7] == 0x64,
+          bytes[14 ..< 18] == [0x00, 0x20, 0x00, 0x00], bytes[19] == 0x01
+    else {
+        return nil
+    }
+    func uint(_ offset: Int, _ count: Int) -> UInt32 {
+        (0 ..< count).reduce(0) { $0 | UInt32(bytes[offset + $1]) << (8 * $1) }
+    }
+    let type = UInt16(uint(22, 2))
+    let byteCount = type == 0x000B && bytes.count >= 32 ? uint(28, 4) : 0
+    return (UInt16(uint(20, 2)), type, byteCount)
 }
 
 /// Every server PDU on the I/O channel of both captures, classified the way

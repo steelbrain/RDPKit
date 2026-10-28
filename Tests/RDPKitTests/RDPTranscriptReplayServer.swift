@@ -24,12 +24,32 @@ final class RDPTranscriptReplayServer {
         var appEvents: [RDPWireEvent]
     }
 
+    /// Application-layer TPKTs the client sent, in order, across connections.
+    final class ClientPacketLog: @unchecked Sendable {
+        private let lock = NSLock()
+        private var storage: [Data] = []
+
+        var packets: [Data] {
+            lock.lock()
+            defer { lock.unlock() }
+            return storage
+        }
+
+        func append(_ packet: Data) {
+            lock.lock()
+            defer { lock.unlock() }
+            storage.append(packet)
+        }
+    }
+
     let port: UInt16
+    let clientPackets: ClientPacketLog
     private let group: MultiThreadedEventLoopGroup
     private let channel: Channel
 
-    private init(port: UInt16, group: MultiThreadedEventLoopGroup, channel: Channel) {
+    private init(port: UInt16, clientPackets: ClientPacketLog, group: MultiThreadedEventLoopGroup, channel: Channel) {
         self.port = port
+        self.clientPackets = clientPackets
         self.group = group
         self.channel = channel
     }
@@ -43,6 +63,7 @@ final class RDPTranscriptReplayServer {
         do {
             let tlsContext = try NIOSSLContext(configuration: MockKRDPTLS.configuration())
             let connectionLog = MockKRDPConnectionLog()
+            let clientPackets = ClientPacketLog()
             let channel = try ServerBootstrap(group: group)
                 .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
                 .childChannelInitializer { channel in
@@ -50,7 +71,8 @@ final class RDPTranscriptReplayServer {
                         tlsContext: tlsContext,
                         credentials: credentials,
                         segments: segments,
-                        connectionLog: connectionLog
+                        connectionLog: connectionLog,
+                        clientPackets: clientPackets
                     ))
                 }
                 .bind(host: "127.0.0.1", port: 0)
@@ -61,7 +83,7 @@ final class RDPTranscriptReplayServer {
             else {
                 throw MockKRDPServerError.missingPort
             }
-            return RDPTranscriptReplayServer(port: serverPort, group: group, channel: channel)
+            return RDPTranscriptReplayServer(port: serverPort, clientPackets: clientPackets, group: group, channel: channel)
         } catch {
             try? group.syncShutdownGracefully()
             throw error
@@ -129,6 +151,7 @@ private final class RDPTranscriptReplayHandler: ChannelInboundHandler {
     private let credentials: RDPCredentials
     private let segments: [RDPTranscriptReplayServer.ConnectionSegment]
     private let connectionLog: MockKRDPConnectionLog
+    private let clientPackets: RDPTranscriptReplayServer.ClientPacketLog
 
     private var segment: RDPTranscriptReplayServer.ConnectionSegment?
     private var stage = Stage.x224
@@ -153,12 +176,14 @@ private final class RDPTranscriptReplayHandler: ChannelInboundHandler {
         tlsContext: NIOSSLContext,
         credentials: RDPCredentials,
         segments: [RDPTranscriptReplayServer.ConnectionSegment],
-        connectionLog: MockKRDPConnectionLog
+        connectionLog: MockKRDPConnectionLog,
+        clientPackets: RDPTranscriptReplayServer.ClientPacketLog
     ) {
         self.tlsContext = tlsContext
         self.credentials = credentials
         self.segments = segments
         self.connectionLog = connectionLog
+        self.clientPackets = clientPackets
     }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
@@ -188,12 +213,14 @@ private final class RDPTranscriptReplayHandler: ChannelInboundHandler {
                 guard let message = try nextASN1Message() else { return }
                 try handleCredSSP(message, context: context)
             case .application:
-                guard nextTPKT() != nil else { return }
+                guard let packet = nextTPKT() else { return }
+                clientPackets.append(packet)
                 advanceClientBarrier()
                 pumpServerEvents(context: context)
             case .done:
-                // Drain and ignore any trailing client packets.
-                guard nextTPKT() != nil else { return }
+                // Record, but do not answer, trailing client packets.
+                guard let packet = nextTPKT() else { return }
+                clientPackets.append(packet)
             }
         }
     }
