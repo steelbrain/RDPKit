@@ -232,16 +232,16 @@ import Testing
     #expect(advertise?.capabilitySets == [.version81(flags: RDPGFXCapabilityFlags.defaultVersion81)])
 }
 
-@Test func rejectsVersion101CapabilitySetWithNonzeroReservedBytes() {
+@Test func ignoresVersion101CapabilitySetReservedBytes() throws {
     var bytes = Data()
     bytes.appendLittleEndianUInt32(RDPGFXCapabilityVersion.version101)
     bytes.appendLittleEndianUInt32(16)
     bytes.append(Data(repeating: 0, count: 15))
     bytes.appendUInt8(1)
 
-    #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
-        try RDPGFXCapabilitySet.parse(from: bytes)
-    }
+    let capabilitySet = try RDPGFXCapabilitySet.parse(from: bytes)
+    #expect(capabilitySet.version == RDPGFXCapabilityVersion.version101)
+    #expect(capabilitySet.flags == nil)
 }
 
 @Test func rejectsNewerCapabilitySetWithIncompatibleAVCFlags() {

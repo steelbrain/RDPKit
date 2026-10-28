@@ -1645,12 +1645,10 @@ import Testing
         try deleteEncodingContextMessage(surfaceID: 1, codecContextID: 42),
         clearCodec: clearCodec
     )
-    #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
-        try compositor.process(
-            try deleteEncodingContextMessage(surfaceID: 1, codecContextID: 42),
-            clearCodec: clearCodec
-        )
-    }
+    try compositor.process(
+        try deleteEncodingContextMessage(surfaceID: 1, codecContextID: 42),
+        clearCodec: clearCodec
+    )
 }
 
 @Test func compositorRequiresKnownCodecContextForProgressiveUpgrade() throws {

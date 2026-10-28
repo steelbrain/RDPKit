@@ -33,6 +33,13 @@ import Testing
     #expect(RDPDynamicVirtualChannelCapabilitiesResponse(requestedVersion: request.version).version == 3)
 }
 
+@Test func ignoresDynamicVirtualChannelCapabilitiesPad() throws {
+    let request = try #require(try RDPDynamicVirtualChannelCapabilitiesRequest.parseIfPresent(
+        from: Data([0x50, 0xFF, 0x01, 0x00])
+    ))
+    #expect(request.version == 1)
+}
+
 @Test func rejectsDynamicVirtualChannelCapabilitiesRequestWithInvalidVersionOrPriorityLength() {
     #expect(throws: RDPDecodeError.invalidDynamicVirtualChannelPDU) {
         try RDPDynamicVirtualChannelCapabilitiesRequest.parseIfPresent(

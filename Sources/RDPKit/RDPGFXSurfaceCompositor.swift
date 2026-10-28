@@ -413,13 +413,9 @@ final class RDPGFXSurfaceCompositor {
         remoteFX.removeProgressiveState(surfaceID: pdu.surfaceID)
     }
 
-    private func deleteEncodingContext(_ pdu: RDPGFXDeleteEncodingContextPDU) throws {
-        let key = CodecContextKey(surfaceID: pdu.surfaceID, codecContextID: pdu.codecContextID)
-        guard surfaces[pdu.surfaceID] != nil,
-              codecContexts.remove(key) != nil
-        else {
-            throw RDPDecodeError.invalidRDPGFXPDU
-        }
+    // Deleting an unknown context is ignored, as FreeRDP does.
+    private func deleteEncodingContext(_ pdu: RDPGFXDeleteEncodingContextPDU) {
+        codecContexts.remove(CodecContextKey(surfaceID: pdu.surfaceID, codecContextID: pdu.codecContextID))
         remoteFX.removeProgressiveState(
             surfaceID: pdu.surfaceID,
             codecContextID: pdu.codecContextID

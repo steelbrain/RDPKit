@@ -98,11 +98,7 @@ struct RDPDynamicVirtualChannelCapabilitiesRequest: Equatable, Sendable {
             throw RDPDecodeError.invalidDynamicVirtualChannelPDU
         }
 
-        let pad = try cursor.readUInt8()
-        guard pad == 0 else {
-            throw RDPDecodeError.invalidDynamicVirtualChannelPDU
-        }
-
+        _ = try cursor.readUInt8() // Pad
         let version = try cursor.readLittleEndianUInt16()
         let priorityChargeData = cursor.readRemainingData()
         switch version {

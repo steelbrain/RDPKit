@@ -195,8 +195,9 @@ struct RDPGFXCapabilitySet: Equatable, Sendable {
         guard data.count == expectedDataLength else {
             return false
         }
+        // The 10.1 set's 16 bytes are reserved; their values are ignored.
         guard let flags = RDPGFXCapabilitySet(version: version, data: data).flags else {
-            return data.allSatisfy { $0 == 0 }
+            return true
         }
         // AVC_THINCLIENT and AVC_DISABLED MUST NOT be set together (MS-RDPEGFX 2.2.3.6).
         let avcFlags = RDPGFXCapabilityFlags.avcDisabled | RDPGFXCapabilityFlags.avcThinClient
