@@ -42,6 +42,12 @@ import Testing
     }
 }
 
+@Test func peeksDynamicVirtualChannelCommandWithoutThrowing() {
+    #expect(RDPDynamicVirtualChannelHeader.command(of: Data([0x31, 0x2C, 0x01])) == .data)
+    #expect(RDPDynamicVirtualChannelHeader.command(of: Data([0xA0, 0x00])) == nil)
+    #expect(RDPDynamicVirtualChannelHeader.command(of: Data()) == nil)
+}
+
 @Test func parsesDynamicVirtualChannelCompressedCommandHeader() throws {
     let header = try RDPDynamicVirtualChannelHeader(byte: 0x71)
 
@@ -256,10 +262,14 @@ import Testing
     #expect(packets[0].count == 1_600)
 }
 
-@Test func dynamicVirtualChannelDataPDUHoldsDecompressedPayloadLargerThanOnePDU() {
-    let payload = Data(repeating: 0xAA, count: 8_192)
+@Test func dynamicVirtualChannelDataPDUHoldsDecompressedPayloadLargerThanOnePDU() throws {
+    let compressed = try #require(try RDPDynamicVirtualChannelCompressedDataPDU.parseIfPresent(
+        from: Data([0x70, 0x07, 0xE0, 0x26, 0x20, 0xC4, 0x3F, 0xFD, 0xFF, 0xE0, 0x05])
+    ))
+    let payload = try RDPZGFXDecompressor.rdp8Lite().decompress(compressed.compressedPayload)
+    let pdu = RDPDynamicVirtualChannelDataPDU(channelID: compressed.channelID, payload: payload)
 
-    #expect(RDPDynamicVirtualChannelDataPDU(channelID: 7, payload: payload).payload.count == 8_192)
+    #expect(pdu.payload == Data(repeating: 0x41, count: 8_192))
 }
 
 @Test func rejectsUncompressedDynamicVirtualChannelDataPDULargerThan1600Bytes() {

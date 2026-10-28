@@ -68,6 +68,12 @@ struct RDPDynamicVirtualChannelHeader: Equatable, Sendable {
     var encodedByte: UInt8 {
         (command.rawValue << 4) | (sp << 2) | channelIDLength
     }
+
+    /// The Cmd field of a DVC PDU, or nil when the PDU is empty or the command
+    /// is unknown, so callers can skip PDUs they do not understand.
+    static func command(of pdu: Data) -> RDPDynamicVirtualChannelCommand? {
+        pdu.first.flatMap { RDPDynamicVirtualChannelCommand(rawValue: $0 >> 4) }
+    }
 }
 
 struct RDPDynamicVirtualChannelCapabilitiesRequest: Equatable, Sendable {
