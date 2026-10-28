@@ -23,11 +23,6 @@ public final class RDPVideoToolboxFrameDecoder {
         avc444Decoders.removeAll()
     }
 
-    func reset(surfaceID: UInt16) {
-        sequenceDecoders = sequenceDecoders.filter { $0.key.surfaceID != surfaceID }
-        avc444Decoders[surfaceID] = nil
-    }
-
     public func decode(_ frame: RDPGraphicsFrameSnapshot) throws -> CGImage {
         let ciImage = CIImage(cvImageBuffer: try decodeDetailed(frame).imageBuffer)
         guard let image = imageContext.createCGImage(ciImage, from: ciImage.extent) else {
@@ -270,12 +265,6 @@ final class RDPVideoToolboxSequenceDecoder {
         if let session {
             VTDecompressionSessionInvalidate(session)
         }
-    }
-
-    func reset() {
-        invalidateSession()
-        parameterSets = Array(repeating: nil, count: parameterSets.count)
-        formatDescription = nil
     }
 
     func decodeDetailed(_ annexBData: Data) throws -> RDPVideoToolboxDecodeResult {

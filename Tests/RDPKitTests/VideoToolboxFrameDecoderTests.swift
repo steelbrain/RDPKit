@@ -54,10 +54,6 @@ import VideoToolbox
 
     #expect(decoder.decoderContextCount == 6)
 
-    decoder.reset(surfaceID: 1)
-
-    #expect(decoder.decoderContextCount == 3)
-
     decoder.reset()
 
     #expect(decoder.decoderContextCount == 0)

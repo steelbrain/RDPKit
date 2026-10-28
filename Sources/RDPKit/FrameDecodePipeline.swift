@@ -76,7 +76,6 @@ public struct RDPFrameDecodeTiming: Sendable {
 public enum RDPFrameDecodeCompletion: Equatable, Sendable {
     case decoded
     case failed(errorDescription: String)
-    case dropped
     case cancelled
 
     public func requireDecoded() throws {
@@ -85,8 +84,6 @@ public enum RDPFrameDecodeCompletion: Equatable, Sendable {
             return
         case .failed(let errorDescription):
             throw RDPFrameDecodeQueueError.decodeFailed(errorDescription)
-        case .dropped:
-            throw RDPFrameDecodeQueueError.frameDropped
         case .cancelled:
             throw RDPFrameDecodeQueueError.cancelled
         }
@@ -95,15 +92,12 @@ public enum RDPFrameDecodeCompletion: Equatable, Sendable {
 
 public enum RDPFrameDecodeQueueError: Error, Equatable, CustomStringConvertible, Sendable {
     case decodeFailed(String)
-    case frameDropped
     case cancelled
 
     public var description: String {
         switch self {
         case .decodeFailed(let errorDescription):
             return "frame decode failed: \(errorDescription)"
-        case .frameDropped:
-            return "frame decode was dropped before updating the graphics output"
         case .cancelled:
             return "frame decode was cancelled before updating the graphics output"
         }
@@ -122,161 +116,6 @@ private final class RDPFrameDecodeCompletionWaiter: @unchecked Sendable {
 
     func load() -> RDPFrameDecodeCompletion? {
         lock.withLock { completion }
-    }
-}
-
-struct RDPPendingDecodeFrame: Sendable {
-    var frame: RDPGraphicsFrameSnapshot
-    var receivedAt: Date
-    var resetDecoderBeforeDecode = false
-    var onCompleted: (@Sendable (RDPFrameDecodeCompletion) -> Void)? = nil
-    var onProcessed: (@Sendable () -> Void)? = nil
-}
-
-struct RDPFrameDecodeQueueLimits: Equatable, Sendable {
-    var maxQueuedVideoFrames: Int
-    var maxQueuedVideoLatency: TimeInterval
-    var maxQueuedVideoBytes: Int
-
-    init(
-        maxQueuedVideoFrames: Int = 30,
-        maxQueuedVideoLatency: TimeInterval = 0.5,
-        maxQueuedVideoBytes: Int = 64 * 1024 * 1024
-    ) {
-        self.maxQueuedVideoFrames = max(1, maxQueuedVideoFrames)
-        self.maxQueuedVideoLatency = max(0, maxQueuedVideoLatency)
-        self.maxQueuedVideoBytes = max(1, maxQueuedVideoBytes)
-    }
-}
-
-struct RDPFrameDecodeBacklog: Sendable {
-    private(set) var frames: [RDPPendingDecodeFrame] = []
-    private var waitingForVideoResyncSurfaceIDs: Set<UInt16> = []
-    var limits: RDPFrameDecodeQueueLimits
-
-    var waitingForVideoResync: Bool {
-        waitingForVideoResyncSurfaceIDs.isEmpty == false
-    }
-
-    init(limits: RDPFrameDecodeQueueLimits = RDPFrameDecodeQueueLimits()) {
-        self.limits = limits
-    }
-
-    mutating func append(_ frame: RDPPendingDecodeFrame) -> [RDPPendingDecodeFrame] {
-        if frame.frame.contentKind == .bitmap {
-            let dropped = frames
-            frames = [frame]
-            waitingForVideoResyncSurfaceIDs.formUnion(dropped.compactMap {
-                $0.frame.contentKind == .video ? $0.frame.surfaceID : nil
-            })
-            return dropped
-        }
-
-        let surfaceID = frame.frame.surfaceID
-        if waitingForVideoResyncSurfaceIDs.contains(surfaceID) {
-            guard frame.frame.isVideoResyncFrame else {
-                return [frame]
-            }
-            var resyncFrame = frame
-            resyncFrame.resetDecoderBeforeDecode = true
-            frames.append(resyncFrame)
-            waitingForVideoResyncSurfaceIDs.remove(surfaceID)
-            return trimVideoBacklogIfNeeded()
-        }
-
-        frames.append(frame)
-        return trimVideoBacklogIfNeeded()
-    }
-
-    mutating func takeNext(shouldCancel: Bool) -> RDPPendingDecodeFrame? {
-        guard !shouldCancel else {
-            frames.removeAll()
-            waitingForVideoResyncSurfaceIDs.removeAll()
-            return nil
-        }
-        guard !frames.isEmpty else {
-            return nil
-        }
-        return frames.removeFirst()
-    }
-
-    mutating func removeAll() -> [RDPPendingDecodeFrame] {
-        let removed = frames
-        frames.removeAll()
-        waitingForVideoResyncSurfaceIDs.removeAll()
-        return removed
-    }
-
-    private mutating func trimVideoBacklogIfNeeded() -> [RDPPendingDecodeFrame] {
-        guard exceedsVideoBacklogLimit else {
-            return []
-        }
-
-        let videoSurfaceIDs = Set(frames.compactMap {
-            $0.frame.contentKind == .video ? $0.frame.surfaceID : nil
-        })
-        var firstRetainedIndexes: [UInt16: Int] = [:]
-        for surfaceID in videoSurfaceIDs {
-            if let resyncIndex = frames.indices.reversed().first(where: {
-                frames[$0].frame.surfaceID == surfaceID && frames[$0].frame.isVideoResyncFrame
-            }) {
-                firstRetainedIndexes[surfaceID] = resyncIndex
-            }
-        }
-
-        let originalFrames = frames
-        let retainedFrames = frames.enumerated().compactMap { index, frame -> (Int, RDPPendingDecodeFrame)? in
-            guard frame.frame.contentKind == .video else {
-                return (index, frame)
-            }
-            guard let firstRetainedIndex = firstRetainedIndexes[frame.frame.surfaceID] else {
-                // Inter pictures remain dependent on the retained decoder chain. Treat the
-                // queue limits as soft until the server supplies a safe recovery point.
-                return (index, frame)
-            }
-            guard index >= firstRetainedIndex else {
-                return nil
-            }
-            var retainedFrame = frame
-            if index == firstRetainedIndex {
-                retainedFrame.resetDecoderBeforeDecode = true
-            }
-            return (index, retainedFrame)
-        }
-        frames = retainedFrames.map(\.1)
-
-        let retainedIndexes = Set(retainedFrames.map(\.0))
-        return originalFrames.enumerated().compactMap { index, frame in
-            retainedIndexes.contains(index) ? nil : frame
-        }
-    }
-
-    private var exceedsVideoBacklogLimit: Bool {
-        var videoFrameCount = 0
-        var videoByteCount = 0
-        var firstVideoReceivedAt: Date?
-        var lastVideoReceivedAt: Date?
-
-        for frame in frames where frame.frame.contentKind == .video {
-            videoFrameCount += 1
-            videoByteCount += frame.frame.payloadByteCount
-            firstVideoReceivedAt = firstVideoReceivedAt ?? frame.receivedAt
-            lastVideoReceivedAt = frame.receivedAt
-        }
-
-        if videoFrameCount > limits.maxQueuedVideoFrames {
-            return true
-        }
-        if videoByteCount > limits.maxQueuedVideoBytes {
-            return true
-        }
-        if let firstVideoReceivedAt,
-           let lastVideoReceivedAt,
-           lastVideoReceivedAt.timeIntervalSince(firstVideoReceivedAt) > limits.maxQueuedVideoLatency
-        {
-            return true
-        }
-        return false
     }
 }
 
@@ -351,19 +190,6 @@ final class RDPDecodedVideoSurfaceCompositor {
     private var chromaEnhancedAVC444Surfaces = Set<UInt16>()
     private var graphicsOutput: Surface?
     private let imageConverter = RDPDecodedImageBufferConverter()
-
-    func reset() {
-        surfaces.removeAll()
-        directSurfaces.removeAll()
-        chromaEnhancedAVC444Surfaces.removeAll()
-        graphicsOutput = nil
-    }
-
-    func reset(surfaceID: UInt16) {
-        surfaces[surfaceID] = nil
-        directSurfaces[surfaceID] = nil
-        chromaEnhancedAVC444Surfaces.remove(surfaceID)
-    }
 
     func presentation(
         for frame: RDPGraphicsFrameSnapshot,
@@ -1077,14 +903,15 @@ private func copy(
     }
 }
 
+/// Decodes and composes graphics frames in arrival order on a background queue.
+/// `submitAndWait` returns once the frame has been presented, so callers can acknowledge
+/// frames (MS-RDPEGFX RDPGFX_FRAME_ACKNOWLEDGE_PDU) only after they were decoded.
 public final class RDPLatestFrameDecodeQueue: @unchecked Sendable {
-    private let lock = NSLock()
+    private let queue = DispatchQueue(label: "RDPKit.FrameDecode", qos: .userInitiated)
+    // The decoder and compositor are only used on `queue`.
     private let decoder = RDPVideoToolboxFrameDecoder()
     private let videoCompositor = RDPDecodedVideoSurfaceCompositor()
-    private var backlog: RDPFrameDecodeBacklog
-    private var skippedPendingFrameCount = 0
-    private var latestSkippedFrameReceivedAt: Date?
-    private var isDraining = false
+    private let lock = NSLock()
     private var isCancelled = false
     private let shouldCancel: () -> Bool
     private let onDecoded: (
@@ -1094,12 +921,9 @@ public final class RDPLatestFrameDecodeQueue: @unchecked Sendable {
         RDPFrameDecodeTiming
     ) -> Void
     private let onDecodeFailed: (Date, String) -> Void
-    private let onSkippedFrames: (Int, Date) -> Void
 
+    /// - Parameter onSkippedFrames: Never called; frames are never skipped.
     public init(
-        maxQueuedVideoFrames: Int = 30,
-        maxQueuedVideoLatency: TimeInterval = 0.5,
-        maxQueuedVideoBytes: Int = 64 * 1024 * 1024,
         shouldCancel: @escaping () -> Bool,
         onDecoded: @escaping (
             RDPDecodedFramePresentation,
@@ -1108,84 +932,11 @@ public final class RDPLatestFrameDecodeQueue: @unchecked Sendable {
             RDPFrameDecodeTiming
         ) -> Void,
         onDecodeFailed: @escaping (Date, String) -> Void,
-        onSkippedFrames: @escaping (Int, Date) -> Void
+        onSkippedFrames _: @escaping (Int, Date) -> Void = { _, _ in }
     ) {
-        backlog = RDPFrameDecodeBacklog(limits: RDPFrameDecodeQueueLimits(
-            maxQueuedVideoFrames: maxQueuedVideoFrames,
-            maxQueuedVideoLatency: maxQueuedVideoLatency,
-            maxQueuedVideoBytes: maxQueuedVideoBytes
-        ))
         self.shouldCancel = shouldCancel
         self.onDecoded = onDecoded
         self.onDecodeFailed = onDecodeFailed
-        self.onSkippedFrames = onSkippedFrames
-    }
-
-    public func submit(
-        _ frame: RDPGraphicsFrameSnapshot,
-        receivedAt: Date,
-        onProcessed: (@Sendable () -> Void)? = nil
-    ) {
-        enqueue(
-            frame,
-            receivedAt: receivedAt,
-            onCompleted: nil,
-            onProcessed: onProcessed
-        )
-    }
-
-    public func submitReportingCompletion(
-        _ frame: RDPGraphicsFrameSnapshot,
-        receivedAt: Date,
-        onCompleted: @escaping @Sendable (RDPFrameDecodeCompletion) -> Void,
-        onProcessed: (@Sendable () -> Void)? = nil
-    ) {
-        enqueue(
-            frame,
-            receivedAt: receivedAt,
-            onCompleted: onCompleted,
-            onProcessed: onProcessed
-        )
-    }
-
-    private func enqueue(
-        _ frame: RDPGraphicsFrameSnapshot,
-        receivedAt: Date,
-        onCompleted: (@Sendable (RDPFrameDecodeCompletion) -> Void)?,
-        onProcessed: (@Sendable () -> Void)?
-    ) {
-        let shouldStartDrain: Bool
-        let droppedFrames: [RDPPendingDecodeFrame]
-
-        lock.lock()
-        guard !isCancelled, !shouldCancel() else {
-            lock.unlock()
-            onCompleted?(.cancelled)
-            onProcessed?()
-            return
-        }
-
-        droppedFrames = backlog.append(RDPPendingDecodeFrame(
-            frame: frame,
-            receivedAt: receivedAt,
-            onCompleted: onCompleted,
-            onProcessed: onProcessed
-        ))
-        recordSkippedFrames(droppedFrames)
-        if isDraining {
-            shouldStartDrain = false
-        } else {
-            isDraining = true
-            shouldStartDrain = true
-        }
-        lock.unlock()
-        complete(droppedFrames, with: .dropped)
-
-        if shouldStartDrain {
-            Task.detached(priority: .userInitiated) { [self] in
-                drain()
-            }
-        }
     }
 
     public func submitAndWait(
@@ -1195,14 +946,10 @@ public final class RDPLatestFrameDecodeQueue: @unchecked Sendable {
     ) -> RDPFrameDecodeCompletion {
         let processed = DispatchSemaphore(value: 0)
         let waiter = RDPFrameDecodeCompletionWaiter()
-        submitReportingCompletion(
-            frame,
-            receivedAt: receivedAt,
-            onCompleted: { completion in
-                waiter.store(completion)
-                processed.signal()
-            }
-        )
+        queue.async { [self] in
+            waiter.store(decode(frame, receivedAt: receivedAt))
+            processed.signal()
+        }
         while processed.wait(timeout: .now() + 0.1) == .timedOut {
             guard shouldContinue() else {
                 return .cancelled
@@ -1212,126 +959,44 @@ public final class RDPLatestFrameDecodeQueue: @unchecked Sendable {
     }
 
     public func cancel() {
-        let droppedFrames: [RDPPendingDecodeFrame]
-        lock.lock()
-        isCancelled = true
-        droppedFrames = backlog.removeAll()
-        skippedPendingFrameCount = 0
-        latestSkippedFrameReceivedAt = nil
-        lock.unlock()
-        complete(droppedFrames, with: .cancelled)
-    }
-
-    private func drain() {
-        while !shouldCancel() {
-            let didProcessFrame = autoreleasepool { () -> Bool in
-                guard let pendingFrame = takeNextFrame() else {
-                    return false
-                }
-                var completion = RDPFrameDecodeCompletion.decoded
-                defer {
-                    pendingFrame.onCompleted?(completion)
-                    pendingFrame.onProcessed?()
-                }
-                if let skippedFrames = takeSkippedFrameSummary() {
-                    onSkippedFrames(skippedFrames.count, skippedFrames.receivedAt)
-                }
-
-                let decodeStartedAt = Date()
-                do {
-                    if pendingFrame.resetDecoderBeforeDecode {
-                        decoder.reset(surfaceID: pendingFrame.frame.surfaceID)
-                        videoCompositor.reset(surfaceID: pendingFrame.frame.surfaceID)
-                    }
-                    let decodedFrame = try decoder.decodeDetailed(pendingFrame.frame)
-                    let decodedAt = Date()
-                    let presentation = try videoCompositor.presentation(
-                        for: pendingFrame.frame,
-                        decodedImageBuffer: decodedFrame.imageBuffer
-                    )
-                    onDecoded(
-                        presentation,
-                        pendingFrame.receivedAt,
-                        decodedAt,
-                        RDPFrameDecodeTiming(
-                            samplePreparationMilliseconds: decodedFrame.samplePreparationMilliseconds,
-                            videoToolboxMilliseconds: decodedFrame.videoToolboxMilliseconds,
-                            imageConversionMilliseconds: decodedFrame.imageConversionMilliseconds,
-                            cropMilliseconds: 0,
-                            totalMilliseconds: decodedAt.timeIntervalSince(decodeStartedAt) * 1000,
-                            decodedPixelFormat: decodedFrame.decodedPixelFormat,
-                            usesHardwareAcceleration: decodedFrame.usesHardwareAcceleration
-                        )
-                    )
-                } catch {
-                    let errorDescription = String(describing: error)
-                    completion = .failed(errorDescription: errorDescription)
-                    onDecodeFailed(
-                        pendingFrame.receivedAt,
-                        errorDescription
-                    )
-                }
-                return true
-            }
-
-            guard didProcessFrame else {
-                return
-            }
-        }
-        cancel()
-    }
-
-    private func takeNextFrame() -> RDPPendingDecodeFrame? {
-        var droppedFrames: [RDPPendingDecodeFrame] = []
-        let nextFrame: RDPPendingDecodeFrame?
-        lock.lock()
-        if isCancelled || shouldCancel() {
+        lock.withLock {
             isCancelled = true
-            droppedFrames = backlog.removeAll()
-            isDraining = false
-            nextFrame = nil
-        } else {
-            nextFrame = backlog.takeNext(shouldCancel: false)
-            if nextFrame == nil {
-                isDraining = false
+        }
+    }
+
+    private func decode(_ frame: RDPGraphicsFrameSnapshot, receivedAt: Date) -> RDPFrameDecodeCompletion {
+        guard lock.withLock({ isCancelled }) == false, shouldCancel() == false else {
+            return .cancelled
+        }
+        return autoreleasepool {
+            let decodeStartedAt = Date()
+            do {
+                let decodedFrame = try decoder.decodeDetailed(frame)
+                let decodedAt = Date()
+                let presentation = try videoCompositor.presentation(
+                    for: frame,
+                    decodedImageBuffer: decodedFrame.imageBuffer
+                )
+                onDecoded(
+                    presentation,
+                    receivedAt,
+                    decodedAt,
+                    RDPFrameDecodeTiming(
+                        samplePreparationMilliseconds: decodedFrame.samplePreparationMilliseconds,
+                        videoToolboxMilliseconds: decodedFrame.videoToolboxMilliseconds,
+                        imageConversionMilliseconds: decodedFrame.imageConversionMilliseconds,
+                        cropMilliseconds: 0,
+                        totalMilliseconds: decodedAt.timeIntervalSince(decodeStartedAt) * 1000,
+                        decodedPixelFormat: decodedFrame.decodedPixelFormat,
+                        usesHardwareAcceleration: decodedFrame.usesHardwareAcceleration
+                    )
+                )
+                return .decoded
+            } catch {
+                let errorDescription = String(describing: error)
+                onDecodeFailed(receivedAt, errorDescription)
+                return .failed(errorDescription: errorDescription)
             }
         }
-        lock.unlock()
-        complete(droppedFrames, with: .cancelled)
-        return nextFrame
-    }
-
-    private func complete(
-        _ frames: [RDPPendingDecodeFrame],
-        with completion: RDPFrameDecodeCompletion
-    ) {
-        for frame in frames {
-            frame.onCompleted?(completion)
-            frame.onProcessed?()
-        }
-    }
-
-    private func recordSkippedFrames(_ frames: [RDPPendingDecodeFrame]) {
-        guard frames.isEmpty == false else {
-            return
-        }
-        skippedPendingFrameCount += frames.count
-        latestSkippedFrameReceivedAt = frames.last?.receivedAt ?? Date()
-    }
-
-    private func takeSkippedFrameSummary() -> (count: Int, receivedAt: Date)? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard skippedPendingFrameCount > 0 else {
-            return nil
-        }
-
-        let summary = (
-            count: skippedPendingFrameCount,
-            receivedAt: latestSkippedFrameReceivedAt ?? Date()
-        )
-        skippedPendingFrameCount = 0
-        latestSkippedFrameReceivedAt = nil
-        return summary
     }
 }

@@ -381,192 +381,15 @@ import Testing
     #expect(try bgraPixel(atX: 1, y: 1, in: presentation.imageBuffer) == [0x00, 0x00, 0x00, 0x00])
 }
 
-@Test func decodeBacklogKeepsVideoFramesInOrderWithinLimit() {
-    var backlog = RDPFrameDecodeBacklog(limits: frameCountOnlyLimits(maxQueuedVideoFrames: 3))
-
-    #expect(backlog.append(pendingVideoFrame(id: 1, nalUnitTypes: [7, 8, 5])).isEmpty)
-    #expect(backlog.append(pendingVideoFrame(id: 2, nalUnitTypes: [1])).isEmpty)
-    #expect(backlog.append(pendingVideoFrame(id: 3, nalUnitTypes: [1])).isEmpty)
-
-    #expect(backlog.frames.map(\.frame.frameID) == [1, 2, 3])
-    #expect(backlog.frames.contains(where: \.resetDecoderBeforeDecode) == false)
-}
-
-@Test func decodeBacklogDoesNotTreatAVC444ChromaOnlyUpdateAsResync() {
-    var backlog = RDPFrameDecodeBacklog(limits: frameCountOnlyLimits(maxQueuedVideoFrames: 1))
-    _ = backlog.append(pendingVideoFrame(id: 1, nalUnitTypes: [1]))
-    _ = backlog.append(pendingVideoFrame(id: 2, nalUnitTypes: [1]))
-    #expect(backlog.waitingForVideoResync == false)
-
-    let chromaOnly = RDPPendingDecodeFrame(
-        frame: RDPGraphicsFrameSnapshot(
-            frameID: 3,
-            surfaceID: 1,
-            codecID: RDPGFXCodecID.avc444v2,
-            codecName: "avc444v2",
-            pixelFormat: 32,
-            destinationRect: RDPFrameRect(left: 0, top: 0, right: 16, bottom: 16),
-            regionRects: [RDPFrameRect(left: 0, top: 0, right: 16, bottom: 16)],
-            encodedVideoData: annexBData(nalUnitTypes: [7, 8, 5]),
-            avc444SubframeLayout: .chroma420Only
-        ),
-        receivedAt: Date(timeIntervalSince1970: 3)
-    )
-    let dropped = backlog.append(chromaOnly)
-
-    #expect(dropped.isEmpty)
-    #expect(backlog.frames.map(\.frame.frameID) == [1, 2, 3])
-    #expect(backlog.waitingForVideoResync == false)
-}
-
-@Test func decodeBacklogTrimsVideoOverflowToNewestResyncFrame() {
-    var backlog = RDPFrameDecodeBacklog(limits: frameCountOnlyLimits(maxQueuedVideoFrames: 3))
-
-    _ = backlog.append(pendingVideoFrame(id: 1, nalUnitTypes: [7, 8, 5]))
-    _ = backlog.append(pendingVideoFrame(id: 2, nalUnitTypes: [1]))
-    _ = backlog.append(pendingVideoFrame(id: 3, nalUnitTypes: [1]))
-
-    let dropped = backlog.append(pendingVideoFrame(id: 4, nalUnitTypes: [7, 8, 5]))
-
-    #expect(dropped.map(\.frame.frameID) == [1, 2, 3])
-    #expect(backlog.frames.map(\.frame.frameID) == [4])
-    #expect(backlog.frames.first?.resetDecoderBeforeDecode == true)
-    #expect(backlog.waitingForVideoResync == false)
-}
-
-@Test func decodeBacklogRetainsIndependentSurfaceResyncFrames() {
-    var backlog = RDPFrameDecodeBacklog(limits: frameCountOnlyLimits(maxQueuedVideoFrames: 3))
-
-    _ = backlog.append(pendingVideoFrame(id: 1, surfaceID: 1, nalUnitTypes: [7, 8, 5]))
-    _ = backlog.append(pendingVideoFrame(id: 2, surfaceID: 2, nalUnitTypes: [7, 8, 5]))
-    _ = backlog.append(pendingVideoFrame(id: 3, surfaceID: 1, nalUnitTypes: [1]))
-    let dropped = backlog.append(pendingVideoFrame(id: 4, surfaceID: 2, nalUnitTypes: [7, 8, 5]))
-
-    #expect(dropped.map(\.frame.frameID) == [2])
-    #expect(backlog.frames.map(\.frame.frameID) == [1, 3, 4])
-    #expect(backlog.frames.map(\.resetDecoderBeforeDecode) == [true, false, true])
-    #expect(backlog.waitingForVideoResync == false)
-}
-
-@Test func decodeBacklogPreservesSurfacesWithoutARecoveryPoint() {
-    var backlog = RDPFrameDecodeBacklog(limits: frameCountOnlyLimits(maxQueuedVideoFrames: 2))
-
-    _ = backlog.append(pendingVideoFrame(id: 1, surfaceID: 1, nalUnitTypes: [1]))
-    _ = backlog.append(pendingVideoFrame(id: 2, surfaceID: 2, nalUnitTypes: [7, 8, 5]))
-    let dropped = backlog.append(pendingVideoFrame(id: 3, surfaceID: 1, nalUnitTypes: [1]))
-
-    #expect(dropped.isEmpty)
-    #expect(backlog.frames.map(\.frame.frameID) == [1, 2, 3])
-    #expect(backlog.waitingForVideoResync == false)
-
-    #expect(backlog.append(pendingVideoFrame(id: 4, surfaceID: 2, nalUnitTypes: [1])).isEmpty)
-    let droppedSurfaceOneDelta = backlog.append(pendingVideoFrame(id: 5, surfaceID: 1, nalUnitTypes: [1]))
-    #expect(droppedSurfaceOneDelta.isEmpty)
-    #expect(backlog.frames.map(\.frame.frameID) == [1, 2, 3, 4, 5])
-}
-
-@Test func decodeBacklogPreservesReferenceChainWhenOverflowHasNoKeyframe() {
-    var backlog = RDPFrameDecodeBacklog(limits: frameCountOnlyLimits(maxQueuedVideoFrames: 2))
-
-    _ = backlog.append(pendingVideoFrame(id: 1, nalUnitTypes: [1]))
-    _ = backlog.append(pendingVideoFrame(id: 2, nalUnitTypes: [1]))
-    let droppedOverflow = backlog.append(pendingVideoFrame(id: 3, nalUnitTypes: [1]))
-
-    #expect(droppedOverflow.isEmpty)
-    #expect(backlog.frames.map(\.frame.frameID) == [1, 2, 3])
-    #expect(backlog.waitingForVideoResync == false)
-
-    let droppedDelta = backlog.append(pendingVideoFrame(id: 4, nalUnitTypes: [1]))
-    #expect(droppedDelta.isEmpty)
-    #expect(backlog.frames.map(\.frame.frameID) == [1, 2, 3, 4])
-    #expect(backlog.waitingForVideoResync == false)
-
-    let droppedForRecovery = backlog.append(pendingVideoFrame(id: 5, nalUnitTypes: [7, 8, 5]))
-    #expect(droppedForRecovery.map(\.frame.frameID) == [1, 2, 3, 4])
-    #expect(backlog.frames.map(\.frame.frameID) == [5])
-    #expect(backlog.frames.first?.resetDecoderBeforeDecode == true)
-    #expect(backlog.waitingForVideoResync == false)
-}
-
-@Test func decodeBacklogUsesLatencyLimitBeforeFrameLimit() {
-    var backlog = RDPFrameDecodeBacklog(limits: RDPFrameDecodeQueueLimits(
-        maxQueuedVideoFrames: 100,
-        maxQueuedVideoLatency: 0.5,
-        maxQueuedVideoBytes: 64 * 1024 * 1024
-    ))
-    let start = Date(timeIntervalSince1970: 10)
-
-    _ = backlog.append(pendingVideoFrame(id: 1, nalUnitTypes: [7, 8, 5], receivedAt: start))
-    _ = backlog.append(pendingVideoFrame(id: 2, nalUnitTypes: [1], receivedAt: start.addingTimeInterval(0.2)))
-    let dropped = backlog.append(pendingVideoFrame(
-        id: 3,
-        nalUnitTypes: [7, 8, 5],
-        receivedAt: start.addingTimeInterval(0.6)
-    ))
-
-    #expect(dropped.map(\.frame.frameID) == [1, 2])
-    #expect(backlog.frames.map(\.frame.frameID) == [3])
-    #expect(backlog.frames.first?.resetDecoderBeforeDecode == true)
-}
-
-@Test func decodeBacklogCoalescesBitmapFramesToLatest() {
-    var backlog = RDPFrameDecodeBacklog()
-
-    #expect(backlog.append(pendingBitmapFrame(id: 1)).isEmpty)
-    let dropped = backlog.append(pendingBitmapFrame(id: 2))
-
-    #expect(dropped.map(\.frame.frameID) == [1])
-    #expect(backlog.frames.map(\.frame.frameID) == [2])
-    #expect(backlog.waitingForVideoResync == false)
-}
-
-@Test func decodeBacklogWaitsForVideoResyncWhenBitmapDropsPendingVideo() {
-    var backlog = RDPFrameDecodeBacklog()
-
-    _ = backlog.append(pendingVideoFrame(id: 1, nalUnitTypes: [7, 8, 5]))
-    let dropped = backlog.append(pendingBitmapFrame(id: 2))
-
-    #expect(dropped.map(\.frame.frameID) == [1])
-    #expect(backlog.frames.map(\.frame.frameID) == [2])
-    #expect(backlog.waitingForVideoResync)
-
-    let droppedDelta = backlog.append(pendingVideoFrame(id: 3, nalUnitTypes: [1]))
-    #expect(droppedDelta.map(\.frame.frameID) == [3])
-    #expect(backlog.frames.map(\.frame.frameID) == [2])
-}
-
-@Test func latestFrameDecodeQueueCompletesAfterPresentingFrame() {
-    let processed = DispatchSemaphore(value: 0)
-    let events = DecodeEventLog()
-    let queue = RDPLatestFrameDecodeQueue(
-        shouldCancel: { false },
-        onDecoded: { _, _, _, _ in
-            events.append("decoded")
-        },
-        onDecodeFailed: { _, _ in },
-        onSkippedFrames: { _, _ in }
-    )
-
-    queue.submit(pendingBitmapFrame(id: 1).frame, receivedAt: Date()) {
-        events.append("processed")
-        processed.signal()
-    }
-
-    #expect(processed.wait(timeout: .now() + 2) == .success)
-    #expect(events.snapshot == ["decoded", "processed"])
-    queue.cancel()
-}
-
 @Test func latestFrameDecodeQueueReportsSuccessfulSynchronousProcessing() throws {
     let queue = RDPLatestFrameDecodeQueue(
         shouldCancel: { false },
         onDecoded: { _, _, _, _ in },
-        onDecodeFailed: { _, _ in },
-        onSkippedFrames: { _, _ in }
+        onDecodeFailed: { _, _ in }
     )
 
     let completion = queue.submitAndWait(
-        pendingBitmapFrame(id: 1).frame,
+        queuedBitmapFrame(id: 1),
         receivedAt: Date(),
         shouldContinue: { true }
     )
@@ -580,12 +403,16 @@ import Testing
     let queue = RDPLatestFrameDecodeQueue(
         shouldCancel: { false },
         onDecoded: { _, _, _, _ in },
-        onDecodeFailed: { _, _ in },
-        onSkippedFrames: { _, _ in }
+        onDecodeFailed: { _, _ in }
     )
 
     let completion = queue.submitAndWait(
-        pendingVideoFrame(id: 1, nalUnitTypes: [1]).frame,
+        videoFrame(
+            id: 1,
+            destinationRect: RDPFrameRect(left: 0, top: 0, right: 2, bottom: 2),
+            regionRects: [RDPFrameRect(left: 0, top: 0, right: 2, bottom: 2)],
+            nalUnitTypes: [1]
+        ),
         receivedAt: Date(),
         shouldContinue: { true }
     )
@@ -606,12 +433,11 @@ import Testing
     let queue = RDPLatestFrameDecodeQueue(
         shouldCancel: { true },
         onDecoded: { _, _, _, _ in },
-        onDecodeFailed: { _, _ in },
-        onSkippedFrames: { _, _ in }
+        onDecodeFailed: { _, _ in }
     )
 
     let completion = queue.submitAndWait(
-        pendingBitmapFrame(id: 1).frame,
+        queuedBitmapFrame(id: 1),
         receivedAt: Date(),
         shouldContinue: { true }
     )
@@ -622,99 +448,21 @@ import Testing
     }
 }
 
-@Test func latestFrameDecodeQueueReportsCoalescedFrameAsDropped() {
-    let decodingStarted = DispatchSemaphore(value: 0)
-    let allowDecodeToFinish = DispatchSemaphore(value: 0)
-    let dropped = DispatchSemaphore(value: 0)
-    let completions = DecodeCompletionLog()
+@Test func latestFrameDecodeQueueReportsFramesSubmittedAfterCancelAsCancelled() {
     let queue = RDPLatestFrameDecodeQueue(
         shouldCancel: { false },
-        onDecoded: { presentation, _, _, _ in
-            guard presentation.frame.frameID == 1 else {
-                return
-            }
-            decodingStarted.signal()
-            _ = allowDecodeToFinish.wait(timeout: .now() + 2)
-        },
-        onDecodeFailed: { _, _ in },
-        onSkippedFrames: { _, _ in }
+        onDecoded: { _, _, _, _ in },
+        onDecodeFailed: { _, _ in }
     )
-
-    queue.submitReportingCompletion(
-        pendingBitmapFrame(id: 1).frame,
-        receivedAt: Date(),
-        onCompleted: { completions.append(frameID: 1, completion: $0) }
-    )
-    #expect(decodingStarted.wait(timeout: .now() + 2) == .success)
-    queue.submitReportingCompletion(
-        pendingBitmapFrame(id: 2).frame,
-        receivedAt: Date(),
-        onCompleted: {
-            completions.append(frameID: 2, completion: $0)
-            dropped.signal()
-        }
-    )
-    queue.submitReportingCompletion(
-        pendingBitmapFrame(id: 3).frame,
-        receivedAt: Date(),
-        onCompleted: { completions.append(frameID: 3, completion: $0) }
-    )
-
-    #expect(dropped.wait(timeout: .now() + 2) == .success)
-    #expect(completions.completion(for: 2) == .dropped)
-    allowDecodeToFinish.signal()
     queue.cancel()
-}
 
-private final class DecodeEventLog: @unchecked Sendable {
-    private let lock = NSLock()
-    private var events: [String] = []
-
-    var snapshot: [String] {
-        lock.withLock { events }
-    }
-
-    func append(_ event: String) {
-        lock.withLock {
-            events.append(event)
-        }
-    }
-}
-
-private final class DecodeCompletionLog: @unchecked Sendable {
-    private let lock = NSLock()
-    private var completions: [UInt32: RDPFrameDecodeCompletion] = [:]
-
-    func append(frameID: UInt32, completion: RDPFrameDecodeCompletion) {
-        lock.withLock {
-            completions[frameID] = completion
-        }
-    }
-
-    func completion(for frameID: UInt32) -> RDPFrameDecodeCompletion? {
-        lock.withLock { completions[frameID] }
-    }
-}
-
-private func pendingVideoFrame(
-    id: UInt32,
-    surfaceID: UInt16 = 1,
-    nalUnitTypes: [UInt8],
-    receivedAt: Date? = nil
-) -> RDPPendingDecodeFrame {
-    RDPPendingDecodeFrame(
-        frame: RDPGraphicsFrameSnapshot(
-            frameID: id,
-            surfaceID: surfaceID,
-            codecID: RDPGFXCodecID.avc444v2,
-            codecName: "avc444v2",
-            pixelFormat: 32,
-            destinationRect: RDPFrameRect(left: 0, top: 0, right: 2, bottom: 2),
-            regionRects: [RDPFrameRect(left: 0, top: 0, right: 2, bottom: 2)],
-            encodedVideoData: annexBData(nalUnitTypes: nalUnitTypes)
-        ),
-        receivedAt: receivedAt ?? Date(timeIntervalSince1970: Double(id))
+    let completion = queue.submitAndWait(
+        queuedBitmapFrame(id: 1),
+        receivedAt: Date(),
+        shouldContinue: { true }
     )
+
+    #expect(completion == .cancelled)
 }
 
 private func videoFrame(
@@ -837,30 +585,19 @@ private enum PixelBufferTestError: Error {
     case missingBaseAddress
 }
 
-private func pendingBitmapFrame(id: UInt32) -> RDPPendingDecodeFrame {
-    RDPPendingDecodeFrame(
-        frame: RDPGraphicsFrameSnapshot(
-            frameID: id,
-            surfaceID: 1,
-            codecID: RDPGFXCodecID.uncompressed,
-            codecName: "surface-bgra",
-            pixelFormat: 32,
-            destinationRect: RDPFrameRect(left: 0, top: 0, right: 1, bottom: 1),
-            regionRects: [RDPFrameRect(left: 0, top: 0, right: 1, bottom: 1)],
-            encodedVideoData: Data(),
-            contentKind: .bitmap,
-            decodedBitmapData: Data([0, 0, 0, 255]),
-            decodedBitmapBytesPerRow: 4
-        ),
-        receivedAt: Date(timeIntervalSince1970: Double(id))
-    )
-}
-
-private func frameCountOnlyLimits(maxQueuedVideoFrames: Int) -> RDPFrameDecodeQueueLimits {
-    RDPFrameDecodeQueueLimits(
-        maxQueuedVideoFrames: maxQueuedVideoFrames,
-        maxQueuedVideoLatency: 100,
-        maxQueuedVideoBytes: 64 * 1024 * 1024
+private func queuedBitmapFrame(id: UInt32) -> RDPGraphicsFrameSnapshot {
+    RDPGraphicsFrameSnapshot(
+        frameID: id,
+        surfaceID: 1,
+        codecID: RDPGFXCodecID.uncompressed,
+        codecName: "surface-bgra",
+        pixelFormat: 32,
+        destinationRect: RDPFrameRect(left: 0, top: 0, right: 1, bottom: 1),
+        regionRects: [RDPFrameRect(left: 0, top: 0, right: 1, bottom: 1)],
+        encodedVideoData: Data(),
+        contentKind: .bitmap,
+        decodedBitmapData: Data([0, 0, 0, 255]),
+        decodedBitmapBytesPerRow: 4
     )
 }
 
