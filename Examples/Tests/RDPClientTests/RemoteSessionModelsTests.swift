@@ -114,3 +114,31 @@ import Testing
     #expect(profile.audioPlaybackEnabled == false)
     #expect(try JSONDecoder().decode(ConnectionProfile.self, from: JSONEncoder().encode(profile)) == profile)
 }
+
+@Test func framePacingStateNormalizesDisplayLinkTiming() {
+    let state = RDPFramePacingState(
+        screenName: "Studio Display",
+        backingScaleFactor: 2,
+        maximumFramesPerSecond: nil,
+        minimumRefreshInterval: 1.0 / 120.0,
+        maximumRefreshInterval: 1.0 / 48.0,
+        displayUpdateGranularity: 0,
+        displayLinkDuration: 0.0167,
+        hasDisplayLink: true,
+        isDisplayLinkPaused: false
+    )
+
+    #expect(state.displayLinkDuration == 1.0 / 60.0)
+    #expect(state.displayLinkFramesPerSecond == 60)
+    #expect(state.maximumRefreshRate == 120)
+    #expect(state.clockState == "window display link")
+}
+
+@Test func framePacingStateMarksUpdatedDisplayLinkActive() {
+    let state = RDPFramePacingState().updatingDisplayLinkDuration(1.0 / 120.0)
+
+    #expect(state.hasDisplayLink)
+    #expect(state.isDisplayLinkPaused == false)
+    #expect(state.displayLinkFramesPerSecond == 120)
+    #expect(state.clockState == "window display link")
+}

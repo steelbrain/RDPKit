@@ -202,35 +202,6 @@ func rdpVideoPixelBufferAttributes(pixelFormat: OSType? = nil) -> [CFString: Any
     return attributes
 }
 
-public enum RDPH264DecodedFrameImage {
-    public static func cropToDestinationRect(
-        _ image: CGImage,
-        frame: RDPGraphicsFrameSnapshot
-    ) throws -> CGImage {
-        let destinationWidth = Int(frame.width)
-        let destinationHeight = Int(frame.height)
-        guard destinationWidth > 0,
-              destinationHeight > 0,
-              image.width >= destinationWidth,
-              image.height >= destinationHeight,
-              image.width != destinationWidth || image.height != destinationHeight
-        else {
-            return image
-        }
-        guard let croppedImage = image.cropping(
-            to: CGRect(x: 0, y: 0, width: destinationWidth, height: destinationHeight)
-        ) else {
-            throw RDPVideoDecodeError.imageCropFailed(
-                sourceWidth: image.width,
-                sourceHeight: image.height,
-                destinationWidth: destinationWidth,
-                destinationHeight: destinationHeight
-            )
-        }
-        return croppedImage
-    }
-}
-
 /// Decodes one Annex B H.264 or HEVC stream through VideoToolbox, recreating the session
 /// whenever the stream carries new parameter sets.
 final class RDPVideoToolboxSequenceDecoder {
@@ -566,7 +537,6 @@ public enum RDPVideoDecodeError: Error, Equatable, CustomStringConvertible {
     case missingOutput(String)
     case missingImageBuffer
     case imageConversionFailed
-    case imageCropFailed(sourceWidth: Int, sourceHeight: Int, destinationWidth: Int, destinationHeight: Int)
     case videoToolbox(operation: String, status: OSStatus)
 
     public var description: String {
@@ -583,8 +553,6 @@ public enum RDPVideoDecodeError: Error, Equatable, CustomStringConvertible {
             "VideoToolbox did not produce an image buffer."
         case .imageConversionFailed:
             "Core Image could not convert the decoded frame."
-        case let .imageCropFailed(sourceWidth, sourceHeight, destinationWidth, destinationHeight):
-            "CoreGraphics could not crop decoded frame from \(sourceWidth)x\(sourceHeight) to \(destinationWidth)x\(destinationHeight)."
         case let .videoToolbox(operation, status):
             "\(operation) failed with OSStatus \(status)."
         }

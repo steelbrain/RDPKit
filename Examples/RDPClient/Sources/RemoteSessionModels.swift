@@ -1,5 +1,4 @@
 import AppKit
-import QuartzCore
 import RDPKit
 
 struct RDPSessionEndReason: Equatable {
@@ -83,34 +82,5 @@ struct RDPSessionEndReason: Equatable {
 
     var diagnosticValue: String {
         "\(statusText): \(message)"
-    }
-}
-
-extension RDPFramePacingState {
-    @MainActor
-    static func current(window: NSWindow?, displayLink: CADisplayLink?, isPaused: Bool) -> RDPFramePacingState {
-        guard let window,
-              let screen = window.screen
-        else {
-            return RDPFramePacingState(
-                screenName: "No window",
-                backingScaleFactor: window?.backingScaleFactor,
-                displayLinkDuration: displayLink?.duration,
-                hasDisplayLink: displayLink != nil,
-                isDisplayLinkPaused: isPaused
-            )
-        }
-
-        return RDPFramePacingState(
-            screenName: screen.localizedName,
-            backingScaleFactor: window.backingScaleFactor,
-            maximumFramesPerSecond: screen.maximumFramesPerSecond,
-            minimumRefreshInterval: screen.minimumRefreshInterval,
-            maximumRefreshInterval: screen.maximumRefreshInterval,
-            displayUpdateGranularity: screen.displayUpdateGranularity,
-            displayLinkDuration: displayLink?.duration,
-            hasDisplayLink: displayLink != nil,
-            isDisplayLinkPaused: isPaused
-        )
     }
 }

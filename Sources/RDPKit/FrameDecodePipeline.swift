@@ -12,29 +12,6 @@ public struct RDPDecodedFramePresentation: @unchecked Sendable {
     }
 }
 
-@MainActor
-public final class RDPFramePresentationBuffer {
-    private var pendingPresentation: RDPDecodedFramePresentation?
-
-    public init() {}
-
-    public func replacePendingPresentation(_ presentation: RDPDecodedFramePresentation) -> Bool {
-        let replacedPendingPresentation = pendingPresentation != nil
-        pendingPresentation = presentation
-        return replacedPendingPresentation
-    }
-
-    public func takePendingPresentation() -> RDPDecodedFramePresentation? {
-        let presentation = pendingPresentation
-        pendingPresentation = nil
-        return presentation
-    }
-
-    public func clear() {
-        pendingPresentation = nil
-    }
-}
-
 public enum RDPReportFirstFrameDecodeResult: @unchecked Sendable {
     case decoded(
         presentation: RDPDecodedFramePresentation,

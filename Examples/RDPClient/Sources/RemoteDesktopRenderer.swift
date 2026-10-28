@@ -148,3 +148,25 @@ func rdpSampleBufferDisplayDisposition(
     }
     return .enqueue
 }
+
+/// Holds the one decoded frame waiting for the next display-link tick.
+@MainActor
+final class RDPFramePresentationBuffer {
+    private var pendingPresentation: RDPDecodedFramePresentation?
+
+    func replacePendingPresentation(_ presentation: RDPDecodedFramePresentation) -> Bool {
+        let replacedPendingPresentation = pendingPresentation != nil
+        pendingPresentation = presentation
+        return replacedPendingPresentation
+    }
+
+    func takePendingPresentation() -> RDPDecodedFramePresentation? {
+        let presentation = pendingPresentation
+        pendingPresentation = nil
+        return presentation
+    }
+
+    func clear() {
+        pendingPresentation = nil
+    }
+}

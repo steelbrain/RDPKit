@@ -399,7 +399,7 @@ private enum RDPFrameBenchmark {
                     case .cgImageCrop:
                         let image = try decoder.decode(frame)
                         let cropStart = Date()
-                        let cropped = try RDPH264DecodedFrameImage.cropToDestinationRect(image, frame: frame)
+                        let cropped = try cropToDestinationRect(image, frame: frame)
                         cropMilliseconds += Date().timeIntervalSince(cropStart) * 1000
                         outputPixelCount += cropped.width * cropped.height
                     }
@@ -582,6 +582,33 @@ private func frameTiming(start: ProcessSample, end: ProcessSample) -> FrameTimin
         wallMilliseconds: end.wallTime.timeIntervalSince(start.wallTime) * 1000,
         cpuMilliseconds: max(0, end.cpuTimeSeconds - start.cpuTimeSeconds) * 1000
     )
+}
+
+/// Crops a decoded image to the frame's size, as a client that cannot present
+/// a padded decoder buffer must.
+private func cropToDestinationRect(_ image: CGImage, frame: RDPGraphicsFrameSnapshot) throws -> CGImage {
+    let width = Int(frame.width)
+    let height = Int(frame.height)
+    guard width > 0, height > 0, image.width >= width, image.height >= height,
+          image.width != width || image.height != height
+    else {
+        return image
+    }
+    guard let cropped = image.cropping(to: CGRect(x: 0, y: 0, width: width, height: height)) else {
+        throw BenchmarkCropError(sourceWidth: image.width, sourceHeight: image.height, width: width, height: height)
+    }
+    return cropped
+}
+
+private struct BenchmarkCropError: Error, CustomStringConvertible {
+    var sourceWidth: Int
+    var sourceHeight: Int
+    var width: Int
+    var height: Int
+
+    var description: String {
+        "CoreGraphics could not crop decoded frame from \(sourceWidth)x\(sourceHeight) to \(width)x\(height)."
+    }
 }
 
 private func rectArea(_ rect: RDPFrameRect) -> Int {
