@@ -111,6 +111,7 @@ extension RDPClientConnection {
         try send(packet)
         report.rdpClientInfoSent = true
         report.rdpClientInfoRequestBytes = packet.count
+        startPhase()
     }
 
     /// Lists start empty once the channels exist, so "none seen" reads as [] rather than nil.

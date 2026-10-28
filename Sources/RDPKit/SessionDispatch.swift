@@ -9,9 +9,18 @@ extension RDPClientConnection {
         guard let transport else {
             throw RDPPreflightError.receive("not connected")
         }
+        var timeout = receiveTimeout
+        if let phaseDeadline {
+            let remaining = phaseDeadline - .now()
+            guard remaining > .zero else {
+                try handleReceiveTimeout()
+                return
+            }
+            timeout = min(timeout ?? remaining, remaining)
+        }
         let message: Data
         do {
-            message = try transport.receive(timeout: receiveTimeout)
+            message = try transport.receive(timeout: timeout)
         } catch RDPTransportError.timedOut {
             try handleReceiveTimeout()
             return
@@ -25,6 +34,17 @@ extension RDPClientConnection {
             report.rdpClientInfoResponseHex = message.rdpHexString
         }
         try dispatch(message)
+    }
+
+    /// Bounds the wait for the next connection milestone by the configured
+    /// timeout, however much other traffic arrives. A live session that shows
+    /// frames awaits nothing: TCP keepalive notices a dead peer. `captureOnly`
+    /// marks a milestone only a capture run waits for, its next frame.
+    func startPhase(captureOnly: Bool = false) {
+        let isLive = targetFrameCount == nil
+        phaseDeadline = isLive && (captureOnly || report.rdpGraphicsFirstFrame != nil)
+            ? nil
+            : .now() + .seconds(Int64(configuration.timeoutSeconds))
     }
 
     /// Live sessions wait indefinitely once frames flow; TCP keepalive notices a dead peer.
@@ -173,6 +193,7 @@ extension RDPClientConnection {
                 throw RDPPreflightError.protocolViolation("server licensing failed: \(alert.description)")
             }
             licensingComplete = true
+            startPhase()
         case let .licenseRequest(request):
             try answerLicenseRequest(request)
         case let .platformChallenge(challenge):
@@ -192,6 +213,7 @@ extension RDPClientConnection {
             let licenseInfo = try licenseKeys.openVerified(issued.encryptedLicenseInfo, mac: issued.mac)
             report.rdpIssuedClientLicense = try RDPServerNewLicenseInformation.parse(licenseInfo).storedClientLicense
             licensingComplete = true
+            startPhase()
         }
     }
 
@@ -273,6 +295,7 @@ extension RDPClientConnection {
     private func activate(_ demandActive: RDPDemandActivePDU) throws {
         licensingComplete = true
         isDeactivated = false
+        startPhase()
         // A reactivation means the server is not disconnecting after all.
         isTerminating = false
         termination = nil
@@ -333,6 +356,7 @@ extension RDPClientConnection {
 
     private func finishActivation(_ share: RDPActiveShare) {
         stage = .graphics
+        startPhase(captureOnly: true)
         guard let channel = transport?.channel else {
             return
         }
@@ -349,6 +373,7 @@ extension RDPClientConnection {
     /// server is disconnecting.
     private func handleDeactivateAll() throws {
         isDeactivated = true
+        startPhase()
         if let termination, termination.errorInfo != nil {
             if termination.isClean, graphicsOpened {
                 try endSession(by: termination)

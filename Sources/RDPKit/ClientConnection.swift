@@ -39,6 +39,8 @@ final class RDPClientConnection {
     /// disconnecting, and only the disconnect reason is still to come.
     var isTerminating = false
     var sessionEnded = false
+    /// When the connection milestone being waited for must be reached.
+    var phaseDeadline: NIODeadline?
     /// The session's desktop size: the one requested, then each Demand
     /// Active's ([MS-RDPBCGR] 1.3.1.3, 2.2.7.1.2).
     var desktopWidth: UInt16

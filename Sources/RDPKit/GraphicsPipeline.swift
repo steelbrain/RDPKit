@@ -20,6 +20,7 @@ extension RDPClientConnection {
         pendingVideoCopies = []
         // totalFramesDecoded counts from the channel's creation ([MS-RDPEGFX] 2.2.2.13).
         graphicsFramesDecoded = 0
+        startPhase()
         let advertise = RDPGFXCapsAdvertisePDU(capabilitySets: configuration.graphicsCapabilityProfile.capabilitySets)
         report.rdpGraphicsCapsAdvertiseHex = try sendDynamicChannelData(advertise.encoded(), channelID: channelID)
             .rdpHexString
@@ -86,6 +87,7 @@ extension RDPClientConnection {
             outputWidth: desktopWidth,
             outputHeight: desktopHeight
         )
+        startPhase(captureOnly: true)
     }
 
     /// Applies one RDPGFX PDU; returns the frame ID when it ends a frame.
@@ -192,6 +194,7 @@ extension RDPClientConnection {
         pendingGraphicsFrames = []
         pendingVideoCopies = []
         try deliver(frames)
+        startPhase(captureOnly: true)
         guard let graphicsChannelID else {
             return
         }
@@ -299,6 +302,9 @@ extension RDPClientConnection {
             return
         }
         try deliver(frames)
+        if !frames.isEmpty {
+            startPhase(captureOnly: true)
+        }
         primaryFramesCaptured += frames.count
         if let targetFrameCount, primaryFramesCaptured >= targetFrameCount {
             sessionEnded = true

@@ -145,6 +145,29 @@ import Testing
     #expect(acknowledgesOnChannel2.count == 2)
 }
 
+/// Each connection milestone must arrive within the timeout however much
+/// other traffic the server sends; here a pointer update every 200 ms, which
+/// used to reset the wait forever.
+@Test(arguments: [
+    // Demand Active answered (event 20), no Synchronize/Control/Font Map.
+    (21, "server did not grant control during connection finalization"),
+    // RDPGFX caps advertised (event 34), no CapsConfirm.
+    (35, "server did not confirm RDPGFX capabilities"),
+    // CapsConfirm, but no frame for a capture run.
+    (39, "receive failed: RDP Graphics Update timed out after 1 seconds"),
+])
+func chattyServerStillMissesTheMilestoneDeadline(prefix: Int, error: String) throws {
+    // Without a deadline the run lasts until the guard cancels it.
+    let run = try KRdpCapture.run(
+        prefix: prefix,
+        timeoutSeconds: 1,
+        guardSeconds: 8,
+        onEnd: KRdpCapture.repeatedly(KRdpCapture.pointerHidden, every: .milliseconds(200))
+    )
+
+    #expect(run.report.error == error)
+}
+
 // MARK: - KRdp capture harness
 
 /// The KRdp capture's channels: I/O 1003, drdynvc 1004, message 1005, and
