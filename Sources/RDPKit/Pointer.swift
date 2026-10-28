@@ -249,7 +249,8 @@ final class RDPRemotePointerState {
         guard attribute.cacheIndex < Self.cacheSize else {
             throw RDPDecodeError.invalidPointerPDU
         }
-        // Servers send hotspots outside the image (FreeRDP resets them too); keep the hotspot on the image.
+        // MS-RDPBCGR 2.2.9.1.1.4.4 does not bound hotSpot. Clamp it onto the image so clients need no
+        // range check; no target server is known to send one outside (FreeRDP resets such a coordinate to 0).
         let image = RDPRemotePointerImage(
             cacheIndex: attribute.cacheIndex,
             hotSpot: RDPRemotePoint(

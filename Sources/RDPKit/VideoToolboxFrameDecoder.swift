@@ -594,7 +594,6 @@ public enum RDPVideoDecodeError: Error, Equatable, CustomStringConvertible {
 public enum RDPBitmapFrameDecodeError: Error, Equatable, CustomStringConvertible {
     case missingBitmapData
     case invalidBitmapLayout
-    case missingPixelBuffer
     case missingBaseAddress
     case coreVideo(operation: String, status: CVReturn)
 
@@ -604,8 +603,6 @@ public enum RDPBitmapFrameDecodeError: Error, Equatable, CustomStringConvertible
             "Decoded bitmap frame is missing BGRA data."
         case .invalidBitmapLayout:
             "Decoded bitmap frame has an invalid layout."
-        case .missingPixelBuffer:
-            "Core Video did not return a bitmap pixel buffer."
         case .missingBaseAddress:
             "Core Video did not expose the bitmap pixel buffer base address."
         case let .coreVideo(operation, status):
