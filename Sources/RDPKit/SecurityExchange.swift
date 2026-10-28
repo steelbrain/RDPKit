@@ -15,7 +15,9 @@ extension RDPClientConnection {
         let certificate = try inspectPeerCertificates(
             tls.certificates,
             host: configuration.host,
-            hideCertificateWarnings: configuration.hideCertificateWarnings
+            hideCertificateWarnings: configuration.hideCertificateWarnings,
+            timeoutSeconds: configuration.timeoutSeconds,
+            callbacks: callbacks
         )
         report.certificateTrusted = certificate.trusted
         report.certificateSHA256 = certificate.sha256
@@ -30,12 +32,10 @@ extension RDPClientConnection {
             guard let credentials = configuration.credentials else {
                 throw RDPCredSSPError.missingCredentials
             }
-            guard let leafCertificate = tls.certificates.first else {
-                throw RDPPreflightError.tls("server did not provide a TLS certificate")
-            }
+            // inspectPeerCertificates rejects an empty chain.
             try authenticate(
                 credentials,
-                certificateDER: Data(leafCertificate.toDERBytes()),
+                certificateDER: Data(tls.certificates[0].toDERBytes()),
                 then: usesEarlyUserAuthorization ? .earlyUserAuthorizationResult : .rdp
             )
             callbacks.wireTranscript?.recordMarker(direction: .clientToServer, layer: .security)

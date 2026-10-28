@@ -145,6 +145,8 @@ final class RDPTransportReader: ChannelDuplexHandler, RemovableChannelHandler {
     private var handshake: EventLoopPromise<Void>?
     private var failure: Error?
     private var readPending = false
+    /// The certificate chain the server presented in the TLS handshake, leaf first.
+    var presentedCertificates: [NIOSSLCertificate] = []
 
     init(onWireReceive: RDPWireReceiveHandler?, transcript: RDPWireTranscript?) {
         self.onWireReceive = onWireReceive
@@ -517,11 +519,14 @@ final class RDPTransport {
         return try promise.futureResult.wait()
     }
 
-    /// Starts TLS on the open connection and returns the server's certificates
-    /// and negotiated version once the handshake completes.
+    /// Starts TLS on the open connection and returns the certificate chain the
+    /// server presented and the negotiated version once the handshake completes.
+    /// The handshake accepts any certificate; the caller evaluates the chain.
     func startTLS(serverHostname: String?) throws -> (certificates: [NIOSSLCertificate], version: TLSVersion?) {
         var configuration = TLSConfiguration.makeClientConfiguration()
-        configuration.certificateVerification = .none
+        // Verification runs, so the callback below sees the presented chain,
+        // but the callback replaces all of BoringSSL's checks.
+        configuration.certificateVerification = .noHostnameVerification
         // Windows RDP can issue RSA certificates without digitalSignature,
         // which BoringSSL rejects on the TLS 1.3 certificate path.
         configuration.maximumTLSVersion = .tlsv12
@@ -533,7 +538,10 @@ final class RDPTransport {
         let timeoutSeconds = timeoutSeconds
         let handshake = channel.eventLoop.makePromise(of: Void.self)
         try channel.eventLoop.submit {
-            let tls = try NIOSSLClientHandler(context: context, serverHostname: serverHostname)
+            let tls = try NIOSSLClientHandler(context: context, serverHostname: serverHostname) { chain, verified in
+                reader.value.presentedCertificates = chain
+                verified.succeed(.certificateVerified)
+            }
             try channel.pipeline.syncOperations.addHandler(tls, position: .first)
             reader.value.awaitHandshake(handshake)
         }.wait()
@@ -558,7 +566,7 @@ final class RDPTransport {
 
         return try channel.eventLoop.submit {
             let tls = try channel.pipeline.syncOperations.handler(type: NIOSSLClientHandler.self)
-            return (tls.peerCertificate.map { [$0] } ?? [], tls.tlsVersion)
+            return (reader.value.presentedCertificates, tls.tlsVersion)
         }.wait()
     }
 }
