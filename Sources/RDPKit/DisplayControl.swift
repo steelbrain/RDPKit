@@ -426,7 +426,7 @@ private func clampedDesktopScaleFactor(_ value: UInt32) -> UInt32 {
     min(500, max(100, value))
 }
 
-private func nearestDeviceScaleFactor(_ value: UInt32) -> UInt32 {
+func nearestDeviceScaleFactor(_ value: UInt32) -> UInt32 {
     if value < 120 {
         return 100
     }

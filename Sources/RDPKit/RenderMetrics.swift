@@ -15,7 +15,6 @@ public struct RDPRenderMetrics: Equatable, Sendable {
     public var lastFrameDecodedAt: Date?
     public var decodedFrameCount = 0
     public var failedDecodeCount = 0
-    public var skippedDecodeFrameCount = 0
     public var skippedPresentationFrameCount = 0
     public var decodedByteCount = 0
     public var wireByteCount = 0
@@ -30,8 +29,6 @@ public struct RDPRenderMetrics: Equatable, Sendable {
     public var lastImageConversionMilliseconds: Double?
     public var decodedPixelFormat: UInt32?
     public var usesHardwareAcceleration: Bool?
-    public var totalCropMilliseconds = 0.0
-    public var lastCropMilliseconds: Double?
     public var lastDecodeError: String?
     // At most rollingFrameLimit decode times from the last rollingWindowSeconds.
     private var recentFrameDecodedAt: [Date] = []
@@ -49,7 +46,6 @@ public struct RDPRenderMetrics: Equatable, Sendable {
         connectionStartedAt != nil
             || decodedFrameCount > 0
             || failedDecodeCount > 0
-            || skippedDecodeFrameCount > 0
             || skippedPresentationFrameCount > 0
             || wireByteCount > 0
     }
@@ -77,10 +73,6 @@ public struct RDPRenderMetrics: Equatable, Sendable {
 
     public var averageImageConversionMilliseconds: Double? {
         averageComponentMilliseconds(totalImageConversionMilliseconds)
-    }
-
-    public var averageCropMilliseconds: Double? {
-        averageComponentMilliseconds(totalCropMilliseconds)
     }
 
     public var averageFramesPerSecond: Double? {
@@ -197,8 +189,6 @@ public struct RDPRenderMetrics: Equatable, Sendable {
         lastImageConversionMilliseconds = timing.imageConversionMilliseconds
         decodedPixelFormat = timing.decodedPixelFormat
         usesHardwareAcceleration = timing.usesHardwareAcceleration
-        totalCropMilliseconds += timing.cropMilliseconds
-        lastCropMilliseconds = timing.cropMilliseconds
         lastDecodeError = nil
 
         recentFrameDecodedAt.append(decodedAt)
@@ -220,16 +210,6 @@ public struct RDPRenderMetrics: Equatable, Sendable {
         lastFrameReceivedAt = receivedAt
         failedDecodeCount += 1
         lastDecodeError = errorDescription
-    }
-
-    public mutating func recordSkippedDecodeFrames(_ count: Int, receivedAt: Date) {
-        guard count > 0 else {
-            return
-        }
-        if connectionStartedAt == nil {
-            connectionStartedAt = receivedAt
-        }
-        skippedDecodeFrameCount += count
     }
 
     public mutating func recordSkippedPresentationFrame(at timestamp: Date) {
@@ -291,10 +271,6 @@ public final class RDPRenderMetricsStore: @unchecked Sendable {
 
     public func recordDecodeFailure(receivedAt: Date, errorDescription: String) {
         lock.withLock { storedMetrics.recordDecodeFailure(receivedAt: receivedAt, errorDescription: errorDescription) }
-    }
-
-    public func recordSkippedDecodeFrames(_ count: Int, receivedAt: Date) {
-        lock.withLock { storedMetrics.recordSkippedDecodeFrames(count, receivedAt: receivedAt) }
     }
 
     public func recordSkippedPresentationFrame(at timestamp: Date) {

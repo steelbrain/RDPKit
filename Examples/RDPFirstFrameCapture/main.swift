@@ -42,8 +42,7 @@ private enum FirstFrameCapture {
                 onDecodeFailed: { _, errorDescription in
                     recorder.recordFailure(errorDescription)
                     fputs("decode failed: \(errorDescription)\n", stderr)
-                },
-                onSkippedFrames: { _, _ in }
+                }
             )
             let wireTranscript = options.transcriptPath.map { _ in RDPWireTranscript() }
             scheduleCancellation(cancellation, after: options.settleSeconds)

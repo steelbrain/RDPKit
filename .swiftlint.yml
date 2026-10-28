@@ -5,7 +5,7 @@ included:
   - Tests
   - Examples/RDPClient/Sources
   - Examples/RDPFirstFrameCapture
-  - Examples/RDPFirstFrameCaptureSupport
+  - Examples/RDPCommandLineSupport
   - Examples/RDPFrameBenchmark
   - Examples/RDPPreflight
   - Examples/Tests

@@ -682,17 +682,6 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                         controller.publishRenderMetricsSnapshotIfNeeded(at: receivedAt)
                         controller.render()
                     }
-                },
-                onSkippedFrames: { count, receivedAt in
-                    sink.apply { controller in
-                        controller.renderMetricsStore.recordSkippedDecodeFrames(
-                            count,
-                            receivedAt: receivedAt
-                        )
-                        if controller.publishRenderMetricsSnapshotIfNeeded(at: receivedAt) {
-                            controller.render()
-                        }
-                    }
                 }
             )
             let wireReceiveCoalescer = RDPWireReceiveMetricsCoalescer(

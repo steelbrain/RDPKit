@@ -49,7 +49,6 @@ public struct RDPFrameDecodeTiming: Sendable {
     public var samplePreparationMilliseconds: Double
     public var videoToolboxMilliseconds: Double
     public var imageConversionMilliseconds: Double
-    public var cropMilliseconds: Double
     public var totalMilliseconds: Double
     public var decodedPixelFormat: UInt32?
     public var usesHardwareAcceleration: Bool?
@@ -58,7 +57,6 @@ public struct RDPFrameDecodeTiming: Sendable {
         samplePreparationMilliseconds: Double,
         videoToolboxMilliseconds: Double,
         imageConversionMilliseconds: Double,
-        cropMilliseconds: Double,
         totalMilliseconds: Double,
         decodedPixelFormat: UInt32?,
         usesHardwareAcceleration: Bool?
@@ -66,7 +64,6 @@ public struct RDPFrameDecodeTiming: Sendable {
         self.samplePreparationMilliseconds = samplePreparationMilliseconds
         self.videoToolboxMilliseconds = videoToolboxMilliseconds
         self.imageConversionMilliseconds = imageConversionMilliseconds
-        self.cropMilliseconds = cropMilliseconds
         self.totalMilliseconds = totalMilliseconds
         self.decodedPixelFormat = decodedPixelFormat
         self.usesHardwareAcceleration = usesHardwareAcceleration
@@ -157,7 +154,6 @@ public func decodeReportFirstFrame(_ frame: RDPGraphicsFrameSnapshot) -> RDPRepo
                     samplePreparationMilliseconds: decodedFrame.samplePreparationMilliseconds,
                     videoToolboxMilliseconds: decodedFrame.videoToolboxMilliseconds,
                     imageConversionMilliseconds: decodedFrame.imageConversionMilliseconds,
-                    cropMilliseconds: 0,
                     totalMilliseconds: decodedAt.timeIntervalSince(receivedAt) * 1000,
                     decodedPixelFormat: decodedFrame.decodedPixelFormat,
                     usesHardwareAcceleration: decodedFrame.usesHardwareAcceleration
@@ -915,7 +911,6 @@ public final class RDPLatestFrameDecodeQueue: @unchecked Sendable {
     ) -> Void
     private let onDecodeFailed: (Date, String) -> Void
 
-    /// - Parameter onSkippedFrames: Never called; frames are never skipped.
     public init(
         shouldCancel: @escaping () -> Bool,
         onDecoded: @escaping (
@@ -924,8 +919,7 @@ public final class RDPLatestFrameDecodeQueue: @unchecked Sendable {
             Date,
             RDPFrameDecodeTiming
         ) -> Void,
-        onDecodeFailed: @escaping (Date, String) -> Void,
-        onSkippedFrames _: @escaping (Int, Date) -> Void = { _, _ in }
+        onDecodeFailed: @escaping (Date, String) -> Void
     ) {
         self.shouldCancel = shouldCancel
         self.onDecoded = onDecoded
@@ -978,7 +972,6 @@ public final class RDPLatestFrameDecodeQueue: @unchecked Sendable {
                         samplePreparationMilliseconds: decodedFrame.samplePreparationMilliseconds,
                         videoToolboxMilliseconds: decodedFrame.videoToolboxMilliseconds,
                         imageConversionMilliseconds: decodedFrame.imageConversionMilliseconds,
-                        cropMilliseconds: 0,
                         totalMilliseconds: decodedAt.timeIntervalSince(decodeStartedAt) * 1000,
                         decodedPixelFormat: decodedFrame.decodedPixelFormat,
                         usesHardwareAcceleration: decodedFrame.usesHardwareAcceleration

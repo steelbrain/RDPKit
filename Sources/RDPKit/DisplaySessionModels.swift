@@ -17,17 +17,7 @@ public struct RDPDisplayScaleFactors: Equatable, Sendable {
             : 1
         let desktopScaleFactor = UInt32(min(500, max(100, (finiteScale * 100).rounded())))
         self.desktopScaleFactor = desktopScaleFactor
-        deviceScaleFactor = Self.nearestDeviceScaleFactor(for: desktopScaleFactor)
-    }
-
-    private static func nearestDeviceScaleFactor(for desktopScaleFactor: UInt32) -> UInt32 {
-        if desktopScaleFactor < 120 {
-            return 100
-        }
-        if desktopScaleFactor < 160 {
-            return 140
-        }
-        return 180
+        deviceScaleFactor = nearestDeviceScaleFactor(desktopScaleFactor)
     }
 }
 

@@ -139,13 +139,8 @@ private struct PerformanceMetricsView: View {
                     "Image Convert",
                     metricTiming(last: metrics.lastImageConversionMilliseconds, average: metrics.averageImageConversionMilliseconds)
                 )
-                DiagnosticRow(
-                    "Crop",
-                    metricTiming(last: metrics.lastCropMilliseconds, average: metrics.averageCropMilliseconds)
-                )
                 DiagnosticRow("Decoded Frames", "\(metrics.decodedFrameCount)")
                 DiagnosticRow("Decoded Bytes", metricBytes(metrics.decodedByteCount))
-                DiagnosticRow("Skipped Decode Frames", "\(metrics.skippedDecodeFrameCount)")
                 DiagnosticRow("Skipped Presentation Frames", "\(metrics.skippedPresentationFrameCount)")
                 DiagnosticRow("Decode Failures", "\(metrics.failedDecodeCount)")
                 if let lastDecodeError = metrics.lastDecodeError {

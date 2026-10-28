@@ -27,7 +27,6 @@ import Testing
             samplePreparationMilliseconds: 0.2,
             videoToolboxMilliseconds: 4.0,
             imageConversionMilliseconds: 0,
-            cropMilliseconds: 0,
             totalMilliseconds: 4.2,
             decodedPixelFormat: 0x3432_3076,
             usesHardwareAcceleration: true
@@ -102,7 +101,6 @@ import Testing
         samplePreparationMilliseconds: 0,
         videoToolboxMilliseconds: 0,
         imageConversionMilliseconds: 0,
-        cropMilliseconds: 0,
         totalMilliseconds: 1,
         decodedPixelFormat: nil,
         usesHardwareAcceleration: nil

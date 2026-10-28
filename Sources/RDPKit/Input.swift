@@ -242,17 +242,13 @@ public struct RDPInputStateTracker: Sendable {
     public mutating func keyboard(
         scancode: RDPKeyboardScancode,
         isReleased: Bool,
-        trackRelease: Bool = true,
         isRepeat: Bool = false
     ) -> RDPSlowPathInputEvent {
-        if trackRelease {
-            if isReleased {
-                pressedScancodes.remove(scancode)
-            } else if isRepeat == false {
-                pressedScancodes.insert(scancode)
-            }
+        if isReleased {
+            pressedScancodes.remove(scancode)
+        } else if isRepeat == false {
+            pressedScancodes.insert(scancode)
         }
-
         return .keyboard(scancode: scancode, isReleased: isReleased, wasDown: isRepeat && isReleased == false)
     }
 
