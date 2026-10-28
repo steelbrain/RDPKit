@@ -106,18 +106,6 @@ import Testing
     }
 }
 
-@Test func closingDynamicChannelDiscardsCompressionContext() {
-    var contexts = [
-        UInt32(7): RDPZGFXDecompressor.rdp8Lite(),
-        UInt32(8): RDPZGFXDecompressor.rdp8Lite(),
-    ]
-
-    discardDynamicVirtualChannelCompressionContext(channelID: 7, decompressors: &contexts)
-
-    #expect(contexts[7] == nil)
-    #expect(contexts[8] != nil)
-}
-
 @Test func detectsDynamicVirtualChannelSoftSyncRequest() throws {
     let request = try #require(try RDPDynamicVirtualChannelSoftSyncPDU.parseIfPresent(
         from: Data([

@@ -24,7 +24,7 @@ struct RDPClientInfoPDU: Equatable, Sendable {
         credentials: RDPCredentials?,
         passwordCookie: Data? = nil,
         clientAddress: String = "0.0.0.0",
-        clientDirectory: String = "KRDPSwift",
+        clientDirectory: String = "RDPKit",
         audioPlaybackEnabled: Bool = false
     ) {
         self.credentials = credentials

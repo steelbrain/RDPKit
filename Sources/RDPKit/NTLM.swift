@@ -60,7 +60,7 @@ final class RDPCredSSPNTLMContext {
 
     init(
         credentials: RDPCredentials,
-        workstationName: String = "KRDPSWIFT",
+        workstationName: String = "RDPKIT",
         channelBindingsHash: Data? = nil,
         randomBytes: @escaping (Int) throws -> Data = RDPCredSSPNTLMContext.secureRandomData(count:),
         currentFileTime: @escaping () -> UInt64 = RDPCredSSPNTLMContext.nowFileTime
@@ -521,7 +521,7 @@ final class RDPCredSSPNTLMContext {
         Data(HMAC<Insecure.MD5>.authenticationCode(for: data, using: SymmetricKey(data: key)))
     }
 
-    private static func secureRandomData(count: Int) throws -> Data {
+    static func secureRandomData(count: Int) throws -> Data {
         var bytes = [UInt8](repeating: 0, count: count)
         let status = SecRandomCopyBytes(kSecRandomDefault, count, &bytes)
         guard status == errSecSuccess else {

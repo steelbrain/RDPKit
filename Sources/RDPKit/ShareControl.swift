@@ -251,7 +251,7 @@ struct RDPShareControlPDU: Equatable, Sendable {
         return try parseIfPresent(from: indication)
     }
 
-    private static func parseIfPresent(from indication: MCSSendDataIndicationPDU) throws -> RDPShareControlPDU? {
+    static func parseIfPresent(from indication: MCSSendDataIndicationPDU) throws -> RDPShareControlPDU? {
         guard indication.userData.count >= 6 else {
             return nil
         }
@@ -481,7 +481,7 @@ struct RDPShareDataPDU: Equatable, Sendable {
         return try parseIfPresent(from: indication)
     }
 
-    private static func parseIfPresent(from indication: MCSSendDataIndicationPDU) throws -> RDPShareDataPDU? {
+    static func parseIfPresent(from indication: MCSSendDataIndicationPDU) throws -> RDPShareDataPDU? {
         guard indication.userData.count >= 18 else {
             return nil
         }

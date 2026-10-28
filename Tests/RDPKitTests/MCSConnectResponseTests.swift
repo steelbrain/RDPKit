@@ -62,7 +62,6 @@ import Testing
     )
 
     #expect(response.serverEarlyCapabilityFlags == 0x0000_0008)
-    #expect(response.serverSupportsSkipChannelJoin)
 }
 
 @Test func rejectsMCSConnectResponseWithMismatchedClientRequestedProtocols() {

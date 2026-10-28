@@ -179,7 +179,7 @@ import Testing
         pixelFormat: 32,
         destinationRect: RDPFrameRect(left: 0, top: 0, right: 16, bottom: 16),
         regionRects: [RDPFrameRect(left: 0, top: 0, right: 16, bottom: 16)],
-        h264AnnexBData: Data([0x00, 0x00, 0x01, 0x65])
+        encodedVideoData: Data([0x00, 0x00, 0x01, 0x65])
     )
 
     let report = RDPPreflightReport(
@@ -208,8 +208,6 @@ import Testing
     #expect(frame.videoCodec == .h264)
     #expect(frame.videoByteCount == 4)
     #expect(frame.videoNalUnitTypes == [5])
-    #expect(frame.h264ByteCount == 4)
-    #expect(frame.h264NalUnitTypes == [5])
 }
 
 @Test func preflightReportCarriesIssuedClientLicenseForPersistence() throws {
@@ -247,7 +245,7 @@ import Testing
         pixelFormat: 32,
         destinationRect: RDPFrameRect(left: 0, top: 0, right: 1280, bottom: 720),
         regionRects: [RDPFrameRect(left: 0, top: 0, right: 1280, bottom: 720)],
-        h264AnnexBData: Data([0x00, 0x00, 0x01, 0x65])
+        encodedVideoData: Data([0x00, 0x00, 0x01, 0x65])
     )
 
     let description = RDPGraphicsPathDescription.describe(
@@ -372,8 +370,6 @@ import Testing
 
     #expect(frame.videoByteCount == 20)
     #expect(frame.videoNalUnitTypes == [32, 33, 34, 19])
-    #expect(frame.h264ByteCount == 0)
-    #expect(frame.h264NalUnitTypes == [])
 }
 
 @Test func copiedVideoFramesRejectsDestinationsOutsideCoordinateRange() {

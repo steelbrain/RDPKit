@@ -45,8 +45,7 @@ final class MockKRDPServer {
         remoteClipboardText: String? = nil,
         audioEnabled: Bool = false,
         waitForCompatibilityTraffic: Bool = false,
-        requireBitmapCodecsCapability: Bool = false,
-        skipChannelJoinSupported: Bool = false
+        requireBitmapCodecsCapability: Bool = false
     ) throws -> MockKRDPServer {
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
         let transcript = MockKRDPServerTranscript()
@@ -72,7 +71,6 @@ final class MockKRDPServer {
                         audioEnabled: audioEnabled,
                         waitForCompatibilityTraffic: waitForCompatibilityTraffic,
                         requireBitmapCodecsCapability: requireBitmapCodecsCapability,
-                        skipChannelJoinSupported: skipChannelJoinSupported,
                         transcript: transcript,
                         connectionLog: connectionLog
                     ))
@@ -222,19 +220,20 @@ enum MockKRDPFinalizationBehavior: Equatable {
 
 enum MockKRDPAuxiliaryDynamicChannelBehavior {
     case none
-    case windowsInputAndCursor
+    /// Windows-style channels this client does not implement; it must reject them.
+    case unsupportedChannels
     case fragmentedGraphicsCreate
 
     var createRequests: [(channelID: UInt32, channelName: String)] {
         switch self {
         case .none, .fragmentedGraphicsCreate:
             []
-        case .windowsInputAndCursor:
+        case .unsupportedChannels:
             [
-                (1, RDPWindowsAuxiliaryDynamicChannel.inputName),
-                (2, RDPWindowsAuxiliaryDynamicChannel.coreInputName),
-                (3, RDPWindowsAuxiliaryDynamicChannel.audioInputName),
-                (8, RDPWindowsAuxiliaryDynamicChannel.mouseCursorName),
+                (1, "Microsoft::Windows::RDS::Input"),
+                (2, "Microsoft::Windows::RDS::CoreInput"),
+                (3, "AUDIO_INPUT"),
+                (8, "Microsoft::Windows::RDS::MouseCursor"),
             ]
         }
     }
@@ -279,7 +278,7 @@ struct MockKRDPServerTranscriptSnapshot: Equatable, Sendable {
     var clientClipboardMessages: [RDPClipboardMessageSummary]
     var receivedLocalClipboardText: String?
     var audioClientMessages: [RDPAudioMessageSummary]
-    var audioInputClientMessages: [String]
+    var dynamicCreateStatuses: [UInt32: Int32]
     var deviceRedirectionClientMessages: [String]
     var displayControlLayouts: [MockDisplayControlLayoutSummary]
     var dynamicCreateResponseStaticFlags: [UInt32]
@@ -296,7 +295,7 @@ final class MockKRDPServerTranscript: @unchecked Sendable {
     private var recordedClientClipboardMessages: [RDPClipboardMessageSummary] = []
     private var recordedReceivedLocalClipboardText: String?
     private var recordedAudioClientMessages: [RDPAudioMessageSummary] = []
-    private var recordedAudioInputClientMessages: [String] = []
+    private var recordedDynamicCreateStatuses: [UInt32: Int32] = [:]
     private var recordedDeviceRedirectionClientMessages: [String] = []
     private var recordedDisplayControlLayouts: [MockDisplayControlLayoutSummary] = []
     private var recordedDynamicCreateResponseStaticFlags: [UInt32] = []
@@ -314,7 +313,7 @@ final class MockKRDPServerTranscript: @unchecked Sendable {
             clientClipboardMessages: recordedClientClipboardMessages,
             receivedLocalClipboardText: recordedReceivedLocalClipboardText,
             audioClientMessages: recordedAudioClientMessages,
-            audioInputClientMessages: recordedAudioInputClientMessages,
+            dynamicCreateStatuses: recordedDynamicCreateStatuses,
             deviceRedirectionClientMessages: recordedDeviceRedirectionClientMessages,
             displayControlLayouts: recordedDisplayControlLayouts,
             dynamicCreateResponseStaticFlags: recordedDynamicCreateResponseStaticFlags,
@@ -362,9 +361,9 @@ final class MockKRDPServerTranscript: @unchecked Sendable {
         lock.unlock()
     }
 
-    func recordAudioInputMessage(_ message: String) {
+    func recordDynamicCreateStatus(channelID: UInt32, status: Int32) {
         lock.lock()
-        recordedAudioInputClientMessages.append(message)
+        recordedDynamicCreateStatuses[channelID] = status
         lock.unlock()
     }
 
@@ -404,8 +403,6 @@ private enum MockKRDPConstants {
     static let deviceRedirectionChannelID: UInt16 = 1008
     static let audioChannelID: UInt16 = 1009
     static let shareID: UInt32 = 0x0001_03EE
-    static let inputDynamicChannelID: UInt32 = 1
-    static let audioInputDynamicChannelID: UInt32 = 3
     static let graphicsDynamicChannelID: UInt32 = 7
     static let displayControlDynamicChannelID: UInt32 = 17
     static let audioDynamicChannelID: UInt32 = 19
@@ -951,8 +948,6 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
         case finalizationFontList
         case dynamicCapabilitiesResponse
         case graphicsCreateResponse(Int)
-        case inputClientReady
-        case inputCloseResponse
         case graphicsCapsAdvertise
         case graphicsFrameAcknowledge
         case done
@@ -973,14 +968,12 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
     private let audioEnabled: Bool
     private let waitForCompatibilityTraffic: Bool
     private let requireBitmapCodecsCapability: Bool
-    private let skipChannelJoinSupported: Bool
     private let transcript: MockKRDPServerTranscript
     private let connectionLog: MockKRDPConnectionLog
     private var connectionIndex = 0
     private var stage = Stage.x224
     private var received = Data()
     private var didReleaseGraphicsHandshake = false
-    private var didCompleteInputReadyClose = false
     private var didReleaseGraphicsFrame = false
     private var credSSPServer: MockCredSSPServer?
 
@@ -1000,7 +993,6 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
         audioEnabled: Bool,
         waitForCompatibilityTraffic: Bool,
         requireBitmapCodecsCapability: Bool,
-        skipChannelJoinSupported: Bool,
         transcript: MockKRDPServerTranscript,
         connectionLog: MockKRDPConnectionLog
     ) {
@@ -1019,7 +1011,6 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
         self.audioEnabled = audioEnabled
         self.waitForCompatibilityTraffic = waitForCompatibilityTraffic
         self.requireBitmapCodecsCapability = requireBitmapCodecsCapability
-        self.skipChannelJoinSupported = skipChannelJoinSupported
         self.transcript = transcript
         self.connectionLog = connectionLog
     }
@@ -1129,9 +1120,6 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
         if try handleDisplayControlPacketIfPresent(packet, context: context) {
             return
         }
-        if try handleAuxiliaryDynamicChannelPacketIfPresent(packet, context: context) {
-            return
-        }
         if try handleDynamicCreateResponseIfPresent(packet, context: context) {
             return
         }
@@ -1184,8 +1172,7 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
                 MockKRDPFixtures.mcsConnectResponse(
                     clipboardEnabled: clipboardEnabled,
                     audioEnabled: audioEnabled,
-                    clientRequestedProtocols: clientRequestedProtocols,
-                    skipChannelJoinSupported: skipChannelJoinSupported
+                    clientRequestedProtocols: clientRequestedProtocols
                 ),
                 context: context
             )
@@ -1198,7 +1185,7 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
         case .attachUser:
             _ = try X224DataTPDU.unwrap(packet)
             writePacket(MockKRDPFixtures.attachUserConfirm(), context: context)
-            stage = skipChannelJoinSupported ? .clientInfo : .channelJoin(0)
+            stage = .channelJoin(0)
 
         case let .channelJoin(index):
             _ = try X224DataTPDU.unwrap(packet)
@@ -1376,17 +1363,6 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
 
         case .dynamicCapabilitiesResponse:
             _ = try MockKRDPFixtures.staticVirtualChannelPayload(from: packet)
-            if auxiliaryDynamicChannelBehavior == .windowsInputAndCursor,
-               let inputRequest = auxiliaryDynamicChannelBehavior.createRequests.first
-            {
-                writePacket(MockKRDPFixtures.dynamicCreateRequest(
-                    channelID: inputRequest.channelID,
-                    channelName: inputRequest.channelName
-                ), context: context)
-                writePacket(MockKRDPFixtures.inputServerReady(), context: context)
-                stage = .graphicsCreateResponse(1)
-                break
-            }
             for createRequest in auxiliaryDynamicChannelBehavior.createRequests {
                 writePacket(MockKRDPFixtures.dynamicCreateRequest(
                     channelID: createRequest.channelID,
@@ -1403,53 +1379,11 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
             stage = .graphicsCreateResponse(auxiliaryDynamicChannelBehavior.createRequests.count + 1)
 
         case let .graphicsCreateResponse(remaining):
-            _ = try MockKRDPFixtures.staticVirtualChannelPayload(from: packet)
-            stage = remaining > 1
-                ? .graphicsCreateResponse(remaining - 1)
-                : auxiliaryDynamicChannelBehavior == .windowsInputAndCursor && !didCompleteInputReadyClose
-                    ? .inputClientReady
-                    : .graphicsCapsAdvertise
-
-        case .inputClientReady:
             let staticPayload = try MockKRDPFixtures.staticVirtualChannelPayload(from: packet)
-            guard let serverReady = try RDPInputServerReadyPDU.parseIfPresent(
-                from: MockKRDPFixtures.inputServerReadyPayload()
-            ) else {
-                throw MockKRDPServerError.invalidClientPDU
+            if let response = MockKRDPFixtures.dynamicCreateResponse(staticPayload) {
+                transcript.recordDynamicCreateStatus(channelID: response.channelID, status: response.status)
             }
-            guard let dataPDU = try RDPDynamicVirtualChannelDataPDU.parseIfPresent(from: staticPayload),
-                  dataPDU.channelID == MockKRDPConstants.inputDynamicChannelID,
-                  dataPDU.payload == RDPInputClientReadyPDU(serverReady: serverReady).encoded()
-            else {
-                throw MockKRDPServerError.invalidClientPDU
-            }
-            writePacket(MockKRDPFixtures.inputSuspend(), context: context)
-            writePacket(MockKRDPFixtures.inputResume(), context: context)
-            writePacket(MockKRDPFixtures.dynamicCloseRequest(channelID: MockKRDPConstants.inputDynamicChannelID), context: context)
-            stage = .inputCloseResponse
-
-        case .inputCloseResponse:
-            let staticPayload = try MockKRDPFixtures.staticVirtualChannelPayload(from: packet)
-            guard let closePDU = try RDPDynamicVirtualChannelClosePDU.parseIfPresent(from: staticPayload),
-                  closePDU.channelID == MockKRDPConstants.inputDynamicChannelID
-            else {
-                throw MockKRDPServerError.invalidClientPDU
-            }
-            didCompleteInputReadyClose = true
-            let remainingAuxiliaryCreates = auxiliaryDynamicChannelBehavior.createRequests.dropFirst()
-            for createRequest in remainingAuxiliaryCreates {
-                writePacket(MockKRDPFixtures.dynamicCreateRequest(
-                    channelID: createRequest.channelID,
-                    channelName: createRequest.channelName
-                ), context: context)
-            }
-            if auxiliaryDynamicChannelBehavior == .windowsInputAndCursor {
-                writePacket(MockKRDPFixtures.audioInputVersion(), context: context)
-                writePacket(MockKRDPFixtures.audioInputFormats(), context: context)
-                writePacket(MockKRDPFixtures.audioInputOpen(), context: context)
-            }
-            writePacket(MockKRDPFixtures.graphicsCreateRequest(), context: context)
-            stage = .graphicsCreateResponse(remainingAuxiliaryCreates.count + 1)
+            stage = remaining > 1 ? .graphicsCreateResponse(remaining - 1) : .graphicsCapsAdvertise
 
         case .graphicsCapsAdvertise:
             let staticPayload = try MockKRDPFixtures.staticVirtualChannelPayload(from: packet)
@@ -1737,39 +1671,6 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
         return true
     }
 
-    private func handleAuxiliaryDynamicChannelPacketIfPresent(
-        _ packet: Data,
-        context _: ChannelHandlerContext
-    ) throws -> Bool {
-        let auxiliaryChannelsByID = Dictionary(
-            uniqueKeysWithValues: auxiliaryDynamicChannelBehavior.createRequests
-                .map { ($0.channelID, $0.channelName) }
-        )
-        guard auxiliaryChannelsByID.isEmpty == false,
-              let request = try? MockKRDPFixtures.clientSendDataRequest(from: packet),
-              request.initiator == MockKRDPConstants.userChannelID,
-              request.channelID == MockKRDPConstants.dynamicChannelID
-        else {
-            return false
-        }
-
-        let staticPDU = try RDPStaticVirtualChannelPDU.parse(fromUserData: request.userData)
-        guard staticPDU.isComplete,
-              let dataPDU = try RDPDynamicVirtualChannelDataPDU.parseIfPresent(from: staticPDU.payload),
-              let channelName = auxiliaryChannelsByID[dataPDU.channelID],
-              channelName != RDPInputDynamicChannel.name
-        else {
-            return false
-        }
-
-        if channelName == RDPAudioInputDynamicChannel.name {
-            let pdu = try RDPAudioInputPDU.parse(from: dataPDU.payload)
-            transcript.recordAudioInputMessage(pdu.typeName)
-        }
-
-        return true
-    }
-
     private func clipboardFormatDataResponse(
         for request: RDPClipboardFormatDataRequestPDU
     ) -> RDPClipboardFormatDataResponsePDU {
@@ -1979,8 +1880,7 @@ private enum MockKRDPFixtures {
     static func mcsConnectResponse(
         clipboardEnabled: Bool = false,
         audioEnabled: Bool = false,
-        clientRequestedProtocols: RDPSecurityProtocols = [.tls, .credSSP],
-        skipChannelJoinSupported: Bool = false
+        clientRequestedProtocols: RDPSecurityProtocols = [.tls, .credSSP]
     ) -> Data {
         let domainParameters = Data([
             0x30, 0x1A,
@@ -2022,14 +1922,11 @@ private enum MockKRDPFixtures {
         ])
         var serverCoreData = Data([
             0x01, 0x0C,
-            skipChannelJoinSupported ? 0x10 : 0x0C,
+            0x0C,
             0x00,
             0x05, 0x00, 0x08, 0x00,
         ])
         serverCoreData.appendLittleEndianUInt32(clientRequestedProtocols.rawValue)
-        if skipChannelJoinSupported {
-            serverCoreData.appendLittleEndianUInt32(0x0000_0008)
-        }
         let serverSecurityData = Data([
             0x02, 0x0C, 0x0C, 0x00,
             0x00, 0x00, 0x00, 0x00,
@@ -3068,6 +2965,19 @@ private enum MockKRDPFixtures {
         )
     }
 
+    static func dynamicCreateResponse(_ payload: Data) -> (channelID: UInt32, status: Int32)? {
+        var cursor = ByteCursor(payload)
+        guard let header = try? RDPDynamicVirtualChannelHeader(byte: cursor.readUInt8()),
+              header.command == .create,
+              let channelID = try? cursor.readDynamicVirtualChannelID(lengthCode: header.channelIDLength),
+              let status = try? cursor.readLittleEndianUInt32(),
+              cursor.remaining == 0
+        else {
+            return nil
+        }
+        return (channelID, Int32(bitPattern: status))
+    }
+
     static func isDynamicCreateResponse(_ payload: Data, channelIDs: Set<UInt32>) -> Bool {
         guard payload.count >= 6 else {
             return false
@@ -3274,58 +3184,6 @@ private enum MockKRDPFixtures {
             payload: payload
         ).encoded()
         return staticVirtualChannelPacket(dynamicPayload)
-    }
-
-    static func inputServerReady() -> Data {
-        dynamicPacket(inputServerReadyPayload(), channelID: MockKRDPConstants.inputDynamicChannelID)
-    }
-
-    static func inputSuspend() -> Data {
-        var payload = Data()
-        payload.appendLittleEndianUInt16(0x0004)
-        payload.appendLittleEndianUInt32(6)
-        return dynamicPacket(payload, channelID: MockKRDPConstants.inputDynamicChannelID)
-    }
-
-    static func inputResume() -> Data {
-        var payload = Data()
-        payload.appendLittleEndianUInt16(0x0005)
-        payload.appendLittleEndianUInt32(6)
-        return dynamicPacket(payload, channelID: MockKRDPConstants.inputDynamicChannelID)
-    }
-
-    static func inputServerReadyPayload() -> Data {
-        var payload = Data()
-        payload.appendLittleEndianUInt16(0x0001)
-        payload.appendLittleEndianUInt32(14)
-        payload.appendLittleEndianUInt32(RDPInputProtocolVersion.version300.rawValue)
-        payload.appendLittleEndianUInt32(0x0000_0001)
-        return payload
-    }
-
-    static func audioInputVersion() -> Data {
-        dynamicPacket(
-            RDPAudioInputVersionPDU(version: 2).encoded(),
-            channelID: MockKRDPConstants.audioInputDynamicChannelID
-        )
-    }
-
-    static func audioInputFormats() -> Data {
-        dynamicPacket(
-            RDPAudioInputFormatsPDU(formats: [.pcmStereo48k16Bit]).encoded(),
-            channelID: MockKRDPConstants.audioInputDynamicChannelID
-        )
-    }
-
-    static func audioInputOpen() -> Data {
-        var payload = Data([RDPAudioInputMessageType.open])
-        payload.appendLittleEndianUInt32(480)
-        payload.appendLittleEndianUInt32(0)
-        payload.append(RDPAudioFormat.pcmStereo48k16Bit.encoded())
-        return dynamicPacket(
-            payload,
-            channelID: MockKRDPConstants.audioInputDynamicChannelID
-        )
     }
 
     static func dynamicCloseRequest(channelID: UInt32) -> Data {

@@ -26,10 +26,6 @@ struct MCSConnectResponse: Equatable, Sendable {
         result == 0 ? "rt-successful" : "rt-\(result)"
     }
 
-    var serverSupportsSkipChannelJoin: Bool {
-        serverEarlyCapabilityFlags.map { $0 & 0x0000_0008 != 0 } ?? false
-    }
-
     static func parse(
         fromTPKT packet: Data,
         requestedChannels: [RDPStaticVirtualChannel] = [],

@@ -170,7 +170,7 @@ struct RDPClientConfirmActivePDU: Equatable, Sendable {
         shareID: UInt32,
         desktopWidth: UInt16 = 1280,
         desktopHeight: UInt16 = 720,
-        sourceDescriptor: Data = Data("KRDPSwift".utf8)
+        sourceDescriptor: Data = Data("RDPKit".utf8)
     ) {
         precondition(!sourceDescriptor.isEmpty)
         precondition(sourceDescriptor.count <= Int(UInt16.max))
@@ -514,7 +514,7 @@ struct RDPClientConfirmActivePDU: Equatable, Sendable {
     }
 }
 
-private enum RDPCapabilitySetType {
+enum RDPCapabilitySetType {
     static let general: UInt16 = 0x0001
     static let bitmap: UInt16 = 0x0002
     static let order: UInt16 = 0x0003

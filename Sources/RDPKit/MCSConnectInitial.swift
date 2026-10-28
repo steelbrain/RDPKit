@@ -104,7 +104,7 @@ struct MCSConnectInitialConfiguration: Equatable, Sendable {
     init(
         desktopWidth: UInt16 = 1280,
         desktopHeight: UInt16 = 720,
-        clientName: String = "KRDPSWIFT",
+        clientName: String = "RDPKIT",
         selectedProtocol: RDPSecurityProtocols = .tls,
         requestedProtocols: RDPSecurityProtocols = [.tls, .credSSP],
         channels: [RDPStaticVirtualChannel] = [.drdynvc],

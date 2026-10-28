@@ -117,7 +117,7 @@ struct MockKRDPServerTests {
     #expect(report.rdpGraphicsFirstFrame?.width == 64)
     #expect(report.rdpGraphicsFirstFrame?.height == 32)
     #expect(report.rdpGraphicsFirstFrame?.videoNalUnitTypes == [7, 8, 5])
-    #expect(report.rdpGraphicsFirstFrame?.h264NalUnitTypes == [7, 8, 5])
+    #expect(report.rdpGraphicsFirstFrame?.videoNalUnitTypes == [7, 8, 5])
     #expect(observed.frames == report.rdpGraphicsFrames)
     #expect(observed.wireBytes > 0)
     #expect(report.error == nil)
@@ -182,32 +182,8 @@ struct MockKRDPServerTests {
     #expect(report.error == nil)
 }
 
-@Test func preflightSkipsMCSChannelJoinWhenServerAdvertisesSupport() throws {
-    let server = try MockKRDPServer.start(skipChannelJoinSupported: true)
-    defer { server.stop() }
-
-    let report = RDPPreflightClient().run(
-        configuration: RDPConnectionConfiguration(
-            host: "127.0.0.1",
-            port: server.port,
-            credentials: RDPCredentials(username: "rdp-user", password: "secret"),
-            timeoutSeconds: 5,
-            hideCertificateWarnings: true,
-            graphicsFrameCaptureLimit: 1,
-            clipboardEnabled: false
-        )
-    )
-
-    let joinedChannels = try #require(report.mcsJoinedChannels)
-    #expect(report.status == "success")
-    #expect(joinedChannels.map(\.name) == ["user", "io", "drdynvc", "message"])
-    #expect(joinedChannels.allSatisfy { $0.result == "rt-successful" })
-    #expect(joinedChannels.allSatisfy { $0.requestHex.isEmpty })
-    #expect(joinedChannels.allSatisfy { $0.confirmHex.isEmpty })
-}
-
-@Test func preflightExplicitlyJoinsMCSChannelsWhenServerDoesNotAdvertiseSkip() throws {
-    let server = try MockKRDPServer.start(skipChannelJoinSupported: false)
+@Test func preflightExplicitlyJoinsEveryMCSChannel() throws {
+    let server = try MockKRDPServer.start()
     defer { server.stop() }
 
     let report = RDPPreflightClient().run(
@@ -264,10 +240,8 @@ struct MockKRDPServerTests {
     #expect(littleEndianUInt32(in: core, at: 230) == 100)
 }
 
-@Test func preflightAcceptsWindowsAuxiliaryDynamicChannelsBeforeGraphics() throws {
-    let server = try MockKRDPServer.start(
-        auxiliaryDynamicChannelBehavior: .windowsInputAndCursor
-    )
+@Test func preflightRejectsUnsupportedDynamicChannelsBeforeGraphics() throws {
+    let server = try MockKRDPServer.start(auxiliaryDynamicChannelBehavior: .unsupportedChannels)
     defer { server.stop() }
 
     let report = RDPPreflightClient().run(
@@ -285,34 +259,13 @@ struct MockKRDPServerTests {
     )
 
     let dynamicRequestTypes = report.rdpDynamicChannelRequestTypes ?? []
-    let audioInputClientNames = server.transcript.snapshot.audioInputClientMessages
+    let statuses = server.transcript.snapshot.dynamicCreateStatuses
     #expect(report.status == "success")
-    #expect(dynamicRequestTypes.contains(
-        "dynvc-create-request:\(RDPWindowsAuxiliaryDynamicChannel.inputName)"
-    ))
-    #expect(dynamicRequestTypes.contains(
-        "dynvc-create-request:\(RDPWindowsAuxiliaryDynamicChannel.coreInputName)"
-    ))
-    #expect(dynamicRequestTypes.contains(
-        "dynvc-create-request:\(RDPWindowsAuxiliaryDynamicChannel.audioInputName)"
-    ))
-    #expect(dynamicRequestTypes.contains(
-        "dynvc-create-request:\(RDPWindowsAuxiliaryDynamicChannel.mouseCursorName)"
-    ))
-    #expect(dynamicRequestTypes.contains("dynvc-data:rdpei-sc-ready"))
-    #expect(dynamicRequestTypes.contains("dynvc-data:rdpei-suspend-input"))
-    #expect(dynamicRequestTypes.contains("dynvc-data:rdpei-resume-input"))
-    #expect(dynamicRequestTypes.contains("dynvc-data:audio-input-version"))
-    #expect(dynamicRequestTypes.contains("dynvc-data:audio-input-formats"))
-    #expect(dynamicRequestTypes.contains("dynvc-data:audio-input-open"))
-    #expect(audioInputClientNames == [
-        "audio-input-version",
-        "audio-input-data-incoming",
-        "audio-input-formats",
-        "audio-input-format-change",
-        "audio-input-open-reply",
-    ])
-    #expect(dynamicRequestTypes.contains("dynvc-close"))
+    for (channelID, channelName) in MockKRDPAuxiliaryDynamicChannelBehavior.unsupportedChannels.createRequests {
+        #expect(dynamicRequestTypes.contains("dynvc-create-request:\(channelName)"))
+        #expect((statuses[channelID] ?? 0) < 0)
+    }
+    #expect(statuses[7] == 0)
     #expect(report.rdpGraphicsChannelName == RDPGFXChannel.name)
     #expect(report.rdpGraphicsResponseType == "rdpgfx-caps-confirm")
     #expect(report.rdpGraphicsFirstFrame?.codecName == "avc420")
@@ -815,11 +768,11 @@ struct MockKRDPServerTests {
     #expect(report.nextStage == nil)
     #expect(report.rdpFinalizationResponseTypes?.contains("font-map") == true)
     #expect(report.rdpDynamicChannelRequestTypes == [])
-    #expect(report.rdpRemoteTerminationErrorInfo == nil)
-    #expect(report.rdpRemoteTerminationErrorInfoName == nil)
+    #expect(report.rdpRemoteTerminationErrorInfo == 0x0000_000C)
+    #expect(report.rdpRemoteTerminationErrorInfoName == "ERRINFO_LOGOFF_BY_USER")
     #expect(report.rdpRemoteTerminationDisconnectReason == 3)
     #expect(report.rdpRemoteTerminationDisconnectReasonName == "rn-user-requested")
-    #expect(report.error == "server ended the session with rn-user-requested before opening RDPGFX dynamic channel")
+    #expect(report.error == "server ended the session with ERRINFO_LOGOFF_BY_USER before opening RDPGFX dynamic channel")
 }
 
 @Test func preflightRejectsNonCleanSetErrorInfoBeforeGraphics() throws {
@@ -1735,9 +1688,9 @@ struct MockKRDPServerTests {
     )
 
     #expect(report.status == "failure")
-    #expect(report.stage == "tls-upgrade")
+    #expect(report.stage == "early-user-authorization")
     #expect(report.selectedProtocols == ["credssp-early-user-auth"])
-    #expect(report.earlyUserAuthorizationResult == nil)
+    #expect(report.earlyUserAuthorizationResult == RDPEarlyUserAuthorizationResult.accessDenied.rawValue)
     #expect(report.error == "early user authorization denied access")
 }
 

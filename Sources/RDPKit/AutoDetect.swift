@@ -155,6 +155,16 @@ struct RDPAutoDetectBandwidthMeter: Sendable {
         return response
     }
 
+    /// Counts other traffic received while a measurement runs: continuous
+    /// detection measures the session's own data ([MS-RDPBCGR] 1.3.9).
+    mutating func countReceivedBytes(_ count: Int) {
+        guard startedAt != nil else {
+            return
+        }
+        let (total, overflow) = byteCount.addingReportingOverflow(UInt32(clamping: count))
+        byteCount = overflow ? .max : total
+    }
+
     private static func milliseconds(_ duration: Duration) -> UInt32 {
         let (seconds, attoseconds) = duration.components
         let milliseconds = seconds * 1000 + attoseconds / 1_000_000_000_000_000

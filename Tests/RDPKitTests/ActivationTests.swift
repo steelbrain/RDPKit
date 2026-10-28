@@ -135,7 +135,7 @@ import Testing
     ]))
     #expect(packet.containsSubsequence(Data([
         0xEE, 0x03, 0x01, 0x00,
-        0xEA, 0x03, 0x09, 0x00,
+        0xEA, 0x03, 0x06, 0x00,
     ])))
     #expect(confirmActive.capabilitySets.map(\.name) == [
         "general",

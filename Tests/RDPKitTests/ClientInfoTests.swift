@@ -50,7 +50,7 @@ import Testing
     #expect(pduData.range(of: utf16LENullTerminated("rdp-user")) != nil)
     #expect(pduData.range(of: utf16LENullTerminated("secret")) != nil)
     #expect(pduData.range(of: utf16LENullTerminated("0.0.0.0")) != nil)
-    #expect(pduData.range(of: utf16LENullTerminated("KRDPSwift")) != nil)
+    #expect(pduData.range(of: utf16LENullTerminated("RDPKit")) != nil)
 }
 
 @Test func clientInfoTPKTUsesUserChannelAsInitiatorAndIOChannelAsTarget() throws {

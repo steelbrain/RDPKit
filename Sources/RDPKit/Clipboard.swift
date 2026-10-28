@@ -115,7 +115,8 @@ public struct RDPClipboardMessageSummary: Encodable, Equatable, Sendable {
     }
 }
 
-typealias RDPClipboardSentMessageHandler = (RDPClipboardMessageSummary, Data) -> Void
+/// Called with each PDU the session sends and its channel packets, on the sending thread.
+typealias RDPClipboardSentMessageHandler = @Sendable (RDPClipboardMessageSummary, Data) -> Void
 
 struct RDPClipboardPDU: Equatable, Sendable {
     static let headerByteCount = 8
@@ -1254,10 +1255,7 @@ public final class RDPClipboardSession: @unchecked Sendable {
     private func send(_ payload: Data) {
         let packets = Self.encodedPackets(payload, userChannelID: userChannelID, staticChannelID: staticChannelID)
         if let sentMessageHandler, let pdu = try? RDPClipboardPDU.parse(from: payload) {
-            // The handler is not Sendable; serialize calls made from the app and the session loop.
-            lock.lock()
             sentMessageHandler(.summarize(pdu), packets.reduce(into: Data()) { $0.append($1) })
-            lock.unlock()
         }
         channel.eventLoop.execute {
             guard self.channel.isActive else {

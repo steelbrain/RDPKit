@@ -344,7 +344,7 @@ struct KRDPRegressionCoverageTests {
     let report = try runRegressionPreflight()
 
     // Mock demand omits minimal bitmap-codecs → full Confirm Active path.
-    #expect(report.rdpConfirmActiveRequestHex.flatMap { Data(rdpHexString: $0)?.count } == 583)
+    #expect(report.rdpConfirmActiveRequestHex.flatMap { Data(rdpHexString: $0)?.count } == 580)
 }
 
 @Test func regression54LiveKRDPStyleMinimalBitmapCodecsGetsFullConfirm() throws {
@@ -401,8 +401,8 @@ private func le16(_ data: Data, _ offset: Int) -> UInt16 {
     #expect(report.rdpGraphicsFirstFrame != nil)
 }
 
-@Test func regression48WindowsAuxiliaryDynamicChannelsPreserveActivationOrdering() throws {
-    let report = try runRegressionPreflight(auxiliaryDynamicChannelBehavior: .windowsInputAndCursor)
+@Test func regression48UnsupportedDynamicChannelsPreserveActivationOrdering() throws {
+    let report = try runRegressionPreflight(auxiliaryDynamicChannelBehavior: .unsupportedChannels)
 
     #expect(report.status == "success")
     #expect(report.rdpFinalizationResponseTypes?.contains("server-synchronize") == true)

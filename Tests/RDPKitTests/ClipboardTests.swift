@@ -830,13 +830,20 @@ import Testing
     _ = try channel.finish()
 }
 
-private final class ClipboardSentMessages {
-    var summaries: [RDPClipboardMessageSummary] = []
-    var packets: [Data] = []
+private final class ClipboardSentMessages: @unchecked Sendable {
+    private let lock = NSLock()
+    private var sent: [(summary: RDPClipboardMessageSummary, packets: Data)] = []
 
-    func record(_ summary: RDPClipboardMessageSummary, _ packets: Data) {
-        summaries.append(summary)
-        self.packets.append(packets)
+    var summaries: [RDPClipboardMessageSummary] {
+        lock.withLock { sent.map(\.summary) }
+    }
+
+    var packets: [Data] {
+        lock.withLock { sent.map(\.packets) }
+    }
+
+    @Sendable func record(_ summary: RDPClipboardMessageSummary, _ packets: Data) {
+        lock.withLock { sent.append((summary, packets)) }
     }
 }
 

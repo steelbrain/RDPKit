@@ -118,7 +118,7 @@ import Testing
     #expect(littleEndianUInt32(token, at: 60) == 0xE288_9235)
     #expect(securityBuffer(token, at: 28) == utf16LittleEndian("Domain"))
     #expect(securityBuffer(token, at: 36) == utf16LittleEndian("User"))
-    #expect(securityBuffer(token, at: 44) == utf16LittleEndian("KRDPSWIFT"))
+    #expect(securityBuffer(token, at: 44) == utf16LittleEndian("RDPKIT"))
     #expect(securityBuffer(token, at: 12) == Data(count: 24))
     #expect(securityBuffer(token, at: 20).count > 48)
     #expect(securityBuffer(token, at: 52).count == 16)
