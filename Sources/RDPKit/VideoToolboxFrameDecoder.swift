@@ -216,10 +216,7 @@ private final class RDPAVC444FrameDecoder {
         var bottom: UInt16
     }
 
-    private let h264Decoder = RDPVideoToolboxSequenceDecoder(
-        codec: .h264,
-        outputPixelFormat: kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
-    )
+    private let h264Decoder = RDPVideoToolboxSequenceDecoder(codec: .h264, preservesCodedSamples: true)
     private let frameStore = RDPAVC444FrameStore()
     private var metalDecoder: RDPAVC444MetalDecoder?
     private var didAttemptMetalDecoderCreation = false
@@ -527,7 +524,7 @@ public enum RDPH264DecodedFrameImage {
 /// whenever the stream carries new parameter sets.
 final class RDPVideoToolboxSequenceDecoder {
     private let codec: RDPVideoCodec
-    private let outputPixelFormat: OSType?
+    private let preservesCodedSamples: Bool
     /// SPS and PPS for H.264; VPS, SPS, and PPS for HEVC.
     private var parameterSets: [Data?]
     private var formatDescription: CMVideoFormatDescription?
@@ -535,9 +532,11 @@ final class RDPVideoToolboxSequenceDecoder {
     private var usesHardwareAcceleration: Bool?
     private let output = VideoToolboxDecodeOutput()
 
-    init(codec: RDPVideoCodec, outputPixelFormat: OSType? = nil) {
+    /// With `preservesCodedSamples`, output is 8-bit NV12 holding the decoded sample values
+    /// unchanged, as AVC444 reconstruction requires.
+    init(codec: RDPVideoCodec, preservesCodedSamples: Bool = false) {
         self.codec = codec
-        self.outputPixelFormat = outputPixelFormat
+        self.preservesCodedSamples = preservesCodedSamples
         parameterSets = Array(repeating: nil, count: codec == .h264 ? 2 : 3)
     }
 
@@ -664,7 +663,9 @@ final class RDPVideoToolboxSequenceDecoder {
                 decoderSpecification: [
                     kVTVideoDecoderSpecification_EnableHardwareAcceleratedVideoDecoder: true,
                 ] as CFDictionary,
-                imageBufferAttributes: rdpVideoPixelBufferAttributes(pixelFormat: outputPixelFormat) as CFDictionary,
+                imageBufferAttributes: rdpVideoPixelBufferAttributes(
+                    pixelFormat: outputPixelFormat(for: formatDescription)
+                ) as CFDictionary,
                 outputCallback: &callback,
                 decompressionSessionOut: &session
             ),
@@ -686,6 +687,23 @@ final class RDPVideoToolboxSequenceDecoder {
         )
         let usesHardwareAcceleration = hardwareAcceleration?.takeRetainedValue()
         self.usesHardwareAcceleration = status == noErr ? usesHardwareAcceleration as? Bool : nil
+    }
+
+    private func outputPixelFormat(for formatDescription: CMVideoFormatDescription) -> OSType? {
+        guard preservesCodedSamples else {
+            return nil
+        }
+        // Requesting the other range makes VideoToolbox rescale every sample. GNOME Remote
+        // Desktop and KRdp signal limited range in the SPS VUI although MS-RDPEGFX 3.3.8.3.1
+        // defines the samples as full-range BT.709, so match the signalled range and let the
+        // AVC444 conversion interpret the raw values.
+        let signalsFullRange = CMFormatDescriptionGetExtension(
+            formatDescription,
+            extensionKey: kCMFormatDescriptionExtension_FullRangeVideo
+        ) as? Bool == true
+        return signalsFullRange
+            ? kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
+            : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
     }
 
     private func makeFormatDescription(parameterSets: [Data]) throws -> CMVideoFormatDescription {
