@@ -130,6 +130,7 @@ enum MockKRDPGraphicsBehavior: Equatable {
     case sendInvalidGraphicsPDU
     case sendCompressedCAVideoRemoteFXFrame
     case sendUnsupportedCompressedDynamicData
+    case sendCompressedDataLargerThanOnePDU
     case sendSoftSyncBeforeFrame
     case sendUnknownCloseBeforeFrame
     case sendEmptyFrameThenStall
@@ -195,6 +196,8 @@ enum MockKRDPLicensingBehavior {
     case serverLicenseRequest
     case serverLicenseRequestWithStoredClientLicense
     case serverLicenseRequestX509
+    case noLicenseServerError
+    case disconnectInsteadOfLicensing
 }
 
 enum MockKRDPRedirectionBehavior {
@@ -214,6 +217,7 @@ enum MockKRDPFinalizationBehavior: Equatable {
     case controlCooperateBeforeSynchronize
     case grantControlWithoutFontMap
     case deactivateAfterFontMap
+    case deactivateThenReactivateAfterFontMap
     case deactivateThenUserRequestedDisconnectAfterFontMap
     case setErrorInfoDeniedThenDeactivateAfterFontMap
     case setErrorInfoLogoffThenDeactivateAfterFontMap
@@ -962,6 +966,8 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
     private let graphicsCapabilitySelection: MockKRDPGraphicsCapabilitySelection
     private let autoDetectBehavior: MockKRDPAutoDetectBehavior
     private let licensingBehavior: MockKRDPLicensingBehavior
+    private var hasReactivated = false
+    private var isAwaitingReactivation = false
     private let redirectionBehavior: MockKRDPRedirectionBehavior
     private let finalizationBehavior: MockKRDPFinalizationBehavior
     private let auxiliaryDynamicChannelBehavior: MockKRDPAuxiliaryDynamicChannelBehavior
@@ -1239,6 +1245,12 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
                     context: context
                 )
                 stage = .clientNewLicenseRequest
+            case .noLicenseServerError:
+                writePacket(MockKRDPFixtures.licenseError(code: 0x0000_0006, stateTransition: 0x0000_0001), context: context)
+                stage = .done
+            case .disconnectInsteadOfLicensing:
+                writePacket(MockKRDPFixtures.disconnectProviderUltimatum(), context: context)
+                stage = .done
             }
 
         case .bandwidthMeasureResponse:
@@ -1268,11 +1280,22 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
                     context: context
                 )
                 stage = .clientNewLicenseRequest
+            case .noLicenseServerError:
+                writePacket(MockKRDPFixtures.licenseError(code: 0x0000_0006, stateTransition: 0x0000_0001), context: context)
+                stage = .done
+            case .disconnectInsteadOfLicensing:
+                writePacket(MockKRDPFixtures.disconnectProviderUltimatum(), context: context)
+                stage = .done
             }
 
         case .clientNewLicenseRequest:
             let request = try MockKRDPFixtures.expectSendDataRequest(packet, channelID: MockKRDPConstants.ioChannelID)
             try MockKRDPFixtures.expectClientNewLicenseRequest(request.userData)
+            // A host in its licensing grace period answers with STATUS_VALID_CLIENT
+            // ([MS-RDPELE] 3.1.5.3); the X.509 variant goes straight to Demand Active.
+            if licensingBehavior == .serverLicenseRequest {
+                writePacket(MockKRDPFixtures.licenseValidClient(), context: context)
+            }
             writePacket(MockKRDPFixtures.demandActive(), context: context)
             stage = .confirmActive
 
@@ -1315,6 +1338,7 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
                  .controlCooperateBeforeSynchronize,
                  .grantControlWithoutFontMap,
                  .deactivateAfterFontMap,
+                 .deactivateThenReactivateAfterFontMap,
                  .deactivateThenUserRequestedDisconnectAfterFontMap,
                  .setErrorInfoDeniedThenDeactivateAfterFontMap,
                  .setErrorInfoLogoffThenDeactivateAfterFontMap,
@@ -1362,7 +1386,8 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
 
         case .finalizationFontList:
             try MockKRDPFixtures.expectSendDataRequest(packet, channelID: MockKRDPConstants.ioChannelID)
-            stage = .dynamicCapabilitiesResponse
+            stage = isAwaitingReactivation ? .confirmActive : .dynamicCapabilitiesResponse
+            isAwaitingReactivation = false
 
         case .dynamicCapabilitiesResponse:
             _ = try MockKRDPFixtures.staticVirtualChannelPayload(from: packet)
@@ -1450,6 +1475,7 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
                  .sendInvalidGraphicsPDU,
                  .sendCompressedCAVideoRemoteFXFrame,
                  .sendUnsupportedCompressedDynamicData,
+                 .sendCompressedDataLargerThanOnePDU,
                  .sendSoftSyncBeforeFrame,
                  .sendUnknownCloseBeforeFrame,
                  .closeAfterFirstFrame,
@@ -1781,6 +1807,15 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
             writePacket(MockKRDPFixtures.deactivateAll(), context: context)
             return
         }
+        if finalizationBehavior == .deactivateThenReactivateAfterFontMap, !hasReactivated {
+            // Deactivation-reactivation ([MS-RDPBCGR] 1.3.1.3): the client
+            // answers the new Demand Active and finalizes again.
+            hasReactivated = true
+            isAwaitingReactivation = true
+            writePacket(MockKRDPFixtures.deactivateAll(), context: context)
+            writePacket(MockKRDPFixtures.demandActive(), context: context)
+            return
+        }
         if clipboardFiles.isEmpty || remoteClipboardText != nil || waitForCompatibilityTraffic {
             releaseGraphicsHandshake(context: context)
         }
@@ -2053,14 +2088,18 @@ private enum MockKRDPFixtures {
     }
 
     static func licenseValidClient() -> Data {
+        licenseError(code: 0x0000_0007, stateTransition: 0x0000_0002)
+    }
+
+    static func licenseError(code: UInt32, stateTransition: UInt32) -> Data {
         var payload = Data()
         payload.appendLittleEndianUInt16(0x0080)
         payload.appendLittleEndianUInt16(0)
         payload.appendUInt8(0xFF)
         payload.appendUInt8(0x03)
         payload.appendLittleEndianUInt16(16)
-        payload.appendLittleEndianUInt32(0x0000_0007)
-        payload.appendLittleEndianUInt32(0x0000_0002)
+        payload.appendLittleEndianUInt32(code)
+        payload.appendLittleEndianUInt32(stateTransition)
         payload.appendLittleEndianUInt16(0x0004)
         payload.appendLittleEndianUInt16(0)
         return mcsSendDataIndication(
@@ -2588,6 +2627,9 @@ private enum MockKRDPFixtures {
             [compressedGraphicsDynamicPacket(segmentedGraphicsData(cavideoRemoteFXFrameMessages()))]
         case .sendUnsupportedCompressedDynamicData:
             [invalidCompressedGraphicsDynamicPacket(Data([0x12, 0x00]))]
+        case .sendCompressedDataLargerThanOnePDU:
+            // RDP8-lite segment that expands to 8,192 x 0x41 ([MS-RDPEDYC] 2.2.3.4).
+            [invalidCompressedGraphicsDynamicPacket(Data([0xE0, 0x26, 0x20, 0xC4, 0x3F, 0xFD, 0xFF, 0xE0, 0x05]))]
         case .sendSoftSyncBeforeFrame:
             [softSyncRequest(), graphicsDynamicPacket(segmentedGraphicsData(avc420FrameMessages()))]
         case .sendUnknownCloseBeforeFrame:

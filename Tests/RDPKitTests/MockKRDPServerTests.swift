@@ -439,6 +439,55 @@ struct MockKRDPServerTests {
     #expect(report.error == nil)
 }
 
+@Test func preflightReportsLicensingFailureWithTheServerErrorCode() throws {
+    let server = try MockKRDPServer.start(licensingBehavior: .noLicenseServerError)
+    defer { server.stop() }
+
+    let report = RDPPreflightClient().run(
+        configuration: RDPConnectionConfiguration(
+            host: "127.0.0.1",
+            port: server.port,
+            credentials: RDPCredentials(username: "rdp-user", password: "secret"),
+            timeoutSeconds: 5,
+            hideCertificateWarnings: true,
+            graphicsFrameCaptureLimit: 1,
+            desktopWidth: 1280,
+            desktopHeight: 720,
+            clipboardEnabled: false
+        )
+    )
+
+    #expect(report.status == "failure")
+    #expect(report.stage == "rdp-licensing")
+    #expect(report.rdpLicensingResponseType == "license-error-0x00000006")
+    #expect(report.rdpLicensingErrorCode == 0x0000_0006)
+    #expect(report.error == "server licensing failed: ERR_NO_LICENSE_SERVER (0x00000006), ST_TOTAL_ABORT")
+}
+
+@Test func preflightReportsDisconnectAfterClientInfo() throws {
+    let server = try MockKRDPServer.start(licensingBehavior: .disconnectInsteadOfLicensing)
+    defer { server.stop() }
+
+    let report = RDPPreflightClient().run(
+        configuration: RDPConnectionConfiguration(
+            host: "127.0.0.1",
+            port: server.port,
+            credentials: RDPCredentials(username: "rdp-user", password: "secret"),
+            timeoutSeconds: 5,
+            hideCertificateWarnings: true,
+            graphicsFrameCaptureLimit: 1,
+            desktopWidth: 1280,
+            desktopHeight: 720,
+            clipboardEnabled: false
+        )
+    )
+
+    #expect(report.status == "failure")
+    #expect(report.rdpClientInfoSent == true)
+    #expect(report.rdpRemoteTerminationDisconnectReasonName == "rn-user-requested")
+    #expect(report.error == "server ended the session with rn-user-requested")
+}
+
 @Test func preflightSendsClientLicenseInformationForMatchingStoredLicense() throws {
     let server = try MockKRDPServer.start(licensingBehavior: .serverLicenseRequestWithStoredClientLicense)
     defer { server.stop() }
@@ -718,6 +767,52 @@ struct MockKRDPServerTests {
     #expect(report.rdpFinalizationResponseTypes?.contains("font-map") == false)
     #expect(report.rdpGraphicsChannelName == nil)
     #expect(report.error == "server did not send Font Map during connection finalization")
+}
+
+@Test func preflightReactivatesAfterDeactivateAllAndDemandActive() throws {
+    let server = try MockKRDPServer.start(finalizationBehavior: .deactivateThenReactivateAfterFontMap)
+    defer { server.stop() }
+
+    let inputSessions = InputSessionCounter()
+    let report = RDPPreflightClient().run(
+        configuration: RDPConnectionConfiguration(
+            host: "127.0.0.1",
+            port: server.port,
+            credentials: RDPCredentials(username: "rdp-user", password: "secret"),
+            timeoutSeconds: 5,
+            hideCertificateWarnings: true,
+            graphicsFrameCaptureLimit: 1,
+            desktopWidth: 1280,
+            desktopHeight: 720,
+            clipboardEnabled: false
+        ),
+        onInputReady: { _ in
+            inputSessions.increment()
+        }
+    )
+
+    #expect(report.status == "success")
+    #expect(report.rdpFinalizationResponseTypes?.filter { $0 == "font-map" }.count == 2)
+    #expect(inputSessions.value == 2)
+    #expect(report.rdpGraphicsFirstFrame?.codecName == "avc420")
+    #expect(report.error == nil)
+}
+
+private final class InputSessionCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+
+    var value: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return count
+    }
+
+    func increment() {
+        lock.lock()
+        defer { lock.unlock() }
+        count += 1
+    }
 }
 
 @Test func preflightReportsServerDeactivateBeforeGraphicsAsDisconnect() throws {
@@ -1200,6 +1295,35 @@ struct MockKRDPServerTests {
     #expect(report.error == "invalid RDP Dynamic Virtual Channel PDU")
 }
 
+/// Decompressed DVC data can exceed one 1,600-byte PDU; it once went through
+/// an encoding initializer that trapped. Here it reaches the graphics decoder,
+/// which rejects the 0x41 bytes as RDPGFX data.
+@Test func preflightHandlesCompressedDynamicDataLargerThanOnePDU() throws {
+    let server = try MockKRDPServer.start(
+        graphicsBehavior: .sendCompressedDataLargerThanOnePDU,
+        dynamicChannelVersion: 3
+    )
+    defer { server.stop() }
+
+    let report = RDPPreflightClient().run(
+        configuration: RDPConnectionConfiguration(
+            host: "127.0.0.1",
+            port: server.port,
+            credentials: RDPCredentials(username: "rdp-user", password: "secret"),
+            timeoutSeconds: 5,
+            hideCertificateWarnings: true,
+            graphicsFrameCaptureLimit: 1,
+            desktopWidth: 1280,
+            desktopHeight: 720,
+            clipboardEnabled: false
+        )
+    )
+
+    #expect(report.status == "failure")
+    #expect(report.stage == "rdp-graphics-dynamic-channel")
+    #expect(report.error == "invalid RDP Graphics Pipeline PDU")
+}
+
 @Test func preflightIgnoresDynamicVirtualChannelSoftSyncRequest() throws {
     let server = try MockKRDPServer.start(graphicsBehavior: .sendSoftSyncBeforeFrame)
     defer { server.stop() }
@@ -1630,6 +1754,39 @@ struct MockKRDPServerTests {
     #expect(certificate.trusted == false)
     #expect(certificate.sha256?.isEmpty == false)
     #expect(certificate.warnings.first?.code == "unrecognized-certificate")
+}
+
+/// Cancelling from onCertificate rejects the server before any credential is
+/// sent (decision: the security gate runs right after the certificate callback).
+@Test func preflightCancelledFromCertificateCallbackSendsNoCredentials() throws {
+    let credentials = RDPCredentials(username: "rdp-user", password: "secret")
+    let server = try MockKRDPServer.start(securityProtocol: .credSSP(credentials: credentials))
+    defer { server.stop() }
+
+    let cancellation = RDPConnectionCancellation()
+    let report = RDPPreflightClient().run(
+        configuration: RDPConnectionConfiguration(
+            host: "127.0.0.1",
+            port: server.port,
+            credentials: credentials,
+            timeoutSeconds: 5,
+            hideCertificateWarnings: true,
+            graphicsFrameCaptureLimit: 1,
+            desktopWidth: 1280,
+            desktopHeight: 720,
+            clipboardEnabled: false
+        ),
+        onCertificate: { _ in
+            cancellation.cancel()
+        },
+        cancellation: cancellation
+    )
+
+    #expect(report.status == "failure")
+    #expect(report.stage == "tls-handshake")
+    #expect(report.error == "cancelled")
+    #expect(report.rdpClientInfoSent != true)
+    #expect(server.transcript.snapshot.credSSPMessages.isEmpty)
 }
 
 @Test func preflightVerifiesCredSSPAuthenticationWithMockServer() throws {
