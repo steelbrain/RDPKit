@@ -97,6 +97,31 @@ struct RDPStaticVirtualChannelPDU: Equatable, Sendable {
         ).encodedTPKT()
     }
 
+    /// `payload` as the MCS Send Data Requests that carry it, split into chunks with
+    /// CHANNEL_FLAG_FIRST and CHANNEL_FLAG_LAST marking the ends ([MS-RDPBCGR] 3.1.5.2.1).
+    /// `flags` go on every chunk.
+    static func encodedTPKTs(payload: Data, flags: UInt32 = 0, initiator: UInt16, channelID: UInt16) -> [Data] {
+        var packets: [Data] = []
+        var lowerBound = payload.startIndex
+        repeat {
+            let upperBound = min(lowerBound + maximumPayloadByteCount, payload.endIndex)
+            var chunkFlags = flags
+            if lowerBound == payload.startIndex {
+                chunkFlags |= RDPStaticVirtualChannelFlags.first
+            }
+            if upperBound == payload.endIndex {
+                chunkFlags |= RDPStaticVirtualChannelFlags.last
+            }
+            packets.append(RDPStaticVirtualChannelPDU(
+                totalLength: UInt32(payload.count),
+                flags: chunkFlags,
+                payload: payload.subdata(in: lowerBound ..< upperBound)
+            ).encodedTPKT(initiator: initiator, channelID: channelID))
+            lowerBound = upperBound
+        } while lowerBound < payload.endIndex
+        return packets
+    }
+
     static func parse(
         fromUserData userData: Data,
         maximumChunkByteCount: Int

@@ -1178,29 +1178,6 @@ public final class RDPClipboardSession: @unchecked Sendable {
         ).encoded())
     }
 
-    static func encodedPackets(_ payload: Data, userChannelID: UInt16, staticChannelID: UInt16) -> [Data] {
-        // Messages larger than one chunk are split, with CHANNEL_FLAG_FIRST and
-        // CHANNEL_FLAG_LAST marking the ends (MS-RDPBCGR 3.1.5.2.1).
-        let chunkByteCount = RDPStaticVirtualChannelPDU.maximumPayloadByteCount
-        var packets: [Data] = []
-        var lowerBound = payload.startIndex
-        repeat {
-            let upperBound = min(lowerBound + chunkByteCount, payload.endIndex)
-            var flags = RDPStaticVirtualChannelFlags.showProtocol
-            if lowerBound == payload.startIndex {
-                flags |= RDPStaticVirtualChannelFlags.first
-            }
-            if upperBound == payload.endIndex {
-                flags |= RDPStaticVirtualChannelFlags.last
-            }
-            var chunk = RDPStaticVirtualChannelPDU(payload: payload.subdata(in: lowerBound ..< upperBound), flags: flags)
-            chunk.totalLength = UInt32(payload.count)
-            packets.append(chunk.encodedTPKT(initiator: userChannelID, channelID: staticChannelID))
-            lowerBound = upperBound
-        } while lowerBound < payload.endIndex
-        return packets
-    }
-
     private func publish(_ content: RDPClipboardLocalContent) {
         lock.lock()
         defer { lock.unlock() }
@@ -1248,7 +1225,12 @@ public final class RDPClipboardSession: @unchecked Sendable {
     }
 
     private func send(_ payload: Data) {
-        let packets = Self.encodedPackets(payload, userChannelID: userChannelID, staticChannelID: staticChannelID)
+        let packets = RDPStaticVirtualChannelPDU.encodedTPKTs(
+            payload: payload,
+            flags: RDPStaticVirtualChannelFlags.showProtocol,
+            initiator: userChannelID,
+            channelID: staticChannelID
+        )
         if let sentMessageHandler, let pdu = try? RDPClipboardPDU.parse(from: payload), let first = packets.first {
             sentMessageHandler(.summarize(pdu), first)
         }

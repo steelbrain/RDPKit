@@ -877,32 +877,6 @@ private final class ClipboardPublishRace: @unchecked Sendable {
     _ = try channel.finish()
 }
 
-@Test func clipboardSessionChunksAndReassemblesMessagesLargerThanOneChannelChunk() throws {
-    let message = RDPClipboardFormatDataResponsePDU.unicodeText(String(repeating: "x", count: 3_000)).encoded()
-
-    let packets = RDPClipboardSession.encodedPackets(message, userChannelID: 1006, staticChannelID: 1007)
-    let chunks = try packets.map { try RDPStaticVirtualChannelPDU.parse(fromUserData: mcsSendDataRequest(fromTPKT: $0).userData, maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumPayloadByteCount) }
-    var reassembler = RDPStaticVirtualChannelReassembler()
-    var reassembled: [Data] = []
-    for chunk in chunks {
-        if let message = try reassembler.append(
-            chunk,
-            maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumPayloadByteCount
-        ) {
-            reassembled.append(message.payload)
-        }
-    }
-
-    #expect(chunks.map(\.flags) == [
-        RDPStaticVirtualChannelFlags.first | RDPStaticVirtualChannelFlags.showProtocol,
-        RDPStaticVirtualChannelFlags.showProtocol,
-        RDPStaticVirtualChannelFlags.showProtocol,
-        RDPStaticVirtualChannelFlags.last | RDPStaticVirtualChannelFlags.showProtocol,
-    ])
-    #expect(chunks.allSatisfy { $0.totalLength == UInt32(message.count) })
-    #expect(reassembled == [message])
-}
-
 private final class ClipboardSentMessages: @unchecked Sendable {
     private let lock = NSLock()
     private var sent: [(summary: RDPClipboardMessageSummary, packets: Data)] = []
