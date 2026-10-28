@@ -121,9 +121,7 @@ enum RDPNegotiationResponse {
                 result: .selected(RDPSecurityProtocols(rawValue: value))
             )
         case 0x03:
-            guard flags == 0 else {
-                throw RDPDecodeError.invalidNegotiationFlags(flags)
-            }
+            // flags MUST be 0 (MS-RDPBCGR 2.2.1.2.2), but that binds the server; report its failure code.
             return RDPNegotiationResponseMessage(
                 flags: flags,
                 result: .failure(value)

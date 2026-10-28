@@ -9,7 +9,6 @@ public enum RDPDecodeError: Error, Equatable, CustomStringConvertible {
     case invalidX224Type(UInt8)
     case invalidNegotiationType(UInt8)
     case invalidNegotiationLength(UInt16)
-    case invalidNegotiationFlags(UInt8)
     case invalidNegotiationProtocol(UInt32)
     case invalidX224DataTPDU
     case invalidMCSConnectResponseHeader
@@ -52,8 +51,6 @@ public enum RDPDecodeError: Error, Equatable, CustomStringConvertible {
             "invalid RDP negotiation type \(type)"
         case let .invalidNegotiationLength(length):
             "invalid RDP negotiation length \(length)"
-        case let .invalidNegotiationFlags(flags):
-            "invalid RDP negotiation flags 0x\(String(flags, radix: 16))"
         case let .invalidNegotiationProtocol(protocols):
             "invalid RDP negotiation protocol 0x\(String(protocols, radix: 16))"
         case .invalidX224DataTPDU:

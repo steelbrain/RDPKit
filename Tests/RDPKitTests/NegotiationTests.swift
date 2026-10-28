@@ -354,7 +354,7 @@ import Testing
     }
 }
 
-@Test func rejectsNegotiationFailureWithNonzeroFlags() throws {
+@Test func reportsNegotiationFailureCodeDespiteNonzeroFlags() throws {
     let packet = Data([
         0x03, 0x00, 0x00, 0x13,
         0x0E, 0xD0, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -362,9 +362,7 @@ import Testing
         0x02, 0x00, 0x00, 0x00,
     ])
 
-    #expect(throws: RDPDecodeError.invalidNegotiationFlags(0x01)) {
-        try X224ConnectionConfirm.parse(fromTPKT: packet)
-    }
+    #expect(try X224ConnectionConfirm.parse(fromTPKT: packet).negotiationResult == .failure(2))
 }
 
 @Test func preservesUnlistedNegotiationFailureCode() throws {
