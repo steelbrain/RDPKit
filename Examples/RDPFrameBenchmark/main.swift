@@ -2,26 +2,40 @@ import CoreGraphics
 import CoreVideo
 import Darwin
 import Foundation
+import RDPCommandLineSupport
 import RDPKit
 
 private struct BenchmarkArguments {
-    var host: String?
-    var port: UInt16 = 3389
-    var username: String?
-    var domain: String?
-    var passwordEnv: String?
-    var timeoutSeconds = 60
+    var connection = RDPCommandLineConnectionOptions(timeoutSeconds: 60)
     var frames = 10
-    var desktopSize: BenchmarkDisplaySize?
     var displayResize: BenchmarkDisplaySize?
-    var profiles: [RDPGraphicsCapabilityProfile] = RDPGraphicsCapabilityProfile.allCases
-    var hideCertificateWarnings = false
     var json = false
+
+    /// Every profile unless `--graphics-profile` selected a subset.
+    var profiles: [RDPGraphicsCapabilityProfile] {
+        connection.graphicsCapabilityProfiles.isEmpty
+            ? RDPGraphicsCapabilityProfile.allCases
+            : connection.graphicsCapabilityProfiles
+    }
 }
 
 private struct BenchmarkDisplaySize: Equatable {
     var width: UInt16
     var height: UInt16
+
+    init?(_ text: String) {
+        let parts = text.lowercased().split(separator: "x", maxSplits: 1)
+        guard parts.count == 2,
+              let width = UInt16(parts[0]),
+              let height = UInt16(parts[1]),
+              width > 0,
+              height > 0
+        else {
+            return nil
+        }
+        self.width = width
+        self.height = height
+    }
 }
 
 private enum BenchmarkStrategy: String, CaseIterable, Encodable {
@@ -96,41 +110,6 @@ private struct StrategyBenchmarkReport: Encodable {
     var errors: [String]
 }
 
-private enum BenchmarkError: Error, CustomStringConvertible {
-    case missingValue(String)
-    case missingHost
-    case missingCredential(String)
-    case missingPasswordEnv(String)
-    case invalidPort(String)
-    case invalidTimeout(String)
-    case invalidFrames(String)
-    case invalidDisplaySize(String)
-    case invalidGraphicsProfile(String)
-
-    var description: String {
-        switch self {
-        case let .missingValue(option):
-            "missing value for \(option)"
-        case .missingHost:
-            "missing required --host"
-        case let .missingCredential(message):
-            message
-        case let .missingPasswordEnv(name):
-            "password environment variable \(name) is not set or is empty"
-        case let .invalidPort(value):
-            "invalid --port \(value)"
-        case let .invalidTimeout(value):
-            "invalid --timeout-seconds \(value)"
-        case let .invalidFrames(value):
-            "invalid --frames \(value)"
-        case let .invalidDisplaySize(value):
-            "invalid display size \(value)"
-        case let .invalidGraphicsProfile(value):
-            "invalid --graphics-profile \(value)"
-        }
-    }
-}
-
 private struct ProcessSample {
     var wallTime: Date
     var cpuTimeSeconds: Double
@@ -197,10 +176,14 @@ private struct FrameTiming {
 
 private enum RDPFrameBenchmark {
     static func main() {
+        if RDPCommandLineArguments.requestsHelp(CommandLine.arguments) {
+            printUsage()
+            exit(0)
+        }
         do {
             let args = try parseArguments(CommandLine.arguments)
-            let host = try requiredHost(args)
-            let credentials = try loadCredentials(from: args)
+            let host = try args.connection.requiredHost()
+            let credentials = try args.connection.credentials()
             let report = runBenchmark(host: host, credentials: credentials, args: args)
 
             if args.json {
@@ -224,14 +207,9 @@ private enum RDPFrameBenchmark {
         credentials: RDPCredentials?,
         args: BenchmarkArguments
     ) -> BenchmarkReport {
-        let target = "\(host):\(args.port)"
+        let target = "\(host):\(args.connection.port)"
         let reports = args.profiles.map { profile in
-            benchmarkProfile(
-                profile,
-                host: host,
-                credentials: credentials,
-                args: args
-            )
+            benchmarkProfile(profile, credentials: credentials, args: args)
         }
         return BenchmarkReport(
             target: target,
@@ -242,17 +220,11 @@ private enum RDPFrameBenchmark {
 
     private static func benchmarkProfile(
         _ profile: RDPGraphicsCapabilityProfile,
-        host: String,
         credentials: RDPCredentials?,
         args: BenchmarkArguments
     ) -> ProfileBenchmarkReport {
         do {
-            let capture = try captureFrames(
-                profile,
-                host: host,
-                credentials: credentials,
-                args: args
-            )
+            let capture = try captureFrames(profile, credentials: credentials, args: args)
             let framePayloadByteCount = capture.frames.reduce(0) { $0 + $1.payloadByteCount }
             let codecNames = Array(Set(capture.frames.map(\.codecName))).sorted()
             let frameReports = makeCapturedFrameReports(capture.frames)
@@ -334,7 +306,6 @@ private enum RDPFrameBenchmark {
 
     private static func captureFrames(
         _ profile: RDPGraphicsCapabilityProfile,
-        host: String,
         credentials: RDPCredentials?,
         args: BenchmarkArguments
     ) throws -> LiveCapture {
@@ -344,27 +315,23 @@ private enum RDPFrameBenchmark {
             initialResidentMemoryBytes: currentResidentMemoryBytes()
         )
         let candidateFrameLimit = args.frames + max(3, args.frames)
+        let configuration = try args.connection.configuration(
+            credentials: credentials,
+            graphicsCapabilityProfile: profile,
+            graphicsFrameCaptureLimit: candidateFrameLimit,
+            clipboardEnabled: false
+        )
+        let displayResize = args.displayResize
         let start = processSample()
         let report = RDPPreflightClient().run(
-            configuration: RDPConnectionConfiguration(
-                host: host,
-                port: args.port,
-                credentials: credentials,
-                timeoutSeconds: args.timeoutSeconds,
-                hideCertificateWarnings: args.hideCertificateWarnings,
-                graphicsFrameCaptureLimit: candidateFrameLimit,
-                desktopWidth: args.desktopSize?.width ?? 1280,
-                desktopHeight: args.desktopSize?.height ?? 720,
-                clipboardEnabled: false,
-                graphicsCapabilityProfile: profile
-            ),
+            configuration: configuration,
             onGraphicsFrame: { frame in
                 if accumulator.appendFrame(frame) {
                     cancellation.cancel()
                 }
             },
             onDisplayControlReady: { session in
-                guard let displayResize = args.displayResize else {
+                guard let displayResize else {
                     return
                 }
                 session.sendSingleMonitorLayout(
@@ -536,123 +503,27 @@ private enum RDPFrameBenchmark {
 
     private static func parseArguments(_ values: [String]) throws -> BenchmarkArguments {
         var args = BenchmarkArguments()
-        var index = 1
-        var explicitProfiles: [RDPGraphicsCapabilityProfile] = []
-
-        while index < values.count {
-            let value = values[index]
-            switch value {
-            case "--host":
-                index += 1
-                guard index < values.count else { throw BenchmarkError.missingValue(value) }
-                args.host = values[index]
-            case "--port":
-                index += 1
-                guard index < values.count else { throw BenchmarkError.missingValue(value) }
-                guard let port = UInt16(values[index]) else { throw BenchmarkError.invalidPort(values[index]) }
-                args.port = port
-            case "--username":
-                index += 1
-                guard index < values.count else { throw BenchmarkError.missingValue(value) }
-                args.username = values[index]
-            case "--domain":
-                index += 1
-                guard index < values.count else { throw BenchmarkError.missingValue(value) }
-                args.domain = values[index]
-            case "--password-env":
-                index += 1
-                guard index < values.count else { throw BenchmarkError.missingValue(value) }
-                args.passwordEnv = values[index]
-            case "--timeout-seconds":
-                index += 1
-                guard index < values.count else { throw BenchmarkError.missingValue(value) }
-                guard let timeout = Int(values[index]), timeout > 0 else {
-                    throw BenchmarkError.invalidTimeout(values[index])
-                }
-                args.timeoutSeconds = timeout
+        var cursor = RDPCommandLineArguments(values)
+        while let option = cursor.nextOption() {
+            if try args.connection.parse(option, from: &cursor) {
+                continue
+            }
+            switch option {
             case "--frames":
-                index += 1
-                guard index < values.count else { throw BenchmarkError.missingValue(value) }
-                guard let frames = Int(values[index]), frames > 0 else {
-                    throw BenchmarkError.invalidFrames(values[index])
-                }
-                args.frames = frames
+                args.frames = try cursor.positiveInteger(for: option)
             case "--desktop-size":
-                index += 1
-                guard index < values.count else { throw BenchmarkError.missingValue(value) }
-                guard let size = parseDisplaySize(values[index]) else {
-                    throw BenchmarkError.invalidDisplaySize(values[index])
-                }
-                args.desktopSize = size
+                let size = try cursor.value(for: option, expected: "<width>x<height>", BenchmarkDisplaySize.init)
+                args.connection.desktopWidth = size.width
+                args.connection.desktopHeight = size.height
             case "--display-resize":
-                index += 1
-                guard index < values.count else { throw BenchmarkError.missingValue(value) }
-                guard let size = parseDisplaySize(values[index]) else {
-                    throw BenchmarkError.invalidDisplaySize(values[index])
-                }
-                args.displayResize = size
-            case "--graphics-profile":
-                index += 1
-                guard index < values.count else { throw BenchmarkError.missingValue(value) }
-                guard let profile = RDPGraphicsCapabilityProfile(rawValue: values[index]) else {
-                    throw BenchmarkError.invalidGraphicsProfile(values[index])
-                }
-                explicitProfiles.append(profile)
-            case "--hide-certificate-warnings":
-                args.hideCertificateWarnings = true
+                args.displayResize = try cursor.value(for: option, expected: "<width>x<height>", BenchmarkDisplaySize.init)
             case "--json":
                 args.json = true
-            case "-h", "--help":
-                printUsage()
-                exit(0)
             default:
-                throw BenchmarkError.missingValue("unknown option \(value)")
+                throw RDPCommandLineError.unknownOption(option)
             }
-            index += 1
-        }
-
-        if !explicitProfiles.isEmpty {
-            args.profiles = explicitProfiles
         }
         return args
-    }
-
-    private static func parseDisplaySize(_ value: String) -> BenchmarkDisplaySize? {
-        let parts = value.lowercased().split(separator: "x", maxSplits: 1)
-        guard parts.count == 2,
-              let width = UInt16(parts[0]),
-              let height = UInt16(parts[1]),
-              width > 0,
-              height > 0
-        else {
-            return nil
-        }
-        return BenchmarkDisplaySize(width: width, height: height)
-    }
-
-    private static func requiredHost(_ args: BenchmarkArguments) throws -> String {
-        guard let host = args.host, !host.isEmpty else {
-            throw BenchmarkError.missingHost
-        }
-        return host
-    }
-
-    private static func loadCredentials(from args: BenchmarkArguments) throws -> RDPCredentials? {
-        let hasAnyCredentialInput = args.username != nil || args.domain != nil || args.passwordEnv != nil
-        guard hasAnyCredentialInput else {
-            return nil
-        }
-        guard let username = args.username, !username.isEmpty else {
-            throw BenchmarkError.missingCredential("username is required when password or domain is provided")
-        }
-        guard let passwordEnv = args.passwordEnv else {
-            throw BenchmarkError.missingCredential("password environment variable is required when credentials are provided")
-        }
-        let password = ProcessInfo.processInfo.environment[passwordEnv]
-        guard let password, !password.isEmpty else {
-            throw BenchmarkError.missingPasswordEnv(passwordEnv)
-        }
-        return RDPCredentials(username: username, domain: args.domain, password: password)
     }
 }
 

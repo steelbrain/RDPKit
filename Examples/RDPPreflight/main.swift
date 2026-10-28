@@ -1,18 +1,10 @@
 import Foundation
+import RDPCommandLineSupport
 import RDPKit
 
 struct Arguments {
-    var host: String?
-    var port: UInt16 = 3389
-    var username: String?
-    var domain: String?
-    var passwordEnv: String?
-    var timeoutSeconds: Int = 10
-    var graphicsFrames: Int = 1
-    var desktopWidth: UInt16 = 1280
-    var desktopHeight: UInt16 = 720
-    var graphicsCapabilityProfile: RDPGraphicsCapabilityProfile = .automatic
-    var hideCertificateWarnings = false
+    var connection = RDPCommandLineConnectionOptions()
+    var graphicsFrames = 1
     var audioPlaybackEnabled = false
     var earlyUserAuthorizationEnabled = false
     var probeClipboardText: String?
@@ -24,50 +16,6 @@ struct Arguments {
     var probeWindowsAudio = false
     var dryRun = false
     var json = false
-}
-
-enum CLIError: Error, CustomStringConvertible {
-    case missingValue(String)
-    case missingHost
-    case missingCredential(String)
-    case missingPasswordEnv(String)
-    case invalidPort(String)
-    case invalidTimeout(String)
-    case invalidGraphicsFrames(String)
-    case invalidDesktopWidth(String)
-    case invalidDesktopHeight(String)
-    case invalidGraphicsProfile(String)
-    case invalidProbeClipboardText
-    case invalidProbeWindowsClipboardText
-
-    var description: String {
-        switch self {
-        case let .missingValue(option):
-            "missing value for \(option)"
-        case .missingHost:
-            "missing required --host"
-        case let .missingCredential(message):
-            message
-        case let .missingPasswordEnv(name):
-            "password environment variable \(name) is not set or is empty"
-        case let .invalidPort(value):
-            "invalid --port \(value)"
-        case let .invalidTimeout(value):
-            "invalid --timeout-seconds \(value)"
-        case let .invalidGraphicsFrames(value):
-            "invalid --graphics-frames \(value)"
-        case let .invalidDesktopWidth(value):
-            "invalid --desktop-width \(value); expected 640...8192"
-        case let .invalidDesktopHeight(value):
-            "invalid --desktop-height \(value); expected 480...8192"
-        case let .invalidGraphicsProfile(value):
-            "invalid --graphics-profile \(value)"
-        case .invalidProbeClipboardText:
-            "--probe-clipboard-text exceeds the CLIPRDR single-message text limit"
-        case .invalidProbeWindowsClipboardText:
-            "--probe-windows-clipboard-text must be non-empty ASCII text up to 96 code units"
-        }
-    }
 }
 
 final class PreflightProbeRecorder: @unchecked Sendable {
@@ -109,7 +57,7 @@ final class PreflightProbeRecorder: @unchecked Sendable {
 
     func sendInputProbeAfterFirstFrame(
         text: String?,
-        movePointerToCenter: Bool,
+        pointerLocation: RDPRemotePoint?,
         toggleWindowsStart: Bool,
         pasteClipboardOnWindows: Bool,
         windowsClipboardText: String?,
@@ -128,9 +76,9 @@ final class PreflightProbeRecorder: @unchecked Sendable {
         var events: [RDPSlowPathInputEvent] = []
         var eventNames: [String] = []
 
-        if movePointerToCenter {
-            events.append(.pointerMove(x: 640, y: 360))
-            eventNames.append("pointer-move:640x360")
+        if let pointerLocation {
+            events.append(.pointerMove(x: pointerLocation.x, y: pointerLocation.y))
+            eventNames.append("pointer-move:\(pointerLocation.x)x\(pointerLocation.y)")
         }
 
         if let text, text.isEmpty == false {
@@ -283,93 +231,32 @@ final class PreflightProbeRecorder: @unchecked Sendable {
 
 func parseArguments(_ values: [String]) throws -> Arguments {
     var args = Arguments()
-    var index = 1
-
-    while index < values.count {
-        let value = values[index]
-        switch value {
-        case "--host":
-            index += 1
-            guard index < values.count else { throw CLIError.missingValue(value) }
-            args.host = values[index]
-        case "--port":
-            index += 1
-            guard index < values.count else { throw CLIError.missingValue(value) }
-            guard let port = UInt16(values[index]) else { throw CLIError.invalidPort(values[index]) }
-            args.port = port
-        case "--username":
-            index += 1
-            guard index < values.count else { throw CLIError.missingValue(value) }
-            args.username = values[index]
-        case "--domain":
-            index += 1
-            guard index < values.count else { throw CLIError.missingValue(value) }
-            args.domain = values[index]
-        case "--password-env":
-            index += 1
-            guard index < values.count else { throw CLIError.missingValue(value) }
-            args.passwordEnv = values[index]
-        case "--timeout-seconds":
-            index += 1
-            guard index < values.count else { throw CLIError.missingValue(value) }
-            guard let timeout = Int(values[index]), timeout > 0 else {
-                throw CLIError.invalidTimeout(values[index])
-            }
-            args.timeoutSeconds = timeout
+    var cursor = RDPCommandLineArguments(values)
+    while let option = cursor.nextOption() {
+        if try args.connection.parse(option, from: &cursor) {
+            continue
+        }
+        switch option {
         case "--graphics-frames":
-            index += 1
-            guard index < values.count else { throw CLIError.missingValue(value) }
-            guard let frames = Int(values[index]), frames > 0 else {
-                throw CLIError.invalidGraphicsFrames(values[index])
-            }
-            args.graphicsFrames = frames
-        case "--desktop-width":
-            index += 1
-            guard index < values.count else { throw CLIError.missingValue(value) }
-            guard let width = UInt16(values[index]), (640 ... 8192).contains(width) else {
-                throw CLIError.invalidDesktopWidth(values[index])
-            }
-            args.desktopWidth = width
-        case "--desktop-height":
-            index += 1
-            guard index < values.count else { throw CLIError.missingValue(value) }
-            guard let height = UInt16(values[index]), (480 ... 8192).contains(height) else {
-                throw CLIError.invalidDesktopHeight(values[index])
-            }
-            args.desktopHeight = height
-        case "--graphics-profile":
-            index += 1
-            guard index < values.count else { throw CLIError.missingValue(value) }
-            guard let profile = RDPGraphicsCapabilityProfile(rawValue: values[index]) else {
-                throw CLIError.invalidGraphicsProfile(values[index])
-            }
-            args.graphicsCapabilityProfile = profile
-        case "--hide-certificate-warnings":
-            args.hideCertificateWarnings = true
+            args.graphicsFrames = try cursor.positiveInteger(for: option)
         case "--early-user-authorization":
             args.earlyUserAuthorizationEnabled = true
         case "--audio":
             args.audioPlaybackEnabled = true
         case "--probe-clipboard-text":
-            index += 1
-            guard index < values.count else { throw CLIError.missingValue(value) }
-            guard RDPClipboardLimits.canPublishUnicodeText(values[index]) else {
-                throw CLIError.invalidProbeClipboardText
-            }
-            args.probeClipboardText = values[index]
+            args.probeClipboardText = try cursor.value(
+                for: option,
+                expected: "text within the CLIPRDR single-message limit"
+            ) { RDPClipboardLimits.canPublishUnicodeText($0) ? $0 : nil }
         case "--probe-windows-clipboard-text":
-            index += 1
-            guard index < values.count else { throw CLIError.missingValue(value) }
-            guard isValidWindowsClipboardProbeText(values[index]) else {
-                throw CLIError.invalidProbeWindowsClipboardText
-            }
-            args.probeWindowsClipboardText = values[index]
+            args.probeWindowsClipboardText = try cursor.value(
+                for: option,
+                expected: "1...96 ASCII letters, digits, or \" -_:.\""
+            ) { isValidWindowsClipboardProbeText($0) ? $0 : nil }
         case "--probe-windows-paste-clipboard":
             args.probeWindowsPasteClipboard = true
         case "--probe-input-text":
-            index += 1
-            guard index < values.count else { throw CLIError.missingValue(value) }
-            args.probeInputText = values[index]
+            args.probeInputText = try cursor.value(for: option)
         case "--probe-input-pointer":
             args.probeInputPointer = true
         case "--probe-windows-key":
@@ -381,16 +268,10 @@ func parseArguments(_ values: [String]) throws -> Arguments {
             args.dryRun = true
         case "--json":
             args.json = true
-        case "-h", "--help":
-            printUsage()
-            exit(0)
         default:
-            throw CLIError.missingValue("unknown option \(value)")
+            throw RDPCommandLineError.unknownOption(option)
         }
-        index += 1
     }
-
-    guard args.host != nil else { throw CLIError.missingHost }
     return args
 }
 
@@ -402,32 +283,6 @@ func isValidWindowsClipboardProbeText(_ text: String) -> Bool {
             character.isASCII
                 && (character.isLetter || character.isNumber || allowedPunctuation.contains(character))
         }
-}
-
-func loadCredentials(from args: Arguments) throws -> RDPCredentials? {
-    let hasAnyCredentialInput = args.username != nil || args.domain != nil || args.passwordEnv != nil
-    guard hasAnyCredentialInput else {
-        return nil
-    }
-
-    guard let username = args.username, !username.isEmpty else {
-        throw CLIError.missingCredential("--username is required when credentials are provided")
-    }
-    guard let passwordEnv = args.passwordEnv, !passwordEnv.isEmpty else {
-        throw CLIError.missingCredential("--password-env is required when credentials are provided")
-    }
-    guard let password = ProcessInfo.processInfo.environment[passwordEnv], !password.isEmpty else {
-        throw CLIError.missingPasswordEnv(passwordEnv)
-    }
-
-    return RDPCredentials(username: username, domain: args.domain, password: password)
-}
-
-func passwordIsConfigured(in args: Arguments?) -> Bool {
-    guard let passwordEnv = args?.passwordEnv else {
-        return false
-    }
-    return ProcessInfo.processInfo.environment[passwordEnv]?.isEmpty == false
 }
 
 func printUsage() {
@@ -871,63 +726,53 @@ func graphicsFrameSummary(_ frame: RDPGraphicsFrameSnapshot) -> String {
 }
 
 func failureReport(args: Arguments?, error: Error) -> RDPPreflightReport {
-    let host = args?.host ?? "unconfigured"
-    let port = args?.port ?? 3389
-    let passwordConfigured = passwordIsConfigured(in: args)
-    let credentials = args?.username.map {
-        RDPCredentials(
-            username: $0,
-            domain: args?.domain,
-            password: ""
-        )
-    }
+    let connection = args?.connection ?? RDPCommandLineConnectionOptions()
     let configuration = RDPConnectionConfiguration(
-        host: host,
-        port: port,
-        credentials: credentials,
-        desktopWidth: args?.desktopWidth ?? 1280,
-        desktopHeight: args?.desktopHeight ?? 720,
-        graphicsCapabilityProfile: args?.graphicsCapabilityProfile ?? .automatic
+        host: connection.host ?? "unconfigured",
+        port: connection.port,
+        credentials: connection.username.map { RDPCredentials(username: $0, domain: connection.domain, password: "") },
+        desktopWidth: connection.desktopWidth,
+        desktopHeight: connection.desktopHeight,
+        graphicsCapabilityProfile: connection.graphicsCapabilityProfile
     )
     var report = RDPPreflightClient().dryRun(configuration: configuration)
     report.status = "failure"
     report.stage = "x224-rdp-negotiation"
-    report.passwordConfigured = passwordConfigured
+    report.passwordConfigured = connection.passwordEnv
+        .flatMap { ProcessInfo.processInfo.environment[$0] }?.isEmpty == false
     report.nextStage = nil
     report.error = String(describing: error)
     return report
 }
 
+if RDPCommandLineArguments.requestsHelp(CommandLine.arguments) {
+    printUsage()
+    exit(0)
+}
+
+var parsedArguments: Arguments?
 do {
     let args = try parseArguments(CommandLine.arguments)
-    guard let host = args.host else {
-        printUsage()
-        Foundation.exit(2)
-    }
-    let credentials = try loadCredentials(from: args)
-    let configuration = RDPConnectionConfiguration(
-        host: host,
-        port: args.port,
-        credentials: credentials,
-        timeoutSeconds: args.timeoutSeconds,
-        hideCertificateWarnings: args.hideCertificateWarnings,
+    parsedArguments = args
+    let configuration = try args.connection.configuration(
+        credentials: args.connection.credentials(),
         graphicsFrameCaptureLimit: args.graphicsFrames,
-        desktopWidth: args.desktopWidth,
-        desktopHeight: args.desktopHeight,
         audioPlaybackEnabled: args.audioPlaybackEnabled,
-        earlyUserAuthorizationEnabled: args.earlyUserAuthorizationEnabled,
-        graphicsCapabilityProfile: args.graphicsCapabilityProfile
+        earlyUserAuthorizationEnabled: args.earlyUserAuthorizationEnabled
     )
+    let pointerProbeLocation = args.probeInputPointer
+        ? RDPRemotePoint(x: configuration.desktopWidth / 2, y: configuration.desktopHeight / 2)
+        : nil
     let client = RDPPreflightClient()
     let probeRecorder = PreflightProbeRecorder(windowsClipboardProbeText: args.probeWindowsClipboardText)
-    let report = args.dryRun
+    var report = args.dryRun
         ? client.dryRun(configuration: configuration)
         : client.run(
             configuration: configuration,
             onGraphicsFrame: { _ in
                 probeRecorder.sendInputProbeAfterFirstFrame(
                     text: args.probeInputText,
-                    movePointerToCenter: args.probeInputPointer,
+                    pointerLocation: pointerProbeLocation,
                     toggleWindowsStart: args.probeWindowsKey,
                     pasteClipboardOnWindows: args.probeWindowsPasteClipboard,
                     windowsClipboardText: args.probeWindowsClipboardText,
@@ -946,20 +791,19 @@ do {
                 probeRecorder.recordClipboardText(text)
             }
         )
-    var annotatedReport = report
-    probeRecorder.apply(to: &annotatedReport)
+    probeRecorder.apply(to: &report)
 
-    try printReport(annotatedReport, json: args.json)
-    if annotatedReport.status == "failure" {
+    try printReport(report, json: args.json)
+    if report.status == "failure" {
         exit(1)
     }
 } catch {
-    let parsedArgs = try? parseArguments(CommandLine.arguments)
-    let report = failureReport(args: parsedArgs, error: error)
-    let json = CommandLine.arguments.contains("--json")
+    let report = failureReport(args: parsedArguments, error: error)
+    let json = parsedArguments?.json ?? CommandLine.arguments.contains("--json")
     try? printReport(report, json: json)
     if !json {
         printUsage()
     }
     exit(1)
 }
+
