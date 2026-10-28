@@ -51,20 +51,6 @@ struct RDPClientSynchronizePDU: Equatable, Sendable {
 struct RDPClientControlPDU: Equatable, Sendable {
     var shareID: UInt32
     var action: UInt16
-    var grantID: UInt16
-    var controlID: UInt32
-
-    init(
-        shareID: UInt32,
-        action: UInt16,
-        grantID: UInt16 = 0,
-        controlID: UInt32 = 0
-    ) {
-        self.shareID = shareID
-        self.action = action
-        self.grantID = grantID
-        self.controlID = controlID
-    }
 
     static func cooperate(shareID: UInt32) -> RDPClientControlPDU {
         RDPClientControlPDU(shareID: shareID, action: RDPControlAction.cooperate)
@@ -77,8 +63,9 @@ struct RDPClientControlPDU: Equatable, Sendable {
     func encodedPDUData(userChannelID: UInt16) -> Data {
         var payload = Data()
         payload.appendLittleEndianUInt16(action)
-        payload.appendLittleEndianUInt16(grantID)
-        payload.appendLittleEndianUInt32(controlID)
+        // grantId and controlId MUST be 0 from the client ([MS-RDPBCGR] 2.2.1.15.1).
+        payload.appendLittleEndianUInt16(0)
+        payload.appendLittleEndianUInt32(0)
         return rdpShareDataPDUData(
             shareID: shareID,
             pduSource: userChannelID,

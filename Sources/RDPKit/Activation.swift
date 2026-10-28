@@ -22,11 +22,6 @@ struct RDPDemandActivePDU: Equatable, Sendable {
     var serverVirtualChannelChunkSize: Int?
     var sessionID: UInt32?
 
-    @available(*, deprecated, message: "Every server gets the same Confirm Active capability list.")
-    var requestsMinimalBitmapCodecs: Bool {
-        capabilitySets.contains(where: { $0.type == RDPCapabilitySetType.bitmapCodecs && $0.length <= 5 })
-    }
-
     var sourceDescriptorText: String {
         String(data: sourceDescriptor, encoding: .ascii) ?? sourceDescriptor.rdpHexString
     }
@@ -179,16 +174,6 @@ struct RDPClientConfirmActivePDU: Equatable, Sendable {
         self.desktopWidth = desktopWidth
         self.desktopHeight = desktopHeight
         self.sourceDescriptor = sourceDescriptor
-    }
-
-    @available(*, deprecated, message: "Every server gets the same capability list; drop the argument.")
-    init(
-        shareID: UInt32,
-        desktopWidth: UInt16 = 1280,
-        desktopHeight: UInt16 = 720,
-        includeActivationControlShareCapabilities _: Bool
-    ) {
-        self.init(shareID: shareID, desktopWidth: desktopWidth, desktopHeight: desktopHeight)
     }
 
     var capabilitySets: [RDPCapabilitySetSummary] {
@@ -346,11 +331,13 @@ struct RDPClientConfirmActivePDU: Equatable, Sendable {
         return data
     }
 
+    /// Color pointers, with as many cache entries as the client keeps
+    /// ([MS-RDPBCGR] 2.2.7.1.5).
     private func pointerCapabilitySetBody() -> Data {
         var data = Data()
         data.appendLittleEndianUInt16(1)
-        data.appendLittleEndianUInt16(32)
-        data.appendLittleEndianUInt16(32)
+        data.appendLittleEndianUInt16(RDPRemotePointerState.cacheSize)
+        data.appendLittleEndianUInt16(RDPRemotePointerState.cacheSize)
         return data
     }
 
@@ -363,7 +350,13 @@ struct RDPClientConfirmActivePDU: Equatable, Sendable {
 
     private func inputCapabilitySetBody() -> Data {
         var data = Data()
-        data.appendLittleEndianUInt16(RDPInputCapability.inputFlags)
+        data.appendLittleEndianUInt16(
+            RDPInputCapabilityFlags.scancodes
+                | RDPInputCapabilityFlags.mouseExtended
+                | RDPInputCapabilityFlags.unicode
+                | RDPInputCapabilityFlags.fastPathInput2
+                | RDPInputCapabilityFlags.mouseHorizontalWheel
+        )
         data.appendLittleEndianUInt16(0)
         data.appendLittleEndianUInt32(0x0000_0409)
         data.appendLittleEndianUInt32(4)
@@ -555,19 +548,6 @@ private enum RDPBitmapCapability {
     static let drawingFlags = allowDynamicColorFidelity
         | allowColorSubsampling
         | allowSkipAlpha
-}
-
-private enum RDPInputCapability {
-    static let scancodes: UInt16 = 0x0001
-    static let mouseExtended: UInt16 = 0x0004
-    static let unicode: UInt16 = 0x0010
-    static let fastPathInput2: UInt16 = 0x0020
-    static let mouseHorizontalWheel: UInt16 = 0x0100
-    static let inputFlags = scancodes
-        | mouseExtended
-        | unicode
-        | fastPathInput2
-        | mouseHorizontalWheel
 }
 
 enum RDPMultifragmentUpdateCapability {

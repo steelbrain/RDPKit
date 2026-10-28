@@ -276,32 +276,10 @@ import Testing
 }
 
 @Test func confirmActiveSendsEveryServerTheMandatoryAndOptionalCapabilitySets() throws {
+    // The list is pinned in confirmActiveUsesDemandShareAndAdvertises... Both
+    // captures show it without Window Activation, Control and Share; those
+    // three are byte-identical to mstsc's (MS-RDPBCGR 4.1.13).
     let confirmActive = RDPClientConfirmActivePDU(shareID: 0x0001_03EE)
-
-    // Mandatory sets (MS-RDPBCGR 2.2.7.1, Sound included) plus the optional
-    // sets the client supports; KRdp accepted this list in the KRdp fixture.
-    #expect(confirmActive.capabilitySets.map(\.name) == [
-        "general",
-        "bitmap",
-        "order",
-        "bitmap-cache",
-        "activation",
-        "control",
-        "pointer",
-        "share",
-        "input",
-        "font",
-        "brush",
-        "glyph-cache",
-        "offscreen-cache",
-        "virtual-channel",
-        "sound",
-        "multifragment-update",
-        "large-pointer",
-        "surface-commands",
-        "bitmap-codecs",
-        "frame-acknowledge",
-    ])
     let userData = confirmActive.encodedPDUData(userChannelID: 1006)
     // MS-RDPBCGR 2.2.8.1.1.1.1: totalLength includes the Share Control Header.
     #expect(Int(userData.littleEndianUInt16(at: 0)) == userData.count)

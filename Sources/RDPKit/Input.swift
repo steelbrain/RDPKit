@@ -280,7 +280,9 @@ public struct RDPInputStateTracker: Sendable {
     }
 }
 
+/// TS_INPUT_CAPABILITYSET inputFlags ([MS-RDPBCGR] 2.2.7.1.6).
 enum RDPInputCapabilityFlags {
+    static let scancodes: UInt16 = 0x0001
     static let mouseExtended: UInt16 = 0x0004
     static let fastPathInput: UInt16 = 0x0008
     static let unicode: UInt16 = 0x0010
