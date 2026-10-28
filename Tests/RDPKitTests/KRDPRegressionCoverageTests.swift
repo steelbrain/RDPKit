@@ -122,21 +122,20 @@ struct KRDPRegressionCoverageTests {
     ])
 }
 
-@Test func regression11MinimalKRDPDemandActiveSelectsCompactConfirmActive() throws {
+@Test func regression11MinimalKRDPDemandActiveParses() throws {
     let demandActive = try demandActiveWithBitmapCodecs(length: 5)
 
-    #expect(demandActive.requestsMinimalBitmapCodecs)
+    #expect(demandActive.capabilitySets.map(\.name) == ["bitmap-codecs"])
 }
 
-@Test func regression12CompactConfirmActiveDeclaresSpecCorrectTotalLength() {
-    let confirm = compactConfirmActive()
-    let userData = confirm.encodedPDUData(userChannelID: 1006)
+@Test func regression12ConfirmActiveDeclaresSpecCorrectTotalLength() {
+    let userData = fullConfirmActive().encodedPDUData(userChannelID: 1006)
     #expect(Int(le16(userData, 0)) == userData.count)
     #expect(le16(userData, 10) == RDPServerChannelID.fixed)
 }
 
-@Test func regression12bCompactConfirmActiveIncludesMandatoryCapabilitySets() {
-    let capabilityNames = Set(compactConfirmActive().capabilitySets.map(\.name))
+@Test func regression12bConfirmActiveIncludesMandatoryCapabilitySets() {
+    let capabilityNames = Set(fullConfirmActive().capabilitySets.map(\.name))
     let mandatoryCapabilityNames: Set<String> = [
         "general",
         "bitmap",
@@ -148,39 +147,18 @@ struct KRDPRegressionCoverageTests {
         "glyph-cache",
         "offscreen-cache",
         "virtual-channel",
+        "sound",
     ]
 
     #expect(mandatoryCapabilityNames.isSubset(of: capabilityNames))
 }
 
-@Test func regression13CompactConfirmActiveOmitsActivationCapability() {
-    let capabilityNames = compactConfirmActive().capabilitySets.map(\.name)
+@Test func regression16ConfirmActiveIncludesActivationControlAndShare() {
+    let capabilityNames = fullConfirmActive().capabilitySets.map(\.name)
 
-    #expect(!capabilityNames.contains("activation"))
-}
-
-@Test func regression14CompactConfirmActiveOmitsControlCapability() {
-    let capabilityNames = compactConfirmActive().capabilitySets.map(\.name)
-
-    #expect(!capabilityNames.contains("control"))
-}
-
-@Test func regression15CompactConfirmActiveOmitsShareCapability() {
-    let capabilityNames = compactConfirmActive().capabilitySets.map(\.name)
-
-    #expect(!capabilityNames.contains("share"))
-}
-
-@Test func regression16ExtendedDemandActiveUsesFullConfirmActiveCapabilities() throws {
-    let demandActive = try demandActiveWithBitmapCodecs(length: 12)
-    let confirmActive = RDPClientConfirmActivePDU(
-        shareID: demandActive.shareID,
-        includeActivationControlShareCapabilities: !demandActive.requestsMinimalBitmapCodecs
-    )
-
-    #expect(confirmActive.capabilitySets.map(\.name).contains("activation"))
-    #expect(confirmActive.capabilitySets.map(\.name).contains("control"))
-    #expect(confirmActive.capabilitySets.map(\.name).contains("share"))
+    #expect(capabilityNames.contains("activation"))
+    #expect(capabilityNames.contains("control"))
+    #expect(capabilityNames.contains("share"))
 }
 
 @Test func regression17FullConfirmActiveAdvertisesBitmapCodecs() {
@@ -189,14 +167,6 @@ struct KRDPRegressionCoverageTests {
 
 @Test func regression18FullConfirmActiveAdvertisesFrameAcknowledge() {
     #expect(fullConfirmActive().capabilitySets.map(\.name).contains("frame-acknowledge"))
-}
-
-@Test func regression19CompactConfirmActiveOmitsBitmapCodecsLikeTag010() {
-    #expect(!compactConfirmActive().capabilitySets.map(\.name).contains("bitmap-codecs"))
-}
-
-@Test func regression20CompactConfirmActiveOmitsFrameAcknowledgeLikeTag010() {
-    #expect(!compactConfirmActive().capabilitySets.map(\.name).contains("frame-acknowledge"))
 }
 
 @Test func regression21ConnectTimeRTTEmitsShortRTTResponse() {
@@ -373,14 +343,10 @@ struct KRDPRegressionCoverageTests {
     #expect(report.rdpConfirmActiveRequestHex.flatMap { Data(rdpHexString: $0)?.count } == 583)
 }
 
-@Test func regression54LiveKRDPStyleMinimalBitmapCodecsSelectsCompactConfirm() throws {
+@Test func regression54LiveKRDPStyleMinimalBitmapCodecsGetsFullConfirm() throws {
     let demandActive = try demandActiveWithBitmapCodecs(length: 5)
-    let confirm = RDPClientConfirmActivePDU(
-        shareID: demandActive.shareID,
-        includeActivationControlShareCapabilities: !demandActive.requestsMinimalBitmapCodecs
-    )
-    #expect(demandActive.requestsMinimalBitmapCodecs)
-    #expect(confirm.capabilitySets.count == 15)
+    let confirm = RDPClientConfirmActivePDU(shareID: demandActive.shareID)
+    #expect(confirm.capabilitySets.count == 20)
     let userData = confirm.encodedPDUData(userChannelID: 1006)
     #expect(Int(le16(userData, 0)) == userData.count)
 }
@@ -547,17 +513,6 @@ private func replayRegressionTranscript(_ fixtureName: String) throws -> RDPPref
             graphicsCapabilityProfile: .avcThinClient
         )
     )
-}
-
-private func compactConfirmActive() -> RDPClientConfirmActivePDU {
-    RDPClientConfirmActivePDU(
-        shareID: 0x0001_03EE,
-        includeActivationControlShareCapabilities: false
-    )
-}
-
-private func compactConfirmActivePacket() -> Data {
-    compactConfirmActive().encodedTPKT(userChannelID: 1006, ioChannelID: 1003)
 }
 
 private func fullConfirmActive() -> RDPClientConfirmActivePDU {

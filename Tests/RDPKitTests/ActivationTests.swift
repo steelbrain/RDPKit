@@ -268,34 +268,27 @@ import Testing
 }
 
 @Test func confirmActiveExposesItsAdvertisedMultifragmentBufferSize() throws {
-    let full = RDPClientConfirmActivePDU(shareID: 1)
-    let compact = RDPClientConfirmActivePDU(
-        shareID: 1,
-        includeActivationControlShareCapabilities: false
-    )
+    let confirmActive = RDPClientConfirmActivePDU(shareID: 1)
 
-    #expect(full.multifragmentUpdateMaxRequestSize == 0x0080_0000)
-    #expect(compact.multifragmentUpdateMaxRequestSize == 0x0080_0000)
-    #expect(try #require(full.capabilityBodies(userChannelID: 1006)[0x001A]).littleEndianUInt32(at: 0)
-        == UInt32(full.multifragmentUpdateMaxRequestSize))
-    #expect(try #require(compact.capabilityBodies(userChannelID: 1006)[0x001A]).littleEndianUInt32(at: 0)
-        == UInt32(compact.multifragmentUpdateMaxRequestSize))
+    #expect(confirmActive.multifragmentUpdateMaxRequestSize == 0x0080_0000)
+    #expect(try #require(confirmActive.capabilityBodies(userChannelID: 1006)[0x001A]).littleEndianUInt32(at: 0)
+        == UInt32(confirmActive.multifragmentUpdateMaxRequestSize))
 }
 
-@Test func confirmActiveCanUseCompactCapabilitySetForKRDPCompatibility() throws {
-    let confirmActive = RDPClientConfirmActivePDU(
-        shareID: 0x0001_03EE,
-        includeActivationControlShareCapabilities: false
-    )
+@Test func confirmActiveSendsEveryServerTheMandatoryAndOptionalCapabilitySets() throws {
+    let confirmActive = RDPClientConfirmActivePDU(shareID: 0x0001_03EE)
 
-    // Compact Confirm Active retains every mandatory capability set (including
-    // Sound, MS-RDPBCGR 2.2.7.1.11) while omitting optional sets.
+    // Mandatory sets (MS-RDPBCGR 2.2.7.1, Sound included) plus the optional
+    // sets the client supports; KRdp accepted this list in the KRdp fixture.
     #expect(confirmActive.capabilitySets.map(\.name) == [
         "general",
         "bitmap",
         "order",
         "bitmap-cache",
+        "activation",
+        "control",
         "pointer",
+        "share",
         "input",
         "font",
         "brush",
@@ -306,11 +299,12 @@ import Testing
         "multifragment-update",
         "large-pointer",
         "surface-commands",
+        "bitmap-codecs",
+        "frame-acknowledge",
     ])
     let userData = confirmActive.encodedPDUData(userChannelID: 1006)
-    let declaredTotalLength = Int(userData.littleEndianUInt16(at: 0))
     // MS-RDPBCGR 2.2.8.1.1.1.1: totalLength includes the Share Control Header.
-    #expect(declaredTotalLength == userData.count)
+    #expect(Int(userData.littleEndianUInt16(at: 0)) == userData.count)
     // originatorID MUST be server channel ID 0x03EA (2.2.1.13.2.1).
     #expect(userData.littleEndianUInt16(at: 10) == RDPServerChannelID.fixed)
 
@@ -318,32 +312,6 @@ import Testing
     let virtualChannel = try #require(capabilities[0x0014])
     // MS-RDPBCGR 2.2.7.1.10: VCChunkSize MUST be in 1,600...16,256.
     #expect(virtualChannel.littleEndianUInt32(at: 4) == UInt32(RDPStaticVirtualChannelPDU.maximumPayloadByteCount))
-}
-
-@Test func compactConfirmActiveSharesTheFullCapabilityBodies() throws {
-    let full = try RDPClientConfirmActivePDU(shareID: 0x0001_03EE).capabilityBodies(userChannelID: 1006)
-    let compact = try RDPClientConfirmActivePDU(
-        shareID: 0x0001_03EE,
-        includeActivationControlShareCapabilities: false
-    ).capabilityBodies(userChannelID: 1006)
-
-    #expect(Set(compact.keys).isSubset(of: Set(full.keys)))
-    for (type, body) in compact {
-        #expect(full[type] == body)
-    }
-    let input = try #require(compact[0x000D])
-    #expect(input.littleEndianUInt16(at: 0) == 0x0135)
-}
-
-@Test func confirmActiveTotalLengthMatchesEncodedUserDataForFullAndCompactPaths() {
-    for includeExtras in [true, false] {
-        let confirmActive = RDPClientConfirmActivePDU(
-            shareID: 0x0001_03EE,
-            includeActivationControlShareCapabilities: includeExtras
-        )
-        let userData = confirmActive.encodedPDUData(userChannelID: 1006)
-        #expect(Int(userData.littleEndianUInt16(at: 0)) == userData.count)
-    }
 }
 
 @Test func parsesServerSynchronizeShareData() throws {

@@ -22,6 +22,7 @@ struct RDPDemandActivePDU: Equatable, Sendable {
     var serverVirtualChannelChunkSize: Int?
     var sessionID: UInt32?
 
+    @available(*, deprecated, message: "Every server gets the same Confirm Active capability list.")
     var requestsMinimalBitmapCodecs: Bool {
         capabilitySets.contains(where: { $0.type == RDPCapabilitySetType.bitmapCodecs && $0.length <= 5 })
     }
@@ -164,14 +165,12 @@ struct RDPClientConfirmActivePDU: Equatable, Sendable {
     var desktopWidth: UInt16
     var desktopHeight: UInt16
     var sourceDescriptor: Data
-    var includeActivationControlShareCapabilities: Bool
 
     init(
         shareID: UInt32,
         desktopWidth: UInt16 = 1280,
         desktopHeight: UInt16 = 720,
-        sourceDescriptor: Data = Data("KRDPSwift".utf8),
-        includeActivationControlShareCapabilities: Bool = true
+        sourceDescriptor: Data = Data("KRDPSwift".utf8)
     ) {
         precondition(!sourceDescriptor.isEmpty)
         precondition(sourceDescriptor.count <= Int(UInt16.max))
@@ -180,7 +179,16 @@ struct RDPClientConfirmActivePDU: Equatable, Sendable {
         self.desktopWidth = desktopWidth
         self.desktopHeight = desktopHeight
         self.sourceDescriptor = sourceDescriptor
-        self.includeActivationControlShareCapabilities = includeActivationControlShareCapabilities
+    }
+
+    @available(*, deprecated, message: "Every server gets the same capability list; drop the argument.")
+    init(
+        shareID: UInt32,
+        desktopWidth: UInt16 = 1280,
+        desktopHeight: UInt16 = 720,
+        includeActivationControlShareCapabilities _: Bool
+    ) {
+        self.init(shareID: shareID, desktopWidth: desktopWidth, desktopHeight: desktopHeight)
     }
 
     var capabilitySets: [RDPCapabilitySetSummary] {
@@ -231,7 +239,7 @@ struct RDPClientConfirmActivePDU: Equatable, Sendable {
     }
 
     private func encodedCapabilitySets() -> [(type: UInt16, data: Data)] {
-        let capabilities = [
+        [
             capabilitySet(type: RDPCapabilitySetType.general, body: generalCapabilitySetBody()),
             capabilitySet(type: RDPCapabilitySetType.bitmap, body: bitmapCapabilitySetBody()),
             capabilitySet(type: RDPCapabilitySetType.order, body: orderCapabilitySetBody()),
@@ -253,13 +261,6 @@ struct RDPClientConfirmActivePDU: Equatable, Sendable {
             capabilitySet(type: RDPCapabilitySetType.bitmapCodecs, body: bitmapCodecsCapabilitySetBody()),
             capabilitySet(type: RDPCapabilitySetType.frameAcknowledge, body: frameAcknowledgeCapabilitySetBody()),
         ]
-        guard !includeActivationControlShareCapabilities else {
-            return capabilities
-        }
-        // Compact list for servers whose Demand Active advertises no bitmap
-        // codecs (KRdp): every mandatory set from [MS-RDPBCGR] 2.2.7.1, without
-        // the optional sets the original KRdp-only client never sent.
-        return capabilities.filter { !RDPCapabilitySetType.omittedFromCompactList.contains($0.type) }
     }
 
     private func capabilitySet(type: UInt16, body: Data) -> (type: UInt16, data: Data) {
@@ -534,8 +535,6 @@ private enum RDPCapabilitySetType {
     static let surfaceCommands: UInt16 = 0x001C
     static let bitmapCodecs: UInt16 = 0x001D
     static let frameAcknowledge: UInt16 = 0x001E
-
-    static let omittedFromCompactList: Set<UInt16> = [activation, control, share, bitmapCodecs, frameAcknowledge]
 }
 
 private enum RDPGeneralCapability {
