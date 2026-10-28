@@ -115,6 +115,22 @@ func rlgrDecodesSpecEncoderOutput(algorithm: RDPRemoteFXDecoder.EntropyAlgorithm
     }
 }
 
+@Test func caprogressiveRejectsTilesOutsideTheSurface() throws {
+    let insideTile = caprogressiveRemoteFXGrayTilesStream(
+        tiles: [CAPROGRESSIVERemoteFXGrayTile(xIndex: 1, yIndex: 1)]
+    )
+    let outsideTile = caprogressiveRemoteFXGrayTilesStream(
+        tiles: [CAPROGRESSIVERemoteFXGrayTile(xIndex: 2, yIndex: 0)]
+    )
+
+    let frame = try RDPRemoteFXDecoder().decodeProgressive(insideTile, surfaceSize: (width: 65, height: 65))
+
+    #expect(frame.tiles.map { [$0.x, $0.y] } == [[64, 64]])
+    #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
+        _ = try RDPRemoteFXDecoder().decodeProgressive(outsideTile, surfaceSize: (width: 128, height: 64))
+    }
+}
+
 @Test func cavideoRemoteFXDecodesLargeTileSetInOrder() throws {
     let positions = (0 ..< 12).map { (x: UInt16($0 % 4), y: UInt16($0 / 4)) }
 

@@ -300,11 +300,14 @@ final class RDPRemoteFXDecoder {
 
     // MARK: - RemoteFX Progressive
 
+    /// Decodes an RFX_PROGRESSIVE_BITMAP_STREAM. With `surfaceSize`, tiles outside
+    /// the surface are rejected, which bounds the tile state kept per surface.
     func decodeProgressive(
         _ data: Data,
         surfaceID: UInt16 = 0,
         codecContextID: UInt32 = 0,
-        permitsUpgrade: Bool = true
+        permitsUpgrade: Bool = true,
+        surfaceSize: (width: Int, height: Int)? = nil
     ) throws -> RDPRemoteFXDecodedFrame {
         var cursor = ByteCursor(data)
         var frameIndex: UInt32?
@@ -346,7 +349,8 @@ final class RDPRemoteFXDecoder {
                     block.body,
                     surfaceID: surfaceID,
                     codecContextID: codecContextID,
-                    permitsUpgrade: permitsUpgrade
+                    permitsUpgrade: permitsUpgrade,
+                    surfaceSize: surfaceSize
                 )
                 decodedTiles += region.tiles
                 decodedRegionRects += region.rectangles
@@ -422,7 +426,8 @@ final class RDPRemoteFXDecoder {
         _ data: Data,
         surfaceID: UInt16,
         codecContextID: UInt32,
-        permitsUpgrade: Bool
+        permitsUpgrade: Bool,
+        surfaceSize: (width: Int, height: Int)?
     ) throws -> (tiles: [RDPRemoteFXDecodedTile], rectangles: [RDPFrameRect]) {
         var cursor = ByteCursor(data)
         guard cursor.remaining >= 12 else {
@@ -477,6 +482,12 @@ final class RDPRemoteFXDecoder {
         }
         guard tiles.count == expectedTileCount else {
             throw RDPDecodeError.invalidRDPGFXPDU
+        }
+        if let surfaceSize {
+            guard tiles.allSatisfy({ $0.xIndex * 64 < surfaceSize.width && $0.yIndex * 64 < surfaceSize.height })
+            else {
+                throw RDPDecodeError.invalidRDPGFXPDU
+            }
         }
 
         let region = ProgressiveRegion(
