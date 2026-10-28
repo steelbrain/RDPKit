@@ -390,6 +390,14 @@ import Testing
     #expect(confirm.negotiationResult == nil)
 }
 
+@Test func rdpHexStringFormatsAndRoundTripsDataSlices() {
+    let data = Data([0xFF, 0x00, 0x0A, 0xB7])
+
+    #expect(data.dropFirst().rdpHexString == "00 0a b7")
+    #expect(Data().rdpHexString == "")
+    #expect(Data(rdpHexString: "00 0A\nb7") == Data([0x00, 0x0A, 0xB7]))
+}
+
 @Test func byteCursorRejectsNegativeReadCount() {
     var cursor = ByteCursor(Data([0x01, 0x02]))
 

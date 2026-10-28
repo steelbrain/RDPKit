@@ -216,8 +216,19 @@ extension Data {
 }
 
 extension Data {
+    /// Lowercase hex bytes separated by single spaces.
     var rdpHexString: String {
-        map { String(format: "%02x", $0) }.joined(separator: " ")
+        let digits = Array("0123456789abcdef".utf8)
+        var characters: [UInt8] = []
+        characters.reserveCapacity(count * 3)
+        for byte in self {
+            if !characters.isEmpty {
+                characters.append(0x20)
+            }
+            characters.append(digits[Int(byte >> 4)])
+            characters.append(digits[Int(byte & 0x0F)])
+        }
+        return String(decoding: characters, as: UTF8.self)
     }
 
     /// Parses a hex string, ignoring any interspersed whitespace (spaces, tabs,
