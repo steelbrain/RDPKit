@@ -146,7 +146,7 @@ final class RDPAVC444MetalDecoder {
             mainFrames[key] = firstImageBuffer
         }
 
-        let output = try makeOutputPixelBuffer(width: width, height: height)
+        let output = try rdpMakeBGRAPixelBuffer(width: width, height: height)
         let mainTextures = try makeNV12Textures(mainImageBuffer)
         let auxiliaryTextures = try auxiliaryImageBuffer.map(makeNV12Textures) ?? mainTextures
         let outputTexture = try makeTexture(
@@ -223,25 +223,6 @@ final class RDPAVC444MetalDecoder {
         )
     }
 
-    private func makeOutputPixelBuffer(width: Int, height: Int) throws -> CVPixelBuffer {
-        var pixelBuffer: CVPixelBuffer?
-        let status = CVPixelBufferCreate(
-            kCFAllocatorDefault,
-            width,
-            height,
-            kCVPixelFormatType_32BGRA,
-            [
-                kCVPixelBufferMetalCompatibilityKey: true,
-                kCVPixelBufferIOSurfacePropertiesKey: [:],
-            ] as CFDictionary,
-            &pixelBuffer
-        )
-        guard status == kCVReturnSuccess, let pixelBuffer else {
-            throw RDPAVC444MetalDecodeError.outputCreationFailed(status)
-        }
-        return pixelBuffer
-    }
-
     private func makeNV12Textures(
         _ imageBuffer: CVImageBuffer
     ) throws -> (y: WrappedTexture, uv: WrappedTexture) {
@@ -298,7 +279,6 @@ final class RDPAVC444MetalDecoder {
 }
 
 enum RDPAVC444MetalDecodeError: Error, CustomStringConvertible {
-    case outputCreationFailed(CVReturn)
     case missingTextureCache
     case textureCreationFailed(CVReturn)
     case commandCreationFailed
@@ -306,8 +286,6 @@ enum RDPAVC444MetalDecodeError: Error, CustomStringConvertible {
 
     var description: String {
         switch self {
-        case let .outputCreationFailed(status):
-            "Core Video could not create an IOSurface-backed AVC444 output: \(status)."
         case .missingTextureCache:
             "The AVC444 Metal texture cache is unavailable."
         case let .textureCreationFailed(status):

@@ -777,43 +777,12 @@ final class RDPDecodedVideoSurfaceCompositor {
     }
 
     private func makePixelBuffer(surface: Surface) throws -> CVPixelBuffer {
-        var pixelBuffer: CVPixelBuffer?
-        let status = CVPixelBufferCreate(
-            kCFAllocatorDefault,
-            surface.width,
-            surface.height,
-            kCVPixelFormatType_32BGRA,
-            [
-                kCVPixelBufferMetalCompatibilityKey: true,
-                kCVPixelBufferIOSurfacePropertiesKey: [:],
-            ] as CFDictionary,
-            &pixelBuffer
+        try rdpMakeBGRAPixelBuffer(
+            width: surface.width,
+            height: surface.height,
+            copying: surface.data,
+            bytesPerRow: surface.bytesPerRow
         )
-        guard status == kCVReturnSuccess, let pixelBuffer else {
-            throw RDPBitmapFrameDecodeError.coreVideo(operation: "create composed video pixel buffer", status: status)
-        }
-
-        CVPixelBufferLockBaseAddress(pixelBuffer, [])
-        defer {
-            CVPixelBufferUnlockBaseAddress(pixelBuffer, [])
-        }
-        guard let destination = CVPixelBufferGetBaseAddress(pixelBuffer) else {
-            throw RDPBitmapFrameDecodeError.missingBaseAddress
-        }
-        let destinationBytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
-        surface.data.withUnsafeBytes { sourceBuffer in
-            guard let source = sourceBuffer.baseAddress else {
-                return
-            }
-            for row in 0 ..< surface.height {
-                memcpy(
-                    destination.advanced(by: row * destinationBytesPerRow),
-                    source.advanced(by: row * surface.bytesPerRow),
-                    surface.width * 4
-                )
-            }
-        }
-        return pixelBuffer
     }
 
     private func synchronizeBitmapSurface(from frame: RDPGraphicsFrameSnapshot) {

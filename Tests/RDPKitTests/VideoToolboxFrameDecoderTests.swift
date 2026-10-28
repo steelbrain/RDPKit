@@ -50,21 +50,15 @@ import Testing
         }
     }
 
-    #expect(decoder.decoderContextCounts.h264 == 2)
-    #expect(decoder.decoderContextCounts.avc444 == 2)
-    #expect(decoder.decoderContextCounts.hevc == 2)
+    #expect(decoder.decoderContextCount == 6)
 
     decoder.reset(surfaceID: 1)
 
-    #expect(decoder.decoderContextCounts.h264 == 1)
-    #expect(decoder.decoderContextCounts.avc444 == 1)
-    #expect(decoder.decoderContextCounts.hevc == 1)
+    #expect(decoder.decoderContextCount == 3)
 
     decoder.reset()
 
-    #expect(decoder.decoderContextCounts.h264 == 0)
-    #expect(decoder.decoderContextCounts.avc444 == 0)
-    #expect(decoder.decoderContextCounts.hevc == 0)
+    #expect(decoder.decoderContextCount == 0)
 }
 
 private func bitmapFrame(pixels: [UInt8]) -> RDPGraphicsFrameSnapshot {

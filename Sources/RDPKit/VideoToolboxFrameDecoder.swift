@@ -5,65 +5,58 @@ import CoreVideo
 import Foundation
 import VideoToolbox
 
-public struct RDPH264FirstFrameDecoder {
-    public init() {}
-
-    public func decode(_ annexBData: Data) throws -> CGImage {
-        try RDPH264FrameSequenceDecoder().decode(annexBData)
-    }
-}
-
 public final class RDPVideoToolboxFrameDecoder {
-    private var h264Decoders: [UInt16: RDPH264FrameSequenceDecoder] = [:]
+    private struct SequenceKey: Hashable {
+        var surfaceID: UInt16
+        var codec: RDPVideoCodec
+    }
+
+    private var sequenceDecoders: [SequenceKey: RDPVideoToolboxSequenceDecoder] = [:]
     private var avc444Decoders: [UInt16: RDPAVC444FrameDecoder] = [:]
-    private var hevcDecoders: [UInt16: RDPHEVCFrameSequenceDecoder] = [:]
     private let bitmapDecoder = RDPBitmapFrameDecoder()
-    private let imageConverter = RDPVideoToolboxCGImageConverter()
+    private lazy var imageContext = CIContext()
 
     public init() {}
 
     public func reset() {
-        h264Decoders.removeAll()
+        sequenceDecoders.removeAll()
         avc444Decoders.removeAll()
-        hevcDecoders.removeAll()
     }
 
     func reset(surfaceID: UInt16) {
-        h264Decoders[surfaceID] = nil
+        sequenceDecoders = sequenceDecoders.filter { $0.key.surfaceID != surfaceID }
         avc444Decoders[surfaceID] = nil
-        hevcDecoders[surfaceID] = nil
     }
 
     public func decode(_ frame: RDPGraphicsFrameSnapshot) throws -> CGImage {
-        try imageConverter.makeImage(from: decodeDetailed(frame).imageBuffer)
+        let ciImage = CIImage(cvImageBuffer: try decodeDetailed(frame).imageBuffer)
+        guard let image = imageContext.createCGImage(ciImage, from: ciImage.extent) else {
+            throw RDPVideoDecodeError.imageConversionFailed
+        }
+        return image
     }
 
     public func decodeDetailed(_ frame: RDPGraphicsFrameSnapshot) throws -> RDPVideoToolboxDecodeResult {
         if frame.contentKind == .bitmap {
             return try bitmapDecoder.decodeDetailed(frame)
         }
-
-        switch frame.videoCodec {
-        case .h264:
-            if frame.avc444SubframeLayout != nil {
-                return try avc444Decoder(for: frame.surfaceID).decodeDetailed(frame)
-            }
-            return try h264Decoder(for: frame.surfaceID).decodeDetailed(frame.encodedVideoData)
-        case .hevc:
-            return try hevcDecoder(for: frame.surfaceID).decodeDetailed(frame.encodedVideoData)
+        if frame.videoCodec == .h264, frame.avc444SubframeLayout != nil {
+            return try avc444Decoder(for: frame.surfaceID).decodeDetailed(frame)
         }
+        return try sequenceDecoder(for: frame.surfaceID, codec: frame.videoCodec).decodeDetailed(frame.encodedVideoData)
     }
 
-    var decoderContextCounts: (h264: Int, avc444: Int, hevc: Int) {
-        (h264Decoders.count, avc444Decoders.count, hevcDecoders.count)
+    var decoderContextCount: Int {
+        sequenceDecoders.count + avc444Decoders.count
     }
 
-    private func h264Decoder(for surfaceID: UInt16) -> RDPH264FrameSequenceDecoder {
-        if let decoder = h264Decoders[surfaceID] {
+    private func sequenceDecoder(for surfaceID: UInt16, codec: RDPVideoCodec) -> RDPVideoToolboxSequenceDecoder {
+        let key = SequenceKey(surfaceID: surfaceID, codec: codec)
+        if let decoder = sequenceDecoders[key] {
             return decoder
         }
-        let decoder = RDPH264FrameSequenceDecoder()
-        h264Decoders[surfaceID] = decoder
+        let decoder = RDPVideoToolboxSequenceDecoder(codec: codec)
+        sequenceDecoders[key] = decoder
         return decoder
     }
 
@@ -75,21 +68,20 @@ public final class RDPVideoToolboxFrameDecoder {
         avc444Decoders[surfaceID] = decoder
         return decoder
     }
+}
 
-    private func hevcDecoder(for surfaceID: UInt16) -> RDPHEVCFrameSequenceDecoder {
-        if let decoder = hevcDecoders[surfaceID] {
-            return decoder
-        }
-        let decoder = RDPHEVCFrameSequenceDecoder()
-        hevcDecoders[surfaceID] = decoder
-        return decoder
-    }
+public struct RDPVideoToolboxDecodeResult {
+    public var imageBuffer: CVImageBuffer
+    public var samplePreparationMilliseconds: Double
+    public var videoToolboxMilliseconds: Double
+    public var imageConversionMilliseconds: Double
+    public var decodedPixelFormat: UInt32
+    public var usesHardwareAcceleration: Bool?
 }
 
 private final class RDPBitmapFrameDecoder {
     func decodeDetailed(_ frame: RDPGraphicsFrameSnapshot) throws -> RDPVideoToolboxDecodeResult {
-        guard frame.contentKind == .bitmap,
-              let bitmapData = frame.decodedBitmapData,
+        guard let bitmapData = frame.decodedBitmapData,
               let bytesPerRow = frame.decodedBitmapBytesPerRow
         else {
             throw RDPBitmapFrameDecodeError.missingBitmapData
@@ -112,17 +104,17 @@ private final class RDPBitmapFrameDecoder {
             bytesPerRow: bytesPerRow,
             data: bitmapData
         )
-        let elapsed = Date().timeIntervalSince(start) * 1000
         return RDPVideoToolboxDecodeResult(
             imageBuffer: imageBuffer,
             samplePreparationMilliseconds: 0,
             videoToolboxMilliseconds: 0,
-            imageConversionMilliseconds: elapsed,
+            imageConversionMilliseconds: Date().timeIntervalSince(start) * 1000,
             decodedPixelFormat: kCVPixelFormatType_32BGRA,
             usesHardwareAcceleration: nil
         )
     }
 
+    /// Wraps the bitmap bytes without copying; the pixel buffer keeps the backing `NSData` alive.
     private func makePixelBuffer(
         width: Int,
         height: Int,
@@ -149,75 +141,70 @@ private final class RDPBitmapFrameDecoder {
             nil,
             &pixelBuffer
         )
-
-        if status != kCVReturnSuccess {
+        guard status == kCVReturnSuccess, let pixelBuffer else {
             retainedData.release()
-            return try makeCopiedPixelBuffer(width: width, height: height, bytesPerRow: bytesPerRow, data: data)
-        }
-
-        guard let pixelBuffer else {
-            throw RDPBitmapFrameDecodeError.missingPixelBuffer
+            return try rdpMakeBGRAPixelBuffer(width: width, height: height, copying: data, bytesPerRow: bytesPerRow)
         }
         return pixelBuffer
-    }
-
-    private func makeCopiedPixelBuffer(
-        width: Int,
-        height: Int,
-        bytesPerRow: Int,
-        data: Data
-    ) throws -> CVPixelBuffer {
-        var pixelBuffer: CVPixelBuffer?
-        let status = CVPixelBufferCreate(
-            kCFAllocatorDefault,
-            width,
-            height,
-            kCVPixelFormatType_32BGRA,
-            makeVideoDecoderImageBufferAttributes(),
-            &pixelBuffer
-        )
-        try check(status, operation: "create bitmap pixel buffer")
-
-        guard let pixelBuffer else {
-            throw RDPBitmapFrameDecodeError.missingPixelBuffer
-        }
-        CVPixelBufferLockBaseAddress(pixelBuffer, [])
-        defer {
-            CVPixelBufferUnlockBaseAddress(pixelBuffer, [])
-        }
-
-        guard let destination = CVPixelBufferGetBaseAddress(pixelBuffer) else {
-            throw RDPBitmapFrameDecodeError.missingBaseAddress
-        }
-
-        let destinationBytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
-        data.withUnsafeBytes { sourceBuffer in
-            guard let source = sourceBuffer.baseAddress else {
-                return
-            }
-            for row in 0 ..< height {
-                let sourceRow = source.advanced(by: row * bytesPerRow)
-                let destinationRow = destination.advanced(by: row * destinationBytesPerRow)
-                memcpy(destinationRow, sourceRow, width * 4)
-            }
-        }
-        return pixelBuffer
-    }
-
-    private func check(_ status: CVReturn, operation: String) throws {
-        guard status == kCVReturnSuccess else {
-            throw RDPBitmapFrameDecodeError.coreVideo(operation: operation, status: status)
-        }
     }
 }
 
-public struct RDPVideoToolboxDecodeResult {
-    public var imageBuffer: CVImageBuffer
-    public var samplePreparationMilliseconds: Double
-    public var videoToolboxMilliseconds: Double
-    public var imageConversionMilliseconds: Double
-    public var decodedPixelFormat: UInt32
-    public var usesHardwareAcceleration: Bool?
+/// Creates an IOSurface-backed, Metal-compatible BGRA pixel buffer, optionally filled with
+/// `height` rows of `width * 4` bytes read from `source` at `bytesPerRow` stride.
+func rdpMakeBGRAPixelBuffer(
+    width: Int,
+    height: Int,
+    copying source: Data? = nil,
+    bytesPerRow: Int = 0
+) throws -> CVPixelBuffer {
+    var pixelBuffer: CVPixelBuffer?
+    let status = CVPixelBufferCreate(
+        kCFAllocatorDefault,
+        width,
+        height,
+        kCVPixelFormatType_32BGRA,
+        rdpVideoPixelBufferAttributes() as CFDictionary,
+        &pixelBuffer
+    )
+    guard status == kCVReturnSuccess, let pixelBuffer else {
+        throw RDPBitmapFrameDecodeError.coreVideo(operation: "create BGRA pixel buffer", status: status)
+    }
+    guard let source else {
+        return pixelBuffer
+    }
+
+    CVPixelBufferLockBaseAddress(pixelBuffer, [])
+    defer {
+        CVPixelBufferUnlockBaseAddress(pixelBuffer, [])
+    }
+    guard let destination = CVPixelBufferGetBaseAddress(pixelBuffer) else {
+        throw RDPBitmapFrameDecodeError.missingBaseAddress
+    }
+    let destinationBytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
+    source.withUnsafeBytes { sourceBuffer in
+        guard let sourceBase = sourceBuffer.baseAddress else {
+            return
+        }
+        for row in 0 ..< height {
+            memcpy(
+                destination.advanced(by: row * destinationBytesPerRow),
+                sourceBase.advanced(by: row * bytesPerRow),
+                width * 4
+            )
+        }
+    }
+    return pixelBuffer
+}
+
+func rdpVideoPixelBufferAttributes(pixelFormat: OSType? = nil) -> [CFString: Any] {
+    var attributes: [CFString: Any] = [
+        kCVPixelBufferMetalCompatibilityKey: true,
+        kCVPixelBufferIOSurfacePropertiesKey: [:],
+    ]
+    if let pixelFormat {
+        attributes[kCVPixelBufferPixelFormatTypeKey] = pixelFormat
+    }
+    return attributes
 }
 
 private final class RDPAVC444FrameDecoder {
@@ -229,7 +216,8 @@ private final class RDPAVC444FrameDecoder {
         var bottom: UInt16
     }
 
-    private let h264Decoder = RDPH264FrameSequenceDecoder(
+    private let h264Decoder = RDPVideoToolboxSequenceDecoder(
+        codec: .h264,
         outputPixelFormat: kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
     )
     private let frameStore = RDPAVC444FrameStore()
@@ -348,7 +336,12 @@ private final class RDPAVC444FrameDecoder {
             destinationRect: frame.destinationRect,
             chromaRegionRects: chromaRegionRects
         )
-        let pixelBuffer = try makeBGRAImageBuffer(from: reconstructed)
+        let pixelBuffer = try rdpMakeBGRAPixelBuffer(
+            width: reconstructed.width,
+            height: reconstructed.height,
+            copying: reconstructed.bgra,
+            bytesPerRow: reconstructed.width * 4
+        )
         let imageConversionMilliseconds = Date().timeIntervalSince(conversionStartedAt) * 1000
         return RDPVideoToolboxDecodeResult(
             imageBuffer: pixelBuffer,
@@ -454,42 +447,6 @@ private final class RDPAVC444FrameDecoder {
         }
         return try RDPYUV420Frame(width: width, height: height, y: yPlane, u: uPlane, v: vPlane)
     }
-
-    private func makeBGRAImageBuffer(from frame: RDPAVC444ReconstructedFrame) throws -> CVImageBuffer {
-        var pixelBuffer: CVPixelBuffer?
-        let status = CVPixelBufferCreate(
-            kCFAllocatorDefault,
-            frame.width,
-            frame.height,
-            kCVPixelFormatType_32BGRA,
-            makeVideoDecoderImageBufferAttributes(),
-            &pixelBuffer
-        )
-        guard status == kCVReturnSuccess, let pixelBuffer else {
-            throw RDPAVC444DecodeError.coreVideo(operation: "create AVC444 pixel buffer", status: status)
-        }
-        CVPixelBufferLockBaseAddress(pixelBuffer, [])
-        defer {
-            CVPixelBufferUnlockBaseAddress(pixelBuffer, [])
-        }
-        guard let destination = CVPixelBufferGetBaseAddress(pixelBuffer) else {
-            throw RDPAVC444DecodeError.missingPixelBufferPlane
-        }
-        let destinationBytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
-        frame.bgra.withUnsafeBytes { source in
-            guard let sourceBase = source.baseAddress else {
-                return
-            }
-            for row in 0 ..< frame.height {
-                memcpy(
-                    destination.advanced(by: row * destinationBytesPerRow),
-                    sourceBase.advanced(by: row * frame.width * 4),
-                    frame.width * 4
-                )
-            }
-        }
-        return pixelBuffer
-    }
 }
 
 private struct RDPYUV420PlaneCopy: @unchecked Sendable {
@@ -527,76 +484,6 @@ private struct RDPYUV420PlaneCopy: @unchecked Sendable {
     }
 }
 
-private func makeVideoDecoderSpecification() -> CFDictionary {
-    [
-        kVTVideoDecoderSpecification_EnableHardwareAcceleratedVideoDecoder: kCFBooleanTrue as Any,
-    ] as CFDictionary
-}
-
-private func makeVideoDecoderImageBufferAttributes(pixelFormat: OSType? = nil) -> CFDictionary {
-    var attributes: [CFString: Any] = [
-        kCVPixelBufferMetalCompatibilityKey: true,
-        kCVPixelBufferIOSurfacePropertiesKey: [:],
-    ]
-    if let pixelFormat {
-        attributes[kCVPixelBufferPixelFormatTypeKey] = pixelFormat
-    }
-    return attributes as CFDictionary
-}
-
-private func copyHardwareAccelerationState(from session: VTDecompressionSession) -> Bool? {
-    var unmanagedValue: Unmanaged<CFTypeRef>?
-    let status = VTSessionCopyProperty(
-        session,
-        key: kVTDecompressionPropertyKey_UsingHardwareAcceleratedVideoDecoder,
-        allocator: kCFAllocatorDefault,
-        valueOut: &unmanagedValue
-    )
-    let value = unmanagedValue?.takeRetainedValue()
-    guard status == noErr,
-          let value,
-          CFGetTypeID(value) == CFBooleanGetTypeID()
-    else {
-        return nil
-    }
-    return CFBooleanGetValue(unsafeDowncast(value, to: CFBoolean.self))
-}
-
-private func setRealtimeDecodeIfSupported(_ session: VTDecompressionSession) -> OSStatus {
-    let status = VTSessionSetProperty(
-        session,
-        key: kVTDecompressionPropertyKey_RealTime,
-        value: kCFBooleanTrue
-    )
-    guard status != kVTPropertyNotSupportedErr else {
-        return noErr
-    }
-    return status
-}
-
-private final class RDPVideoToolboxCGImageConverter {
-    private let ciContext = CIContext()
-
-    func makeImage(from imageBuffer: CVImageBuffer) throws -> CGImage {
-        let ciImage = CIImage(cvImageBuffer: imageBuffer)
-        guard let image = ciContext.createCGImage(ciImage, from: ciImage.extent) else {
-            throw RDPVideoToolboxImageConversionError.imageConversionFailed
-        }
-        return image
-    }
-}
-
-private enum RDPVideoToolboxImageConversionError: Error, CustomStringConvertible {
-    case imageConversionFailed
-
-    var description: String {
-        switch self {
-        case .imageConversionFailed:
-            "Core Image could not convert the decoded video buffer to a CGImage."
-        }
-    }
-}
-
 public enum RDPH264DecodedFrameImage {
     public static func cropToDestinationRect(
         _ image: CGImage,
@@ -625,7 +512,7 @@ public enum RDPH264DecodedFrameImage {
                 height: destinationHeight
             )
         ) else {
-            throw RDPH264FirstFrameDecodeError.imageCropFailed(
+            throw RDPVideoDecodeError.imageCropFailed(
                 sourceWidth: image.width,
                 sourceHeight: image.height,
                 destinationWidth: destinationWidth,
@@ -636,15 +523,23 @@ public enum RDPH264DecodedFrameImage {
     }
 }
 
-public final class RDPH264FrameSequenceDecoder {
-    private var sequenceParameterSet: Data?
-    private var pictureParameterSet: Data?
+/// Decodes one Annex B H.264 or HEVC stream through VideoToolbox, recreating the session
+/// whenever the stream carries new parameter sets.
+final class RDPVideoToolboxSequenceDecoder {
+    private let codec: RDPVideoCodec
+    private let outputPixelFormat: OSType?
+    /// SPS and PPS for H.264; VPS, SPS, and PPS for HEVC.
+    private var parameterSets: [Data?]
     private var formatDescription: CMVideoFormatDescription?
     private var session: VTDecompressionSession?
     private var usesHardwareAcceleration: Bool?
     private let output = VideoToolboxDecodeOutput()
-    private let imageConverter = RDPVideoToolboxCGImageConverter()
-    private let outputPixelFormat: OSType?
+
+    init(codec: RDPVideoCodec, outputPixelFormat: OSType? = nil) {
+        self.codec = codec
+        self.outputPixelFormat = outputPixelFormat
+        parameterSets = Array(repeating: nil, count: codec == .h264 ? 2 : 3)
+    }
 
     deinit {
         if let session {
@@ -652,61 +547,36 @@ public final class RDPH264FrameSequenceDecoder {
         }
     }
 
-    public init() {
-        outputPixelFormat = nil
-    }
-
-    init(outputPixelFormat: OSType) {
-        self.outputPixelFormat = outputPixelFormat
-    }
-
-    public func reset() {
-        if let session {
-            VTDecompressionSessionInvalidate(session)
-        }
-        sequenceParameterSet = nil
-        pictureParameterSet = nil
+    func reset() {
+        invalidateSession()
+        parameterSets = Array(repeating: nil, count: parameterSets.count)
         formatDescription = nil
-        session = nil
-        usesHardwareAcceleration = nil
-        output.status = noErr
-        output.imageBuffer = nil
     }
 
-    public func decode(_ annexBData: Data) throws -> CGImage {
-        try imageConverter.makeImage(from: decodeDetailed(annexBData).imageBuffer)
-    }
-
-    public func decodeDetailed(_ annexBData: Data) throws -> RDPVideoToolboxDecodeResult {
+    func decodeDetailed(_ annexBData: Data) throws -> RDPVideoToolboxDecodeResult {
         let samplePreparationStartedAt = Date()
-        let preparedSample = RDPH264AnnexB.sample(from: annexBData)
-        guard preparedSample.isEmpty == false else {
-            throw RDPH264FirstFrameDecodeError.emptySample
+        let sample = prepareSample(annexBData)
+        guard sample.lengthPrefixedData.isEmpty == false else {
+            throw RDPVideoDecodeError.emptySample
         }
-
-        let parameterSetsChanged = updateParameterSets(from: preparedSample)
+        let parameterSetsChanged = updateParameterSets(sample.parameterSets)
         if session == nil || parameterSetsChanged {
             try rebuildSession()
         }
-
-        guard let formatDescription,
-              let session
-        else {
-            throw RDPH264FirstFrameDecodeError.missingParameterSets
+        guard let formatDescription, let session else {
+            throw RDPVideoDecodeError.missingParameterSets(codec)
         }
-
         let sampleBuffer = try makeSampleBuffer(
             formatDescription: formatDescription,
-            lengthPrefixedData: preparedSample.lengthPrefixedData
+            lengthPrefixedData: sample.lengthPrefixedData
         )
-        let samplePreparedAt = Date()
 
+        let videoToolboxStartedAt = Date()
         output.status = noErr
         output.imageBuffer = nil
         defer {
             output.imageBuffer = nil
         }
-        let videoToolboxStartedAt = Date()
         try check(
             VTDecompressionSessionDecodeFrame(
                 session,
@@ -715,18 +585,17 @@ public final class RDPH264FrameSequenceDecoder {
                 frameRefcon: nil,
                 infoFlagsOut: nil
             ),
-            operation: "decode H.264 frame"
+            operation: "decode \(codec.displayName) frame"
         )
         let videoToolboxFinishedAt = Date()
-        try check(output.status, operation: "finish H.264 decode")
-
+        try check(output.status, operation: "finish \(codec.displayName) decode")
         guard let imageBuffer = output.imageBuffer else {
-            throw RDPH264FirstFrameDecodeError.missingImageBuffer
+            throw RDPVideoDecodeError.missingImageBuffer
         }
 
         return RDPVideoToolboxDecodeResult(
             imageBuffer: imageBuffer,
-            samplePreparationMilliseconds: samplePreparedAt.timeIntervalSince(samplePreparationStartedAt) * 1000,
+            samplePreparationMilliseconds: videoToolboxStartedAt.timeIntervalSince(samplePreparationStartedAt) * 1000,
             videoToolboxMilliseconds: videoToolboxFinishedAt.timeIntervalSince(videoToolboxStartedAt) * 1000,
             imageConversionMilliseconds: 0,
             decodedPixelFormat: CVPixelBufferGetPixelFormatType(imageBuffer),
@@ -734,40 +603,46 @@ public final class RDPH264FrameSequenceDecoder {
         )
     }
 
-    private func updateParameterSets(from sample: RDPH264AnnexBSample) -> Bool {
-        var changed = false
-        if let nextSequenceParameterSet = sample.sequenceParameterSet,
-           nextSequenceParameterSet != sequenceParameterSet
-        {
-            sequenceParameterSet = nextSequenceParameterSet
-            changed = true
+    private func prepareSample(_ annexBData: Data) -> (lengthPrefixedData: Data, parameterSets: [Data?]) {
+        switch codec {
+        case .h264:
+            let sample = RDPH264AnnexB.sample(from: annexBData)
+            return (sample.lengthPrefixedData, [sample.sequenceParameterSet, sample.pictureParameterSet])
+        case .hevc:
+            let sample = RDPHEVCAnnexB.sample(from: annexBData)
+            return (
+                sample.lengthPrefixedData,
+                [sample.videoParameterSet, sample.sequenceParameterSet, sample.pictureParameterSet]
+            )
         }
-        if let nextPictureParameterSet = sample.pictureParameterSet,
-           nextPictureParameterSet != pictureParameterSet
-        {
-            pictureParameterSet = nextPictureParameterSet
-            changed = true
+    }
+
+    private func updateParameterSets(_ nextParameterSets: [Data?]) -> Bool {
+        var changed = false
+        for (index, nextParameterSet) in nextParameterSets.enumerated() {
+            if let nextParameterSet, nextParameterSet != parameterSets[index] {
+                parameterSets[index] = nextParameterSet
+                changed = true
+            }
         }
         return changed
     }
 
-    private func rebuildSession() throws {
-        guard let sequenceParameterSet,
-              let pictureParameterSet
-        else {
-            throw RDPH264FirstFrameDecodeError.missingParameterSets
-        }
-
+    private func invalidateSession() {
         if let session {
             VTDecompressionSessionInvalidate(session)
-            self.session = nil
-            usesHardwareAcceleration = nil
         }
+        session = nil
+        usesHardwareAcceleration = nil
+    }
 
-        let formatDescription = try makeFormatDescription(
-            sequenceParameterSet: sequenceParameterSet,
-            pictureParameterSet: pictureParameterSet
-        )
+    private func rebuildSession() throws {
+        let parameterSets = parameterSets.compactMap { $0 }
+        guard parameterSets.count == self.parameterSets.count else {
+            throw RDPVideoDecodeError.missingParameterSets(codec)
+        }
+        invalidateSession()
+        let formatDescription = try makeFormatDescription(parameterSets: parameterSets)
         self.formatDescription = formatDescription
 
         var callback = VTDecompressionOutputCallbackRecord(
@@ -781,59 +656,76 @@ public final class RDPH264FrameSequenceDecoder {
             },
             decompressionOutputRefCon: Unmanaged.passUnretained(output).toOpaque()
         )
-
+        var session: VTDecompressionSession?
         try check(
             VTDecompressionSessionCreate(
                 allocator: kCFAllocatorDefault,
                 formatDescription: formatDescription,
-                decoderSpecification: makeVideoDecoderSpecification(),
-                imageBufferAttributes: makeVideoDecoderImageBufferAttributes(pixelFormat: outputPixelFormat),
+                decoderSpecification: [
+                    kVTVideoDecoderSpecification_EnableHardwareAcceleratedVideoDecoder: true,
+                ] as CFDictionary,
+                imageBufferAttributes: rdpVideoPixelBufferAttributes(pixelFormat: outputPixelFormat) as CFDictionary,
                 outputCallback: &callback,
                 decompressionSessionOut: &session
             ),
-            operation: "create VideoToolbox session"
+            operation: "create \(codec.displayName) decompression session"
         )
-
         guard let session else {
-            throw RDPH264FirstFrameDecodeError.missingDecompressionSession
+            throw RDPVideoDecodeError.missingOutput("\(codec.displayName) decompression session")
         }
-        try check(
-            setRealtimeDecodeIfSupported(session),
-            operation: "configure H.264 realtime decode"
+        self.session = session
+        // A latency hint only; decoders that do not support it still decode correctly.
+        _ = VTSessionSetProperty(session, key: kVTDecompressionPropertyKey_RealTime, value: kCFBooleanTrue)
+
+        var hardwareAcceleration: Unmanaged<CFTypeRef>?
+        let status = VTSessionCopyProperty(
+            session,
+            key: kVTDecompressionPropertyKey_UsingHardwareAcceleratedVideoDecoder,
+            allocator: kCFAllocatorDefault,
+            valueOut: &hardwareAcceleration
         )
-        usesHardwareAcceleration = copyHardwareAccelerationState(from: session)
+        let usesHardwareAcceleration = hardwareAcceleration?.takeRetainedValue()
+        self.usesHardwareAcceleration = status == noErr ? usesHardwareAcceleration as? Bool : nil
     }
 
-    private func makeFormatDescription(
-        sequenceParameterSet: Data,
-        pictureParameterSet: Data
-    ) throws -> CMVideoFormatDescription {
+    private func makeFormatDescription(parameterSets: [Data]) throws -> CMVideoFormatDescription {
+        let joinedParameterSets = parameterSets.reduce(into: Data()) { $0.append($1) }
         var formatDescription: CMVideoFormatDescription?
-
-        try sequenceParameterSet.withUnsafeBytes { spsBuffer in
-            try pictureParameterSet.withUnsafeBytes { ppsBuffer in
-                guard let sps = spsBuffer.bindMemory(to: UInt8.self).baseAddress,
-                      let pps = ppsBuffer.bindMemory(to: UInt8.self).baseAddress
-                else {
-                    throw RDPH264FirstFrameDecodeError.invalidParameterSets
-                }
-
-                var parameterSetPointers = [sps, pps]
-                var parameterSetSizes = [sequenceParameterSet.count, pictureParameterSet.count]
-                let status = CMVideoFormatDescriptionCreateFromH264ParameterSets(
+        let status = joinedParameterSets.withUnsafeBytes { buffer -> OSStatus in
+            guard let base = buffer.bindMemory(to: UInt8.self).baseAddress else {
+                return kCMFormatDescriptionError_InvalidParameter
+            }
+            var offset = 0
+            var pointers = parameterSets.map { parameterSet -> UnsafePointer<UInt8> in
+                defer { offset += parameterSet.count }
+                return base.advanced(by: offset)
+            }
+            var sizes = parameterSets.map(\.count)
+            switch codec {
+            case .h264:
+                return CMVideoFormatDescriptionCreateFromH264ParameterSets(
                     allocator: kCFAllocatorDefault,
-                    parameterSetCount: parameterSetPointers.count,
-                    parameterSetPointers: &parameterSetPointers,
-                    parameterSetSizes: &parameterSetSizes,
+                    parameterSetCount: pointers.count,
+                    parameterSetPointers: &pointers,
+                    parameterSetSizes: &sizes,
                     nalUnitHeaderLength: 4,
                     formatDescriptionOut: &formatDescription
                 )
-                try check(status, operation: "create H.264 format description")
+            case .hevc:
+                return CMVideoFormatDescriptionCreateFromHEVCParameterSets(
+                    allocator: kCFAllocatorDefault,
+                    parameterSetCount: pointers.count,
+                    parameterSetPointers: &pointers,
+                    parameterSetSizes: &sizes,
+                    nalUnitHeaderLength: 4,
+                    extensions: nil,
+                    formatDescriptionOut: &formatDescription
+                )
             }
         }
-
+        try check(status, operation: "create \(codec.displayName) format description")
         guard let formatDescription else {
-            throw RDPH264FirstFrameDecodeError.missingFormatDescription
+            throw RDPVideoDecodeError.missingOutput("\(codec.displayName) format description")
         }
         return formatDescription
     }
@@ -855,16 +747,14 @@ public final class RDPH264FrameSequenceDecoder {
                 flags: 0,
                 blockBufferOut: &blockBuffer
             ),
-            operation: "create H.264 block buffer"
+            operation: "create block buffer"
         )
-
         guard let blockBuffer else {
-            throw RDPH264FirstFrameDecodeError.missingBlockBuffer
+            throw RDPVideoDecodeError.missingOutput("block buffer")
         }
-
         try lengthPrefixedData.withUnsafeBytes { bytes in
             guard let baseAddress = bytes.baseAddress else {
-                throw RDPH264FirstFrameDecodeError.emptySample
+                throw RDPVideoDecodeError.emptySample
             }
             try check(
                 CMBlockBufferReplaceDataBytes(
@@ -873,7 +763,7 @@ public final class RDPH264FrameSequenceDecoder {
                     offsetIntoDestination: 0,
                     dataLength: lengthPrefixedData.count
                 ),
-                operation: "copy H.264 sample bytes"
+                operation: "copy sample bytes"
             )
         }
 
@@ -896,348 +786,51 @@ public final class RDPH264FrameSequenceDecoder {
                 sampleSizeArray: &sampleSize,
                 sampleBufferOut: &sampleBuffer
             ),
-            operation: "create H.264 sample buffer"
+            operation: "create sample buffer"
         )
-
         guard let sampleBuffer else {
-            throw RDPH264FirstFrameDecodeError.missingSampleBuffer
+            throw RDPVideoDecodeError.missingOutput("sample buffer")
         }
         return sampleBuffer
     }
 
     private func check(_ status: OSStatus, operation: String) throws {
         guard status == noErr else {
-            throw RDPH264FirstFrameDecodeError.videoToolbox(operation: operation, status: status)
+            throw RDPVideoDecodeError.videoToolbox(operation: operation, status: status)
         }
     }
 }
 
-public final class RDPHEVCFrameSequenceDecoder {
-    private var videoParameterSet: Data?
-    private var sequenceParameterSet: Data?
-    private var pictureParameterSet: Data?
-    private var formatDescription: CMVideoFormatDescription?
-    private var session: VTDecompressionSession?
-    private var usesHardwareAcceleration: Bool?
-    private let output = VideoToolboxDecodeOutput()
-    private let imageConverter = RDPVideoToolboxCGImageConverter()
-
-    deinit {
-        if let session {
-            VTDecompressionSessionInvalidate(session)
-        }
-    }
-
-    public init() {}
-
-    public func reset() {
-        if let session {
-            VTDecompressionSessionInvalidate(session)
-        }
-        videoParameterSet = nil
-        sequenceParameterSet = nil
-        pictureParameterSet = nil
-        formatDescription = nil
-        session = nil
-        usesHardwareAcceleration = nil
-        output.status = noErr
-        output.imageBuffer = nil
-    }
-
-    public func decode(_ annexBData: Data) throws -> CGImage {
-        try imageConverter.makeImage(from: decodeDetailed(annexBData).imageBuffer)
-    }
-
-    public func decodeDetailed(_ annexBData: Data) throws -> RDPVideoToolboxDecodeResult {
-        let samplePreparationStartedAt = Date()
-        let preparedSample = RDPHEVCAnnexB.sample(from: annexBData)
-        guard preparedSample.isEmpty == false else {
-            throw RDPHEVCFrameDecodeError.emptySample
-        }
-
-        let parameterSetsChanged = updateParameterSets(from: preparedSample)
-        if session == nil || parameterSetsChanged {
-            try rebuildSession()
-        }
-
-        guard let formatDescription,
-              let session
-        else {
-            throw RDPHEVCFrameDecodeError.missingParameterSets
-        }
-
-        let sampleBuffer = try makeSampleBuffer(
-            formatDescription: formatDescription,
-            lengthPrefixedData: preparedSample.lengthPrefixedData
-        )
-        let samplePreparedAt = Date()
-
-        output.status = noErr
-        output.imageBuffer = nil
-        defer {
-            output.imageBuffer = nil
-        }
-        let videoToolboxStartedAt = Date()
-        try check(
-            VTDecompressionSessionDecodeFrame(
-                session,
-                sampleBuffer: sampleBuffer,
-                flags: [],
-                frameRefcon: nil,
-                infoFlagsOut: nil
-            ),
-            operation: "decode HEVC frame"
-        )
-        let videoToolboxFinishedAt = Date()
-        try check(output.status, operation: "finish HEVC decode")
-
-        guard let imageBuffer = output.imageBuffer else {
-            throw RDPHEVCFrameDecodeError.missingImageBuffer
-        }
-
-        return RDPVideoToolboxDecodeResult(
-            imageBuffer: imageBuffer,
-            samplePreparationMilliseconds: samplePreparedAt.timeIntervalSince(samplePreparationStartedAt) * 1000,
-            videoToolboxMilliseconds: videoToolboxFinishedAt.timeIntervalSince(videoToolboxStartedAt) * 1000,
-            imageConversionMilliseconds: 0,
-            decodedPixelFormat: CVPixelBufferGetPixelFormatType(imageBuffer),
-            usesHardwareAcceleration: usesHardwareAcceleration
-        )
-    }
-
-    private func updateParameterSets(from sample: RDPHEVCAnnexBSample) -> Bool {
-        var changed = false
-        if let nextVideoParameterSet = sample.videoParameterSet,
-           nextVideoParameterSet != videoParameterSet
-        {
-            videoParameterSet = nextVideoParameterSet
-            changed = true
-        }
-        if let nextSequenceParameterSet = sample.sequenceParameterSet,
-           nextSequenceParameterSet != sequenceParameterSet
-        {
-            sequenceParameterSet = nextSequenceParameterSet
-            changed = true
-        }
-        if let nextPictureParameterSet = sample.pictureParameterSet,
-           nextPictureParameterSet != pictureParameterSet
-        {
-            pictureParameterSet = nextPictureParameterSet
-            changed = true
-        }
-        return changed
-    }
-
-    private func rebuildSession() throws {
-        guard let videoParameterSet,
-              let sequenceParameterSet,
-              let pictureParameterSet
-        else {
-            throw RDPHEVCFrameDecodeError.missingParameterSets
-        }
-
-        if let session {
-            VTDecompressionSessionInvalidate(session)
-            self.session = nil
-            usesHardwareAcceleration = nil
-        }
-
-        let formatDescription = try makeFormatDescription(
-            videoParameterSet: videoParameterSet,
-            sequenceParameterSet: sequenceParameterSet,
-            pictureParameterSet: pictureParameterSet
-        )
-        self.formatDescription = formatDescription
-
-        var callback = VTDecompressionOutputCallbackRecord(
-            decompressionOutputCallback: { refCon, _, status, _, imageBuffer, _, _ in
-                guard let refCon else {
-                    return
-                }
-                let output = Unmanaged<VideoToolboxDecodeOutput>.fromOpaque(refCon).takeUnretainedValue()
-                output.status = status
-                output.imageBuffer = imageBuffer
-            },
-            decompressionOutputRefCon: Unmanaged.passUnretained(output).toOpaque()
-        )
-
-        try check(
-            VTDecompressionSessionCreate(
-                allocator: kCFAllocatorDefault,
-                formatDescription: formatDescription,
-                decoderSpecification: makeVideoDecoderSpecification(),
-                imageBufferAttributes: makeVideoDecoderImageBufferAttributes(),
-                outputCallback: &callback,
-                decompressionSessionOut: &session
-            ),
-            operation: "create HEVC VideoToolbox session"
-        )
-
-        guard let session else {
-            throw RDPHEVCFrameDecodeError.missingDecompressionSession
-        }
-        try check(
-            setRealtimeDecodeIfSupported(session),
-            operation: "configure HEVC realtime decode"
-        )
-        usesHardwareAcceleration = copyHardwareAccelerationState(from: session)
-    }
-
-    private func makeFormatDescription(
-        videoParameterSet: Data,
-        sequenceParameterSet: Data,
-        pictureParameterSet: Data
-    ) throws -> CMVideoFormatDescription {
-        var formatDescription: CMVideoFormatDescription?
-
-        try videoParameterSet.withUnsafeBytes { vpsBuffer in
-            try sequenceParameterSet.withUnsafeBytes { spsBuffer in
-                try pictureParameterSet.withUnsafeBytes { ppsBuffer in
-                    guard let vps = vpsBuffer.bindMemory(to: UInt8.self).baseAddress,
-                          let sps = spsBuffer.bindMemory(to: UInt8.self).baseAddress,
-                          let pps = ppsBuffer.bindMemory(to: UInt8.self).baseAddress
-                    else {
-                        throw RDPHEVCFrameDecodeError.invalidParameterSets
-                    }
-
-                    var parameterSetPointers = [vps, sps, pps]
-                    var parameterSetSizes = [
-                        videoParameterSet.count,
-                        sequenceParameterSet.count,
-                        pictureParameterSet.count,
-                    ]
-                    let status = CMVideoFormatDescriptionCreateFromHEVCParameterSets(
-                        allocator: kCFAllocatorDefault,
-                        parameterSetCount: parameterSetPointers.count,
-                        parameterSetPointers: &parameterSetPointers,
-                        parameterSetSizes: &parameterSetSizes,
-                        nalUnitHeaderLength: 4,
-                        extensions: nil,
-                        formatDescriptionOut: &formatDescription
-                    )
-                    try check(status, operation: "create HEVC format description")
-                }
-            }
-        }
-
-        guard let formatDescription else {
-            throw RDPHEVCFrameDecodeError.missingFormatDescription
-        }
-        return formatDescription
-    }
-
-    private func makeSampleBuffer(
-        formatDescription: CMVideoFormatDescription,
-        lengthPrefixedData: Data
-    ) throws -> CMSampleBuffer {
-        var blockBuffer: CMBlockBuffer?
-        try check(
-            CMBlockBufferCreateWithMemoryBlock(
-                allocator: kCFAllocatorDefault,
-                memoryBlock: nil,
-                blockLength: lengthPrefixedData.count,
-                blockAllocator: kCFAllocatorDefault,
-                customBlockSource: nil,
-                offsetToData: 0,
-                dataLength: lengthPrefixedData.count,
-                flags: 0,
-                blockBufferOut: &blockBuffer
-            ),
-            operation: "create HEVC block buffer"
-        )
-
-        guard let blockBuffer else {
-            throw RDPHEVCFrameDecodeError.missingBlockBuffer
-        }
-
-        try lengthPrefixedData.withUnsafeBytes { bytes in
-            guard let baseAddress = bytes.baseAddress else {
-                throw RDPHEVCFrameDecodeError.emptySample
-            }
-            try check(
-                CMBlockBufferReplaceDataBytes(
-                    with: baseAddress,
-                    blockBuffer: blockBuffer,
-                    offsetIntoDestination: 0,
-                    dataLength: lengthPrefixedData.count
-                ),
-                operation: "copy HEVC sample bytes"
-            )
-        }
-
-        var sampleBuffer: CMSampleBuffer?
-        var timing = CMSampleTimingInfo(
-            duration: .invalid,
-            presentationTimeStamp: .zero,
-            decodeTimeStamp: .invalid
-        )
-        var sampleSize = lengthPrefixedData.count
-        try check(
-            CMSampleBufferCreateReady(
-                allocator: kCFAllocatorDefault,
-                dataBuffer: blockBuffer,
-                formatDescription: formatDescription,
-                sampleCount: 1,
-                sampleTimingEntryCount: 1,
-                sampleTimingArray: &timing,
-                sampleSizeEntryCount: 1,
-                sampleSizeArray: &sampleSize,
-                sampleBufferOut: &sampleBuffer
-            ),
-            operation: "create HEVC sample buffer"
-        )
-
-        guard let sampleBuffer else {
-            throw RDPHEVCFrameDecodeError.missingSampleBuffer
-        }
-        return sampleBuffer
-    }
-
-    private func check(_ status: OSStatus, operation: String) throws {
-        guard status == noErr else {
-            throw RDPHEVCFrameDecodeError.videoToolbox(operation: operation, status: status)
-        }
-    }
-}
-
+/// Receives VideoToolbox output. Decoding is synchronous, so the callback runs before
+/// `VTDecompressionSessionDecodeFrame` returns.
 private final class VideoToolboxDecodeOutput {
     var status: OSStatus = noErr
     var imageBuffer: CVImageBuffer?
 }
 
-public enum RDPH264FirstFrameDecodeError: Error, CustomStringConvertible {
-    case missingParameterSets
-    case invalidParameterSets
-    case missingFormatDescription
-    case missingBlockBuffer
-    case missingSampleBuffer
-    case missingDecompressionSession
-    case missingImageBuffer
+public enum RDPVideoDecodeError: Error, Equatable, CustomStringConvertible {
     case emptySample
+    case missingParameterSets(RDPVideoCodec)
+    case missingOutput(String)
+    case missingImageBuffer
     case imageConversionFailed
     case imageCropFailed(sourceWidth: Int, sourceHeight: Int, destinationWidth: Int, destinationHeight: Int)
     case videoToolbox(operation: String, status: OSStatus)
 
     public var description: String {
         switch self {
-        case .missingParameterSets:
-            "H.264 stream did not include SPS and PPS NAL units."
-        case .invalidParameterSets:
-            "H.264 parameter set bytes were invalid."
-        case .missingFormatDescription:
-            "CoreMedia did not return an H.264 format description."
-        case .missingBlockBuffer:
-            "CoreMedia did not return a block buffer."
-        case .missingSampleBuffer:
-            "CoreMedia did not return a sample buffer."
-        case .missingDecompressionSession:
-            "VideoToolbox did not return a decompression session."
+        case .emptySample:
+            "The video sample contained no NAL units."
+        case let .missingParameterSets(codec):
+            codec == .h264
+                ? "H.264 stream did not include SPS and PPS NAL units."
+                : "HEVC stream did not include VPS, SPS, and PPS NAL units."
+        case let .missingOutput(output):
+            "Core Media did not return a \(output)."
         case .missingImageBuffer:
             "VideoToolbox did not produce an image buffer."
-        case .emptySample:
-            "H.264 sample was empty."
         case .imageConversionFailed:
-            "CoreImage could not convert the decoded frame."
+            "Core Image could not convert the decoded frame."
         case let .imageCropFailed(sourceWidth, sourceHeight, destinationWidth, destinationHeight):
             "CoreGraphics could not crop decoded frame from \(sourceWidth)x\(sourceHeight) to \(destinationWidth)x\(destinationHeight)."
         case let .videoToolbox(operation, status):
@@ -1265,44 +858,6 @@ public enum RDPBitmapFrameDecodeError: Error, Equatable, CustomStringConvertible
             "Core Video did not expose the bitmap pixel buffer base address."
         case let .coreVideo(operation, status):
             "Core Video failed to \(operation): \(status)."
-        }
-    }
-}
-
-public enum RDPHEVCFrameDecodeError: Error, CustomStringConvertible {
-    case missingParameterSets
-    case invalidParameterSets
-    case missingFormatDescription
-    case missingBlockBuffer
-    case missingSampleBuffer
-    case missingDecompressionSession
-    case missingImageBuffer
-    case emptySample
-    case imageConversionFailed
-    case videoToolbox(operation: String, status: OSStatus)
-
-    public var description: String {
-        switch self {
-        case .missingParameterSets:
-            "HEVC stream did not include VPS, SPS, and PPS NAL units."
-        case .invalidParameterSets:
-            "HEVC parameter set bytes were invalid."
-        case .missingFormatDescription:
-            "CoreMedia did not return an HEVC format description."
-        case .missingBlockBuffer:
-            "CoreMedia did not return a block buffer."
-        case .missingSampleBuffer:
-            "CoreMedia did not return a sample buffer."
-        case .missingDecompressionSession:
-            "VideoToolbox did not return a decompression session."
-        case .missingImageBuffer:
-            "VideoToolbox did not produce an image buffer."
-        case .emptySample:
-            "HEVC sample was empty."
-        case .imageConversionFailed:
-            "CoreImage could not convert the decoded frame."
-        case let .videoToolbox(operation, status):
-            "\(operation) failed with OSStatus \(status)."
         }
     }
 }
