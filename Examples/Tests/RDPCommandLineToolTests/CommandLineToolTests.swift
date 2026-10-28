@@ -73,6 +73,12 @@ import Testing
     }
 }
 
+@Test func connectionOptionsRejectPortZero() {
+    #expect(throws: RDPCommandLineError.invalidValue(option: "--port", value: "0", expected: "1...65535")) {
+        try FirstFrameCaptureOptions.parse(["RDPFirstFrameCapture", "--port", "0"])
+    }
+}
+
 @Test func firstFrameCaptureRejectsNonPositiveSettleWindow() {
     #expect(throws: RDPCommandLineError.invalidValue(
         option: "--settle-seconds",

@@ -98,7 +98,7 @@ public struct RDPCommandLineConnectionOptions: Equatable, Sendable {
         case "--host":
             host = try arguments.value(for: option)
         case "--port":
-            port = try arguments.value(for: option, expected: "0...65535") { UInt16($0) }
+            port = try arguments.value(for: option, expected: "1...65535") { UInt16($0).flatMap { $0 > 0 ? $0 : nil } }
         case "--username":
             username = try arguments.value(for: option)
         case "--domain":
