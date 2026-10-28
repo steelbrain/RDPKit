@@ -127,7 +127,7 @@ extension RDPClientConnection {
         case .audio:
             dynamicAudio = nil
         case .displayControl:
-            break
+            pendingDisplayControlSession = nil
         }
         try sendDynamicChannelControl(close.encoded())
     }
@@ -244,6 +244,16 @@ extension RDPClientConnection {
         return fragment.payload
     }
 
+    /// Hands the display control session over once frames flow: KRdp 6.8 opens DisplayControl
+    /// before its video stream and ignores a monitor layout that arrives before that stream.
+    func announceDisplayControl() {
+        guard let session = pendingDisplayControlSession else {
+            return
+        }
+        pendingDisplayControlSession = nil
+        callbacks.onDisplayControlReady?(session)
+    }
+
     private func handleDisplayControl(_ message: Data, channelID: UInt32, packet: Data) {
         do {
             guard let caps = try RDPDisplayControlCapsPDU.parseIfPresent(from: message) else {
@@ -254,13 +264,16 @@ extension RDPClientConnection {
             guard let channel = transport?.channel, let staticChannelID = drdynvcChannelID else {
                 return
             }
-            callbacks.onDisplayControlReady?(RDPDisplayControlSession(
+            pendingDisplayControlSession = RDPDisplayControlSession(
                 dynamicChannelID: channelID,
                 capabilities: caps.capabilities,
                 userChannelID: userChannelID,
                 staticChannelID: staticChannelID,
                 channel: channel
-            ))
+            )
+            if report.rdpGraphicsFirstFrame != nil {
+                announceDisplayControl()
+            }
         } catch {
             recordChannelError(RDPDisplayControlChannel.name, error)
         }

@@ -226,6 +226,9 @@ extension RDPClientConnection {
                 throw RDPConnectionError.graphicsFrameHandler(error)
             }
         }
+        if !frames.isEmpty {
+            announceDisplayControl()
+        }
     }
 
     private func recordGraphicsUpdatePacket(_ packet: Data) {

@@ -1177,6 +1177,7 @@ struct MockKRDPServerTests {
             client: {
                 RDPClient().run(
                     configuration: $0,
+                    onGraphicsFrame: { frame in observed.withLock { $0.frames.append(frame) } },
                     onInputReady: { session in
                         var events: [RDPSlowPathInputEvent] = [.pointerMove(x: 640, y: 360)]
                         for codeUnit in inputText.utf16 {
@@ -1186,6 +1187,7 @@ struct MockKRDPServerTests {
                         session.send(events)
                     },
                     onDisplayControlReady: { session in
+                        observed.withLock { $0.framesBeforeDisplayControl = $0.frames.count }
                         session.sendSingleMonitorLayout(
                             width: 1440,
                             height: 900,
@@ -1281,6 +1283,8 @@ struct MockKRDPServerTests {
             if case .unicode = $0 { true } else { false }
         }.count == inputText.utf16.count * 2)
 
+        // KRdp ignores a layout sent before its video stream starts.
+        #expect(observed.withLock(\.framesBeforeDisplayControl) == 1)
         #expect(transcript.displayControlLayouts == [
             MockDisplayControlLayoutSummary(
                 monitorCount: 1,
@@ -1338,6 +1342,7 @@ private func runMock(
     )
     configure(&configuration)
     let report = client(configuration)
+    server.waitForClientsToClose()
     return MockRun(report: report, transcript: server.transcript.value, connectionCount: server.connectionCount)
 }
 
@@ -1351,6 +1356,7 @@ private struct Observed {
     var remoteFileData: Data?
     var clipboardTexts: [String] = []
     var clipboardErrors: [String] = []
+    var framesBeforeDisplayControl: Int?
     var audioSamples: [RDPAudioSample] = []
 }
 

@@ -28,6 +28,7 @@ final class MockKRDPServer {
     let port: UInt16
     let transcript: Locked<MockKRDPServerTranscript>
     private let connections: Locked<Int>
+    private let openConnections: DispatchGroup
     private let group: MultiThreadedEventLoopGroup
     private let channel: Channel
 
@@ -39,12 +40,14 @@ final class MockKRDPServer {
         port: UInt16,
         transcript: Locked<MockKRDPServerTranscript>,
         connections: Locked<Int>,
+        openConnections: DispatchGroup,
         group: MultiThreadedEventLoopGroup,
         channel: Channel
     ) {
         self.port = port
         self.transcript = transcript
         self.connections = connections
+        self.openConnections = openConnections
         self.group = group
         self.channel = channel
     }
@@ -53,6 +56,7 @@ final class MockKRDPServer {
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
         let transcript = Locked(MockKRDPServerTranscript())
         let connections = Locked(0)
+        let openConnections = DispatchGroup()
         do {
             let tlsContext = try NIOSSLContext(configuration: MockKRDPTLS.configuration())
             let channel = try ServerBootstrap(group: group)
@@ -62,7 +66,8 @@ final class MockKRDPServer {
                         options: options,
                         tlsContext: tlsContext,
                         transcript: transcript,
-                        connections: connections
+                        connections: connections,
+                        openConnections: openConnections
                     ))
                 }
                 .bind(host: "127.0.0.1", port: 0)
@@ -77,6 +82,7 @@ final class MockKRDPServer {
                 port: serverPort,
                 transcript: transcript,
                 connections: connections,
+                openConnections: openConnections,
                 group: group,
                 channel: channel
             )
@@ -98,6 +104,12 @@ final class MockKRDPServer {
     }
 
     private static let shutdownQueue = DispatchQueue(label: "MockKRDPServer.shutdown")
+
+    /// Waits until the server has seen every client close, and so has handled
+    /// everything they sent.
+    func waitForClientsToClose() {
+        _ = openConnections.wait(timeout: .now() + 5)
+    }
 }
 
 enum MockKRDPSecurityProtocol {
@@ -647,6 +659,7 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
     private let tlsContext: NIOSSLContext
     private let transcript: Locked<MockKRDPServerTranscript>
     private let connections: Locked<Int>
+    private let openConnections: DispatchGroup
     private var connectionIndex = 0
     private var stage = Stage.x224
     private var received = ClientByteStream()
@@ -660,12 +673,24 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
         options: MockKRDPServer.Options,
         tlsContext: NIOSSLContext,
         transcript: Locked<MockKRDPServerTranscript>,
-        connections: Locked<Int>
+        connections: Locked<Int>,
+        openConnections: DispatchGroup
     ) {
         self.options = options
         self.tlsContext = tlsContext
         self.transcript = transcript
         self.connections = connections
+        self.openConnections = openConnections
+    }
+
+    func channelActive(context: ChannelHandlerContext) {
+        openConnections.enter()
+        context.fireChannelActive()
+    }
+
+    func channelInactive(context: ChannelHandlerContext) {
+        openConnections.leave()
+        context.fireChannelInactive()
     }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
@@ -1290,7 +1315,6 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
               transcript.deviceRedirectionClientMessages.contains("rdpdr-client-name"),
               transcript.deviceRedirectionClientMessages.contains("rdpdr-client-capability"),
               transcript.deviceRedirectionClientMessages.contains("rdpdr-device-list-announce"),
-              transcript.displayControlLayouts.isEmpty == false,
               ["audio-formats", "audio-quality-mode", "audio-training", "audio-wave-confirm"]
               .allSatisfy(audioMessages.contains)
         else {

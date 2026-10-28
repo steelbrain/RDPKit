@@ -9,6 +9,9 @@ public typealias RDPRemotePointerHandler = @Sendable (RDPRemotePointerUpdate) ->
 /// Called after connection finalization, and again with a new session after a
 /// server deactivation-reactivation (MS-RDPBCGR 1.3.1.3).
 public typealias RDPInputSessionHandler = @Sendable (RDPInputSession) -> Void
+/// Called once the server's DisplayControl capabilities have arrived ([MS-RDPEDISP] 2.2.2.1)
+/// and the first graphics frame has been delivered, so the first layout sent finds an output
+/// to resize: KRdp 6.8 ignores a layout that arrives before its video stream starts.
 public typealias RDPDisplayControlSessionHandler = @Sendable (RDPDisplayControlSession) -> Void
 public typealias RDPClipboardSessionHandler = @Sendable (RDPClipboardSession) -> Void
 public typealias RDPClipboardTextHandler = @Sendable (String) -> Void

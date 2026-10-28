@@ -96,6 +96,8 @@
   certificate evaluation and sends, and cancelling during a redirection returns
   the report of the session that ran.
 - Negotiate only PCM rates `AVAudioEngine` can play.
+- `onDisplayControlReady` runs once the first graphics frame has arrived:
+  KRdp ignores a monitor layout that arrives before its video stream starts.
 
 ### Security and robustness
 

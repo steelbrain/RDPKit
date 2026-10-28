@@ -23,6 +23,8 @@ final class RDPClientConnection {
     var messageChannelID: UInt16?
     var staticChannelNames: [UInt16: String] = [:]
     var drdynvcChannelID: UInt16?
+    /// Display control, held back until the first graphics frame.
+    var pendingDisplayControlSession: RDPDisplayControlSession?
     var serverCertificatePublicKey: RDPRSAPublicKey?
     let clientName = MCSConnectInitialConfiguration().clientName
 
