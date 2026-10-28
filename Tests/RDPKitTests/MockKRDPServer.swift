@@ -2492,7 +2492,7 @@ private enum MockKRDPFixtures {
     ) -> Data {
         let capability = capability.encoded
         let confirm = graphicsMessage(commandID: RDPGFXCommandID.capsConfirm, payload: capability)
-        return graphicsDynamicPacket(confirm)
+        return graphicsDynamicPacket(segmentedGraphicsData(confirm))
     }
 
     static func compressedGraphicsCapsConfirmFirst(
@@ -2501,7 +2501,7 @@ private enum MockKRDPFixtures {
     ) -> Data {
         let capability = capability.encoded
         let confirm = graphicsMessage(commandID: RDPGFXCommandID.capsConfirm, payload: capability)
-        return compressedGraphicsDynamicFirstPacket(confirm)
+        return compressedGraphicsDynamicFirstPacket(segmentedGraphicsData(confirm))
     }
 
     static func fragmentedCompressedGraphicsCapsConfirmFirst(
@@ -2509,7 +2509,7 @@ private enum MockKRDPFixtures {
             .selectedCapability(from: nil)
     ) -> [Data] {
         let capability = capability.encoded
-        let confirm = graphicsMessage(commandID: RDPGFXCommandID.capsConfirm, payload: capability)
+        let confirm = segmentedGraphicsData(graphicsMessage(commandID: RDPGFXCommandID.capsConfirm, payload: capability))
         let firstCount = min(8, confirm.count - 1)
         guard firstCount > 0 else {
             return [compressedGraphicsDynamicFirstPacket(confirm)]
@@ -2629,9 +2629,9 @@ private enum MockKRDPFixtures {
              .sendCompressedCapsConfirmFirstFrame,
              .sendFragmentedCompressedCapsConfirmFirstFrame,
              .closeAfterFirstFrame:
-            [graphicsDynamicPacket(avc420FrameMessages())]
+            [graphicsDynamicPacket(segmentedGraphicsData(avc420FrameMessages()))]
         case .sendPointerUpdatesBeforeFirstFrame:
-            [pointerColorUpdate(), cachedPointerUpdate(), graphicsDynamicPacket(avc420FrameMessages())]
+            [pointerColorUpdate(), cachedPointerUpdate(), graphicsDynamicPacket(segmentedGraphicsData(avc420FrameMessages()))]
         case .setErrorInfoLogoffBeforeFrame:
             [
                 setErrorInfo(0x0000_000C),
@@ -2641,31 +2641,31 @@ private enum MockKRDPFixtures {
         case .sendFragmentedBitmapCompositionFrame:
             fragmentedGraphicsDynamicPackets(zgfxMultipart(bitmapCompositionFrameMessages()))
         case .sendClearCodecBandsFrame:
-            [graphicsDynamicPacket(clearCodecBandsFrameMessages())]
+            [graphicsDynamicPacket(segmentedGraphicsData(clearCodecBandsFrameMessages()))]
         case .sendCAVideoRemoteFXFrame:
-            [graphicsDynamicPacket(cavideoRemoteFXFrameMessages())]
+            [graphicsDynamicPacket(segmentedGraphicsData(cavideoRemoteFXFrameMessages()))]
         case .sendGnomeRemoteDesktopCAPROGRESSIVEFrame:
-            [graphicsDynamicPacket(gnomeRemoteDesktopCAPROGRESSIVEFrameMessages())]
+            [graphicsDynamicPacket(segmentedGraphicsData(gnomeRemoteDesktopCAPROGRESSIVEFrameMessages()))]
         case .sendVideoBeforeBitmapCompositionFrame:
-            [graphicsDynamicPacket(videoBeforeBitmapCompositionFrameMessages())]
+            [graphicsDynamicPacket(segmentedGraphicsData(videoBeforeBitmapCompositionFrameMessages()))]
         case .sendMultipleVideoUpdatesInFrame:
-            [graphicsDynamicPacket(multipleVideoUpdatesInFrameMessages())]
+            [graphicsDynamicPacket(segmentedGraphicsData(multipleVideoUpdatesInFrameMessages()))]
         case .sendMultipleBitmapSurfacesInFrame:
-            [graphicsDynamicPacket(multipleBitmapSurfacesInFrameMessages())]
+            [graphicsDynamicPacket(segmentedGraphicsData(multipleBitmapSurfacesInFrameMessages()))]
         case .sendMalformedAVCFrame:
-            [graphicsDynamicPacket(malformedAVCFrameMessages())]
+            [graphicsDynamicPacket(segmentedGraphicsData(malformedAVCFrameMessages()))]
         case .sendInvalidGraphicsPDU:
             [graphicsDynamicPacket(Data([0x12, 0x00, 0x00]))]
         case .sendCompressedCAVideoRemoteFXFrame:
-            [compressedGraphicsDynamicPacket(cavideoRemoteFXFrameMessages())]
+            [compressedGraphicsDynamicPacket(segmentedGraphicsData(cavideoRemoteFXFrameMessages()))]
         case .sendUnsupportedCompressedDynamicData:
             [invalidCompressedGraphicsDynamicPacket(Data([0x12, 0x00]))]
         case .sendSoftSyncBeforeFrame:
-            [softSyncRequest(), graphicsDynamicPacket(avc420FrameMessages())]
+            [softSyncRequest(), graphicsDynamicPacket(segmentedGraphicsData(avc420FrameMessages()))]
         case .sendUnknownCloseBeforeFrame:
             [
                 dynamicCloseRequest(channelID: 0x00FE_ED00),
-                graphicsDynamicPacket(avc420FrameMessages()),
+                graphicsDynamicPacket(segmentedGraphicsData(avc420FrameMessages())),
             ]
         case .sendEmptyFrameThenStall:
             [graphicsEmptyFrameUpdate()]
@@ -2830,7 +2830,7 @@ private enum MockKRDPFixtures {
             + startFrameMessage()
             + wireToSurfaceMessage()
             + endFrameMessage()
-        return graphicsDynamicPacket(messages)
+        return graphicsDynamicPacket(segmentedGraphicsData(messages))
     }
 
     @discardableResult
@@ -3166,6 +3166,11 @@ private enum MockKRDPFixtures {
             chunkIndex += 1
         }
         return packets
+    }
+
+    /// Wraps graphics messages in an uncompressed single RDP_SEGMENTED_DATA segment.
+    private static func segmentedGraphicsData(_ messages: Data) -> Data {
+        Data([0xE0, 0x04]) + messages
     }
 
     private static func graphicsDynamicPacket(_ payload: Data) -> Data {

@@ -357,6 +357,20 @@ import Testing
     #expect(messages.first?.typeName == "rdpgfx-caps-confirm")
 }
 
+@Test func rejectsUnsegmentedServerTransport() {
+    let bytes = Data([
+        0x13, 0x00, 0x00, 0x00,
+        0x14, 0x00, 0x00, 0x00,
+        0x05, 0x01, 0x08, 0x00,
+        0x04, 0x00, 0x00, 0x00,
+        0x12, 0x00, 0x00, 0x00,
+    ])
+
+    #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
+        try RDPGFXServerTransportDecoder().decodeGraphicsMessages(from: bytes)
+    }
+}
+
 @Test func decodesEveryGraphicsMessageInSegmentedData() throws {
     var bytes = Data([0xE0, 0x04])
     bytes.append(startFrameMessage(frameID: 1))

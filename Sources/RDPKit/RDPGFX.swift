@@ -1605,17 +1605,10 @@ private struct RDPGFXCAVideoStreamSummary {
 final class RDPGFXServerTransportDecoder {
     private let zgfx = RDPZGFXDecompressor()
 
-    /// Returns all the graphics messages in one server message.
+    /// Unwraps the RDP_SEGMENTED_DATA that carries every server message (MS-RDPEGFX
+    /// 2.2.5.1) and returns all the graphics messages it contains.
     func decodeGraphicsMessages(from data: Data) throws -> [RDPGFXHeader] {
-        guard let descriptor = data.first else {
-            throw RDPDecodeError.invalidRDPGFXPDU
-        }
-        var cursor = switch descriptor {
-        case 0xE0, 0xE1:
-            try ByteCursor(zgfx.decompress(data))
-        default:
-            ByteCursor(data)
-        }
+        var cursor = try ByteCursor(zgfx.decompress(data))
         var messages: [RDPGFXHeader] = []
         while cursor.remaining > 0 {
             try messages.append(RDPGFXHeader.parse(from: &cursor))
