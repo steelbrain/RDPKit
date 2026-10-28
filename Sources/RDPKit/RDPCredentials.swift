@@ -51,3 +51,23 @@ public struct RDPCredentials: Equatable, Sendable {
         )
     }
 }
+
+/// Descriptions and mirrors leave the password out, so logging credentials, or a configuration
+/// that holds them, does not leak it.
+extension RDPCredentials: CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
+    public var description: String {
+        "RDPCredentials(username: \(String(reflecting: username)), domain: \(String(reflecting: domain)), password: <redacted>)"
+    }
+
+    public var debugDescription: String {
+        description
+    }
+
+    public var customMirror: Mirror {
+        Mirror(
+            self,
+            children: ["username": username, "domain": domain as Any, "password": "<redacted>"],
+            displayStyle: .struct
+        )
+    }
+}
