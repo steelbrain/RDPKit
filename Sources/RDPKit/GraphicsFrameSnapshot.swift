@@ -79,6 +79,10 @@ public struct RDPGraphicsFrameSnapshot: Encodable, Equatable, Sendable {
     public var contentKind: RDPGraphicsFrameContentKind
     public var decodedBitmapData: Data?
     public var decodedBitmapBytesPerRow: Int?
+    /// Surfaces the server deleted ([MS-RDPEGFX] 2.2.2.10) since the previous
+    /// snapshot. A decoder drops what it kept for them before using this frame,
+    /// whose surface ID may name a new surface.
+    public var deletedSurfaceIDs: [UInt16]
 
     public init(
         frameID: UInt32?,
@@ -98,7 +102,8 @@ public struct RDPGraphicsFrameSnapshot: Encodable, Equatable, Sendable {
         avc444SubframeLayout: RDPAVC444SubframeLayout? = nil,
         contentKind: RDPGraphicsFrameContentKind = .video,
         decodedBitmapData: Data? = nil,
-        decodedBitmapBytesPerRow: Int? = nil
+        decodedBitmapBytesPerRow: Int? = nil,
+        deletedSurfaceIDs: [UInt16] = []
     ) {
         self.frameID = frameID
         self.surfaceID = surfaceID
@@ -118,6 +123,7 @@ public struct RDPGraphicsFrameSnapshot: Encodable, Equatable, Sendable {
         self.contentKind = contentKind
         self.decodedBitmapData = decodedBitmapData
         self.decodedBitmapBytesPerRow = decodedBitmapBytesPerRow
+        self.deletedSurfaceIDs = deletedSurfaceIDs
     }
 
     public var width: UInt16 {

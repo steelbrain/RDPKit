@@ -35,6 +35,7 @@ public final class RDPVideoToolboxFrameDecoder {
     }
 
     public func decodeDetailed(_ frame: RDPGraphicsFrameSnapshot) throws -> RDPVideoToolboxDecodeResult {
+        discardSurfaces(frame.deletedSurfaceIDs)
         if frame.contentKind == .bitmap {
             return try bitmapDecoder.decodeDetailed(frame)
         }
@@ -48,6 +49,16 @@ public final class RDPVideoToolboxFrameDecoder {
 
     var decoderContextCount: Int {
         sequenceDecoders.count + avc444Decoders.count
+    }
+
+    private func discardSurfaces(_ surfaceIDs: [UInt16]) {
+        guard !surfaceIDs.isEmpty else {
+            return
+        }
+        sequenceDecoders = sequenceDecoders.filter { !surfaceIDs.contains($0.key.surfaceID) }
+        for surfaceID in surfaceIDs {
+            avc444Decoders[surfaceID] = nil
+        }
     }
 
     private func sequenceDecoder(for surfaceID: UInt16, codec: RDPVideoCodec) -> RDPVideoToolboxSequenceDecoder {

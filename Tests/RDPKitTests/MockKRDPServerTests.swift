@@ -1017,6 +1017,18 @@ struct MockKRDPServerTests {
         #expect(report.error == "receive failed: RDP Graphics Update timed out after 1 seconds")
     }
 
+    /// A deleted surface's queued video is dropped, and the next snapshot names the
+    /// surface so decoders do not carry its state into the one recreated with its ID.
+    @Test func deletedSurfacesAreNamedOnTheNextSnapshot() throws {
+        let report = try runMock(.init(graphicsBehavior: .deleteAndRecreateSurfaceInSecondFrame)) {
+            $0.graphicsFrameCaptureLimit = 2
+        }.report
+
+        #expect(report.status == "success")
+        #expect(report.rdpGraphicsFrames?.map(\.deletedSurfaceIDs) == [[], [1]])
+        #expect(report.rdpGraphicsFrames?.last?.frameID == 2)
+    }
+
     @Test func clientDoesNotAcknowledgeFrameWhenGraphicsHandlerFails() throws {
         let report = try runMock(.init(graphicsBehavior: .closeAfterFirstFrame), client: {
             RDPSessionClient().run(configuration: $0, onGraphicsFrame: { _ in

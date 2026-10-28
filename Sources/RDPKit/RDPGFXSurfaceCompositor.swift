@@ -352,6 +352,10 @@ final class RDPGFXSurfaceCompositor {
         )
     }
 
+    var surfaceIDs: [UInt16] {
+        surfaces.keys.sorted()
+    }
+
     func surfaceRect(surfaceID: UInt16) -> RDPFrameRect? {
         surfaces[surfaceID]?.outputRect
     }

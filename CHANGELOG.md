@@ -88,6 +88,12 @@
 - Fix AVC444 reverse filtering, subframe scaling, chroma-only updates and
   inverted chroma regions, and recreate VideoToolbox sessions after
   invalidation.
+- `RDPGraphicsFrameSnapshot.deletedSurfaceIDs` names the surfaces the server
+  deleted since the previous snapshot. `RDPVideoToolboxFrameDecoder` and
+  `RDPFrameDecodeQueue` drop their decoders and pixels for them, so a session
+  that recreates surfaces no longer keeps a decoder per old surface, and a
+  surface recreated with the same ID starts empty. Video queued for a surface
+  deleted later in the frame is dropped.
 - Acknowledge every RDPGFX EndFrame and every surface frame marker, including
   after an update that fails to decode, and ignore cosmetic RDPGFX and DVC
   fields instead of ending the session.

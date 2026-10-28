@@ -72,6 +72,8 @@ final class RDPClientConnection {
     /// The current RDPGFX frame's video, and copies of it made by SurfaceToSurface.
     var pendingGraphicsFrames: [RDPGraphicsFrameSnapshot] = []
     var pendingVideoCopies: [RDPGraphicsFrameSnapshot] = []
+    /// Surfaces deleted since the last delivered snapshot, which carries them.
+    var deletedGraphicsSurfaceIDs: [UInt16] = []
     var graphicsFramesDecoded: UInt32 = 0
     /// Created on first use at the current desktop size, again after a resize.
     private var primarySurfaceStorage: RDPPrimarySurfaceCompositor?

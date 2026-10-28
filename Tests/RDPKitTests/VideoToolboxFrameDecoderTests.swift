@@ -60,6 +60,26 @@ import VideoToolbox
     #expect(decoder.decoderContextCount == 0)
 }
 
+@Test func videoToolboxFrameDecoderDropsStateOfDeletedSurfaces() throws {
+    let decoder = RDPVideoToolboxFrameDecoder()
+    for surfaceID: UInt16 in [1, 2] {
+        _ = try? decoder.decodeDetailed(videoFrame(surfaceID: surfaceID, videoCodec: .h264))
+        _ = try? decoder.decodeDetailed(videoFrame(
+            surfaceID: surfaceID,
+            codecID: RDPGFXCodecID.avc444v2,
+            videoCodec: .h264,
+            avc444SubframeLayout: .yuv420Only
+        ))
+    }
+    #expect(decoder.decoderContextCount == 4)
+
+    var frame = bitmapFrame(pixels: Array(repeating: 0xFF, count: 16))
+    frame.deletedSurfaceIDs = [1]
+    _ = try decoder.decodeDetailed(frame)
+
+    #expect(decoder.decoderContextCount == 2)
+}
+
 @Test func sequenceDecoderDecodesEncodedH264Stream() throws {
     let accessUnits = try encodeH264AnnexB(frames: [(luma: 60, chroma: 128), (luma: 60, chroma: 128)])
     let decoder = RDPVideoToolboxSequenceDecoder(codec: .h264)

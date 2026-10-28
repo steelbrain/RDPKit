@@ -247,6 +247,32 @@ import Testing
     #expect(try bgraPixel(atX: 3, y: 1, in: presentation.imageBuffer) == [0x10, 0x20, 0x30, 0xFF])
 }
 
+/// A surface recreated with a deleted surface's ID starts empty, not with its pixels.
+@Test func decodedVideoCompositorForgetsDeletedSurfaces() throws {
+    let compositor = RDPDecodedVideoSurfaceCompositor()
+    let surfaceRect = RDPFrameRect(left: 0, top: 0, right: 4, bottom: 4)
+    _ = try compositor.presentation(
+        for: videoFrame(id: 1, surfaceRect: surfaceRect, destinationRect: surfaceRect, regionRects: [surfaceRect]),
+        decodedImageBuffer: try bgraPixelBuffer(width: 4, height: 4, pixel: [0x10, 0x20, 0x30, 0xFF])
+    )
+
+    var update = videoFrame(
+        id: 2,
+        surfaceRect: surfaceRect,
+        destinationRect: RDPFrameRect(left: 1, top: 1, right: 3, bottom: 3),
+        regionRects: [RDPFrameRect(left: 0, top: 0, right: 2, bottom: 2)],
+        nalUnitTypes: [1]
+    )
+    update.deletedSurfaceIDs = [1]
+    let presentation = try compositor.presentation(
+        for: update,
+        decodedImageBuffer: try bgraPixelBuffer(width: 2, height: 2, pixel: [0xA0, 0xB0, 0xC0, 0xFF])
+    )
+
+    #expect(try bgraPixel(atX: 1, y: 1, in: presentation.imageBuffer) == [0xA0, 0xB0, 0xC0, 0xFF])
+    #expect(try bgraPixel(atX: 0, y: 0, in: presentation.imageBuffer) == [0x00, 0x00, 0x00, 0x00])
+}
+
 @Test func decodedVideoCompositorClearsStaleSurfaceOnFullResyncFrame() throws {
     let compositor = RDPDecodedVideoSurfaceCompositor()
     _ = try compositor.presentation(

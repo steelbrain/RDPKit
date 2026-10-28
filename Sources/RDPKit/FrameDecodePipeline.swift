@@ -132,6 +132,11 @@ final class RDPDecodedVideoSurfaceCompositor {
         for frame: RDPGraphicsFrameSnapshot,
         decodedImageBuffer: CVImageBuffer
     ) throws -> RDPDecodedFramePresentation {
+        for surfaceID in frame.deletedSurfaceIDs {
+            surfaces[surfaceID] = nil
+            directSurfaces[surfaceID] = nil
+            chromaEnhancedAVC444Surfaces.remove(surfaceID)
+        }
         guard frame.contentKind == .video else {
             if let outputRect = frame.graphicsOutputRect {
                 try materializeDirectGraphicsOutputIfNeeded(

@@ -134,6 +134,7 @@ enum MockKRDPGraphicsBehavior: Equatable {
     case sendVideoBeforeBitmapCompositionFrame
     case sendMultipleVideoUpdatesInFrame
     case sendTwoFramesInOnePayload
+    case deleteAndRecreateSurfaceInSecondFrame
     case sendMultipleBitmapSurfacesInFrame
     case sendMalformedAVCFrame
     case sendInvalidGraphicsPDU
@@ -2055,6 +2056,18 @@ private enum MockKRDPFixtures {
                     + wireToSurfaceMessage()
                     + endFrameMessage(frameID: 2)
             ))]
+        case .deleteAndRecreateSurfaceInSecondFrame:
+            // The first video of frame 2 belongs to the surface deleted after it.
+            [graphicsDynamicPacket(segmentedGraphicsData(
+                avc420FrameMessages()
+                    + startFrameMessage(frameID: 2)
+                    + wireToSurfaceMessage()
+                    + deleteSurfaceMessage(surfaceID: 1)
+                    + createSurfaceMessage(surfaceID: 1)
+                    + mapSurfaceToOutputMessage(surfaceID: 1, x: 0, y: 0)
+                    + wireToSurfaceMessage()
+                    + endFrameMessage(frameID: 2)
+            ))]
         case .sendMultipleBitmapSurfacesInFrame:
             [graphicsDynamicPacket(segmentedGraphicsData(multipleBitmapSurfacesInFrameMessages()))]
         case .sendMalformedAVCFrame:
@@ -2698,6 +2711,12 @@ private enum MockKRDPFixtures {
         payload.appendLittleEndianUInt16(height)
         payload.appendUInt8(0x20)
         return graphicsMessage(commandID: RDPGFXCommandID.createSurface, payload: payload)
+    }
+
+    private static func deleteSurfaceMessage(surfaceID: UInt16) -> Data {
+        var payload = Data()
+        payload.appendLittleEndianUInt16(surfaceID)
+        return graphicsMessage(commandID: RDPGFXCommandID.deleteSurface, payload: payload)
     }
 
     private static func mapSurfaceToOutputMessage(surfaceID: UInt16, x: UInt32, y: UInt32) -> Data {

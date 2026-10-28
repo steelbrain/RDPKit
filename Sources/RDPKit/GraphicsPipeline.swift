@@ -14,6 +14,8 @@ extension RDPClientConnection {
     func openGraphicsPipeline(channelID: UInt32) throws {
         graphicsChannelID = channelID
         graphicsDecoder = RDPGFXServerTransportDecoder()
+        // A new pipeline starts without surfaces; the previous one's are gone.
+        deletedGraphicsSurfaceIDs += graphicsCompositor?.surfaceIDs ?? []
         graphicsCompositor = nil
         graphicsFrameTracker = RDPGFXLogicalFrameTracker()
         pendingGraphicsFrames = []
@@ -82,6 +84,7 @@ extension RDPClientConnection {
                 "server confirmed an RDPGFX capability version that the client did not advertise"
             )
         }
+        deletedGraphicsSurfaceIDs += graphicsCompositor?.surfaceIDs ?? []
         graphicsCompositor = RDPGFXSurfaceCompositor(
             capabilitySet: confirm.capabilitySet,
             outputWidth: desktopWidth,
@@ -107,6 +110,13 @@ extension RDPClientConnection {
                 try checkPendingVideoRoom(for: 1)
                 pendingGraphicsFrames.append(frame)
             }
+        case RDPGFXCommandID.deleteSurface:
+            // Video already queued for the surface has nowhere to go, and a surface
+            // created later with the same ID must not inherit its decoder state.
+            let surfaceID = try RDPGFXDeleteSurfacePDU.parse(from: message).surfaceID
+            pendingGraphicsFrames.removeAll { $0.surfaceID == surfaceID }
+            pendingVideoCopies.removeAll { $0.surfaceID == surfaceID }
+            deletedGraphicsSurfaceIDs.append(surfaceID)
         case RDPGFXCommandID.surfaceToSurface:
             // Copies are made of decoded video only, never of other copies.
             let copies = try copiedVideoFrames(pendingGraphicsFrames, using: RDPGFXSurfaceToSurfacePDU.parse(from: message))
@@ -213,6 +223,11 @@ extension RDPClientConnection {
     /// Records the snapshots, then calls the application. A throwing handler
     /// ends the session; the frame is not acknowledged.
     private func deliver(_ frames: [RDPGraphicsFrameSnapshot]) throws {
+        var frames = frames
+        if !frames.isEmpty, !deletedGraphicsSurfaceIDs.isEmpty {
+            frames[0].deletedSurfaceIDs = deletedGraphicsSurfaceIDs
+            deletedGraphicsSurfaceIDs = []
+        }
         for frame in frames {
             if report.rdpGraphicsFirstFrame == nil {
                 report.rdpGraphicsFirstFrame = frame
