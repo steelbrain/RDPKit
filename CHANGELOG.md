@@ -130,8 +130,9 @@
 - `RDPScrollWheelAccumulator` turns scroll deltas into wheel events.
 - The RDPClient example runs sessions on a dedicated thread, fixes modifier,
   focus-loss, toggle-key, Windows-key and keypad input, keeps a key held as a
-  scancode repeating as that scancode once its modifier is released, and pins
-  a redirected server's certificate under its own host. The command-line
+  scancode repeating as that scancode once its modifier is released, leaves
+  Cmd-. to the server instead of ending the session, and pins a redirected
+  server's certificate under its own host. The command-line
   tools share argument parsing through `RDPCommandLineSupport`.
 
 ## 0.3.1

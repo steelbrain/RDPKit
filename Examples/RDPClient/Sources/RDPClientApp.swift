@@ -88,10 +88,10 @@ private struct RDPSessionCommands: Commands {
             .keyboardShortcut("r", modifiers: [.command])
             .disabled(center.state?.canStart != true)
 
+            // No shortcut: Cmd-. would end a session at one keystroke and keep Win-. from the server.
             Button("Cancel") {
                 center.controller?.cancelConnection()
             }
-            .keyboardShortcut(".", modifiers: [.command])
             .disabled(center.state?.canCancel != true)
 
             Divider()
