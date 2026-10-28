@@ -410,14 +410,15 @@ private enum RDPASN1 {
         return wrap(tag: 0x02, Data(bytes))
     }
 
-    static func explicitInteger(from data: Data) throws -> Int {
+    static func explicitInteger(from data: Data, requiresMinimalEncoding: Bool = true) throws -> Int {
         let bytes = try explicitPayload(tag: 0x02, from: data)
         guard let first = bytes.first, bytes.count <= MemoryLayout<Int>.size else {
             throw RDPDecodeError.invalidCredSSPMessage
         }
         let signExtension: UInt8 = first & 0x80 == 0 ? 0x00 : 0xFF
         // DER: the first nine bits are never all zeros or all ones.
-        if bytes.count > 1,
+        if requiresMinimalEncoding,
+           bytes.count > 1,
            first == signExtension,
            (bytes[bytes.startIndex + 1] ^ signExtension) & 0x80 == 0
         {
@@ -431,9 +432,10 @@ private enum RDPASN1 {
     }
 
     /// errorCode is an NTSTATUS. Windows and FreeRDP-based servers encode failures such as
-    /// 0xC000006D as a negative 32-bit INTEGER; the unsigned form is accepted too.
+    /// 0xC000006D as a negative 32-bit INTEGER; the unsigned form is accepted too. FreeRDP 2.x
+    /// writes every value from 0x80000000 in 4 bytes, which is not minimal from 0xFF800000.
     static func explicitNTStatus(from data: Data) throws -> UInt32 {
-        let value = try explicitInteger(from: data)
+        let value = try explicitInteger(from: data, requiresMinimalEncoding: false)
         if let signedValue = Int32(exactly: value) {
             return UInt32(bitPattern: signedValue)
         }

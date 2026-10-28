@@ -576,12 +576,11 @@ import Testing
     #expect(RDPCredSSPTSRequest(errorCode: 0xC000_006D).encoded() == signed)
 }
 
-@Test func credSSPTSRequestRejectsNonMinimalNegativeDERInteger() {
-    let encoded = sequence(context(0, integer(6)) + context(4, Data([0x02, 0x02, 0xFF, 0x80])))
+@Test func credSSPTSRequestAcceptsNonMinimalErrorCodeFromFreeRDP2() throws {
+    // FreeRDP 2.x ber_write_integer writes 0xFFFFFF80 in 4 bytes; DER needs only 0x80.
+    let encoded = sequence(context(0, integer(6)) + context(4, Data([0x02, 0x04, 0xFF, 0xFF, 0xFF, 0x80])))
 
-    #expect(throws: RDPDecodeError.invalidCredSSPMessage) {
-        try RDPCredSSPTSRequest.parse(encoded)
-    }
+    #expect(try RDPCredSSPTSRequest.parse(encoded).errorCode == 0xFFFF_FF80)
 }
 
 @Test func credSSPTSRequestRejectsOversizedErrorCode() {
