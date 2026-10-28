@@ -214,18 +214,34 @@ final class PreflightProbeRecorder: @unchecked Sendable {
         "cmd /c <nul set /p \"=\(text)\"|clip"
     }
 
-    func apply(to report: inout RDPPreflightReport) {
+    var results: PreflightProbeResults {
         lock.lock()
-        let clipboardProbeTextUTF16CodeUnitCount = clipboardProbeTextUTF16CodeUnitCount
-        let clipboardReceivedTextUTF16CodeUnitCount = clipboardReceivedTextUTF16CodeUnitCount
-        let clipboardReceivedTextMatchesProbe = clipboardReceivedTextMatchesProbe
-        let inputProbeEvents = inputProbeEvents
-        lock.unlock()
+        defer { lock.unlock() }
+        return PreflightProbeResults(
+            rdpClipboardProbeTextUTF16CodeUnitCount: clipboardProbeTextUTF16CodeUnitCount,
+            rdpClipboardReceivedTextUTF16CodeUnitCount: clipboardReceivedTextUTF16CodeUnitCount,
+            rdpClipboardReceivedTextMatchesProbe: clipboardReceivedTextMatchesProbe,
+            rdpInputProbeEvents: inputProbeEvents.isEmpty ? nil : inputProbeEvents
+        )
+    }
+}
 
-        report.rdpClipboardProbeTextUTF16CodeUnitCount = clipboardProbeTextUTF16CodeUnitCount
-        report.rdpClipboardReceivedTextUTF16CodeUnitCount = clipboardReceivedTextUTF16CodeUnitCount
-        report.rdpClipboardReceivedTextMatchesProbe = clipboardReceivedTextMatchesProbe
-        report.rdpInputProbeEvents = inputProbeEvents.isEmpty ? nil : inputProbeEvents
+/// What the command-line probes observed, printed alongside the library's report.
+struct PreflightProbeResults: Encodable {
+    var rdpClipboardProbeTextUTF16CodeUnitCount: Int?
+    var rdpClipboardReceivedTextUTF16CodeUnitCount: Int?
+    var rdpClipboardReceivedTextMatchesProbe: Bool?
+    var rdpInputProbeEvents: [String]?
+}
+
+/// Encodes the report and the probe results as one flat JSON object.
+private struct PreflightOutput: Encodable {
+    var report: RDPPreflightReport
+    var probes: PreflightProbeResults
+
+    func encode(to encoder: Encoder) throws {
+        try report.encode(to: encoder)
+        try probes.encode(to: encoder)
     }
 }
 
@@ -294,11 +310,11 @@ func printUsage() {
     """)
 }
 
-func printReport(_ report: RDPPreflightReport, json: Bool) throws {
+func printReport(_ report: RDPPreflightReport, probes: PreflightProbeResults = PreflightProbeResults(), json: Bool) throws {
     if json {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        let encodedReport = try encoder.encode(report)
+        let encodedReport = try encoder.encode(PreflightOutput(report: report, probes: probes))
         if let encodedText = String(data: encodedReport, encoding: .utf8) {
             print(encodedText)
         } else {
@@ -332,9 +348,6 @@ func printReport(_ report: RDPPreflightReport, json: Bool) throws {
         }
         if let tlsProtocol = report.tlsProtocol {
             print("tls protocol: \(tlsProtocol)")
-        }
-        if let tlsCipherSuite = report.tlsCipherSuite {
-            print("tls cipher suite: \(tlsCipherSuite)")
         }
         if let certificateTrusted = report.certificateTrusted {
             print("certificate trusted: \(certificateTrusted)")
@@ -524,27 +537,17 @@ func printReport(_ report: RDPPreflightReport, json: Bool) throws {
                 .joined(separator: ", ")
             print("rdp clipboard sent messages: \(messages)")
         }
-        if let rdpClipboardMessageHexes = report.rdpClipboardMessageHexes {
-            for (index, messageHex) in rdpClipboardMessageHexes.enumerated() {
-                print("rdp clipboard message \(index + 1): \(messageHex)")
-            }
+        if let count = probes.rdpClipboardProbeTextUTF16CodeUnitCount {
+            print("rdp clipboard probe text code units: \(count)")
         }
-        if let rdpClipboardSentMessageHexes = report.rdpClipboardSentMessageHexes {
-            for (index, messageHex) in rdpClipboardSentMessageHexes.enumerated() {
-                print("rdp clipboard sent message \(index + 1): \(messageHex)")
-            }
+        if let count = probes.rdpClipboardReceivedTextUTF16CodeUnitCount {
+            print("rdp clipboard received text code units: \(count)")
         }
-        if let rdpClipboardProbeTextUTF16CodeUnitCount = report.rdpClipboardProbeTextUTF16CodeUnitCount {
-            print("rdp clipboard probe text code units: \(rdpClipboardProbeTextUTF16CodeUnitCount)")
+        if let matches = probes.rdpClipboardReceivedTextMatchesProbe {
+            print("rdp clipboard received text matches probe: \(matches)")
         }
-        if let rdpClipboardReceivedTextUTF16CodeUnitCount = report.rdpClipboardReceivedTextUTF16CodeUnitCount {
-            print("rdp clipboard received text code units: \(rdpClipboardReceivedTextUTF16CodeUnitCount)")
-        }
-        if let rdpClipboardReceivedTextMatchesProbe = report.rdpClipboardReceivedTextMatchesProbe {
-            print("rdp clipboard received text matches probe: \(rdpClipboardReceivedTextMatchesProbe)")
-        }
-        if let rdpInputProbeEvents = report.rdpInputProbeEvents, !rdpInputProbeEvents.isEmpty {
-            print("rdp input probe events: \(rdpInputProbeEvents.joined(separator: ", "))")
+        if let events = probes.rdpInputProbeEvents, !events.isEmpty {
+            print("rdp input probe events: \(events.joined(separator: ", "))")
         }
         if let rdpAudioChannelID = report.rdpAudioChannelID {
             print("rdp audio channel id: \(rdpAudioChannelID)")
@@ -554,11 +557,6 @@ func printReport(_ report: RDPPreflightReport, json: Bool) throws {
                 .map { "\($0.typeName):bytes=\($0.bodySize)" }
                 .joined(separator: ", ")
             print("rdp audio messages: \(messages)")
-        }
-        if let rdpAudioMessageHexes = report.rdpAudioMessageHexes {
-            for (index, messageHex) in rdpAudioMessageHexes.enumerated() {
-                print("rdp audio message \(index + 1): \(messageHex)")
-            }
         }
         if let rdpGraphicsResponseHex = report.rdpGraphicsResponseHex {
             print("rdp graphics response: \(rdpGraphicsResponseHex)")
@@ -765,7 +763,7 @@ do {
         : nil
     let client = RDPPreflightClient()
     let probeRecorder = PreflightProbeRecorder(windowsClipboardProbeText: args.probeWindowsClipboardText)
-    var report = args.dryRun
+    let report = args.dryRun
         ? client.dryRun(configuration: configuration)
         : client.run(
             configuration: configuration,
@@ -791,9 +789,7 @@ do {
                 probeRecorder.recordClipboardText(text)
             }
         )
-    probeRecorder.apply(to: &report)
-
-    try printReport(report, json: args.json)
+    try printReport(report, probes: probeRecorder.results, json: args.json)
     if report.status == "failure" {
         exit(1)
     }

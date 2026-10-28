@@ -399,14 +399,6 @@ struct RemoteSessionDiagnosticsWindowContent: View {
                         if let rdpDisplayControlCapsHex = report.rdpDisplayControlCapsHex {
                             MonospaceBlock(title: "Display Control Caps", value: rdpDisplayControlCapsHex)
                         }
-                        if let rdpClipboardMessageHexes = report.rdpClipboardMessageHexes {
-                            ForEach(rdpClipboardMessageHexes.indices, id: \.self) { index in
-                                let title = report.rdpClipboardMessages?[safe: index].map {
-                                    "Clipboard \(index + 1) \($0.typeName)"
-                                } ?? "Clipboard \(index + 1)"
-                                MonospaceBlock(title: title, value: rdpClipboardMessageHexes[index])
-                            }
-                        }
                         if let rdpGraphicsResponseHex = report.rdpGraphicsResponseHex {
                             MonospaceBlock(title: "RDPGFX Response", value: rdpGraphicsResponseHex)
                         }
@@ -436,10 +428,10 @@ struct RemoteSessionDiagnosticsWindowContent: View {
                             MonospaceBlock(title: "RDPGFX Failure Response", value: failureResponseHex)
                         }
                         if let rdpDynamicChannelRequestHexes = report.rdpDynamicChannelRequestHexes {
+                            // The hex list holds the first drdynvc packets; the type list is not index-aligned with it.
                             ForEach(rdpDynamicChannelRequestHexes.indices, id: \.self) { index in
-                                let type = report.rdpDynamicChannelRequestTypes?[safe: index] ?? "request"
                                 MonospaceBlock(
-                                    title: "DRDYNVC \(index + 1) \(type)",
+                                    title: "DRDYNVC \(index + 1)",
                                     value: rdpDynamicChannelRequestHexes[index]
                                 )
                             }
