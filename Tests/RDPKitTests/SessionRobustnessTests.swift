@@ -126,7 +126,7 @@ import Testing
     let create = Data([0x10, 0x02]) + Data("Microsoft::Windows::RDS::Graphics".utf8) + Data([0])
     let run = try KRdpCapture.run(
         appending: [
-            KRdpCapture.packet(
+            mcsSendDataIndication(
                 channelID: KRdpCapture.drdynvcChannelID,
                 userData: RDPStaticVirtualChannelPDU(payload: create).encodedUserData()
             ),
@@ -286,12 +286,7 @@ enum KRdpCapture {
     }
 
     static func events() throws -> [RDPWireEvent] {
-        let url = try #require(Bundle.module.url(
-            forResource: "krdp-negotiation-transcript",
-            withExtension: "json",
-            subdirectory: "Fixtures"
-        ))
-        return try JSONDecoder().decode([RDPWireEvent].self, from: Data(contentsOf: url))
+        try loadTranscriptFixture("krdp-negotiation-transcript")
     }
 
     /// Replays the capture (or its first `prefix` events) followed by
@@ -353,22 +348,12 @@ enum KRdpCapture {
         return Run(report: report, clientPackets: server.clientPackets.value)
     }
 
-    /// An MCS Send Data Indication from the capture's server ([MS-RDPBCGR] 2.2.8.1.1.1.2).
-    static func packet(channelID: UInt16, userData: Data) -> Data {
-        var mcs = Data([0x68, 0x00, 0x05])
-        mcs.appendBigEndianUInt16(channelID)
-        mcs.appendUInt8(0x70)
-        mcs.appendPERLength(userData.count)
-        mcs.append(userData)
-        return X224DataTPDU.wrap(mcs)
-    }
-
     static func ioPacket(_ userData: Data) -> Data {
-        packet(channelID: ioChannelID, userData: userData)
+        mcsSendDataIndication(channelID: ioChannelID, userData: userData)
     }
 
     static func messageChannelPacket(_ userData: Data) -> Data {
-        packet(channelID: messageChannelID, userData: userData)
+        mcsSendDataIndication(channelID: messageChannelID, userData: userData)
     }
 
     /// A Share Control PDU of `type` from the server channel ([MS-RDPBCGR] 2.2.8.1.1.1.1).
@@ -421,32 +406,23 @@ enum KRdpCapture {
     /// RDP8 segment ([MS-RDPEGFX] 2.2.5.1) in a complete DVC message.
     static func graphicsPacket(_ messages: Data, channelID: UInt32 = graphicsChannelID) -> Data {
         let dynamic = RDPDynamicVirtualChannelDataPDU(channelID: channelID, payload: Data([0xE0, 0x04]) + messages).encoded()
-        return packet(
+        return mcsSendDataIndication(
             channelID: drdynvcChannelID,
             userData: RDPStaticVirtualChannelPDU(payload: dynamic).encodedUserData()
         )
-    }
-
-    static func graphicsPDU(_ commandID: UInt16, _ body: Data) -> Data {
-        var data = Data()
-        data.appendLittleEndianUInt16(commandID)
-        data.appendLittleEndianUInt16(0)
-        data.appendLittleEndianUInt32(UInt32(8 + body.count))
-        data.append(body)
-        return data
     }
 
     static func startFrame(id: UInt32) -> Data {
         var body = Data()
         body.appendLittleEndianUInt32(0)
         body.appendLittleEndianUInt32(id)
-        return graphicsPDU(RDPGFXCommandID.startFrame, body)
+        return graphicsMessage(commandID: RDPGFXCommandID.startFrame, payload: body)
     }
 
     static func endFrame(id: UInt32) -> Data {
         var body = Data()
         body.appendLittleEndianUInt32(id)
-        return graphicsPDU(RDPGFXCommandID.endFrame, body)
+        return graphicsMessage(commandID: RDPGFXCommandID.endFrame, payload: body)
     }
 
     /// A WireToSurface1 AVC420 update for the capture's surface 1 ([MS-RDPEGFX] 2.2.2.1, 2.2.4.4).
@@ -463,7 +439,7 @@ enum KRdpCapture {
         body.append(contentsOf: [0, 0, 0, 0, 16, 0, 16, 0])
         body.appendLittleEndianUInt32(UInt32(stream.count))
         body.append(stream)
-        return graphicsPDU(RDPGFXCommandID.wireToSurface1, body)
+        return graphicsMessage(commandID: RDPGFXCommandID.wireToSurface1, payload: body)
     }
 
     static func emptyGraphicsFrame(id: UInt32) -> Data {
@@ -483,11 +459,7 @@ enum KRdpCapture {
         command.appendLittleEndianUInt16(1)
         command.appendLittleEndianUInt32(UInt32(pixel.count))
         command.append(pixel)
-        var update = Data([0x04])
-        update.appendLittleEndianUInt16(UInt16(command.count))
-        update.append(command)
-        let length = 3 + update.count
-        return Data([0x00, 0x80 | UInt8(length >> 8), UInt8(length & 0xFF)]) + update
+        return fastPathPacket(fastPathUpdate(code: 0x04, payload: command))
     }
 
     /// `demandActive` with its Bitmap Capability Set's desktop size replaced ([MS-RDPBCGR] 2.2.7.1.2).

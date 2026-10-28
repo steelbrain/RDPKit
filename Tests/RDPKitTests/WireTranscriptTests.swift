@@ -5,7 +5,7 @@ import Testing
 /// A Server Redirection PDU's Password field is a cleartext password unless
 /// PK-encrypted ([MS-RDPBCGR] 2.2.13.1); transcripts and report hex zero it.
 @Test func redactionZeroesTheRedirectionPassword() throws {
-    let password = Data("S3cret!\0".utf16.flatMap { [UInt8($0 & 0xFF), UInt8($0 >> 8)] })
+    let password = utf16LittleEndian("S3cret!", nullTerminated: true)
     let packet = KRdpCapture.ioPacket(KRdpCapture.redirection(
         flags: RDPServerRedirectionPDU.Flags.loadBalanceInfo.rawValue,
         password: password
