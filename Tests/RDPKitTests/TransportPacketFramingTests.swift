@@ -148,7 +148,7 @@ private let tpkt = Data([0x03, 0x00, 0x00, 0x07, 0x02, 0xF0, 0x80])
     let error = #expect(throws: RDPCredSSPError.self) {
         try nextMessage(reader, channel)
     }
-    #expect(error.map(String.init(describing:)) == "CredSSP server returned NTSTATUS 0xc000006d")
+    #expect(error.map(String.init(describing:)) == "CredSSP server returned STATUS_LOGON_FAILURE (0xc000006d)")
 
     let (accepted, acceptedReader, _) = try readerChannel()
     acceptedReader.setFraming(.credSSPResult(then: .rdp))

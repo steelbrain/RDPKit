@@ -290,9 +290,32 @@ enum RDPCredSSPError: Error, CustomStringConvertible {
         case let .ntlm(message):
             "CredSSP NTLM failed: \(message)"
         case let .serverError(code):
-            "CredSSP server returned NTSTATUS 0x\(String(format: "%08x", code))"
+            "CredSSP server returned \(RDPLogonStatus.name(code) ?? "NTSTATUS") (0x\(String(format: "%08x", code)))"
         case .serverBindingMismatch:
             "CredSSP server public-key binding did not match"
+        }
+    }
+}
+
+/// The NTSTATUS values ([MS-ERREF] 2.3.1) for the logon and account failures a
+/// CredSSP server reports in its TSRequest errorCode.
+private enum RDPLogonStatus {
+    static func name(_ code: UInt32) -> String? {
+        switch code {
+        case 0xC000_0022: "STATUS_ACCESS_DENIED"
+        case 0xC000_0064: "STATUS_NO_SUCH_USER"
+        case 0xC000_006A: "STATUS_WRONG_PASSWORD"
+        case 0xC000_006D: "STATUS_LOGON_FAILURE"
+        case 0xC000_006E: "STATUS_ACCOUNT_RESTRICTION"
+        case 0xC000_006F: "STATUS_INVALID_LOGON_HOURS"
+        case 0xC000_0070: "STATUS_INVALID_WORKSTATION"
+        case 0xC000_0071: "STATUS_PASSWORD_EXPIRED"
+        case 0xC000_0072: "STATUS_ACCOUNT_DISABLED"
+        case 0xC000_015B: "STATUS_LOGON_TYPE_NOT_GRANTED"
+        case 0xC000_0193: "STATUS_ACCOUNT_EXPIRED"
+        case 0xC000_0224: "STATUS_PASSWORD_MUST_CHANGE"
+        case 0xC000_0234: "STATUS_ACCOUNT_LOCKED_OUT"
+        default: nil
         }
     }
 }

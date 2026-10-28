@@ -1064,3 +1064,12 @@ private func wrap(tag: UInt8, _ payload: Data) -> Data {
     data.append(payload)
     return data
 }
+
+/// A TSRequest errorCode is an NTSTATUS ([MS-ERREF] 2.3.1); logon failures are named.
+@Test func credSSPServerErrorNamesLogonFailures() {
+    #expect(
+        RDPCredSSPError.serverError(0xC000_0234).description
+            == "CredSSP server returned STATUS_ACCOUNT_LOCKED_OUT (0xc0000234)"
+    )
+    #expect(RDPCredSSPError.serverError(0xC000_0001).description == "CredSSP server returned NTSTATUS (0xc0000001)")
+}
