@@ -468,7 +468,7 @@ struct RDPLicenseKeys: Equatable, Sendable {
     }
 
     func encrypt(_ data: Data) -> Data {
-        RDPLicenseRC4(key: licensingEncryptionKey).process(data)
+        RDPRC4(key: licensingEncryptionKey).process(data)
     }
 
     func decrypt(_ data: Data) -> Data {
@@ -772,35 +772,6 @@ private func secureRandomData(count: Int) throws -> Data {
         throw RDPDecodeError.invalidLicensePDU
     }
     return data
-}
-
-private final class RDPLicenseRC4 {
-    private var state = Array(UInt8.min ... UInt8.max)
-    private var i = 0
-    private var j = 0
-
-    init(key: Data) {
-        var keyIndex = 0
-        var j = 0
-        for i in 0 ..< 256 {
-            j = (j + Int(state[i]) + Int(key[key.index(key.startIndex, offsetBy: keyIndex)])) & 0xFF
-            state.swapAt(i, j)
-            keyIndex = (keyIndex + 1) % key.count
-        }
-    }
-
-    func process(_ data: Data) -> Data {
-        var output = Data()
-        output.reserveCapacity(data.count)
-        for byte in data {
-            i = (i + 1) & 0xFF
-            j = (j + Int(state[i])) & 0xFF
-            state.swapAt(i, j)
-            let keyByte = state[(Int(state[i]) + Int(state[j])) & 0xFF]
-            output.append(byte ^ keyByte)
-        }
-        return output
-    }
 }
 
 private func readNullTerminatedUnicodeString(

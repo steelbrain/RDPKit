@@ -317,8 +317,8 @@ final class MockCredSSPServer {
     private var negotiatedFlags: UInt32 = 0
     private var sendSigningKey = Data()
     private var receiveSigningKey = Data()
-    private var sendSealingKey: RDPNTLMRC4?
-    private var receiveSealingKey: RDPNTLMRC4?
+    private var sendSealingKey: RDPRC4?
+    private var receiveSealingKey: RDPRC4?
     private var sendSequenceNumber: UInt32 = 0
     private var receiveSequenceNumber: UInt32 = 0
 
@@ -484,12 +484,12 @@ final class MockCredSSPServer {
 
         var exportedSessionKey = keyExchangeKey
         if negotiatedFlags & Self.negotiateKeyExchange != 0 {
-            exportedSessionKey = try RDPNTLMRC4(key: keyExchangeKey).process(readSecurityBuffer(authenticate, at: 52))
+            exportedSessionKey = try RDPRC4(key: keyExchangeKey).process(readSecurityBuffer(authenticate, at: 52))
         }
         sendSigningKey = Self.md5(exportedSessionKey + Self.serverSigningMagic)
         receiveSigningKey = Self.md5(exportedSessionKey + Self.clientSigningMagic)
-        sendSealingKey = RDPNTLMRC4(key: Self.md5(exportedSessionKey + Self.serverSealingMagic))
-        receiveSealingKey = RDPNTLMRC4(key: Self.md5(exportedSessionKey + Self.clientSealingMagic))
+        sendSealingKey = RDPRC4(key: Self.md5(exportedSessionKey + Self.serverSealingMagic))
+        receiveSealingKey = RDPRC4(key: Self.md5(exportedSessionKey + Self.clientSealingMagic))
     }
 
     private func wrap(_ message: Data) throws -> Data {

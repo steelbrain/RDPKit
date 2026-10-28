@@ -53,8 +53,8 @@ final class RDPCredSSPNTLMContext {
     private var negotiatedFlags: UInt32 = 0
     private var sendSigningKey = Data()
     private var receiveSigningKey = Data()
-    private var sendSealingKey: RDPNTLMRC4?
-    private var receiveSealingKey: RDPNTLMRC4?
+    private var sendSealingKey: RDPRC4?
+    private var receiveSealingKey: RDPRC4?
     private var sendSequenceNumber: UInt32 = 0
     private var receiveSequenceNumber: UInt32 = 0
 
@@ -146,7 +146,7 @@ final class RDPCredSSPNTLMContext {
         for message: Data,
         sequenceNumber: UInt32,
         signingKey: Data,
-        sealingKey: RDPNTLMRC4
+        sealingKey: RDPRC4
     ) -> Data {
         var input = Data()
         input.appendLittleEndianUInt32(sequenceNumber)
@@ -182,7 +182,7 @@ final class RDPCredSSPNTLMContext {
         let encryptedRandomSessionKey: Data
         if negotiatedFlags & Self.negotiateKeyExchange != 0 {
             exportedSessionKey = try randomBytes(Self.hashSize)
-            encryptedRandomSessionKey = RDPNTLMRC4(key: ntChallenge.sessionBaseKey).process(exportedSessionKey)
+            encryptedRandomSessionKey = RDPRC4(key: ntChallenge.sessionBaseKey).process(exportedSessionKey)
         } else {
             exportedSessionKey = ntChallenge.sessionBaseKey
             encryptedRandomSessionKey = Data()
@@ -248,8 +248,8 @@ final class RDPCredSSPNTLMContext {
         } else {
             sealingMaterial = exportedSessionKey.prefix(5)
         }
-        sendSealingKey = RDPNTLMRC4(key: Self.md5(sealingMaterial + Self.clientSealingMagic))
-        receiveSealingKey = RDPNTLMRC4(key: Self.md5(sealingMaterial + Self.serverSealingMagic))
+        sendSealingKey = RDPRC4(key: Self.md5(sealingMaterial + Self.clientSealingMagic))
+        receiveSealingKey = RDPRC4(key: Self.md5(sealingMaterial + Self.serverSealingMagic))
     }
 
     private static func makeNegotiateMessage() -> Data {
@@ -590,33 +590,4 @@ final class RDPCredSSPNTLMContext {
         | negotiateSeal
         | negotiateKeyExchange
         | negotiateSign
-}
-
-final class RDPNTLMRC4 {
-    private var i = 0
-    private var j = 0
-    private var state = [UInt8](0 ... 255)
-
-    init(key: Data) {
-        precondition(key.isEmpty == false)
-        var j = 0
-        let keyBytes = [UInt8](key)
-        for i in 0 ..< 256 {
-            j = (j + Int(state[i]) + Int(keyBytes[i % keyBytes.count])) & 0xFF
-            state.swapAt(i, j)
-        }
-    }
-
-    func process(_ input: Data) -> Data {
-        var output = Data()
-        output.reserveCapacity(input.count)
-        for byte in input {
-            i = (i + 1) & 0xFF
-            j = (j + Int(state[i])) & 0xFF
-            state.swapAt(i, j)
-            let keyIndex = (Int(state[i]) + Int(state[j])) & 0xFF
-            output.append(byte ^ state[keyIndex])
-        }
-        return output
-    }
 }
