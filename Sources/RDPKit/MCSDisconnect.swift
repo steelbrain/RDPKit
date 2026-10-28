@@ -1,6 +1,9 @@
 import Foundation
 
 struct MCSDisconnectProviderUltimatumPDU: Equatable, Sendable {
+    /// The reason a client gives when it ends the session ([MS-RDPBCGR] 3.1.5.1.1).
+    static let userRequested = MCSDisconnectProviderUltimatumPDU(reason: 3)
+
     var reason: UInt8
 
     var reasonName: String {
@@ -18,6 +21,10 @@ struct MCSDisconnectProviderUltimatumPDU: Equatable, Sendable {
         default:
             "rn-unknown-\(reason)"
         }
+    }
+
+    func encodedTPKT() -> Data {
+        X224DataTPDU.wrap(Data([0x20 | (reason >> 1), (reason & 0x01) << 7]))
     }
 
     static func parseIfPresent(fromTPKT packet: Data) throws -> MCSDisconnectProviderUltimatumPDU? {

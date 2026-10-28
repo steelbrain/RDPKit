@@ -324,6 +324,8 @@ final class RDPTransport {
     private let reader: NIOLoopBound<RDPTransportReader>
     private let callbacks: RDPSessionCallbacks
     private let cancellationRegistration: RDPConnectionCancellationRegistration?
+    /// True from joining the MCS domain until `disconnect` sends the ultimatum.
+    private let owesDisconnectUltimatum: NIOLoopBoundBox<Bool>
 
     private init(
         channel: Channel,
@@ -335,8 +337,10 @@ final class RDPTransport {
         self.reader = reader
         self.timeoutSeconds = timeoutSeconds
         self.callbacks = callbacks
+        let owesDisconnectUltimatum = NIOLoopBoundBox.makeBoxSendingValue(false, eventLoop: channel.eventLoop)
+        self.owesDisconnectUltimatum = owesDisconnectUltimatum
         cancellationRegistration = callbacks.cancellation?.register {
-            channel.close(promise: nil)
+            Self.disconnect(channel, owesDisconnectUltimatum: owesDisconnectUltimatum)
         }
     }
 
@@ -409,6 +413,32 @@ final class RDPTransport {
         channel.close(promise: nil)
     }
 
+    /// From now on `disconnect` sends the Disconnect Provider Ultimatum.
+    func noteJoinedDomain() {
+        let owesDisconnectUltimatum = owesDisconnectUltimatum
+        channel.eventLoop.execute {
+            owesDisconnectUltimatum.value = true
+        }
+    }
+
+    /// Ends the session from this side: once the MCS domain is joined, the
+    /// Disconnect Provider Ultimatum with rn-user-requested goes out before
+    /// the connection closes ([MS-RDPBCGR] 1.3.1.4.1, 3.1.5.1.1).
+    func disconnect() {
+        Self.disconnect(channel, owesDisconnectUltimatum: owesDisconnectUltimatum)
+    }
+
+    private static func disconnect(_ channel: Channel, owesDisconnectUltimatum: NIOLoopBoundBox<Bool>) {
+        channel.eventLoop.execute {
+            if owesDisconnectUltimatum.value {
+                owesDisconnectUltimatum.value = false
+                let packet = MCSDisconnectProviderUltimatumPDU.userRequested.encodedTPKT()
+                channel.writeAndFlush(channel.allocator.buffer(bytes: packet), promise: nil)
+            }
+            channel.close(promise: nil)
+        }
+    }
+
     /// Waits for `future`, polling `shouldCancel` about once a second. An
     /// `RDPConnectionCancellation` needs no polling: it closes the channel,
     /// which fails the future at once.
@@ -446,7 +476,7 @@ final class RDPTransport {
         var buffer = channel.allocator.buffer(capacity: packet.count)
         buffer.writeBytes(packet)
         do {
-            try Self.wait(for: channel.writeAndFlush(buffer), callbacks: callbacks, onCancel: close)
+            try Self.wait(for: channel.writeAndFlush(buffer), callbacks: callbacks, onCancel: disconnect)
         } catch let error as RDPConnectionError {
             throw error
         } catch {
@@ -488,7 +518,7 @@ final class RDPTransport {
                 return try receive(until: slice)
             } catch RDPTransportError.timedOut where slice != deadline {
                 if callbacks.isCancelled {
-                    close()
+                    disconnect()
                     throw RDPConnectionError.cancelled
                 }
                 if let deadline, deadline <= .now() {
@@ -553,7 +583,7 @@ final class RDPTransport {
             timeout.cancel()
         }
         do {
-            try Self.wait(for: handshake.futureResult, callbacks: callbacks, onCancel: close)
+            try Self.wait(for: handshake.futureResult, callbacks: callbacks, onCancel: disconnect)
         } catch let error as RDPConnectionError {
             throw error
         } catch RDPTransportError.closed {

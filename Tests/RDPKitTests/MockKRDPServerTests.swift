@@ -75,6 +75,7 @@ struct MockKRDPServerTests {
         #expect(run.report.error == "cancelled")
         #expect(run.report.rdpClientInfoSent != true)
         #expect(run.transcript.credSSPMessages.isEmpty)
+        #expect(run.transcript.disconnectUltimatumReasons.isEmpty)
     }
 
     @Test func clientVerifiesCredSSPAuthenticationWithMockServer() throws {
@@ -1031,15 +1032,33 @@ struct MockKRDPServerTests {
     }
 
     @Test func liveSessionTreatsRemoteCloseAfterFrameAsCleanDisconnect() throws {
-        let report = try runMock(.init(graphicsBehavior: .closeAfterFirstFrame)) {
+        let run = try runMock(.init(graphicsBehavior: .closeAfterFirstFrame)) {
             $0.graphicsFrameCaptureLimit = nil
-        }.report
+        }
+        let report = run.report
 
         #expect(report.status == "success")
         #expect(report.stage == "rdp-graphics-dynamic-channel")
         #expect(report.rdpGraphicsFirstFrame?.codecName == "avc420")
         #expect(report.rdpGraphicsFrameAcknowledgeHexes?.isEmpty == false)
         #expect(report.error == nil)
+        // The server ended the session, so the client sends no ultimatum of its own.
+        #expect(run.transcript.disconnectUltimatumReasons.isEmpty)
+    }
+
+    /// A session the client ends, at its frame target or by cancelling, says so with
+    /// the Disconnect Provider Ultimatum before closing ([MS-RDPBCGR] 1.3.1.4.1).
+    @Test func clientEndsItsSessionWithTheDisconnectUltimatum() throws {
+        let captured = try runMock()
+        #expect(captured.report.status == "success")
+        #expect(captured.transcript.disconnectUltimatumReasons == [3])
+
+        let cancellation = RDPConnectionCancellation()
+        let cancelled = try runMock(.init(), { $0.graphicsFrameCaptureLimit = nil }, client: {
+            RDPClient().run(configuration: $0, onGraphicsFrame: { _ in cancellation.cancel() }, cancellation: cancellation)
+        })
+        #expect(cancelled.report.error == "cancelled")
+        #expect(cancelled.transcript.disconnectUltimatumReasons == [3])
     }
 
     /// A close after a non-clean Set Error Info is the server ending the session

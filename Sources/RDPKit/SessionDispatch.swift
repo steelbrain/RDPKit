@@ -388,6 +388,13 @@ extension RDPClientConnection {
 
     // MARK: Session end
 
+    /// Ends a session this client is done with, such as once it has the
+    /// frames it asked for.
+    func disconnect() {
+        sessionEnded = true
+        transport?.disconnect()
+    }
+
     /// Ends the session for a termination: a clean one after the graphics
     /// pipeline opened is a normal end, anything else a failure.
     func endSession(by termination: RDPRemoteTermination) throws {
@@ -437,7 +444,7 @@ extension RDPClientConnection {
                 : "server did not grant control during connection finalization")
         case .graphics:
             if targetFrameCount != nil, report.rdpGraphicsFirstFrame != nil, !hasPartialGraphicsData {
-                sessionEnded = true
+                disconnect()
                 return
             }
             if graphicsChannelID != nil, graphicsCompositor == nil {

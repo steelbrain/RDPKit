@@ -60,6 +60,7 @@ extension RDPClientConnection {
             throw RDPConnectionError.protocolViolation("MCS Attach User Confirm did not include a user channel ID")
         }
         self.userChannelID = userChannelID
+        transport?.noteJoinedDomain()
         report.mcsUserChannelID = userChannelID
 
         var joins = [("user", userChannelID), ("io", ioChannelID)]

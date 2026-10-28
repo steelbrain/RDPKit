@@ -13,6 +13,19 @@ import Testing
     #expect(pdu.reasonName == "rn-user-requested")
 }
 
+/// The bytes FreeRDP sends for its own disconnects, which KRdp sends RDPKit too.
+@Test func encodesUserRequestedMCSDisconnectProviderUltimatum() throws {
+    #expect(MCSDisconnectProviderUltimatumPDU.userRequested.encodedTPKT() == Data([
+        0x03, 0x00, 0x00, 0x09,
+        0x02, 0xF0, 0x80,
+        0x21, 0x80,
+    ]))
+    for reason in UInt8(0) ... 4 {
+        let pdu = MCSDisconnectProviderUltimatumPDU(reason: reason)
+        #expect(try MCSDisconnectProviderUltimatumPDU.parseIfPresent(fromTPKT: pdu.encodedTPKT()) == pdu)
+    }
+}
+
 @Test func ignoresNonDisconnectTPKT() throws {
     #expect(try MCSDisconnectProviderUltimatumPDU.parseIfPresent(fromTPKT: Data([
         0x03, 0x00, 0x00, 0x08,

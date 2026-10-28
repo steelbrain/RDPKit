@@ -206,7 +206,7 @@ extension RDPClientConnection {
             limit: recordedGraphicsAcknowledgeLimit(targetFrameCount: targetFrameCount)
         )
         if let targetFrameCount, graphicsFramesDecoded >= UInt32(clamping: targetFrameCount) {
-            sessionEnded = true
+            disconnect()
         }
     }
 
@@ -310,7 +310,7 @@ extension RDPClientConnection {
         }
         primaryFramesCaptured += frames.count
         if let targetFrameCount, primaryFramesCaptured >= targetFrameCount {
-            sessionEnded = true
+            disconnect()
         }
     }
 

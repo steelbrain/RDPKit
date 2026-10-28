@@ -287,6 +287,7 @@ struct MockKRDPServerTranscript: Equatable, Sendable {
     var audioDynamicStaticFlags: [UInt32] = []
     var credSSPMessages: [String] = []
     var credSSPGates: [String] = []
+    var disconnectUltimatumReasons: [UInt8] = []
 }
 
 private enum MockKRDPConstants {
@@ -728,6 +729,10 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
     }
 
     private func handle(_ packet: Data, context: ChannelHandlerContext) throws {
+        if let ultimatum = try? MCSDisconnectProviderUltimatumPDU.parseIfPresent(fromTPKT: packet) {
+            transcript.withLock { $0.disconnectUltimatumReasons.append(ultimatum.reason) }
+            return
+        }
         if let request = try? mcsSendDataRequest(fromTPKT: packet),
            request.initiator == MockKRDPConstants.userChannelID,
            try handleChannelTraffic(request, context: context)

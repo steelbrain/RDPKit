@@ -62,6 +62,10 @@
   or malformed request no longer ends the session.
 - Reactivate after Deactivate All followed by Demand Active, at the desktop
   size the server's Demand Active sets.
+- End a session the client finishes, by cancelling or at its frame target,
+  with the MCS Disconnect Provider Ultimatum (rn-user-requested) before
+  closing the connection, as MS-RDPBCGR 1.3.1.4.1 describes. Servers log a
+  user logoff instead of a transport failure.
 - Server redirection: follow redirections that name only a target host, send
   the password cookie opaquely in the Client Info PDU instead of using it for
   NLA, accept the spec's PDU form as well as gnome-remote-desktop's, and treat
