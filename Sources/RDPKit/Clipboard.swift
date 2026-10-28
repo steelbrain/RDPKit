@@ -883,26 +883,16 @@ public struct RDPClipboardFileContentsResponse: Equatable, Sendable {
     }
 
     public func decodedFileSize() throws -> UInt64 {
-        try decodeClipboardFileSize(ok: ok, data: data)
+        guard ok, data.count == 8 else {
+            throw RDPDecodeError.invalidClipboardPDU
+        }
+        var cursor = ByteCursor(data)
+        return try cursor.readLittleEndianUInt64()
     }
 }
 
-struct RDPClipboardFileContentsResponsePDU: Equatable, Sendable {
-    var streamID: UInt32
-    var ok: Bool
-    var data: Data
-
-    init(streamID: UInt32, ok: Bool, data: Data) {
-        self.streamID = streamID
-        self.ok = ok
-        self.data = data
-    }
-
-    var response: RDPClipboardFileContentsResponse {
-        RDPClipboardFileContentsResponse(streamID: streamID, ok: ok, data: data)
-    }
-
-    static func parseIfPresent(from pdu: RDPClipboardPDU) throws -> RDPClipboardFileContentsResponsePDU? {
+extension RDPClipboardFileContentsResponse {
+    static func parseIfPresent(from pdu: RDPClipboardPDU) throws -> RDPClipboardFileContentsResponse? {
         guard pdu.header.messageType == RDPClipboardMessageType.fileContentsResponse else {
             return nil
         }
@@ -913,7 +903,7 @@ struct RDPClipboardFileContentsResponsePDU: Equatable, Sendable {
         }
 
         var cursor = ByteCursor(pdu.payload)
-        return try RDPClipboardFileContentsResponsePDU(
+        return try RDPClipboardFileContentsResponse(
             streamID: cursor.readLittleEndianUInt32(),
             ok: pdu.header.messageFlags == RDPClipboardMessageFlags.responseOK,
             data: cursor.readRemainingData()
@@ -923,21 +913,21 @@ struct RDPClipboardFileContentsResponsePDU: Equatable, Sendable {
     static func fileSize(
         streamID: UInt32,
         byteCount: UInt64
-    ) -> RDPClipboardFileContentsResponsePDU {
+    ) -> RDPClipboardFileContentsResponse {
         var data = Data()
         data.appendLittleEndianUInt64(byteCount)
-        return RDPClipboardFileContentsResponsePDU(streamID: streamID, ok: true, data: data)
+        return RDPClipboardFileContentsResponse(streamID: streamID, ok: true, data: data)
     }
 
     static func range(
         streamID: UInt32,
         data: Data
-    ) -> RDPClipboardFileContentsResponsePDU {
-        RDPClipboardFileContentsResponsePDU(streamID: streamID, ok: true, data: data)
+    ) -> RDPClipboardFileContentsResponse {
+        RDPClipboardFileContentsResponse(streamID: streamID, ok: true, data: data)
     }
 
-    static func failure(streamID: UInt32) -> RDPClipboardFileContentsResponsePDU {
-        RDPClipboardFileContentsResponsePDU(streamID: streamID, ok: false, data: Data())
+    static func failure(streamID: UInt32) -> RDPClipboardFileContentsResponse {
+        RDPClipboardFileContentsResponse(streamID: streamID, ok: false, data: Data())
     }
 
     func encoded() -> Data {
@@ -950,18 +940,6 @@ struct RDPClipboardFileContentsResponsePDU: Equatable, Sendable {
             payload: payload
         ).encoded()
     }
-
-    func decodedFileSize() throws -> UInt64 {
-        try decodeClipboardFileSize(ok: ok, data: data)
-    }
-}
-
-private func decodeClipboardFileSize(ok: Bool, data: Data) throws -> UInt64 {
-    guard ok, data.count == 8 else {
-        throw RDPDecodeError.invalidClipboardPDU
-    }
-    var cursor = ByteCursor(data)
-    return try cursor.readLittleEndianUInt64()
 }
 
 public final class RDPClipboardSession: @unchecked Sendable {
@@ -1030,8 +1008,8 @@ public final class RDPClipboardSession: @unchecked Sendable {
             respondToFileContentsRequest(request)
             return nil
         }
-        if let response = try RDPClipboardFileContentsResponsePDU.parseIfPresent(from: pdu) {
-            return .fileContents(response.response)
+        if let response = try RDPClipboardFileContentsResponse.parseIfPresent(from: pdu) {
+            return .fileContents(response)
         }
         if let response = try RDPClipboardFormatDataResponsePDU.parseIfPresent(from: pdu) {
             // A response with no outstanding request has nothing to decode against and is dropped.
@@ -1151,13 +1129,13 @@ public final class RDPClipboardSession: @unchecked Sendable {
               request.fileIndex >= 0,
               Int(request.fileIndex) < files.count
         else {
-            send(RDPClipboardFileContentsResponsePDU.failure(streamID: request.streamID).encoded())
+            send(RDPClipboardFileContentsResponse.failure(streamID: request.streamID).encoded())
             return
         }
 
         let file = files[Int(request.fileIndex)]
         if request.flags & RDPClipboardFileContentsFlags.size != 0 {
-            send(RDPClipboardFileContentsResponsePDU.fileSize(
+            send(RDPClipboardFileContentsResponse.fileSize(
                 streamID: request.streamID,
                 byteCount: file.descriptor.fileSize
             ).encoded())
@@ -1167,12 +1145,12 @@ public final class RDPClipboardSession: @unchecked Sendable {
         // cbRequested is an upper bound; a range that runs past the end of the
         // file returns the bytes that remain (MS-RDPECLIP 2.2.5.3).
         guard request.position <= UInt64(file.contents.count) else {
-            send(RDPClipboardFileContentsResponsePDU.failure(streamID: request.streamID).encoded())
+            send(RDPClipboardFileContentsResponse.failure(streamID: request.streamID).encoded())
             return
         }
         let lowerBound = file.contents.startIndex + Int(request.position)
         let upperBound = lowerBound + min(Int(request.requestedByteCount), file.contents.endIndex - lowerBound)
-        send(RDPClipboardFileContentsResponsePDU.range(
+        send(RDPClipboardFileContentsResponse.range(
             streamID: request.streamID,
             data: file.contents.subdata(in: lowerBound ..< upperBound)
         ).encoded())

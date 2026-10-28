@@ -1230,7 +1230,7 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
 
     private func clipboardFileContentsResponse(
         for request: RDPClipboardFileContentsRequestPDU
-    ) -> RDPClipboardFileContentsResponsePDU {
+    ) -> RDPClipboardFileContentsResponse {
         guard request.fileIndex >= 0,
               Int(request.fileIndex) < options.clipboardFiles.count
         else {

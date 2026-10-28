@@ -571,12 +571,12 @@ import Testing
 }
 
 @Test func clipboardFileContentsResponseRoundTripsFileSize() throws {
-    let response = RDPClipboardFileContentsResponsePDU.fileSize(
+    let response = RDPClipboardFileContentsResponse.fileSize(
         streamID: 0x0102_0304,
         byteCount: 0x0000_0001_0000_0002
     )
     let pdu = try RDPClipboardPDU.parse(from: response.encoded())
-    let parsed = try #require(try RDPClipboardFileContentsResponsePDU.parseIfPresent(from: pdu))
+    let parsed = try #require(try RDPClipboardFileContentsResponse.parseIfPresent(from: pdu))
 
     #expect(pdu.typeName == "clipboard-file-contents-response")
     #expect(pdu.encoded() == hexData("""
@@ -589,16 +589,16 @@ import Testing
 }
 
 @Test func clipboardFileContentsResponseRoundTripsRangeDataAndFailure() throws {
-    let rangeResponse = RDPClipboardFileContentsResponsePDU.range(
+    let rangeResponse = RDPClipboardFileContentsResponse.range(
         streamID: 9,
         data: Data([0x01, 0x02, 0x03])
     )
-    let failureResponse = RDPClipboardFileContentsResponsePDU.failure(streamID: 10)
+    let failureResponse = RDPClipboardFileContentsResponse.failure(streamID: 10)
 
-    let parsedRange = try #require(try RDPClipboardFileContentsResponsePDU.parseIfPresent(
+    let parsedRange = try #require(try RDPClipboardFileContentsResponse.parseIfPresent(
         from: RDPClipboardPDU.parse(from: rangeResponse.encoded())
     ))
-    let parsedFailure = try #require(try RDPClipboardFileContentsResponsePDU.parseIfPresent(
+    let parsedFailure = try #require(try RDPClipboardFileContentsResponse.parseIfPresent(
         from: RDPClipboardPDU.parse(from: failureResponse.encoded())
     ))
 
@@ -625,7 +625,7 @@ import Testing
         ).encoded())
 
         #expect(throws: RDPDecodeError.invalidClipboardPDU) {
-            try RDPClipboardFileContentsResponsePDU.parseIfPresent(from: pdu)
+            try RDPClipboardFileContentsResponse.parseIfPresent(from: pdu)
         }
     }
 }
@@ -866,7 +866,7 @@ private final class ClipboardPublishRace: @unchecked Sendable {
     session.respondToFileContentsRequest(.range(streamID: 10, fileIndex: 0, position: 6, requestedByteCount: 1))
 
     let responses = try sent.packets.suffix(2).map { packets in
-        try RDPClipboardFileContentsResponsePDU.parseIfPresent(
+        try RDPClipboardFileContentsResponse.parseIfPresent(
             from: RDPClipboardPDU.parse(from: clipboardPayload(fromPackets: packets))
         )
     }
