@@ -91,6 +91,17 @@ private let fullFrame = [RDPFrameRect(left: 0, top: 0, right: 16, bottom: 16)]
     #expect(try bgraPixel(x: 0, y: 1, in: reconstructed) == bgra(y: 128, u: 100, v: 150))
 }
 
+@Test func AVC444IgnoresInvertedChromaRegion() throws {
+    let reconstructed = try rdpReconstructAVC444OnCPU(
+        main: try flatNV12PixelBuffer(y: 128, u: 100, v: 150),
+        auxiliary: try flatNV12PixelBuffer(y: 40, u: 50, v: 190),
+        usesV2Layout: false,
+        chromaRegionRects: [RDPFrameRect(left: 0, top: 10, right: 8, bottom: 4)]
+    )
+
+    #expect(try bgraPixel(x: 1, y: 5, in: reconstructed) == bgra(y: 128, u: 100, v: 150))
+}
+
 @Test func AVC444ChromaOnlyUpdateCombinesWithLastLumaView() throws {
     var views = RDPAVC444Views()
     let luma = try flatNV12PixelBuffer(y: 90, u: 100, v: 150)
@@ -175,6 +186,7 @@ private let fullFrame = [RDPFrameRect(left: 0, top: 0, right: 16, bottom: 16)]
     let metalDecoder = try #require(RDPAVC444MetalDecoder())
     let main = try flatNV12PixelBuffer(y: 128, u: 100, v: 150)
     let regions = [RDPFrameRect(left: 4, top: 2, right: 14, bottom: 13)]
+    let invertedRegions = [RDPFrameRect(left: 0, top: 10, right: 8, bottom: 4)]
     let auxiliaries: [CVPixelBuffer?] = [
         nil,
         try flatNV12PixelBuffer(y: 40, u: 50, v: 190),
@@ -182,7 +194,7 @@ private let fullFrame = [RDPFrameRect(left: 0, top: 0, right: 16, bottom: 16)]
     ]
 
     for usesV2Layout in [false, true] {
-        for chromaRegions in [[], regions] {
+        for chromaRegions in [[], regions, invertedRegions] {
             for auxiliary in auxiliaries {
                 let expected = try rdpReconstructAVC444OnCPU(
                     main: main,

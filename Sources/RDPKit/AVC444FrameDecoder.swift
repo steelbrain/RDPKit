@@ -212,10 +212,12 @@ private func avc444ChromaMask(width: Int, height: Int, regionRects: [RDPFrameRec
     for rect in regionRects {
         let left = min(width, Int(rect.left))
         let right = min(width, Int(rect.right))
-        guard right > left else {
+        let top = min(height, Int(rect.top))
+        let bottom = min(height, Int(rect.bottom))
+        guard right > left, bottom > top else {
             continue
         }
-        for row in min(height, Int(rect.top)) ..< min(height, Int(rect.bottom)) {
+        for row in top ..< bottom {
             mask.replaceSubrange(row * width + left ..< row * width + right, with: repeatElement(true, count: right - left))
         }
     }

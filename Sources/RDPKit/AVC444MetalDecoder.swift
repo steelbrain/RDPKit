@@ -80,8 +80,15 @@ final class RDPAVC444MetalDecoder {
         encoder.setBuffer(regionBuffer, offset: 0, index: 1)
         let threadWidth = pipeline.threadExecutionWidth
         let threadHeight = max(1, pipeline.maxTotalThreadsPerThreadgroup / threadWidth)
-        encoder.dispatchThreads(
-            MTLSize(width: width, height: height, depth: 1),
+        // Uniform threadgroups covering the frame: `dispatchThreads` needs non-uniform
+        // threadgroup support (Apple4+), which A8-A10 devices lack. The kernel skips the
+        // threads past the frame edge.
+        encoder.dispatchThreadgroups(
+            MTLSize(
+                width: (width + threadWidth - 1) / threadWidth,
+                height: (height + threadHeight - 1) / threadHeight,
+                depth: 1
+            ),
             threadsPerThreadgroup: MTLSize(width: threadWidth, height: threadHeight, depth: 1)
         )
         encoder.endEncoding()
