@@ -42,9 +42,10 @@
 - `RDPConnectionError.graphicsFrameHandler` is new: a throwing `onGraphicsFrame`
   ends the session with its own error. Remove `RDPDecodeError` and
   `RDPBitmapFrameDecodeError` cases that were never thrown.
-- Move `RDPFramePacingState`, `RDPFramePresentationBuffer` and
-  `RDPH264DecodedFrameImage.cropToDestinationRect`, which only the examples
-  used, into the examples.
+- Move `RDPFramePacingState`, `RDPFramePresentationBuffer`,
+  `RDPH264DecodedFrameImage.cropToDestinationRect` and
+  `decodeReportFirstFrame(_:)`, which only the examples used, into the
+  examples.
 - Use `RDPKit`/`RDPKIT` as the default client, workstation and source names.
 
 ### Protocol and compatibility
