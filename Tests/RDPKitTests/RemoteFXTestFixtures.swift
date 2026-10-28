@@ -13,6 +13,7 @@ func cavideoRemoteFXGrayTileStream(
     frameRegionCount: UInt16 = 1,
     tileXIndex: UInt16 = 0,
     tileYIndex: UInt16 = 0,
+    tilePositions: [(x: UInt16, y: UInt16)]? = nil,
     codecVersionID: UInt8 = 1,
     codecVersion: UInt16 = 0x0100,
     contextID: UInt8 = 0,
@@ -72,20 +73,23 @@ func cavideoRemoteFXGrayTileStream(
     region.appendLittleEndianUInt16(1)
     stream.appendRFXBlock(type: 0xCCC6, body: region)
 
-    var tile = Data()
-    tile.appendUInt8(0)
-    tile.appendUInt8(0)
-    tile.appendUInt8(0)
-    tile.appendLittleEndianUInt16(tileXIndex)
-    tile.appendLittleEndianUInt16(tileYIndex)
-    tile.appendLittleEndianUInt16(UInt16(component.count))
-    tile.appendLittleEndianUInt16(UInt16(component.count))
-    tile.appendLittleEndianUInt16(UInt16(component.count))
-    tile.append(component)
-    tile.append(component)
-    tile.append(component)
+    let positions = tilePositions ?? [(tileXIndex, tileYIndex)]
     var tileBlock = Data()
-    tileBlock.appendRFXBlock(type: 0xCAC3, body: tile)
+    for position in positions {
+        var tile = Data()
+        tile.appendUInt8(0)
+        tile.appendUInt8(0)
+        tile.appendUInt8(0)
+        tile.appendLittleEndianUInt16(position.x)
+        tile.appendLittleEndianUInt16(position.y)
+        tile.appendLittleEndianUInt16(UInt16(component.count))
+        tile.appendLittleEndianUInt16(UInt16(component.count))
+        tile.appendLittleEndianUInt16(UInt16(component.count))
+        tile.append(component)
+        tile.append(component)
+        tile.append(component)
+        tileBlock.appendRFXBlock(type: 0xCAC3, body: tile)
+    }
 
     var tileSet = Data()
     tileSet.appendRFXChannelHeader(channelID: 0)
@@ -94,7 +98,7 @@ func cavideoRemoteFXGrayTileStream(
     tileSet.appendLittleEndianUInt16(tileSetProperties)
     tileSet.appendUInt8(1)
     tileSet.appendUInt8(tileSetTileSize)
-    tileSet.appendLittleEndianUInt16(1)
+    tileSet.appendLittleEndianUInt16(UInt16(positions.count))
     tileSet.appendLittleEndianUInt32(UInt32(tileBlock.count))
     tileSet.append(quantData)
     tileSet.append(tileBlock)
@@ -164,6 +168,7 @@ func caprogressiveRemoteFXGrayTilesStream(
     tileSize: UInt8 = 64,
     rectangleCount: UInt16 = 1,
     quantCount: UInt8 = 1,
+    quantData: Data = Data([0x66, 0x66, 0x77, 0x88, 0x98]),
     regionFlags: UInt8 = 1,
     progressiveQuantTables: [Data] = [],
     advertisedTileCount: UInt16? = nil,
@@ -197,6 +202,7 @@ func caprogressiveRemoteFXGrayTilesStream(
         tileSize: tileSize,
         rectangleCount: rectangleCount,
         quantCount: quantCount,
+        quantData: quantData,
         regionFlags: regionFlags,
         progressiveQuantTables: progressiveQuantTables,
         advertisedTileCount: advertisedTileCount,
@@ -245,6 +251,7 @@ func caprogressiveRemoteFXGrayRegionBlock(
     tileSize: UInt8 = 64,
     rectangleCount: UInt16 = 1,
     quantCount: UInt8 = 1,
+    quantData: Data = Data([0x66, 0x66, 0x77, 0x88, 0x98]),
     regionFlags: UInt8 = 1,
     progressiveQuantTables: [Data] = [],
     advertisedTileCount: UInt16? = nil,
@@ -309,7 +316,7 @@ func caprogressiveRemoteFXGrayRegionBlock(
         region.appendLittleEndianUInt16(regionHeight)
     }
     for _ in 0 ..< quantCount {
-        region.append(contentsOf: [0x66, 0x66, 0x77, 0x88, 0x98])
+        region.append(quantData)
     }
     for table in progressiveQuantTables {
         region.append(table)
@@ -398,7 +405,7 @@ private extension Data {
     }
 }
 
-private struct BitWriter {
+struct BitWriter {
     private var bytes: [UInt8] = []
     private var bitCount = 0
 
