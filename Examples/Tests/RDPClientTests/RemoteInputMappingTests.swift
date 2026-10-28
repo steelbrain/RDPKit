@@ -24,6 +24,46 @@ import Testing
     #expect(control.isDown(in: []) == false)
 }
 
+@Test func releasingTheLastSideOfAModifierWithoutSideBitsReleasesBothSides() throws {
+    let leftShift = try #require(MacRDPModifierKey(keyCode: UInt16(kVK_Shift)))
+    let rightShift = try #require(MacRDPModifierKey(keyCode: UInt16(kVK_RightShift)))
+    let bothPressed: (RDPKeyboardScancode) -> Bool = { _ in true }
+
+    // With no side bits, releasing one Shift leaves .shift set, so nothing tells which side it was.
+    #expect(leftShift.changes(in: .shift, isPressed: bothPressed).isEmpty)
+    let release = rightShift.changes(in: [], isPressed: bothPressed)
+    #expect(release.map(\.scancode) == [RDPKeyboardScancode(code: 0x36), RDPKeyboardScancode(code: 0x2A)])
+    #expect(release.allSatisfy { $0.isDown == false })
+    #expect(leftShift.changes(in: .shift) { _ in false }.map(\.scancode) == [RDPKeyboardScancode(code: 0x2A)])
+}
+
+@Test func commandSendsWindowsKeyOnlyWithAnotherKeyOrAsATap() {
+    let leftWindows = RDPKeyboardScancode(code: 0x5B, isExtended: true)
+    var inputState = RDPInputStateTracker()
+    var windowsKey = MacRDPDeferredWindowsKey()
+
+    // Command released alone: a Win tap.
+    windowsKey.press(leftWindows)
+    #expect(windowsKey.release(leftWindows) == [
+        .keyboard(scancode: leftWindows, isReleased: false),
+        .keyboard(scancode: leftWindows, isReleased: true),
+    ])
+
+    // Another key while Command is held: Win down goes first and is then tracked as pressed.
+    windowsKey.press(leftWindows)
+    #expect(windowsKey.flush(&inputState) == [.keyboard(scancode: leftWindows, isReleased: false)])
+    #expect(inputState.isScancodePressed(leftWindows))
+    #expect(windowsKey.release(leftWindows).isEmpty)
+
+    // A shortcut handled locally (only its key-up seen), or focus loss: nothing at all.
+    windowsKey.press(leftWindows)
+    windowsKey.noteChordedElsewhere()
+    #expect(windowsKey.release(leftWindows).isEmpty)
+    windowsKey.press(leftWindows)
+    windowsKey.reset()
+    #expect(windowsKey.isHeld(leftWindows) == false)
+}
+
 @Test func rightSideAndCommandModifiersUseExtendedScancodes() throws {
     let expected: [Int: RDPKeyboardScancode] = [
         kVK_RightControl: RDPKeyboardScancode(code: 0x1D, isExtended: true),

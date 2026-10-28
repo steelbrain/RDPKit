@@ -19,6 +19,7 @@ final class RemoteInputCaptureNSView: NSView {
 
     private var trackingArea: NSTrackingArea?
     private var inputState = RDPInputStateTracker()
+    private var deferredWindowsKey = MacRDPDeferredWindowsKey()
     private var wheelAccumulator = RDPScrollWheelAccumulator()
     private var commandKeyUpMonitor: Any?
 
@@ -169,11 +170,22 @@ final class RemoteInputCaptureNSView: NSView {
         guard let modifier = MacRDPModifierKey(keyCode: event.keyCode) else {
             return
         }
-        let isDown = modifier.isDown(in: event.modifierFlags)
-        guard isDown != inputState.isScancodePressed(modifier.scancode) else {
-            return
+        let changes = modifier.changes(in: event.modifierFlags) {
+            inputState.isScancodePressed($0) || deferredWindowsKey.isHeld($0)
         }
-        sendKeyboardScancode(modifier.scancode, isReleased: !isDown)
+        for change in changes {
+            if MacRDPDeferredWindowsKey.isWindowsKey(change.scancode),
+               inputState.isScancodePressed(change.scancode) == false
+            {
+                if change.isDown {
+                    deferredWindowsKey.press(change.scancode)
+                } else {
+                    inputSession?.send(deferredWindowsKey.release(change.scancode))
+                }
+            } else {
+                sendKeyboardScancode(change.scancode, isReleased: !change.isDown)
+            }
+        }
     }
 
     private func startObservingWindow() {
@@ -238,6 +250,7 @@ final class RemoteInputCaptureNSView: NSView {
         else {
             return
         }
+        deferredWindowsKey.noteChordedElsewhere()
         keyUp(with: event)
     }
 
@@ -252,7 +265,8 @@ final class RemoteInputCaptureNSView: NSView {
         guard let inputEvent = inputState.pointerButton(button, isDown: isDown, at: remotePoint(from: event)) else {
             return
         }
-        inputSession?.send(inputEvent)
+        let windowsKeyEvents = isDown ? deferredWindowsKey.flush(&inputState) : []
+        inputSession?.send(windowsKeyEvents + [inputEvent])
     }
 
     private func pointerButton(for event: NSEvent) -> RDPPointerButton? {
@@ -269,10 +283,15 @@ final class RemoteInputCaptureNSView: NSView {
     }
 
     private func sendKeyboardScancode(_ scancode: RDPKeyboardScancode, isReleased: Bool, isRepeat: Bool = false) {
-        inputSession?.send(inputState.keyboard(scancode: scancode, isReleased: isReleased, isRepeat: isRepeat))
+        let windowsKeyEvents = isReleased ? [] : deferredWindowsKey.flush(&inputState)
+        inputSession?.send(
+            windowsKeyEvents + [inputState.keyboard(scancode: scancode, isReleased: isReleased, isRepeat: isRepeat)]
+        )
     }
 
+    /// A Windows key still deferred never reached the server, so nothing is sent for it.
     private func releasePressedInputs() {
+        deferredWindowsKey.reset()
         inputSession?.send(inputState.releasePressedInputs())
     }
 
@@ -306,6 +325,61 @@ enum MacRDPScrollWheel {
     }
 }
 
+/// Command is sent as the Windows key, and a Windows key pressed and released with nothing in
+/// between opens the server's Start menu (GNOME Activities, the KDE launcher). Command chords the
+/// server never sees, such as Cmd-Tab and menu shortcuts, must not reach it as such a tap, so Win
+/// down is sent only before another key or button goes to the server while Command is held, or as
+/// a tap when Command is released alone.
+struct MacRDPDeferredWindowsKey {
+    private var heldScancodes: [RDPKeyboardScancode] = []
+    private var isChordedElsewhere = false
+
+    static func isWindowsKey(_ scancode: RDPKeyboardScancode) -> Bool {
+        scancode.isExtended && (scancode.code == 0x5B || scancode.code == 0x5C)
+    }
+
+    func isHeld(_ scancode: RDPKeyboardScancode) -> Bool {
+        heldScancodes.contains(scancode)
+    }
+
+    mutating func press(_ scancode: RDPKeyboardScancode) {
+        if heldScancodes.contains(scancode) == false {
+            heldScancodes.append(scancode)
+        }
+    }
+
+    /// Sends the held Windows keys down, ahead of another key or button.
+    mutating func flush(_ inputState: inout RDPInputStateTracker) -> [RDPSlowPathInputEvent] {
+        defer {
+            reset()
+        }
+        return heldScancodes.map { inputState.keyboard(scancode: $0, isReleased: false) }
+    }
+
+    /// Another key was used with Command but never reached the server (seen only as its key-up,
+    /// for example a menu shortcut), so releasing Command sends nothing.
+    mutating func noteChordedElsewhere() {
+        isChordedElsewhere = heldScancodes.isEmpty == false
+    }
+
+    mutating func release(_ scancode: RDPKeyboardScancode) -> [RDPSlowPathInputEvent] {
+        guard let index = heldScancodes.firstIndex(of: scancode) else {
+            return []
+        }
+        heldScancodes.remove(at: index)
+        let isTap = isChordedElsewhere == false
+        if heldScancodes.isEmpty {
+            isChordedElsewhere = false
+        }
+        return isTap ? [.keyboard(scancode: scancode, isReleased: false), .keyboard(scancode: scancode, isReleased: true)] : []
+    }
+
+    mutating func reset() {
+        heldScancodes.removeAll()
+        isChordedElsewhere = false
+    }
+}
+
 struct MacRDPModifierKey {
     // Device-dependent modifier bits from IOKit's IOLLEvent.h (NX_DEVICE*KEYMASK).
     private static let leftControl: UInt = 0x0000_0001
@@ -317,7 +391,18 @@ struct MacRDPModifierKey {
     private static let rightOption: UInt = 0x0000_0040
     private static let rightControl: UInt = 0x0000_2000
 
+    private static let leftShiftScancode = RDPKeyboardScancode(code: 0x2A)
+    private static let rightShiftScancode = RDPKeyboardScancode(code: 0x36)
+    private static let leftControlScancode = RDPKeyboardScancode(code: 0x1D)
+    private static let rightControlScancode = RDPKeyboardScancode(code: 0x1D, isExtended: true)
+    private static let leftOptionScancode = RDPKeyboardScancode(code: 0x38)
+    private static let rightOptionScancode = RDPKeyboardScancode(code: 0x38, isExtended: true)
+    private static let leftCommandScancode = RDPKeyboardScancode(code: 0x5B, isExtended: true)
+    private static let rightCommandScancode = RDPKeyboardScancode(code: 0x5C, isExtended: true)
+
     let scancode: RDPKeyboardScancode
+    /// The other side's key, which shares `flag`.
+    private let pairScancode: RDPKeyboardScancode
     private let flag: NSEvent.ModifierFlags
     private let deviceMask: UInt
     private let pairDeviceMask: UInt
@@ -325,31 +410,51 @@ struct MacRDPModifierKey {
     init?(keyCode: UInt16) {
         switch Int(keyCode) {
         case kVK_Shift:
-            self.init(0x2A, flag: .shift, deviceMask: Self.leftShift, pair: Self.rightShift)
+            self.init(Self.leftShiftScancode, Self.rightShiftScancode, .shift, Self.leftShift, Self.rightShift)
         case kVK_RightShift:
-            self.init(0x36, flag: .shift, deviceMask: Self.rightShift, pair: Self.leftShift)
+            self.init(Self.rightShiftScancode, Self.leftShiftScancode, .shift, Self.rightShift, Self.leftShift)
         case kVK_Control:
-            self.init(0x1D, flag: .control, deviceMask: Self.leftControl, pair: Self.rightControl)
+            self.init(Self.leftControlScancode, Self.rightControlScancode, .control, Self.leftControl, Self.rightControl)
         case kVK_RightControl:
-            self.init(0x1D, isExtended: true, flag: .control, deviceMask: Self.rightControl, pair: Self.leftControl)
+            self.init(Self.rightControlScancode, Self.leftControlScancode, .control, Self.rightControl, Self.leftControl)
         case kVK_Option:
-            self.init(0x38, flag: .option, deviceMask: Self.leftOption, pair: Self.rightOption)
+            self.init(Self.leftOptionScancode, Self.rightOptionScancode, .option, Self.leftOption, Self.rightOption)
         case kVK_RightOption:
-            self.init(0x38, isExtended: true, flag: .option, deviceMask: Self.rightOption, pair: Self.leftOption)
+            self.init(Self.rightOptionScancode, Self.leftOptionScancode, .option, Self.rightOption, Self.leftOption)
         case kVK_Command:
-            self.init(0x5B, isExtended: true, flag: .command, deviceMask: Self.leftCommand, pair: Self.rightCommand)
+            self.init(Self.leftCommandScancode, Self.rightCommandScancode, .command, Self.leftCommand, Self.rightCommand)
         case kVK_RightCommand:
-            self.init(0x5C, isExtended: true, flag: .command, deviceMask: Self.rightCommand, pair: Self.leftCommand)
+            self.init(Self.rightCommandScancode, Self.leftCommandScancode, .command, Self.rightCommand, Self.leftCommand)
         default:
             return nil
         }
     }
 
-    private init(_ code: UInt16, isExtended: Bool = false, flag: NSEvent.ModifierFlags, deviceMask: UInt, pair: UInt) {
-        scancode = RDPKeyboardScancode(code: code, isExtended: isExtended)
+    private init(
+        _ scancode: RDPKeyboardScancode,
+        _ pairScancode: RDPKeyboardScancode,
+        _ flag: NSEvent.ModifierFlags,
+        _ deviceMask: UInt,
+        _ pairSideMask: UInt
+    ) {
+        self.scancode = scancode
+        self.pairScancode = pairScancode
         self.flag = flag
         self.deviceMask = deviceMask
-        pairDeviceMask = deviceMask | pair
+        pairDeviceMask = deviceMask | pairSideMask
+    }
+
+    /// The key changes that bring the server in line with `modifierFlags`. Keyboards without side
+    /// bits clear `flag` only once both sides are up, so both sides are released then.
+    func changes(
+        in modifierFlags: NSEvent.ModifierFlags,
+        isPressed: (RDPKeyboardScancode) -> Bool
+    ) -> [(scancode: RDPKeyboardScancode, isDown: Bool)] {
+        guard modifierFlags.contains(flag) else {
+            return [scancode, pairScancode].filter(isPressed).map { ($0, false) }
+        }
+        let isDown = isDown(in: modifierFlags)
+        return isDown == isPressed(scancode) ? [] : [(scancode, isDown)]
     }
 
     /// Reads this key's own side bit so left and right modifiers track independently, falling
