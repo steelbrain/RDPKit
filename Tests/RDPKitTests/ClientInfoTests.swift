@@ -90,6 +90,14 @@ import Testing
     #expect(littleEndianUInt16(in: cookieOnly, at: 8) & 0x0008 != 0) // INFO_AUTOLOGON
 }
 
+@Test func clientInfoAcceptsPKEncryptedRedirectionCookieFor4096BitKey() throws {
+    let cookie = Data(repeating: 0xA5, count: 512)
+    let pduData = try RDPClientInfoPDU(credentials: nil, passwordCookie: cookie).encodedPDUData()
+
+    #expect(littleEndianUInt16(in: pduData, at: 16) == 512)
+    #expect(pduData.range(of: cookie + Data([0, 0])) != nil)
+}
+
 @Test func clientInfoUsesBasicSecurityHeaderForEnhancedSecurity() throws {
     let pduData = try RDPClientInfoPDU(credentials: nil).encodedPDUData()
     let securityFlags = littleEndianUInt16(in: pduData, at: 0)

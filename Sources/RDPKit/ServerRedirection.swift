@@ -82,7 +82,10 @@ struct RDPServerRedirectionPDU: Equatable, Sendable {
         guard pduType & 0x000F == 0x000A else {
             return nil
         }
-        guard pduType >> 4 == 1, // TS_PROTOCOL_VERSION
+        // The version subfield MUST be 0 ([MS-RDPBCGR] 2.2.13.3.1; Windows in
+        // the 4.6 annotated capture). gnome-remote-desktop sends
+        // TS_PROTOCOL_VERSION 1 (Fixtures/gnome-negotiation-transcript.json, sequence 58).
+        guard pduType >> 4 <= 1,
               Int(totalLength) >= 20,
               Int(totalLength) <= indication.userData.count
         else {
@@ -94,18 +97,19 @@ struct RDPServerRedirectionPDU: Equatable, Sendable {
         let redirectionLength = try cursor.readLittleEndianUInt16()
         let availableRedirectionBytes = Int(totalLength) - 12
         let declaredRedirectionBodyBytes = Int(redirectionLength) - 4
-        // gnome-remote-desktop overstates the redirection packet Length by 2
-        // (Fixtures/gnome-negotiation-transcript.json, sequence 58).
+        // The packet may be followed by the optional pad1Octet ([MS-RDPBCGR]
+        // 2.2.13.3.1). gnome-remote-desktop overstates its Length by 2 (sequence 58).
         guard redirectionPacketFlags == 0x0400,
               redirectionLength >= 12,
               availableRedirectionBytes >= 8,
-              declaredRedirectionBodyBytes == availableRedirectionBytes
-                  || declaredRedirectionBodyBytes == availableRedirectionBytes + 2
+              [availableRedirectionBytes, availableRedirectionBytes - 1, availableRedirectionBytes + 2]
+                  .contains(declaredRedirectionBodyBytes)
         else {
             throw RDPDecodeError.invalidShareControlHeader
         }
 
-        var redirectionCursor = ByteCursor(try cursor.readData(count: availableRedirectionBytes))
+        let redirectionBodyBytes = min(declaredRedirectionBodyBytes, availableRedirectionBytes)
+        var redirectionCursor = ByteCursor(try cursor.readData(count: redirectionBodyBytes))
         let sessionID = try redirectionCursor.readLittleEndianUInt32()
         let flags = Flags(rawValue: try redirectionCursor.readLittleEndianUInt32())
         var pdu = RDPServerRedirectionPDU(channelID: indication.channelID, sessionID: sessionID, flags: flags)

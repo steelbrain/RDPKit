@@ -1529,7 +1529,7 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
             return false
         }
 
-        let staticPDU = try RDPStaticVirtualChannelPDU.parse(fromUserData: request.userData)
+        let staticPDU = try RDPStaticVirtualChannelPDU.parse(fromUserData: request.userData, maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumPayloadByteCount)
         guard staticPDU.isComplete else {
             throw MockKRDPServerError.invalidClientPDU
         }
@@ -1582,7 +1582,7 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
             return false
         }
 
-        let staticPDU = try RDPStaticVirtualChannelPDU.parse(fromUserData: request.userData)
+        let staticPDU = try RDPStaticVirtualChannelPDU.parse(fromUserData: request.userData, maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumPayloadByteCount)
         guard staticPDU.isComplete else {
             throw MockKRDPServerError.invalidClientPDU
         }
@@ -1601,7 +1601,7 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
             return false
         }
 
-        let staticPDU = try RDPStaticVirtualChannelPDU.parse(fromUserData: request.userData)
+        let staticPDU = try RDPStaticVirtualChannelPDU.parse(fromUserData: request.userData, maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumPayloadByteCount)
         guard staticPDU.isComplete,
               let dataPDU = try RDPDynamicVirtualChannelDataPDU.parseIfPresent(from: staticPDU.payload),
               dataPDU.channelID == MockKRDPConstants.audioDynamicChannelID
@@ -1628,7 +1628,7 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
             return false
         }
 
-        let staticPDU = try RDPStaticVirtualChannelPDU.parse(fromUserData: request.userData)
+        let staticPDU = try RDPStaticVirtualChannelPDU.parse(fromUserData: request.userData, maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumPayloadByteCount)
         guard staticPDU.isComplete,
               let dataPDU = try RDPDynamicVirtualChannelDataPDU.parseIfPresent(from: staticPDU.payload),
               dataPDU.channelID == MockKRDPConstants.displayControlDynamicChannelID,
@@ -1654,7 +1654,7 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
             return false
         }
 
-        let staticPDU = try RDPStaticVirtualChannelPDU.parse(fromUserData: request.userData)
+        let staticPDU = try RDPStaticVirtualChannelPDU.parse(fromUserData: request.userData, maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumPayloadByteCount)
         guard staticPDU.isComplete,
               MockKRDPFixtures.isDynamicCreateResponse(
                   staticPDU.payload,
@@ -2026,7 +2026,7 @@ private enum MockKRDPFixtures {
         let totalLength = UInt16(8 + Int(redirectionLength))
         var payload = Data()
         payload.appendLittleEndianUInt16(totalLength)
-        payload.appendLittleEndianUInt16(0x001A)
+        payload.appendLittleEndianUInt16(0x000A)
         payload.appendLittleEndianUInt16(0)
         payload.appendLittleEndianUInt16(0)
         payload.appendLittleEndianUInt16(0x0400)
@@ -2748,7 +2748,7 @@ private enum MockKRDPFixtures {
         else {
             throw MockKRDPServerError.invalidClientPDU
         }
-        return try RDPStaticVirtualChannelPDU.parse(fromUserData: request.userData).payload
+        return try RDPStaticVirtualChannelPDU.parse(fromUserData: request.userData, maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumPayloadByteCount).payload
     }
 
     static func clientSendDataRequest(from packet: Data) throws -> MockMCSSendDataRequest {

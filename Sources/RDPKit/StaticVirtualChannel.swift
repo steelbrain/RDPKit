@@ -100,7 +100,7 @@ struct RDPStaticVirtualChannelPDU: Equatable, Sendable {
     static func parseIfPresent(
         fromTPKT packet: Data,
         channelID expectedChannelID: UInt16,
-        maximumChunkByteCount: Int = maximumPayloadByteCount
+        maximumChunkByteCount: Int
     ) throws -> RDPStaticVirtualChannelPDU? {
         guard let indication = try? MCSSendDataIndicationPDU.parse(fromTPKT: packet),
               indication.channelID == expectedChannelID
@@ -115,7 +115,7 @@ struct RDPStaticVirtualChannelPDU: Equatable, Sendable {
 
     static func parse(
         fromUserData userData: Data,
-        maximumChunkByteCount: Int = maximumPayloadByteCount
+        maximumChunkByteCount: Int
     ) throws -> RDPStaticVirtualChannelPDU {
         guard userData.count >= headerByteCount else {
             throw RDPDecodeError.invalidStaticVirtualChannelPDU
@@ -157,9 +157,25 @@ struct RDPStaticVirtualChannelReassembler: Sendable {
         self.maximumTotalLength = maximumTotalLength
     }
 
+    /// Returns the complete message once its last chunk arrives. A FIRST chunk
+    /// always starts a new message, and an error drops the partial one, so a
+    /// bad chunk costs at most the message it belongs to.
     mutating func append(
         _ pdu: RDPStaticVirtualChannelPDU,
-        maximumChunkByteCount: Int = RDPStaticVirtualChannelPDU.maximumPayloadByteCount
+        maximumChunkByteCount: Int
+    ) throws -> RDPStaticVirtualChannelPDU? {
+        do {
+            return try appendChunk(pdu, maximumChunkByteCount: maximumChunkByteCount)
+        } catch {
+            totalLength = nil
+            payload = Data()
+            throw error
+        }
+    }
+
+    private mutating func appendChunk(
+        _ pdu: RDPStaticVirtualChannelPDU,
+        maximumChunkByteCount: Int
     ) throws -> RDPStaticVirtualChannelPDU? {
         guard pdu.payload.count <= maximumChunkByteCount else {
             throw RDPDecodeError.invalidStaticVirtualChannelPDU
@@ -170,9 +186,8 @@ struct RDPStaticVirtualChannelReassembler: Sendable {
         }
 
         if pdu.isFirst {
-            guard totalLength == nil else {
-                throw RDPDecodeError.invalidStaticVirtualChannelPDU
-            }
+            totalLength = nil
+            payload = Data()
             if pdu.isLast {
                 return pdu
             }

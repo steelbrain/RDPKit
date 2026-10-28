@@ -301,7 +301,7 @@ import Testing
     let outboundBytes = outbound.readBytes(length: outbound.readableBytes)
     let packet = Data(try #require(outboundBytes))
     let request = try mcsSendDataRequest(fromTPKT: packet)
-    let staticPDU = try RDPStaticVirtualChannelPDU.parse(fromUserData: request.userData)
+    let staticPDU = try RDPStaticVirtualChannelPDU.parse(fromUserData: request.userData, maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumPayloadByteCount)
     let dynamicPDU = try #require(try RDPDynamicVirtualChannelDataPDU.parseIfPresent(from: staticPDU.payload))
 
     #expect(request.initiator == 1001)

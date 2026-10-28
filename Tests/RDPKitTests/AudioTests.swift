@@ -350,7 +350,7 @@ import Testing
     )
     #expect(packets.count == 1)
     let request = try clientSendDataRequest(from: packets[0])
-    let pdu = try RDPStaticVirtualChannelPDU.parse(fromUserData: request.userData)
+    let pdu = try RDPStaticVirtualChannelPDU.parse(fromUserData: request.userData, maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumPayloadByteCount)
 
     #expect(request.channelID == 1004)
     #expect(pdu.flags == RDPStaticVirtualChannelFlags.complete)
@@ -367,7 +367,7 @@ import Testing
     )
     #expect(packets.count == 1)
     let request = try clientSendDataRequest(from: packets[0])
-    let pdu = try RDPStaticVirtualChannelPDU.parse(fromUserData: request.userData)
+    let pdu = try RDPStaticVirtualChannelPDU.parse(fromUserData: request.userData, maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumPayloadByteCount)
     let dynamicPDU = try #require(try RDPDynamicVirtualChannelDataPDU.parseIfPresent(from: pdu.payload))
 
     #expect(request.channelID == 1004)
@@ -386,8 +386,8 @@ import Testing
     )
     let firstRequest = try clientSendDataRequest(from: packets[0])
     let secondRequest = try clientSendDataRequest(from: packets[1])
-    let firstStaticPDU = try RDPStaticVirtualChannelPDU.parse(fromUserData: firstRequest.userData)
-    let secondStaticPDU = try RDPStaticVirtualChannelPDU.parse(fromUserData: secondRequest.userData)
+    let firstStaticPDU = try RDPStaticVirtualChannelPDU.parse(fromUserData: firstRequest.userData, maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumPayloadByteCount)
+    let secondStaticPDU = try RDPStaticVirtualChannelPDU.parse(fromUserData: secondRequest.userData, maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumPayloadByteCount)
     let firstDynamicPDU = try #require(try RDPDynamicVirtualChannelDataFirstPDU.parseIfPresent(
         from: firstStaticPDU.payload
     ))
@@ -401,25 +401,6 @@ import Testing
     #expect(firstDynamicPDU.totalLength == 2_000)
     #expect(firstDynamicPDU.payload.count == 1_596)
     #expect(secondDynamicPDU.payload.count == 404)
-}
-
-@Test func audioSessionReassemblesChunkedStaticChannelMessages() throws {
-    let channel = EmbeddedChannel()
-    let session = RDPAudioSession(userChannelID: 1006, staticChannelID: 1004, channel: channel)
-    var first = RDPStaticVirtualChannelPDU(
-        payload: Data([0x02, 0x00, 0x10]),
-        flags: RDPStaticVirtualChannelFlags.first | RDPStaticVirtualChannelFlags.showProtocol
-    )
-    first.totalLength = 5
-    var last = RDPStaticVirtualChannelPDU(
-        payload: Data([0x00, 0x34]),
-        flags: RDPStaticVirtualChannelFlags.last | RDPStaticVirtualChannelFlags.showProtocol
-    )
-    last.totalLength = 5
-
-    #expect(try session.reassembledPayload(from: first, maximumChunkByteCount: 1_600) == nil)
-    #expect(try session.reassembledPayload(from: last, maximumChunkByteCount: 1_600) == Data([0x02, 0x00, 0x10, 0x00, 0x34]))
-    _ = try channel.finish()
 }
 
 @Test func audioTrainingConfirmEchoesServerTimestampAndPacketSize() throws {

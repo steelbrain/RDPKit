@@ -39,7 +39,8 @@ import Testing
 
     let pdu = try #require(try RDPStaticVirtualChannelPDU.parseIfPresent(
         fromTPKT: packet,
-        channelID: 1004
+        channelID: 1004,
+        maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumPayloadByteCount
     ))
 
     #expect(pdu.totalLength == 4)
@@ -54,7 +55,7 @@ import Testing
         totalLength: UInt32(payload.count),
         flags: RDPStaticVirtualChannelFlags.complete,
         payload: payload
-    ))
+    ), maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumPayloadByteCount)
 
     #expect(pdu.totalLength == UInt32(payload.count))
     #expect(pdu.payload == payload)
@@ -102,7 +103,7 @@ import Testing
             totalLength: UInt32(payload.count),
             flags: RDPStaticVirtualChannelFlags.complete,
             payload: payload
-        ))
+        ), maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumPayloadByteCount)
     }
 }
 
@@ -112,7 +113,7 @@ import Testing
             totalLength: 4,
             flags: RDPStaticVirtualChannelFlags.complete | RDPStaticVirtualChannelFlags.compressed,
             payload: Data([0x50, 0x00, 0x02, 0x00])
-        ))
+        ), maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumPayloadByteCount)
     }
 }
 
@@ -121,7 +122,7 @@ import Testing
         totalLength: 4,
         flags: RDPStaticVirtualChannelFlags.complete | RDPStaticVirtualChannelFlags.shadowPersistent,
         payload: Data([0x50, 0x00, 0x02, 0x00])
-    ))
+    ), maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumPayloadByteCount)
 
     #expect(pdu.payload == Data([0x50, 0x00, 0x02, 0x00]))
     #expect(pdu.flags & RDPStaticVirtualChannelFlags.shadowPersistent != 0)
@@ -133,7 +134,7 @@ import Testing
             totalLength: 4,
             flags: RDPStaticVirtualChannelFlags.complete | 0x0000_0100,
             payload: Data([0x50, 0x00, 0x02, 0x00])
-        ))
+        ), maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumPayloadByteCount)
     }
 }
 
@@ -144,7 +145,7 @@ import Testing
     userData.append(contentsOf: [0x50, 0x00, 0x02, 0x00])
 
     #expect(throws: RDPDecodeError.invalidStaticVirtualChannelPDU) {
-        try RDPStaticVirtualChannelPDU.parse(fromUserData: userData)
+        try RDPStaticVirtualChannelPDU.parse(fromUserData: userData, maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumPayloadByteCount)
     }
 }
 
@@ -153,7 +154,7 @@ import Testing
         totalLength: 4,
         flags: 0,
         payload: Data([0x50, 0x00, 0x02, 0x00])
-    ))
+    ), maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumPayloadByteCount)
 
     #expect(!pdu.isComplete)
     #expect(pdu.isStandalone)
@@ -167,12 +168,12 @@ import Testing
             totalLength: 0,
             flags: flag,
             payload: Data()
-        ))
+        ), maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumPayloadByteCount)
         let withDataFlags = try RDPStaticVirtualChannelPDU.parse(fromUserData: staticChannelUserData(
             totalLength: 1,
             flags: flag | RDPStaticVirtualChannelFlags.complete,
             payload: Data([0x00])
-        ))
+        ), maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumPayloadByteCount)
 
         #expect(empty.isFlowControl)
         #expect(!empty.canDispatchPayload)
@@ -188,9 +189,9 @@ import Testing
         let middle = try chunk(totalLength: 9, flags: extraFlags, payload: [4, 5, 6])
         let last = try chunk(totalLength: 9, flags: .last | extraFlags, payload: [7, 8, 9])
 
-        #expect(try reassembler.append(first) == nil)
-        #expect(try reassembler.append(middle) == nil)
-        let complete = try #require(try reassembler.append(last))
+        #expect(try reassembler.append(first, maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumPayloadByteCount) == nil)
+        #expect(try reassembler.append(middle, maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumPayloadByteCount) == nil)
+        let complete = try #require(try reassembler.append(last, maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumPayloadByteCount))
 
         #expect(complete.totalLength == 9)
         #expect(complete.flags == RDPStaticVirtualChannelFlags.complete)
@@ -204,8 +205,8 @@ import Testing
     let suspend = try chunk(totalLength: 0, flags: RDPStaticVirtualChannelFlags.suspend, payload: [])
     let standalone = try chunk(totalLength: 3, flags: 0, payload: [1, 2, 3])
 
-    #expect(try reassembler.append(suspend) == nil)
-    #expect(try reassembler.append(standalone) == standalone)
+    #expect(try reassembler.append(suspend, maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumPayloadByteCount) == nil)
+    #expect(try reassembler.append(standalone, maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumPayloadByteCount) == standalone)
 }
 
 @Test func staticVirtualChannelReassemblerRejectsOversizedChunk() throws {
@@ -221,40 +222,62 @@ import Testing
     )
 
     #expect(throws: RDPDecodeError.invalidStaticVirtualChannelPDU) {
-        try reassembler.append(pdu)
+        try reassembler.append(pdu, maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumPayloadByteCount)
     }
 }
 
 @Test func staticVirtualChannelReassemblerRejectsInvalidSequences() throws {
     var missingFirst = RDPStaticVirtualChannelReassembler()
     #expect(throws: RDPDecodeError.invalidStaticVirtualChannelPDU) {
-        try missingFirst.append(try chunk(totalLength: 4, flags: .last, payload: [1, 2]))
+        try missingFirst.append(try chunk(totalLength: 4, flags: .last, payload: [1, 2]), maximumChunkByteCount: 1_600)
     }
     #expect(throws: RDPDecodeError.invalidStaticVirtualChannelPDU) {
-        try missingFirst.append(try chunk(totalLength: 4, flags: 0, payload: [1, 2]))
-    }
-
-    var restartedSequence = RDPStaticVirtualChannelReassembler()
-    _ = try restartedSequence.append(try chunk(totalLength: 4, flags: .first, payload: [1, 2]))
-    #expect(throws: RDPDecodeError.invalidStaticVirtualChannelPDU) {
-        try restartedSequence.append(try chunk(totalLength: 2, flags: .first | .last, payload: [3, 4]))
+        try missingFirst.append(try chunk(totalLength: 4, flags: 0, payload: [1, 2]), maximumChunkByteCount: 1_600)
     }
 
     var mismatchedLength = RDPStaticVirtualChannelReassembler()
-    _ = try mismatchedLength.append(try chunk(totalLength: 4, flags: .first, payload: [1, 2]))
+    _ = try mismatchedLength.append(try chunk(totalLength: 4, flags: .first, payload: [1, 2]), maximumChunkByteCount: 1_600)
     #expect(throws: RDPDecodeError.invalidStaticVirtualChannelPDU) {
-        try mismatchedLength.append(try chunk(totalLength: 5, flags: .last, payload: [3, 4]))
+        try mismatchedLength.append(try chunk(totalLength: 5, flags: .last, payload: [3, 4]), maximumChunkByteCount: 1_600)
     }
 
     var capped = RDPStaticVirtualChannelReassembler(maximumTotalLength: 8)
     #expect(throws: RDPDecodeError.invalidStaticVirtualChannelPDU) {
-        try capped.append(try chunk(totalLength: 9, flags: .first, payload: [1, 2]))
+        try capped.append(try chunk(totalLength: 9, flags: .first, payload: [1, 2]), maximumChunkByteCount: 1_600)
     }
 
     var shortFinal = RDPStaticVirtualChannelReassembler()
-    _ = try shortFinal.append(try chunk(totalLength: 5, flags: .first, payload: [1, 2]))
+    _ = try shortFinal.append(try chunk(totalLength: 5, flags: .first, payload: [1, 2]), maximumChunkByteCount: 1_600)
     #expect(throws: RDPDecodeError.invalidStaticVirtualChannelPDU) {
-        try shortFinal.append(try chunk(totalLength: 5, flags: .last, payload: [3, 4]))
+        try shortFinal.append(try chunk(totalLength: 5, flags: .last, payload: [3, 4]), maximumChunkByteCount: 1_600)
+    }
+}
+
+@Test func staticVirtualChannelReassemblerRecoversAfterABadChunk() throws {
+    var reassembler = RDPStaticVirtualChannelReassembler()
+    _ = try reassembler.append(try chunk(totalLength: 4, flags: .first, payload: [1, 2]), maximumChunkByteCount: 1_600)
+    #expect(throws: RDPDecodeError.invalidStaticVirtualChannelPDU) {
+        try reassembler.append(try chunk(totalLength: 5, flags: .last, payload: [3, 4]), maximumChunkByteCount: 1_600)
+    }
+
+    // The next message starts clean after the error.
+    _ = try reassembler.append(try chunk(totalLength: 4, flags: .first, payload: [5, 6]), maximumChunkByteCount: 1_600)
+    let message = try #require(
+        try reassembler.append(try chunk(totalLength: 4, flags: .last, payload: [7, 8]), maximumChunkByteCount: 1_600)
+    )
+    #expect(message.payload == Data([5, 6, 7, 8]))
+}
+
+@Test func staticVirtualChannelReassemblerRestartsOnFirstChunk() throws {
+    var reassembler = RDPStaticVirtualChannelReassembler()
+    _ = try reassembler.append(try chunk(totalLength: 4, flags: .first, payload: [1, 2]), maximumChunkByteCount: 1_600)
+
+    let restarted = try #require(
+        try reassembler.append(try chunk(totalLength: 2, flags: .first | .last, payload: [3, 4]), maximumChunkByteCount: 1_600)
+    )
+    #expect(restarted.payload == Data([3, 4]))
+    #expect(throws: RDPDecodeError.invalidStaticVirtualChannelPDU) {
+        try reassembler.append(try chunk(totalLength: 4, flags: .last, payload: [5, 6]), maximumChunkByteCount: 1_600)
     }
 }
 
@@ -288,7 +311,7 @@ private func chunk(totalLength: UInt32, flags: UInt32, payload: [UInt8]) throws 
         totalLength: totalLength,
         flags: flags,
         payload: Data(payload)
-    ))
+    ), maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumPayloadByteCount)
 }
 
 private extension UInt32 {

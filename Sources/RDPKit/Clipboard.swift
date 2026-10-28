@@ -115,7 +115,7 @@ public struct RDPClipboardMessageSummary: Encodable, Equatable, Sendable {
     }
 }
 
-/// Called with each PDU the session sends and its channel packets, on the sending thread.
+/// Called with each PDU the session sends and its first channel packet, on the sending thread.
 typealias RDPClipboardSentMessageHandler = @Sendable (RDPClipboardMessageSummary, Data) -> Void
 
 struct RDPClipboardPDU: Equatable, Sendable {
@@ -971,7 +971,6 @@ public final class RDPClipboardSession: @unchecked Sendable {
     private var negotiatedGeneralFlags: UInt32 = 0
     /// Format Lists wait for the initialization sequence (MS-RDPECLIP 1.3.2.1).
     private var hasAnsweredMonitorReady = false
-    private var staticChannelReassembler = RDPStaticVirtualChannelReassembler()
 
     init(
         userChannelID: UInt16,
@@ -991,13 +990,6 @@ public final class RDPClipboardSession: @unchecked Sendable {
 
     public func publishLocalFiles(_ files: [RDPClipboardLocalFile]) {
         publish(files.isEmpty ? .empty : .files(files))
-    }
-
-    /// Reassembles cliprdr channel chunks (MS-RDPBCGR 3.1.5.2.2); returns the payload once complete.
-    func reassembledPayload(from pdu: RDPStaticVirtualChannelPDU, maximumChunkByteCount: Int) throws -> Data? {
-        lock.lock()
-        defer { lock.unlock() }
-        return try staticChannelReassembler.append(pdu, maximumChunkByteCount: maximumChunkByteCount)?.payload
     }
 
     /// Handles one complete cliprdr PDU from the server, sends the replies the protocol
@@ -1254,8 +1246,8 @@ public final class RDPClipboardSession: @unchecked Sendable {
 
     private func send(_ payload: Data) {
         let packets = Self.encodedPackets(payload, userChannelID: userChannelID, staticChannelID: staticChannelID)
-        if let sentMessageHandler, let pdu = try? RDPClipboardPDU.parse(from: payload) {
-            sentMessageHandler(.summarize(pdu), packets.reduce(into: Data()) { $0.append($1) })
+        if let sentMessageHandler, let pdu = try? RDPClipboardPDU.parse(from: payload), let first = packets.first {
+            sentMessageHandler(.summarize(pdu), first)
         }
         channel.eventLoop.execute {
             guard self.channel.isActive else {

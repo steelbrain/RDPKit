@@ -10,7 +10,7 @@ import Testing
     let redirectionLength = UInt16(12 + 4 + cookie.count + 4 + username.count + 4 + netbios.count)
     let totalLength = UInt16(8 + Int(redirectionLength))
     userData.appendLittleEndianUInt16(totalLength)
-    userData.appendLittleEndianUInt16(0x001A)
+    userData.appendLittleEndianUInt16(0x000A)
     userData.appendLittleEndianUInt16(0)
     userData.appendLittleEndianUInt16(0)
     userData.appendLittleEndianUInt16(0x0400)
@@ -169,20 +169,50 @@ import Testing
     #expect(try RDPServerRedirectionPDU.parseIfPresent(fromTPKT: packet, channelID: 1004) == nil)
 }
 
-@Test func rejectsServerRedirectionWithVersionZeroShareHeader() throws {
-    var packet = redirectionUserData(
-        sessionID: 4,
-        flags: RDPServerRedirectionPDU.Flags.loadBalanceInfo.rawValue,
-        fields: lengthPrefixed(Data("Cookie: mststs=load-balanced\r\n".utf8))
-    )
-    packet.replaceSubrange(2 ..< 4, with: Data([0x0A, 0x00]))
+@Test func acceptsServerRedirectionWithVersionZeroAndVersionOneShareHeaders() throws {
+    // Version 0 is the [MS-RDPBCGR] 2.2.13.3.1 form Windows sends; version 1 is GRD's.
+    for pduType: [UInt8] in [[0x0A, 0x00], [0x1A, 0x00]] {
+        var packet = redirectionUserData(
+            sessionID: 4,
+            flags: RDPServerRedirectionPDU.Flags.loadBalanceInfo.rawValue,
+            fields: lengthPrefixed(Data("Cookie: mststs=load-balanced\r\n".utf8))
+        )
+        packet.replaceSubrange(2 ..< 4, with: Data(pduType))
 
-    #expect(throws: RDPDecodeError.invalidShareControlHeader) {
-        try RDPServerRedirectionPDU.parseIfPresent(fromTPKT: mcsSendDataIndication(
+        let pdu = try #require(try RDPServerRedirectionPDU.parseIfPresent(fromTPKT: mcsSendDataIndication(
             channelID: 1003,
             userData: packet
-        ))
+        )))
+        #expect(pdu.routingToken == Data("Cookie: mststs=load-balanced\r\n".utf8))
     }
+}
+
+@Test func parsesWindowsServerRedirectionWithTrailingPadOctet() throws {
+    // Shaped like the [MS-RDPBCGR] 4.6 Windows capture: version 0 header, a
+    // load-balance cookie, user name, domain, binary password cookie and FQDN,
+    // then the optional pad1Octet counted only in the Share Control length.
+    let cookie = Data([0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08])
+    var fields = lengthPrefixed(Data("Cookie: msts=3640205228.15629.0000\r\n".utf8))
+    fields.append(lengthPrefixed(utf16LE("AdminUser\u{0}")))
+    fields.append(lengthPrefixed(utf16LE("NTDEV\u{0}")))
+    fields.append(lengthPrefixed(cookie))
+    fields.append(lengthPrefixed(utf16LE("server2.example.test\u{0}")))
+    let flags: RDPServerRedirectionPDU.Flags = [.loadBalanceInfo, .username, .domain, .password, .targetFQDN]
+    var packet = redirectionUserData(sessionID: 2, flags: flags.rawValue, fields: fields)
+    packet.append(0)
+    let totalLength = UInt16(packet.count)
+    packet.replaceSubrange(0 ..< 2, with: Data([UInt8(totalLength & 0xFF), UInt8(totalLength >> 8)]))
+
+    let pdu = try #require(try RDPServerRedirectionPDU.parseIfPresent(fromTPKT: mcsSendDataIndication(
+        channelID: 1003,
+        userData: packet
+    )))
+    #expect(pdu.sessionID == 2)
+    #expect(pdu.username == "AdminUser")
+    #expect(pdu.domain == "NTDEV")
+    #expect(pdu.passwordCookie == cookie)
+    #expect(pdu.targetFQDN == "server2.example.test")
+    #expect(pdu.routingToken == Data("Cookie: msts=3640205228.15629.0000\r\n".utf8))
 }
 
 @Test func keepsBinaryRedirectionPasswordCookieVerbatim() throws {
@@ -424,7 +454,7 @@ private func redirectionUserData(
     let totalLength = UInt16(8 + Int(redirectionLength))
     var userData = Data()
     userData.appendLittleEndianUInt16(totalLength)
-    userData.appendLittleEndianUInt16(0x001A)
+    userData.appendLittleEndianUInt16(0x000A)
     userData.appendLittleEndianUInt16(0)
     userData.appendLittleEndianUInt16(0)
     userData.appendLittleEndianUInt16(0x0400)

@@ -226,7 +226,7 @@ private func sentDeviceRedirectionTypeNames(_ channel: EmbeddedChannel) throws -
         var cursor = try ByteCursor(X224DataTPDU.unwrap(Data(buffer.readBytes(length: buffer.readableBytes) ?? [])))
         _ = try cursor.readData(count: 6)
         let userData = try cursor.readData(count: cursor.readPERLength())
-        let staticPDU = try RDPStaticVirtualChannelPDU.parse(fromUserData: userData)
+        let staticPDU = try RDPStaticVirtualChannelPDU.parse(fromUserData: userData, maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumPayloadByteCount)
         try typeNames.append(RDPDeviceRedirectionPDU.parse(from: staticPDU.payload).typeName)
     }
     return typeNames

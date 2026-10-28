@@ -803,19 +803,18 @@ import Testing
 }
 
 @Test func clipboardSessionChunksAndReassemblesMessagesLargerThanOneChannelChunk() throws {
-    let channel = EmbeddedChannel()
-    let session = RDPClipboardSession(userChannelID: 1006, staticChannelID: 1007, channel: channel)
     let message = RDPClipboardFormatDataResponsePDU.unicodeText(String(repeating: "x", count: 3_000)).encoded()
 
     let packets = RDPClipboardSession.encodedPackets(message, userChannelID: 1006, staticChannelID: 1007)
-    let chunks = try packets.map { try RDPStaticVirtualChannelPDU.parse(fromUserData: sendDataRequestUserData(from: $0)) }
+    let chunks = try packets.map { try RDPStaticVirtualChannelPDU.parse(fromUserData: sendDataRequestUserData(from: $0), maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumPayloadByteCount) }
+    var reassembler = RDPStaticVirtualChannelReassembler()
     var reassembled: [Data] = []
     for chunk in chunks {
-        if let payload = try session.reassembledPayload(
-            from: chunk,
+        if let message = try reassembler.append(
+            chunk,
             maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumPayloadByteCount
         ) {
-            reassembled.append(payload)
+            reassembled.append(message.payload)
         }
     }
 
@@ -827,7 +826,6 @@ import Testing
     ])
     #expect(chunks.allSatisfy { $0.totalLength == UInt32(message.count) })
     #expect(reassembled == [message])
-    _ = try channel.finish()
 }
 
 private final class ClipboardSentMessages: @unchecked Sendable {
@@ -862,9 +860,10 @@ private func clipboardPayload(fromPackets data: Data) throws -> Data {
     while offset < data.endIndex {
         let length = Int(data[offset + 2]) << 8 | Int(data[offset + 3])
         let chunk = try RDPStaticVirtualChannelPDU.parse(
-            fromUserData: sendDataRequestUserData(from: data.subdata(in: offset ..< offset + length))
+            fromUserData: sendDataRequestUserData(from: data.subdata(in: offset ..< offset + length)),
+            maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumPayloadByteCount
         )
-        if let pdu = try reassembler.append(chunk) {
+        if let pdu = try reassembler.append(chunk, maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumPayloadByteCount) {
             return pdu.payload
         }
         offset += length

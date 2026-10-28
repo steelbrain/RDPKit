@@ -827,7 +827,6 @@ public final class RDPAudioSession: @unchecked Sendable {
     private var negotiatedFormats: [RDPAudioFormat] = []
     private var serverVersion: UInt16 = 0
     private var pendingWaveInfo: RDPAudioWaveInfoPDU?
-    private var staticChannelReassembler = RDPStaticVirtualChannelReassembler()
 
     init(userChannelID: UInt16, staticChannelID: UInt16, channel: Channel) {
         self.userChannelID = userChannelID
@@ -850,13 +849,6 @@ public final class RDPAudioSession: @unchecked Sendable {
 
     func handlesDynamicChannel(_ channelID: UInt32) -> Bool {
         dynamicChannelID == channelID
-    }
-
-    /// Reassembles rdpsnd channel chunks (MS-RDPBCGR 3.1.5.2.2); returns the payload once complete.
-    func reassembledPayload(from pdu: RDPStaticVirtualChannelPDU, maximumChunkByteCount: Int) throws -> Data? {
-        lock.lock()
-        defer { lock.unlock() }
-        return try staticChannelReassembler.append(pdu, maximumChunkByteCount: maximumChunkByteCount)?.payload
     }
 
     func respondToServerFormats(_ serverFormatsPDU: RDPAudioFormatsPDU) {

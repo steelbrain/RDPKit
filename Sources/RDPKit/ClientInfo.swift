@@ -49,10 +49,15 @@ struct RDPClientInfoPDU: Equatable, Sendable {
             name: "username",
             maxBytesIncludingNull: RDPClientInfoLimits.standardFieldByteCount
         )
+        // The 512-byte limit is for typed passwords; a redirection cookie is
+        // opaque server data (a PK-encrypted one for a 4096-bit key is 512
+        // bytes before the terminator), bounded only by the 16-bit cbPassword.
         let password = try rdpUnicodeField(
             passwordCookie ?? utf16LittleEndian(credentials?.password ?? ""),
             name: "password",
-            maxBytesIncludingNull: RDPClientInfoLimits.standardFieldByteCount
+            maxBytesIncludingNull: passwordCookie == nil
+                ? RDPClientInfoLimits.standardFieldByteCount
+                : RDPClientInfoLimits.passwordCookieByteCount
         )
         let alternateShell = try rdpUnicodeString(
             "",
@@ -148,6 +153,7 @@ private enum RDPClientInfoFlags {
 
 private enum RDPClientInfoLimits {
     static let standardFieldByteCount = 512
+    static let passwordCookieByteCount = Int(UInt16.max)
     static let clientAddressByteCount = 80
 }
 

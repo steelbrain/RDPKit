@@ -2281,7 +2281,7 @@ private func staticChannelFlags(fromTPKTHex hex: String?) throws -> UInt32 {
     let userData = try cursor.readData(count: userDataLength)
     #expect(cursor.remaining == 0)
 
-    let pdu = try RDPStaticVirtualChannelPDU.parse(fromUserData: userData)
+    let pdu = try RDPStaticVirtualChannelPDU.parse(fromUserData: userData, maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumPayloadByteCount)
     return pdu.flags
 }
 
