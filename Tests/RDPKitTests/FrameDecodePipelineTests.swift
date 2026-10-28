@@ -310,6 +310,30 @@ import Testing
     #expect(try bgraPixel(atX: 1, y: 1, in: presentation.imageBuffer) == [0xA0, 0xB0, 0xC0, 0xFF])
 }
 
+@Test func decodedVideoCompositorDiscardsBitmapSurfaceShorterThanItsLayout() throws {
+    let compositor = RDPDecodedVideoSurfaceCompositor()
+    var truncatedBitmap = bitmapFrame(id: 1, width: 4, height: 4, pixel: [0x60, 0x70, 0x80, 0xFF])
+    truncatedBitmap.decodedBitmapData = truncatedBitmap.decodedBitmapData?.prefix(16)
+    _ = try compositor.presentation(
+        for: truncatedBitmap,
+        decodedImageBuffer: try bgraPixelBuffer(width: 4, height: 4, pixel: [0x60, 0x70, 0x80, 0xFF])
+    )
+
+    let presentation = try compositor.presentation(
+        for: videoFrame(
+            id: 2,
+            surfaceRect: RDPFrameRect(left: 0, top: 0, right: 4, bottom: 4),
+            destinationRect: RDPFrameRect(left: 0, top: 0, right: 4, bottom: 4),
+            regionRects: [RDPFrameRect(left: 0, top: 3, right: 4, bottom: 4)],
+            nalUnitTypes: [1]
+        ),
+        decodedImageBuffer: try bgraPixelBuffer(width: 4, height: 4, pixel: [0xA0, 0xB0, 0xC0, 0xFF])
+    )
+
+    #expect(try bgraPixel(atX: 0, y: 0, in: presentation.imageBuffer) == [0x00, 0x00, 0x00, 0x00])
+    #expect(try bgraPixel(atX: 3, y: 3, in: presentation.imageBuffer) == [0xA0, 0xB0, 0xC0, 0xFF])
+}
+
 @Test func decodedVideoCompositorCombinesMappedSurfacesInGraphicsOutput() throws {
     let compositor = RDPDecodedVideoSurfaceCompositor()
     let outputRect = RDPFrameRect(left: 0, top: 0, right: 4, bottom: 2)

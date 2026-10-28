@@ -146,7 +146,6 @@ private extension RDPGraphicsFrameSnapshot {
 public func decodeReportFirstFrame(_ frame: RDPGraphicsFrameSnapshot) -> RDPReportFirstFrameDecodeResult {
     autoreleasepool {
         let receivedAt = Date()
-        let decodeStartedAt = Date()
         do {
             let decodedFrame = try RDPVideoToolboxFrameDecoder().decodeDetailed(frame)
             let decodedAt = Date()
@@ -159,7 +158,7 @@ public func decodeReportFirstFrame(_ frame: RDPGraphicsFrameSnapshot) -> RDPRepo
                     videoToolboxMilliseconds: decodedFrame.videoToolboxMilliseconds,
                     imageConversionMilliseconds: decodedFrame.imageConversionMilliseconds,
                     cropMilliseconds: 0,
-                    totalMilliseconds: decodedAt.timeIntervalSince(decodeStartedAt) * 1000,
+                    totalMilliseconds: decodedAt.timeIntervalSince(receivedAt) * 1000,
                     decodedPixelFormat: decodedFrame.decodedPixelFormat,
                     usesHardwareAcceleration: decodedFrame.usesHardwareAcceleration
                 )
@@ -203,9 +202,10 @@ final class RDPDecodedVideoSurfaceCompositor {
                 )
             }
             directSurfaces[frame.surfaceID] = nil
-            synchronizeBitmapSurface(from: frame)
-            if let displayedSurface = bitmapSurface(from: frame) {
-                return try graphicsOutputPresentation(from: frame, displayedSurface: displayedSurface)
+            let bitmap = bitmapSurface(from: frame)
+            surfaces[frame.surfaceID] = frame.mappedOutputRect == nil ? bitmap : nil
+            if frame.graphicsOutputRect != nil, let bitmap {
+                return try graphicsOutputPresentation(from: frame, displayedSurface: bitmap)
             }
             return RDPDecodedFramePresentation(frame: frame, imageBuffer: decodedImageBuffer)
         }
@@ -538,8 +538,7 @@ final class RDPDecodedVideoSurfaceCompositor {
     }
 
     private func bitmapSurface(from frame: RDPGraphicsFrameSnapshot) -> Surface? {
-        guard frame.graphicsOutputRect != nil,
-              let data = frame.decodedBitmapData,
+        guard let data = frame.decodedBitmapData,
               let bytesPerRow = frame.decodedBitmapBytesPerRow,
               frame.width > 0,
               frame.height > 0,
@@ -589,14 +588,26 @@ final class RDPDecodedVideoSurfaceCompositor {
             return surface
         }
         let bytesPerRow = width * 4
-        var data = Data(repeating: 0, count: bytesPerRow * height)
-        for targetY in 0 ..< height {
-            let sourceY = min(surface.height - 1, targetY * surface.height / height)
-            for targetX in 0 ..< width {
-                let sourceX = min(surface.width - 1, targetX * surface.width / width)
-                let sourceOffset = sourceY * surface.bytesPerRow + sourceX * 4
-                let targetOffset = targetY * bytesPerRow + targetX * 4
-                data[targetOffset ..< targetOffset + 4] = surface.data[sourceOffset ..< sourceOffset + 4]
+        var data = Data(count: bytesPerRow * height)
+        surface.data.withUnsafeBytes { sourceBuffer in
+            data.withUnsafeMutableBytes { destinationBuffer in
+                guard let source = sourceBuffer.baseAddress,
+                      let destination = destinationBuffer.baseAddress
+                else {
+                    return
+                }
+                for targetY in 0 ..< height {
+                    let sourceY = min(surface.height - 1, targetY * surface.height / height)
+                    let sourceRow = source.advanced(by: sourceY * surface.bytesPerRow)
+                    let targetRow = destination.advanced(by: targetY * bytesPerRow)
+                    for targetX in 0 ..< width {
+                        let sourceX = min(surface.width - 1, targetX * surface.width / width)
+                        targetRow.advanced(by: targetX * 4).copyMemory(
+                            from: sourceRow.advanced(by: sourceX * 4),
+                            byteCount: 4
+                        )
+                    }
+                }
             }
         }
         return Surface(width: width, height: height, bytesPerRow: bytesPerRow, data: data)
@@ -608,24 +619,6 @@ final class RDPDecodedVideoSurfaceCompositor {
             height: surface.height,
             copying: surface.data,
             bytesPerRow: surface.bytesPerRow
-        )
-    }
-
-    private func synchronizeBitmapSurface(from frame: RDPGraphicsFrameSnapshot) {
-        guard let data = frame.decodedBitmapData,
-              let bytesPerRow = frame.decodedBitmapBytesPerRow,
-              frame.mappedOutputRect == nil,
-              frame.width > 0,
-              frame.height > 0
-        else {
-            surfaces[frame.surfaceID] = nil
-            return
-        }
-        surfaces[frame.surfaceID] = Surface(
-            width: Int(frame.width),
-            height: Int(frame.height),
-            bytesPerRow: bytesPerRow,
-            data: data
         )
     }
 }
