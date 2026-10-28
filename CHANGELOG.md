@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+- Rebuild the connection engine around one connection object and one receive
+  path that routes every server message by MCS channel. The whole connection,
+  including X.224, now runs on SwiftNIO with a connect timeout and TCP
+  keepalive.
+- Answer mid-session auto-detect requests, including continuous bandwidth
+  measurement, and reactivate after Deactivate All followed by Demand Active.
+- Follow redirections that name only a target host, and send the redirection
+  password cookie in the Client Info PDU instead of using it for NLA.
+- Reject dynamic channels the client does not implement with E_NOTIMPL,
+  instead of accepting the Windows input, mouse-cursor and microphone channels.
+- Report licensing failures with the server's error code, and keep reading
+  licensing PDUs only until licensing completes.
+- Cancelling from `onCertificate` now rejects the server before any credential
+  is sent. A throwing `onGraphicsFrame` ends the session with its own error.
+- `RDPPreflightReport.stage` uses one stage list: `tls-upgrade` is split into
+  `tls-handshake`, `credssp` and `early-user-authorization`.
+- Bound every report list that grows during a live session, and stop keeping
+  raw clipboard and audio bytes in the report.
+- Remove `RDPPreflightReport.tlsCipherSuite` and the `h264AnnexBData`,
+  `h264ByteCount` and `h264NalUnitTypes` aliases on graphics frames (use
+  `encodedVideoData`, `videoByteCount` and `videoNalUnitTypes`). The clipboard
+  and input probe fields moved from the report into the `RDPPreflight` tool.
+- Use `RDPKit`/`RDPKIT` as the default client, workstation and source names.
+
 ## 0.3.1
 
 - Raise the minimum deployment targets from 16.0 to 17.0 for iOS, tvOS, and

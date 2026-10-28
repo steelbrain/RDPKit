@@ -106,6 +106,12 @@ samples, TLS certificate inspection, wire bandwidth samples, and cancellation.
 It also accepts an `RDPWireTranscript` for recording the connection flow. The
 macOS example app builds a full viewer on top of these APIs.
 
+`run` and `connect` block the calling thread until the session ends, so call
+them from a dedicated thread. Handlers run on that thread, except
+`onWireReceive`, which runs on the SwiftNIO event loop and must not block.
+Cancelling from `onCertificate` rejects the server before any credential is
+sent.
+
 ## Features
 
 ### Graphics
