@@ -276,6 +276,24 @@ import Testing
     }
 }
 
+@Test func rejectsMultipartMessageLargerThanTheGraphicsMessageLimit() {
+    // Unencoded 65,535-byte segments whose sum matches the declared size,
+    // one segment more than fits in the limit.
+    let segment = Data([0x04]) + Data(repeating: 0x41, count: 65_535)
+    let segmentCount = RDPZGFXDecompressor.maximumMultipartByteCount / 65_535 + 1
+    var encoded = Data([0xE1])
+    encoded.appendLittleEndianUInt16(UInt16(segmentCount))
+    encoded.appendLittleEndianUInt32(UInt32(segmentCount * 65_535))
+    for _ in 0 ..< segmentCount {
+        encoded.appendLittleEndianUInt32(UInt32(segment.count))
+        encoded.append(segment)
+    }
+
+    #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
+        try RDPZGFXDecompressor().decompress(encoded)
+    }
+}
+
 @Test func rejectsMultipartSegmentCountBeyondAvailableData() {
     var encoded = Data([0xE1])
     encoded.appendLittleEndianUInt16(0xFFFF)

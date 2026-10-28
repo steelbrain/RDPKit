@@ -16,6 +16,11 @@ final class RDPZGFXDecompressor {
         static let rdp8LiteCompressionType: UInt8 = 0x06
     }
 
+    /// Largest multipart message accepted. The spec sets no ceiling, so this
+    /// is the bound on a reassembled graphics DVC message (64 MiB): a 4K
+    /// uncompressed surface update is about 37 MB.
+    static let maximumMultipartByteCount = RDPStaticVirtualChannelReassembler.defaultMaximumTotalLength
+
     private let compressionType: UInt8
     private let maximumSegmentByteCount: Int
     private var history: [UInt8]
@@ -62,7 +67,7 @@ final class RDPZGFXDecompressor {
         let segmentCount = try Int(cursor.readLittleEndianUInt16())
         let uncompressedSize = try Int(cursor.readLittleEndianUInt32())
         // Each RDP_DATA_SEGMENT needs a size field and a bulk header byte.
-        guard segmentCount <= cursor.remaining / 5 else {
+        guard segmentCount <= cursor.remaining / 5, uncompressedSize <= Self.maximumMultipartByteCount else {
             throw RDPDecodeError.invalidRDPGFXPDU
         }
 
