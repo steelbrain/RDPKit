@@ -13,6 +13,8 @@ struct MCSDisconnectProviderUltimatumPDU: Equatable, Sendable {
             "rn-token-purged"
         case 3:
             "rn-user-requested"
+        case 4:
+            "rn-channel-purged"
         default:
             "rn-unknown-\(reason)"
         }
@@ -28,15 +30,17 @@ struct MCSDisconnectProviderUltimatumPDU: Equatable, Sendable {
             return nil
         }
 
-        let choiceAndReasonHighBit = packet[7]
-        let reasonLowBitAndPadding = packet[8]
-        guard choiceAndReasonHighBit & 0xFE == 0x20,
+        // T.125 PER: 6-bit DomainMCSPDU choice (8), then the 3-bit Reason
+        // spanning the byte boundary, then padding.
+        let choiceAndReasonHighBits = packet[packet.index(packet.startIndex, offsetBy: 7)]
+        let reasonLowBitAndPadding = packet[packet.index(packet.startIndex, offsetBy: 8)]
+        guard choiceAndReasonHighBits & 0xFC == 0x20,
               reasonLowBitAndPadding & 0x7F == 0
         else {
             throw RDPDecodeError.invalidMCSSendDataIndication
         }
 
-        let reason = ((choiceAndReasonHighBit & 0x01) << 1) | (reasonLowBitAndPadding >> 7)
+        let reason = ((choiceAndReasonHighBits & 0x03) << 1) | (reasonLowBitAndPadding >> 7)
         return MCSDisconnectProviderUltimatumPDU(reason: reason)
     }
 }

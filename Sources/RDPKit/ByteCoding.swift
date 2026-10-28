@@ -177,7 +177,7 @@ struct ByteCursor {
     }
 
     private func require(_ count: Int) throws {
-        guard remaining >= count else {
+        guard count >= 0, remaining >= count else {
             throw RDPDecodeError.truncated(needed: count, remaining: remaining)
         }
     }

@@ -29,3 +29,21 @@ import Testing
         ]))
     }
 }
+
+@Test func parsesMCSDisconnectProviderUltimatumThreeBitReason() throws {
+    let pdu = try #require(try MCSDisconnectProviderUltimatumPDU.parseIfPresent(fromTPKT: Data([
+        0x03, 0x00, 0x00, 0x09,
+        0x02, 0xF0, 0x80,
+        0x22, 0x00,
+    ])))
+
+    #expect(pdu.reason == 4)
+    #expect(pdu.reasonName == "rn-channel-purged")
+}
+
+@Test func parsesMCSDisconnectProviderUltimatumFromDataSlice() throws {
+    let buffer = Data([0xFF, 0x03, 0x00, 0x00, 0x09, 0x02, 0xF0, 0x80, 0x21, 0x80])
+    let pdu = try #require(try MCSDisconnectProviderUltimatumPDU.parseIfPresent(fromTPKT: buffer.dropFirst()))
+
+    #expect(pdu.reason == 3)
+}
