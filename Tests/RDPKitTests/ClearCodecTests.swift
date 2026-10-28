@@ -294,6 +294,43 @@ import Testing
     }
 }
 
+@Test func limitsClearCodecGlyphsToSpecifiedArea() throws {
+    let decoder = RDPClearCodecDecoder()
+    _ = try decoder.decode(clearCodecGlyphMissStream(glyphIndex: 0), width: 32, height: 32)
+
+    var oversized = clearCodecGlyphMissStream(glyphIndex: 1)
+    oversized[1] = 1
+    #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
+        try decoder.decode(oversized, width: 33, height: 32)
+    }
+}
+
+@Test func keepsClearCodecDestinationPixelsThatNoLayerCovers() throws {
+    var stream = Data([0x00, 0x00])
+    stream.appendLittleEndianUInt32(0)
+    stream.appendLittleEndianUInt32(0)
+    stream.appendLittleEndianUInt32(16)
+    stream.appendLittleEndianUInt16(1)
+    stream.appendLittleEndianUInt16(0)
+    stream.appendLittleEndianUInt16(1)
+    stream.appendLittleEndianUInt16(1)
+    stream.appendLittleEndianUInt32(3)
+    stream.appendUInt8(0)
+    stream.append(contentsOf: [0x10, 0x20, 0x30])
+
+    let bitmap = try RDPClearCodecDecoder().decode(
+        stream,
+        width: 2,
+        height: 1,
+        destination: Data([0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08])
+    )
+
+    #expect(bitmap.bgraData == Data([
+        0x01, 0x02, 0x03, 0x04,
+        0x10, 0x20, 0x30, 0xFF,
+    ]))
+}
+
 @Test func decodesClearCodecResidualRuns() throws {
     var stream = Data([0x00, 0x00])
     stream.appendLittleEndianUInt32(8)

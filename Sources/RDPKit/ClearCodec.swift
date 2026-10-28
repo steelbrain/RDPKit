@@ -29,88 +29,87 @@ struct RDPClearCodecSubcodecSummary: Equatable, Sendable {
     var nsCodecChromaSubsamplingLevel: UInt8? = nil
 }
 
+/// Decoder for the ClearCodec bitmap stream defined by MS-RDPEGFX 2.2.4.1.
 final class RDPClearCodecDecoder {
-    private static let validFlagsMask: UInt8 = 0x07
-    private static let maximumGlyphIndex: UInt16 = 3_999
-    private static let maximumGlyphPixelCount = 1_024 * 1_024
-
-    private struct VBarEntry {
-        var bgraData: Data
+    private enum Flag {
+        static let glyphIndex: UInt8 = 0x01
+        static let glyphHit: UInt8 = 0x02
+        static let cacheReset: UInt8 = 0x04
+        static let validMask: UInt8 = glyphIndex | glyphHit | cacheReset
     }
 
+    private struct Header {
+        var flags: UInt8
+        var sequenceNumber: UInt8
+        var glyphIndex: UInt16?
+    }
+
+    private static let maximumGlyphIndex: UInt16 = 3_999
+    /// MS-RDPEGFX 2.2.4.1 and 3.3.1.9: glyph storage slots hold bitmaps of at most 1,024 square pixels.
+    private static let maximumGlyphPixelCount = 1_024
+    private static let maximumBandHeight = 52
+    private static let vBarStorageSize = 32_768
+    private static let shortVBarStorageSize = 16_384
+
     private var glyphCache: [UInt16: RDPClearCodecBitmap] = [:]
-    private var vBarStorage: [Int: VBarEntry] = [:]
-    private var shortVBarStorage: [Int: VBarEntry] = [:]
+    private var vBarStorage: [Int: Data] = [:]
+    private var shortVBarStorage: [Int: Data] = [:]
     private var vBarStorageCursor = 0
     private var shortVBarStorageCursor = 0
     private var expectedSequenceNumber: UInt8 = 0
 
-    func decode(_ data: Data, width: Int, height: Int) throws -> RDPClearCodecBitmap {
-        guard width > 0, height > 0, width <= Int(UInt16.max), height <= Int(UInt16.max) else {
-            throw RDPDecodeError.invalidRDPGFXPDU
-        }
-
-        var cursor = ByteCursor(data)
-        let flags = try cursor.readUInt8()
-        let sequenceNumber = try cursor.readUInt8()
-        let glyphIndex = flags & 0x01 != 0 ? try cursor.readLittleEndianUInt16() : nil
-        guard flags & ~Self.validFlagsMask == 0,
-              flags & 0x02 == 0 || glyphIndex != nil,
-              glyphIndex.map({ $0 <= Self.maximumGlyphIndex }) ?? true,
-              glyphIndex == nil || width * height <= Self.maximumGlyphPixelCount,
-              sequenceNumber == expectedSequenceNumber
+    /// Decodes `data` for a `width` x `height` destination whose current BGRA pixels are
+    /// `destination` (zero-filled when nil). Every ClearCodec layer is optional, so pixels that no
+    /// layer covers keep their destination value.
+    func decode(
+        _ data: Data,
+        width: Int,
+        height: Int,
+        destination: Data? = nil
+    ) throws -> RDPClearCodecBitmap {
+        guard width > 0,
+              height > 0,
+              width <= Int(UInt16.max),
+              height <= Int(UInt16.max),
+              destination.map({ $0.count == width * height * 4 }) ?? true
         else {
             throw RDPDecodeError.invalidRDPGFXPDU
         }
 
-        if flags & 0x04 != 0 {
+        var cursor = ByteCursor(data)
+        let header = try Self.readHeader(&cursor)
+        guard header.sequenceNumber == expectedSequenceNumber,
+              header.glyphIndex == nil || width * height <= Self.maximumGlyphPixelCount
+        else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+
+        if header.flags & Flag.cacheReset != 0 {
             vBarStorageCursor = 0
             shortVBarStorageCursor = 0
         }
 
-        if flags & 0x02 != 0 {
-            guard let glyphIndex,
+        let bitmap: RDPClearCodecBitmap
+        if header.flags & Flag.glyphHit != 0 {
+            guard let glyphIndex = header.glyphIndex,
                   let cached = glyphCache[glyphIndex],
                   cursor.remaining == 0
             else {
                 throw RDPDecodeError.invalidRDPGFXPDU
             }
-            expectedSequenceNumber &+= 1
-            return cached
-        }
-
-        var bitmap = RDPClearCodecBitmap(
-            width: width,
-            height: height,
-            bytesPerRow: width * 4,
-            bgraData: Data(repeating: 0, count: width * height * 4)
-        )
-
-        guard cursor.remaining > 0 else {
-            if let glyphIndex {
-                glyphCache[glyphIndex] = bitmap
+            bitmap = cached
+        } else {
+            var decoded = RDPClearCodecBitmap(
+                width: width,
+                height: height,
+                bytesPerRow: width * 4,
+                bgraData: destination ?? Data(count: width * height * 4)
+            )
+            try decodeCompositePayload(&cursor, into: &decoded)
+            if let glyphIndex = header.glyphIndex {
+                glyphCache[glyphIndex] = decoded
             }
-            expectedSequenceNumber &+= 1
-            return bitmap
-        }
-
-        let residualByteCount = try Int(cursor.readLittleEndianUInt32())
-        let bandsByteCount = try Int(cursor.readLittleEndianUInt32())
-        let subcodecByteCount = try Int(cursor.readLittleEndianUInt32())
-
-        let residualData = try cursor.readData(count: residualByteCount)
-        let bandsData = try cursor.readData(count: bandsByteCount)
-        let subcodecData = try cursor.readData(count: subcodecByteCount)
-        guard cursor.remaining == 0 else {
-            throw RDPDecodeError.invalidRDPGFXPDU
-        }
-
-        try decodeResidualLayer(residualData, into: &bitmap)
-        try decodeBandsLayer(bandsData, into: &bitmap)
-        try decodeSubcodecLayer(subcodecData, into: &bitmap)
-
-        if let glyphIndex {
-            glyphCache[glyphIndex] = bitmap
+            bitmap = decoded
         }
         expectedSequenceNumber &+= 1
         return bitmap
@@ -118,35 +117,20 @@ final class RDPClearCodecDecoder {
 
     static func summarize(_ data: Data) throws -> RDPClearCodecStreamSummary {
         var cursor = ByteCursor(data)
-        let flags = try cursor.readUInt8()
-        let sequenceNumber = try cursor.readUInt8()
-        let glyphIndex = flags & 0x01 != 0 ? try cursor.readLittleEndianUInt16() : nil
-        guard flags & ~Self.validFlagsMask == 0,
-              flags & 0x02 == 0 || glyphIndex != nil,
-              glyphIndex.map({ $0 <= Self.maximumGlyphIndex }) ?? true
-        else {
-            throw RDPDecodeError.invalidRDPGFXPDU
-        }
-
-        if flags & 0x02 != 0 {
-            guard flags & 0x01 != 0,
-                  cursor.remaining == 0
-            else {
+        let header = try readHeader(&cursor)
+        var summary = RDPClearCodecStreamSummary(
+            flags: header.flags,
+            sequenceNumber: header.sequenceNumber,
+            glyphIndex: header.glyphIndex
+        )
+        if header.flags & Flag.glyphHit != 0 {
+            guard cursor.remaining == 0 else {
                 throw RDPDecodeError.invalidRDPGFXPDU
             }
-            return RDPClearCodecStreamSummary(
-                flags: flags,
-                sequenceNumber: sequenceNumber,
-                glyphIndex: glyphIndex
-            )
+            return summary
         }
-
         guard cursor.remaining >= 12 else {
-            return RDPClearCodecStreamSummary(
-                flags: flags,
-                sequenceNumber: sequenceNumber,
-                glyphIndex: glyphIndex
-            )
+            return summary
         }
 
         let residualByteCount = try cursor.readLittleEndianUInt32()
@@ -155,19 +139,24 @@ final class RDPClearCodecDecoder {
         guard UInt64(residualByteCount) + UInt64(bandsByteCount) + UInt64(subcodecByteCount) == UInt64(cursor.remaining) else {
             throw RDPDecodeError.invalidRDPGFXPDU
         }
-        _ = try cursor.readData(count: Int(residualByteCount))
-        _ = try cursor.readData(count: Int(bandsByteCount))
-        let subcodecData = try cursor.readData(count: Int(subcodecByteCount))
+        summary.residualByteCount = residualByteCount
+        summary.bandsByteCount = bandsByteCount
+        summary.subcodecByteCount = subcodecByteCount
+        summary.subcodecRegions = try summarizeSubcodecs(data.suffix(Int(subcodecByteCount)))
+        return summary
+    }
 
-        return RDPClearCodecStreamSummary(
-            flags: flags,
-            sequenceNumber: sequenceNumber,
-            glyphIndex: glyphIndex,
-            residualByteCount: residualByteCount,
-            bandsByteCount: bandsByteCount,
-            subcodecByteCount: subcodecByteCount,
-            subcodecRegions: try summarizeSubcodecs(subcodecData)
-        )
+    private static func readHeader(_ cursor: inout ByteCursor) throws -> Header {
+        let flags = try cursor.readUInt8()
+        let sequenceNumber = try cursor.readUInt8()
+        let glyphIndex = flags & Flag.glyphIndex != 0 ? try cursor.readLittleEndianUInt16() : nil
+        guard flags & ~Flag.validMask == 0,
+              flags & Flag.glyphHit == 0 || glyphIndex != nil,
+              glyphIndex.map({ $0 <= maximumGlyphIndex }) ?? true
+        else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+        return Header(flags: flags, sequenceNumber: sequenceNumber, glyphIndex: glyphIndex)
     }
 
     private static func summarizeSubcodecs(_ data: Data) throws -> [RDPClearCodecSubcodecSummary] {
@@ -254,8 +243,29 @@ final class RDPClearCodecDecoder {
         )
     }
 
+    private func decodeCompositePayload(_ cursor: inout ByteCursor, into bitmap: inout RDPClearCodecBitmap) throws {
+        guard cursor.remaining > 0 else {
+            return
+        }
+
+        let residualByteCount = try Int(cursor.readLittleEndianUInt32())
+        let bandsByteCount = try Int(cursor.readLittleEndianUInt32())
+        let subcodecByteCount = try Int(cursor.readLittleEndianUInt32())
+        let residualData = try cursor.readData(count: residualByteCount)
+        let bandsData = try cursor.readData(count: bandsByteCount)
+        let subcodecData = try cursor.readData(count: subcodecByteCount)
+        guard cursor.remaining == 0 else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+
+        try decodeResidualLayer(residualData, into: &bitmap)
+        try decodeBandsLayer(bandsData, into: &bitmap)
+        try decodeSubcodecLayer(subcodecData, into: &bitmap)
+    }
+
     private func decodeResidualLayer(_ data: Data, into bitmap: inout RDPClearCodecBitmap) throws {
         var cursor = ByteCursor(data)
+        let pixelCount = bitmap.width * bitmap.height
         var pixelIndex = 0
         while cursor.remaining > 0 {
             guard cursor.remaining >= 4 else {
@@ -265,24 +275,13 @@ final class RDPClearCodecDecoder {
             let blue = try cursor.readUInt8()
             let green = try cursor.readUInt8()
             let red = try cursor.readUInt8()
-            let runLength = try decodeRunLength(
-                firstFactor: cursor.readUInt8(),
-                requiresNonzeroFactor: true,
-                cursor: &cursor
-            )
-            guard pixelIndex + runLength <= bitmap.width * bitmap.height else {
+            let runLength = try Self.readRunLength(&cursor, requiresNonzero: true)
+            guard runLength <= pixelCount - pixelIndex else {
                 throw RDPDecodeError.invalidRDPGFXPDU
             }
 
             for index in pixelIndex ..< pixelIndex + runLength {
-                setPixel(
-                    x: index % bitmap.width,
-                    y: index / bitmap.width,
-                    blue: blue,
-                    green: green,
-                    red: red,
-                    in: &bitmap
-                )
+                bitmap.setPixel(x: index % bitmap.width, y: index / bitmap.width, blue: blue, green: green, red: red)
             }
             pixelIndex += runLength
         }
@@ -299,157 +298,78 @@ final class RDPClearCodecDecoder {
             let xEnd = try Int(cursor.readLittleEndianUInt16())
             let yStart = try Int(cursor.readLittleEndianUInt16())
             let yEnd = try Int(cursor.readLittleEndianUInt16())
-            let backgroundBlue = try cursor.readUInt8()
-            let backgroundGreen = try cursor.readUInt8()
-            let backgroundRed = try cursor.readUInt8()
-
-            guard xEnd >= xStart,
-                  yEnd >= yStart,
-                  xStart >= 0,
-                  yStart >= 0,
+            let background = try Data([cursor.readUInt8(), cursor.readUInt8(), cursor.readUInt8(), 0xFF])
+            let height = yEnd - yStart + 1
+            guard xStart <= xEnd,
+                  yStart <= yEnd,
                   xEnd < bitmap.width,
-                  yEnd < bitmap.height
+                  yEnd < bitmap.height,
+                  height <= Self.maximumBandHeight
             else {
                 throw RDPDecodeError.invalidRDPGFXPDU
             }
 
-            let vBarHeight = yEnd - yStart + 1
-            guard vBarHeight <= 52 else {
-                throw RDPDecodeError.invalidRDPGFXPDU
-            }
-
-            for column in 0 ... (xEnd - xStart) {
-                let vBar = try decodeVBar(
-                    backgroundBlue: backgroundBlue,
-                    backgroundGreen: backgroundGreen,
-                    backgroundRed: backgroundRed,
-                    height: vBarHeight,
-                    cursor: &cursor
-                )
-                try blitVBar(vBar, x: xStart + column, y: yStart, into: &bitmap)
+            for x in xStart ... xEnd {
+                let vBar = try decodeVBar(&cursor, background: background, height: height)
+                for row in 0 ..< height {
+                    let destinationOffset = (yStart + row) * bitmap.bytesPerRow + x * 4
+                    bitmap.bgraData[destinationOffset ..< destinationOffset + 4] = vBar[row * 4 ..< row * 4 + 4]
+                }
             }
         }
     }
 
-    private func decodeVBar(
-        backgroundBlue: UInt8,
-        backgroundGreen: UInt8,
-        backgroundRed: UInt8,
-        height: Int,
-        cursor: inout ByteCursor
-    ) throws -> VBarEntry {
+    /// Decodes one CLEARCODEC_VBAR (MS-RDPEGFX 2.2.4.1.1.2.1.1) into a `height`-pixel BGRA column.
+    private func decodeVBar(_ cursor: inout ByteCursor, background: Data, height: Int) throws -> Data {
         let header = try cursor.readLittleEndianUInt16()
 
-        if header & 0xC000 == 0x4000 {
-            let index = Int(header & 0x3FFF)
-            guard let shortVBar = shortVBarStorage[index] else {
+        if header & 0x8000 != 0 {
+            guard let vBar = vBarStorage[Int(header & 0x7FFF)],
+                  vBar.count == height * 4
+            else {
                 throw RDPDecodeError.invalidRDPGFXPDU
             }
-            let yOn = try Int(cursor.readUInt8())
-            let vBar = try composeVBar(
-                shortVBar: shortVBar,
-                yOn: yOn,
-                backgroundBlue: backgroundBlue,
-                backgroundGreen: backgroundGreen,
-                backgroundRed: backgroundRed,
-                height: height
-            )
-            storeVBar(vBar)
             return vBar
         }
 
-        if header & 0xC000 == 0x0000 {
-            let yOn = Int(header & 0x00FF)
+        let shortVBar: Data
+        let yOn: Int
+        if header & 0x4000 != 0 {
+            guard let cached = shortVBarStorage[Int(header & 0x3FFF)] else {
+                throw RDPDecodeError.invalidRDPGFXPDU
+            }
+            shortVBar = cached
+            yOn = try Int(cursor.readUInt8())
+        } else {
+            yOn = Int(header & 0x00FF)
             let yOff = Int((header >> 8) & 0x003F)
-            guard yOff >= yOn,
-                  yOn <= height,
-                  yOff <= height
-            else {
+            guard yOn <= yOff, yOff <= height else {
                 throw RDPDecodeError.invalidRDPGFXPDU
             }
-
-            let shortPixelCount = yOff - yOn
-            guard shortPixelCount <= 52 else {
-                throw RDPDecodeError.invalidRDPGFXPDU
+            var pixels = Data(capacity: (yOff - yOn) * 4)
+            for _ in yOn ..< yOff {
+                try pixels.append(contentsOf: [cursor.readUInt8(), cursor.readUInt8(), cursor.readUInt8(), 0xFF])
             }
-
-            var shortData = Data()
-            shortData.reserveCapacity(shortPixelCount * 4)
-            for _ in 0 ..< shortPixelCount {
-                shortData.append(try cursor.readUInt8())
-                shortData.append(try cursor.readUInt8())
-                shortData.append(try cursor.readUInt8())
-                shortData.append(0xFF)
-            }
-
-            let shortVBar = VBarEntry(bgraData: shortData)
+            shortVBar = pixels
             shortVBarStorage[shortVBarStorageCursor] = shortVBar
-            shortVBarStorageCursor = (shortVBarStorageCursor + 1) % 16_384
-
-            let vBar = try composeVBar(
-                shortVBar: shortVBar,
-                yOn: yOn,
-                backgroundBlue: backgroundBlue,
-                backgroundGreen: backgroundGreen,
-                backgroundRed: backgroundRed,
-                height: height
-            )
-            storeVBar(vBar)
-            return vBar
+            shortVBarStorageCursor = (shortVBarStorageCursor + 1) % Self.shortVBarStorageSize
         }
 
-        if header & 0x8000 == 0x8000 {
-            let index = Int(header & 0x7FFF)
-            guard let vBar = vBarStorage[index],
-                  vBar.bgraData.count == height * 4
-            else {
-                throw RDPDecodeError.invalidRDPGFXPDU
-            }
-            return vBar
-        }
-
-        throw RDPDecodeError.invalidRDPGFXPDU
-    }
-
-    private func composeVBar(
-        shortVBar: VBarEntry,
-        yOn: Int,
-        backgroundBlue: UInt8,
-        backgroundGreen: UInt8,
-        backgroundRed: UInt8,
-        height: Int
-    ) throws -> VBarEntry {
-        guard shortVBar.bgraData.count % 4 == 0 else {
+        let yOff = yOn + shortVBar.count / 4
+        guard yOff <= height else {
             throw RDPDecodeError.invalidRDPGFXPDU
         }
-
-        let shortPixelCount = shortVBar.bgraData.count / 4
-        guard yOn >= 0,
-              yOn + shortPixelCount <= height
-        else {
-            throw RDPDecodeError.invalidRDPGFXPDU
+        var vBar = Data(capacity: height * 4)
+        for _ in 0 ..< yOn {
+            vBar.append(background)
         }
-
-        var data = Data()
-        data.reserveCapacity(height * 4)
-        for y in 0 ..< height {
-            if y >= yOn, y < yOn + shortPixelCount {
-                let offset = (y - yOn) * 4
-                data.append(shortVBar.bgraData[offset ..< offset + 4])
-            } else {
-                data.append(backgroundBlue)
-                data.append(backgroundGreen)
-                data.append(backgroundRed)
-                data.append(0xFF)
-            }
+        vBar.append(shortVBar)
+        for _ in yOff ..< height {
+            vBar.append(background)
         }
-
-        return VBarEntry(bgraData: data)
-    }
-
-    private func storeVBar(_ vBar: VBarEntry) {
         vBarStorage[vBarStorageCursor] = vBar
-        vBarStorageCursor = (vBarStorageCursor + 1) % 32_768
+        vBarStorageCursor = (vBarStorageCursor + 1) % Self.vBarStorageSize
+        return vBar
     }
 
     private func decodeSubcodecLayer(_ data: Data, into bitmap: inout RDPClearCodecBitmap) throws {
@@ -469,8 +389,6 @@ final class RDPClearCodecDecoder {
 
             guard width > 0,
                   height > 0,
-                  x >= 0,
-                  y >= 0,
                   x + width <= bitmap.width,
                   y + height <= bitmap.height
             else {
@@ -479,7 +397,7 @@ final class RDPClearCodecDecoder {
 
             switch codecID {
             case 0x00:
-                try decodeRawSubcodec(bitmapData, x: x, y: y, width: width, height: height, into: &bitmap)
+                try decodeUncompressedSubcodec(bitmapData, x: x, y: y, width: width, height: height, into: &bitmap)
             case 0x01:
                 try decodeNSCodecSubcodec(bitmapData, x: x, y: y, width: width, height: height, into: &bitmap)
             case 0x02:
@@ -490,26 +408,7 @@ final class RDPClearCodecDecoder {
         }
     }
 
-    private func blitVBar(_ vBar: VBarEntry, x: Int, y: Int, into bitmap: inout RDPClearCodecBitmap) throws {
-        let height = vBar.bgraData.count / 4
-        guard x >= 0,
-              y >= 0,
-              x < bitmap.width,
-              y + height <= bitmap.height,
-              vBar.bgraData.count == height * 4
-        else {
-            throw RDPDecodeError.invalidRDPGFXPDU
-        }
-
-        for row in 0 ..< height {
-            let sourceOffset = row * 4
-            let destinationOffset = (y + row) * bitmap.bytesPerRow + x * 4
-            bitmap.bgraData[destinationOffset ..< destinationOffset + 4] =
-                vBar.bgraData[sourceOffset ..< sourceOffset + 4]
-        }
-    }
-
-    private func decodeRawSubcodec(
+    private func decodeUncompressedSubcodec(
         _ data: Data,
         x: Int,
         y: Int,
@@ -527,89 +426,8 @@ final class RDPClearCodecDecoder {
                 let blue = try cursor.readUInt8()
                 let green = try cursor.readUInt8()
                 let red = try cursor.readUInt8()
-                setPixel(x: x + column, y: y + row, blue: blue, green: green, red: red, in: &bitmap)
+                bitmap.setPixel(x: x + column, y: y + row, blue: blue, green: green, red: red)
             }
-        }
-    }
-
-    private func decodeRLEXSubcodec(
-        _ data: Data,
-        x: Int,
-        y: Int,
-        width: Int,
-        height: Int,
-        into bitmap: inout RDPClearCodecBitmap
-    ) throws {
-        var cursor = ByteCursor(data)
-        let paletteCount = try Int(cursor.readUInt8())
-        guard (1 ... 127).contains(paletteCount), cursor.remaining >= paletteCount * 3 else {
-            throw RDPDecodeError.invalidRDPGFXPDU
-        }
-
-        var palette: [(blue: UInt8, green: UInt8, red: UInt8)] = []
-        palette.reserveCapacity(paletteCount)
-        for _ in 0 ..< paletteCount {
-            palette.append((
-                blue: try cursor.readUInt8(),
-                green: try cursor.readUInt8(),
-                red: try cursor.readUInt8()
-            ))
-        }
-
-        let stopIndexBits = bitLength(paletteCount - 1)
-        let suiteDepthBits = 8 - stopIndexBits
-        var pixelIndex = 0
-        let pixelCount = width * height
-
-        while cursor.remaining > 0 {
-            guard cursor.remaining >= 2 else {
-                throw RDPDecodeError.invalidRDPGFXPDU
-            }
-
-            let packed = try cursor.readUInt8()
-            let firstRunLengthFactor = try cursor.readUInt8()
-            let suiteDepth = Int((packed >> UInt8(stopIndexBits)) & UInt8((1 << suiteDepthBits) - 1))
-            let stopIndex = Int(packed & UInt8((1 << stopIndexBits) - 1))
-            guard stopIndex >= suiteDepth, stopIndex < paletteCount else {
-                throw RDPDecodeError.invalidRDPGFXPDU
-            }
-
-            let startIndex = stopIndex - suiteDepth
-            let runLength = try decodeRunLength(
-                firstFactor: firstRunLengthFactor,
-                requiresNonzeroFactor: false,
-                cursor: &cursor
-            )
-            guard pixelIndex + runLength + suiteDepth + 1 <= pixelCount else {
-                throw RDPDecodeError.invalidRDPGFXPDU
-            }
-
-            try writeRLEXPixels(
-                count: runLength,
-                paletteIndex: startIndex,
-                palette: palette,
-                x: x,
-                y: y,
-                width: width,
-                pixelIndex: &pixelIndex,
-                into: &bitmap
-            )
-            for paletteIndex in startIndex ... stopIndex {
-                try writeRLEXPixels(
-                    count: 1,
-                    paletteIndex: paletteIndex,
-                    palette: palette,
-                    x: x,
-                    y: y,
-                    width: width,
-                    pixelIndex: &pixelIndex,
-                    into: &bitmap
-                )
-            }
-        }
-
-        guard pixelIndex == pixelCount else {
-            throw RDPDecodeError.invalidRDPGFXPDU
         }
     }
 
@@ -628,95 +446,110 @@ final class RDPClearCodecDecoder {
             throw RDPDecodeError.invalidRDPGFXPDU
         }
 
-        for pixelIndex in 0 ..< width * height {
-            let sourceOffset = pixelIndex * 4
-            setPixel(
-                x: x + pixelIndex % width,
-                y: y + pixelIndex / width,
-                blue: decoded[sourceOffset],
-                green: decoded[sourceOffset + 1],
-                red: decoded[sourceOffset + 2],
-                in: &bitmap
-            )
+        for row in 0 ..< height {
+            for column in 0 ..< width {
+                let offset = (row * width + column) * 4
+                bitmap.setPixel(
+                    x: x + column,
+                    y: y + row,
+                    blue: decoded[offset],
+                    green: decoded[offset + 1],
+                    red: decoded[offset + 2]
+                )
+            }
         }
     }
 
-    private func writeRLEXPixels(
-        count: Int,
-        paletteIndex: Int,
-        palette: [(blue: UInt8, green: UInt8, red: UInt8)],
+    /// Decodes CLEARCODEC_SUBCODEC_RLEX (MS-RDPEGFX 2.2.4.1.1.3.1.1): each segment is a run of
+    /// `palette[stopIndex - suiteDepth]` followed by the suite `palette[stopIndex - suiteDepth ... stopIndex]`.
+    private func decodeRLEXSubcodec(
+        _ data: Data,
         x: Int,
         y: Int,
         width: Int,
-        pixelIndex: inout Int,
+        height: Int,
         into bitmap: inout RDPClearCodecBitmap
     ) throws {
-        guard palette.indices.contains(paletteIndex) else {
+        var cursor = ByteCursor(data)
+        let paletteCount = try Int(cursor.readUInt8())
+        guard (1 ... 127).contains(paletteCount), cursor.remaining >= paletteCount * 3 else {
             throw RDPDecodeError.invalidRDPGFXPDU
         }
-        let color = palette[paletteIndex]
-        for _ in 0 ..< count {
-            setPixel(
+
+        var palette: [(blue: UInt8, green: UInt8, red: UInt8)] = []
+        palette.reserveCapacity(paletteCount)
+        for _ in 0 ..< paletteCount {
+            try palette.append((blue: cursor.readUInt8(), green: cursor.readUInt8(), red: cursor.readUInt8()))
+        }
+
+        let stopIndexBitCount = Int.bitWidth - (paletteCount - 1).leadingZeroBitCount
+        let pixelCount = width * height
+        var pixelIndex = 0
+        func writePixel(paletteIndex: Int) {
+            let color = palette[paletteIndex]
+            bitmap.setPixel(
                 x: x + pixelIndex % width,
                 y: y + pixelIndex / width,
                 blue: color.blue,
                 green: color.green,
-                red: color.red,
-                in: &bitmap
+                red: color.red
             )
             pixelIndex += 1
         }
-    }
 
-    private func decodeRunLength(
-        firstFactor: UInt8,
-        requiresNonzeroFactor: Bool,
-        cursor: inout ByteCursor
-    ) throws -> Int {
-        guard !requiresNonzeroFactor || firstFactor > 0 else {
+        while cursor.remaining > 0 {
+            guard cursor.remaining >= 2 else {
+                throw RDPDecodeError.invalidRDPGFXPDU
+            }
+
+            let packed = try Int(cursor.readUInt8())
+            let stopIndex = packed & ((1 << stopIndexBitCount) - 1)
+            let suiteDepth = packed >> stopIndexBitCount
+            guard suiteDepth <= stopIndex, stopIndex < paletteCount else {
+                throw RDPDecodeError.invalidRDPGFXPDU
+            }
+            let runLength = try Self.readRunLength(&cursor, requiresNonzero: false)
+            guard runLength + suiteDepth + 1 <= pixelCount - pixelIndex else {
+                throw RDPDecodeError.invalidRDPGFXPDU
+            }
+
+            let startIndex = stopIndex - suiteDepth
+            for _ in 0 ..< runLength {
+                writePixel(paletteIndex: startIndex)
+            }
+            for paletteIndex in startIndex ... stopIndex {
+                writePixel(paletteIndex: paletteIndex)
+            }
+        }
+
+        guard pixelIndex == pixelCount else {
             throw RDPDecodeError.invalidRDPGFXPDU
         }
-        guard firstFactor == 0xFF else {
-            return Int(firstFactor)
-        }
+    }
 
-        let factor2 = try cursor.readLittleEndianUInt16()
-        guard !requiresNonzeroFactor || factor2 > 0 else {
+    /// Reads a run length stored as a 1-byte factor that escalates to a 2-byte and then a 4-byte
+    /// factor when saturated (MS-RDPEGFX 2.2.4.1.1.1.1 and 2.2.4.1.1.3.1.1.1).
+    private static func readRunLength(_ cursor: inout ByteCursor, requiresNonzero: Bool) throws -> Int {
+        var runLength = try Int(cursor.readUInt8())
+        if runLength == 0xFF {
+            runLength = try Int(cursor.readLittleEndianUInt16())
+            if runLength == 0xFFFF {
+                runLength = try Int(cursor.readLittleEndianUInt32())
+            }
+        }
+        guard !requiresNonzero || runLength > 0 else {
             throw RDPDecodeError.invalidRDPGFXPDU
         }
-        guard factor2 == 0xFFFF else {
-            return Int(factor2)
-        }
-        let factor3 = try cursor.readLittleEndianUInt32()
-        guard !requiresNonzeroFactor || factor3 > 0 else {
-            throw RDPDecodeError.invalidRDPGFXPDU
-        }
-        return Int(factor3)
+        return runLength
     }
+}
 
-    private func setPixel(
-        x: Int,
-        y: Int,
-        blue: UInt8,
-        green: UInt8,
-        red: UInt8,
-        in bitmap: inout RDPClearCodecBitmap
-    ) {
-        let offset = y * bitmap.bytesPerRow + x * 4
-        bitmap.bgraData[offset] = blue
-        bitmap.bgraData[offset + 1] = green
-        bitmap.bgraData[offset + 2] = red
-        bitmap.bgraData[offset + 3] = 0xFF
-    }
-
-    private func clamp8(_ value: Int) -> UInt8 {
-        UInt8(min(max(value, 0), 255))
-    }
-
-    private func bitLength(_ value: Int) -> Int {
-        guard value > 0 else {
-            return 0
-        }
-        return Int.bitWidth - value.leadingZeroBitCount
+private extension RDPClearCodecBitmap {
+    mutating func setPixel(x: Int, y: Int, blue: UInt8, green: UInt8, red: UInt8) {
+        let offset = y * bytesPerRow + x * 4
+        bgraData[offset] = blue
+        bgraData[offset + 1] = green
+        bgraData[offset + 2] = red
+        bgraData[offset + 3] = 0xFF
     }
 }
