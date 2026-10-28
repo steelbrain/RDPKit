@@ -285,6 +285,9 @@ import Testing
 
     #expect(meter.response(to: request(0x1014), receivedAt: start) == nil)
     #expect(meter.response(to: request(0x0002, payload: 1000), receivedAt: start + .milliseconds(40)) == nil)
+    // Only Bandwidth Measure Payload and Stop count ([MS-RDPBCGR] 2.2.14.1.3-4),
+    // not an RTT request's bytes.
+    #expect(meter.response(to: request(0x1001, payload: 64), receivedAt: start + .milliseconds(100))?.payload == .rtt)
     let results = meter.response(to: request(0x002B, payload: 500), receivedAt: start + .milliseconds(250))
     #expect(results?.payload == .bandwidth(byteCount: 1516, milliseconds: 250))
 
