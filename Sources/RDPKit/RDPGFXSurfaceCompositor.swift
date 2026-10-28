@@ -265,15 +265,22 @@ final class RDPGFXSurfaceCompositor {
         makeFrames(frameID: frameID).first
     }
 
-    /// Snapshots every mapped surface with dirty rectangles. Surfaces that are excluded, unmapped,
-    /// or outside the output space keep their dirty rectangles for a later frame, so updates to
-    /// them (such as ClearCodec text on a surface that also receives AVC) are not lost.
+    /// Snapshots every mapped surface with dirty rectangles. Unmapped surfaces, and surfaces
+    /// outside the output space, keep their dirty rectangles for a later frame.
+    ///
+    /// Excluded surfaces carry video this frame. The compositor does not hold decoded AVC pixels,
+    /// so their dirty rectangles are dropped: a later snapshot would paint black over the video.
+    /// Known limitation: non-video updates on a video surface in a mixed-codec frame are lost.
     func makeFrames(
         frameID: UInt32?,
         excludingSurfaceIDs: Set<UInt16> = []
     ) -> [RDPGraphicsFrameSnapshot] {
         var frames: [RDPGraphicsFrameSnapshot] = []
-        for surfaceID in surfaces.keys.sorted() where !excludingSurfaceIDs.contains(surfaceID) {
+        for surfaceID in surfaces.keys.sorted() {
+            guard !excludingSurfaceIDs.contains(surfaceID) else {
+                surfaces[surfaceID]?.dirtyRects.removeAll()
+                continue
+            }
             guard let surface = surfaces[surfaceID],
                   !surface.dirtyRects.isEmpty,
                   let frame = makeFrame(frameID: frameID, surface: surface)
@@ -426,6 +433,13 @@ final class RDPGFXSurfaceCompositor {
     }
 
     private func mapSurfaceToScaledOutput(_ pdu: RDPGFXMapSurfaceToScaledOutputPDU) throws {
+        // Every frame of the surface allocates the scaled target; bound it like a surface.
+        guard pdu.targetWidth <= RDPGFXResetGraphicsPDU.maximumDimension,
+              pdu.targetHeight <= RDPGFXResetGraphicsPDU.maximumDimension,
+              Int(pdu.targetWidth) * Int(pdu.targetHeight) * 4 <= Self.maximumSurfaceByteCount
+        else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
         try modifySurface(pdu.surfaceID) {
             $0.outputMapping = OutputMapping(
                 x: pdu.outputOriginX,

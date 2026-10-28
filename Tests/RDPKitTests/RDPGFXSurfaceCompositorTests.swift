@@ -229,7 +229,7 @@ import Testing
     #expect(Array(xrgbData) == [0x01, 0x02, 0x03, 0xFF])
 }
 
-@Test func compositorDefersExcludedVideoSurfaceUpdatesWithoutDroppingOtherDirtySurfaces() throws {
+@Test func compositorDropsExcludedVideoSurfaceUpdatesWithoutDroppingOtherDirtySurfaces() throws {
     let compositor = RDPGFXSurfaceCompositor()
     let clearCodec = RDPClearCodecDecoder()
     for surfaceID: UInt16 in [1, 2] {
@@ -254,8 +254,44 @@ import Testing
     let frames = compositor.makeFrames(frameID: 29, excludingSurfaceIDs: [1])
 
     #expect(frames.map(\.surfaceID) == [2])
-    #expect(compositor.makeFrames(frameID: 30).map(\.surfaceID) == [1])
-    #expect(compositor.makeFrames(frameID: 31).isEmpty)
+    #expect(compositor.makeFrames(frameID: 30).isEmpty)
+}
+
+/// gnome-remote-desktop encodes AVC420 into unmapped surface 1 and copies it
+/// to mapped surface 0 every frame (gnome fixture, sequence 143-144). The copy
+/// marks surface 0 dirty with pixels the compositor never decoded; a later
+/// frame without video must not paint them as a black bitmap over the video.
+@Test func compositorDoesNotPaintCopiedVideoAsBlackInALaterFrame() throws {
+    let compositor = RDPGFXSurfaceCompositor(outputWidth: 64, outputHeight: 32)
+    let clearCodec = RDPClearCodecDecoder()
+    let fullSurface = RDPGFXRect16(left: 0, top: 0, right: 64, bottom: 32)
+    try compositor.process(try createSurfaceMessage(surfaceID: 0, width: 64, height: 32), clearCodec: clearCodec)
+    try compositor.process(try createSurfaceMessage(surfaceID: 1, width: 64, height: 32), clearCodec: clearCodec)
+    try compositor.process(try mapSurfaceToOutputMessage(surfaceID: 0, x: 0, y: 0), clearCodec: clearCodec)
+    let video = RDPGraphicsFrameSnapshot(
+        frameID: 1,
+        surfaceID: 1,
+        codecID: RDPGFXCodecID.avc420,
+        codecName: "avc420",
+        pixelFormat: RDPGFXPixelFormat.xrgb8888,
+        destinationRect: RDPFrameRect(fullSurface),
+        regionRects: [RDPFrameRect(fullSurface)],
+        encodedVideoData: Data([0x00, 0x00, 0x01, 0x65])
+    )
+    let copy = try surfaceToSurfaceMessage(
+        sourceSurfaceID: 1,
+        destinationSurfaceID: 0,
+        sourceRect: fullSurface,
+        destinationPoints: [RDPGFXPoint16(x: 0, y: 0)]
+    )
+    try compositor.process(copy, clearCodec: clearCodec)
+
+    // EndFrame as the client handles it: the copied video excludes surface 0.
+    let copied = copiedVideoFrames([video], using: try RDPGFXSurfaceToSurfacePDU.parse(from: copy))
+    #expect(copied.map(\.surfaceID) == [0])
+    #expect(compositor.makeFrames(frameID: 1, excludingSurfaceIDs: Set(copied.map(\.surfaceID))).isEmpty)
+    // The next frame has no updates.
+    #expect(compositor.makeFrames(frameID: 2).isEmpty)
 }
 
 @Test func compositorCollapsesHeldBackDirtyRectsIntoBoundingBox() throws {
@@ -1528,14 +1564,34 @@ import Testing
             surfaceID: 1,
             x: UInt32.max,
             y: UInt32.max,
-            targetWidth: UInt32.max,
-            targetHeight: UInt32.max
+            targetWidth: 2,
+            targetHeight: 2
         ),
         clearCodec: clearCodec
     )
 
     #expect(compositor.mappedOutputRect(surfaceID: 1) == nil)
     #expect(compositor.makeFrames(frameID: 2).isEmpty)
+}
+
+/// Every frame allocates the scaled target, so its size is bounded like a surface.
+@Test func compositorRejectsOversizedScaledOutputTargets() throws {
+    let compositor = RDPGFXSurfaceCompositor()
+    let clearCodec = RDPClearCodecDecoder()
+    try compositor.process(try createSurfaceMessage(surfaceID: 1, width: 2, height: 2), clearCodec: clearCodec)
+
+    for (width, height): (UInt32, UInt32) in [(UInt32.max, 2), (2, 32_767), (32_766, 32_766)] {
+        #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
+            try compositor.process(
+                try mapSurfaceToScaledOutputMessage(surfaceID: 1, x: 0, y: 0, targetWidth: width, targetHeight: height),
+                clearCodec: clearCodec
+            )
+        }
+    }
+    try compositor.process(
+        try mapSurfaceToScaledOutputMessage(surfaceID: 1, x: 0, y: 0, targetWidth: 16_384, targetHeight: 16_384),
+        clearCodec: clearCodec
+    )
 }
 
 @Test func compositorRejectsVideoUpdatesWithInvalidSurfaceBounds() throws {
