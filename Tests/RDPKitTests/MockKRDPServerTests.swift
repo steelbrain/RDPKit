@@ -229,6 +229,31 @@ struct MockKRDPServerTests {
         #expect(run.report.error == nil)
     }
 
+    /// A run cancelled once a redirect arrives returns the redirected session's report
+    /// instead of opening the connection the redirect points to. The redirect answers the
+    /// client's caps advertise, so the client is waiting for it and reads it.
+    @Test func cancellingDuringARedirectReturnsTheSessionThatRan() throws {
+        let transcript = RDPWireTranscript()
+        let sawRedirect: @Sendable () -> Bool = {
+            transcript.events.contains { event in
+                guard event.direction == .serverToClient,
+                      let bytes = event.bytes,
+                      let indication = try? MCSSendDataIndicationPDU.parse(fromTPKT: bytes)
+                else {
+                    return false
+                }
+                return (try? RDPServerRedirectionPDU.parseIfPresent(from: indication)) != nil
+            }
+        }
+        let run = try runMock(.init(redirectionBehavior: .redirectFirstConnection), client: {
+            RDPSessionClient().run(configuration: $0, wireTranscript: transcript, shouldCancel: sawRedirect)
+        })
+
+        #expect(run.report.stage == "rdp-graphics-dynamic-channel")
+        #expect(run.report.rdpClientInfoSent == true)
+        #expect(run.report.error == "cancelled")
+    }
+
     @Test func clientFollowsRedirectionSentInsteadOfDemandActive() throws {
         let run = try runMock(.init(redirectionBehavior: .redirectInsteadOfDemandActive))
 
