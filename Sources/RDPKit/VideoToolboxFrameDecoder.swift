@@ -353,9 +353,17 @@ final class RDPVideoToolboxSequenceDecoder {
     }
 
     private func rebuildSession() throws {
-        let parameterSets = parameterSets.compactMap { $0 }
+        var parameterSets = parameterSets.compactMap { $0 }
         guard parameterSets.count == self.parameterSets.count else {
             throw RDPVideoDecodeError.missingParameterSets(codec)
+        }
+        // MS-RDPEGFX 2.2.4.4 and 3.3.8.3.1 define RDPGFX H.264 samples as full-range BT.709
+        // whatever the VUI says. GNOME Remote Desktop and KRdp encode full range but send no
+        // video signal type, which H.264 E.2.1 infers as limited range.
+        if codec == .h264,
+           let sequenceParameterSet = RDPH264SequenceParameterSet.signalingFullRangeBT709(parameterSets[0])
+        {
+            parameterSets[0] = sequenceParameterSet
         }
         invalidateSession()
         let formatDescription = try makeFormatDescription(parameterSets: parameterSets)
@@ -410,10 +418,7 @@ final class RDPVideoToolboxSequenceDecoder {
         guard preservesCodedSamples else {
             return nil
         }
-        // Requesting the other range makes VideoToolbox rescale every sample. GNOME Remote
-        // Desktop and KRdp signal limited range in the SPS VUI although MS-RDPEGFX 3.3.8.3.1
-        // defines the samples as full-range BT.709, so match the signalled range and let the
-        // AVC444 conversion interpret the raw values.
+        // Requesting the other range makes VideoToolbox rescale every sample.
         let signalsFullRange = CMFormatDescriptionGetExtension(
             formatDescription,
             extensionKey: kCMFormatDescriptionExtension_FullRangeVideo

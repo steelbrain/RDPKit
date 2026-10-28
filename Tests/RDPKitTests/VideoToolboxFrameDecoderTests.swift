@@ -1,3 +1,4 @@
+import CoreImage
 import CoreMedia
 import CoreVideo
 import Foundation
@@ -70,17 +71,98 @@ import VideoToolbox
     }
 }
 
-@Test func sequenceDecoderPreservesCodedSamplesOfLimitedRangeStreams() throws {
-    // VideoToolbox marks a stream encoded from video-range input as limited range, like the
-    // SPS VUI that GNOME Remote Desktop and KRdp send.
+@Test func sequenceDecoderSignalsFullRangeWithoutRescalingSamples() throws {
+    // VideoToolbox marks a stream encoded from video-range input as limited range. The decoder
+    // re-signals it as full range, so the samples must still arrive unscaled.
     let accessUnits = try encodeH264AnnexB(frames: [(luma: 20, chroma: 128)])
     let decoder = RDPVideoToolboxSequenceDecoder(codec: .h264, preservesCodedSamples: true)
 
     let result = try decoder.decodeDetailed(accessUnits[0])
 
-    #expect(CVPixelBufferGetPixelFormatType(result.imageBuffer) == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange)
-    let luma = try lumaSample(atX: 8, y: 8, in: result.imageBuffer)
+    #expect(CVPixelBufferGetPixelFormatType(result.imageBuffer) == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange)
+    let luma = try nv12Sample(atX: 8, y: 8, in: result.imageBuffer)[0]
     #expect(abs(Int(luma) - 20) <= 2)
+}
+
+@Test(arguments: [
+    // GNOME Remote Desktop: High profile with Extended_SAR and timing info.
+    (
+        "67 64 08 28 ac 2b 20 0a 00 c3 7f e0 02 00 01 e2 00 00 07 d0 00 03 a9 81 08",
+        "67 64 08 28 ac 2b 20 0a 00 c3 7f e0 02 00 01 ed c0 43 40 50 00 00 3e 80 00 1d 4c 08 40"
+    ),
+    // KRdp: Baseline profile with timing info and bitstream restrictions.
+    (
+        "67 42 c0 3e da 00 f0 01 2d a1 00 00 03 00 01 00 00 07 d0 8f 08 04 2a",
+        "67 42 c0 3e da 00 f0 01 2d a6 e0 21 a0 28 00 00 03 00 08 00 00 3e 84 78 40 21 50"
+    ),
+    // No VUI.
+    ("67 42 00 0a f4 21 32", "67 42 00 0a f4 21 34 dc 04 34 04 08"),
+    // High profile with a scaling list.
+    ("67 64 00 1e ad 84 40 5a 10 99", "67 64 00 1e ad 84 40 5a 10 9a 6e 02 1a 02 04"),
+])
+func sequenceParameterSetSignalsFullRangeBT709(originalHex: String, expectedHex: String) throws {
+    let original = hexData(originalHex)
+    let rewritten = try #require(RDPH264SequenceParameterSet.signalingFullRangeBT709(original))
+
+    #expect(rewritten == hexData(expectedHex))
+    #expect(RDPH264SequenceParameterSet.signalingFullRangeBT709(rewritten) == rewritten)
+    let originalSize = CMVideoFormatDescriptionGetDimensions(try h264FormatDescription(sequenceParameterSet: original))
+    let rewrittenFormat = try h264FormatDescription(sequenceParameterSet: rewritten)
+    let rewrittenSize = CMVideoFormatDescriptionGetDimensions(rewrittenFormat)
+    #expect(rewrittenSize.width == originalSize.width && rewrittenSize.height == originalSize.height)
+    let extensions = try #require(CMFormatDescriptionGetExtensions(rewrittenFormat) as? [CFString: Any])
+    #expect(extensions[kCMFormatDescriptionExtension_FullRangeVideo] as? Bool == true)
+    #expect(extensions[kCMFormatDescriptionExtension_YCbCrMatrix] as? String == kCMFormatDescriptionYCbCrMatrix_ITU_R_709_2 as String)
+    #expect(extensions[kCMFormatDescriptionExtension_ColorPrimaries] as? String == kCMFormatDescriptionColorPrimaries_ITU_R_709_2 as String)
+    #expect(extensions[kCMFormatDescriptionExtension_TransferFunction] as? String == kCMFormatDescriptionTransferFunction_sRGB as String)
+}
+
+@Test func sequenceParameterSetRewriteRejectsTruncatedSPS() {
+    #expect(RDPH264SequenceParameterSet.signalingFullRangeBT709(hexData("67 64 08 28 ac")) == nil)
+    #expect(RDPH264SequenceParameterSet.signalingFullRangeBT709(hexData("68 ce 38 80")) == nil)
+}
+
+/// GNOME Remote Desktop and KRdp encode full-range samples under an SPS without a video signal
+/// type. Presented AVC420 output must match the full-range BT.709 conversion of MS-RDPEGFX
+/// 3.3.8.3.1 that the AVC444 path applies; read as limited range it is about 10 levels off.
+@Test(arguments: [
+    ("gnome-negotiation-transcript", 100, 100, [UInt8]([34, 130, 127])),
+    ("krdp-negotiation-transcript", 1680, 1584, [UInt8]([35, 129, 126])),
+])
+func avc420FixtureFramesPresentAsFullRangeBT709(fixture: String, x: Int, y: Int, background: [UInt8]) throws {
+    let frame = try firstTranscriptFrame(fixture)
+    let presented = try RDPVideoToolboxFrameDecoder().decodeDetailed(frame).imageBuffer
+    let coded = try RDPVideoToolboxSequenceDecoder(codec: .h264, preservesCodedSamples: true)
+        .decodeDetailed(frame.encodedVideoData).imageBuffer
+    #expect(try nv12Sample(atX: x, y: y, in: coded) == background)
+
+    let expected = try rdpReconstructAVC444OnCPU(main: coded, auxiliary: nil, usesV2Layout: false, chromaRegionRects: [])
+    let rendered = try coreImageBGRA(presented)
+    CVPixelBufferLockBaseAddress(expected, .readOnly)
+    defer {
+        CVPixelBufferUnlockBaseAddress(expected, .readOnly)
+    }
+    let expectedBase = try #require(CVPixelBufferGetBaseAddress(expected)).assumingMemoryBound(to: UInt8.self)
+    let expectedBytesPerRow = CVPixelBufferGetBytesPerRow(expected)
+    let width = CVPixelBufferGetWidth(expected)
+    let backgroundOffset = y * width * 4 + x * 4
+    for channel in 0 ..< 3 {
+        #expect(abs(Int(rendered[backgroundOffset + channel]) - Int(expectedBase[y * expectedBytesPerRow + x * 4 + channel])) <= 2)
+    }
+    var difference = 0
+    var count = 0
+    for row in stride(from: 0, to: CVPixelBufferGetHeight(expected), by: 4) {
+        for column in stride(from: 0, to: width, by: 4) {
+            for channel in 0 ..< 3 {
+                difference += abs(
+                    Int(rendered[(row * width + column) * 4 + channel])
+                        - Int(expectedBase[row * expectedBytesPerRow + column * 4 + channel])
+                )
+                count += 1
+            }
+        }
+    }
+    #expect(Double(difference) / Double(count) < 1.5)
 }
 
 @Test func sequenceDecoderRecreatesInvalidatedSession() throws {
@@ -145,16 +227,89 @@ private func bgraPixel(atX x: Int, y: Int, in imageBuffer: CVImageBuffer) throws
     return [pixel[0], pixel[1], pixel[2], pixel[3]]
 }
 
-private func lumaSample(atX x: Int, y: Int, in imageBuffer: CVImageBuffer) throws -> UInt8 {
+/// Returns the Y, Cb, and Cr samples of an NV12 pixel.
+private func nv12Sample(atX x: Int, y: Int, in imageBuffer: CVImageBuffer) throws -> [UInt8] {
     CVPixelBufferLockBaseAddress(imageBuffer, .readOnly)
     defer {
         CVPixelBufferUnlockBaseAddress(imageBuffer, .readOnly)
     }
-    guard let baseAddress = CVPixelBufferGetBaseAddressOfPlane(imageBuffer, 0) else {
+    guard let luma = CVPixelBufferGetBaseAddressOfPlane(imageBuffer, 0),
+          let chroma = CVPixelBufferGetBaseAddressOfPlane(imageBuffer, 1)
+    else {
         throw PixelReadError.missingBaseAddress
     }
-    let bytesPerRow = CVPixelBufferGetBytesPerRowOfPlane(imageBuffer, 0)
-    return baseAddress.advanced(by: y * bytesPerRow + x).assumingMemoryBound(to: UInt8.self).pointee
+    let lumaOffset = y * CVPixelBufferGetBytesPerRowOfPlane(imageBuffer, 0) + x
+    let chromaOffset = y / 2 * CVPixelBufferGetBytesPerRowOfPlane(imageBuffer, 1) + x / 2 * 2
+    return [
+        luma.load(fromByteOffset: lumaOffset, as: UInt8.self),
+        chroma.load(fromByteOffset: chromaOffset, as: UInt8.self),
+        chroma.load(fromByteOffset: chromaOffset + 1, as: UInt8.self),
+    ]
+}
+
+/// Renders the image the way the frame compositor does.
+private func coreImageBGRA(_ imageBuffer: CVImageBuffer) throws -> [UInt8] {
+    let width = CVPixelBufferGetWidth(imageBuffer)
+    let height = CVPixelBufferGetHeight(imageBuffer)
+    var bytes = [UInt8](repeating: 0, count: width * height * 4)
+    CIContext().render(
+        CIImage(cvImageBuffer: imageBuffer),
+        toBitmap: &bytes,
+        rowBytes: width * 4,
+        bounds: CGRect(x: 0, y: 0, width: width, height: height),
+        format: .BGRA8,
+        colorSpace: CGColorSpaceCreateDeviceRGB()
+    )
+    return bytes
+}
+
+private func h264FormatDescription(sequenceParameterSet: Data) throws -> CMVideoFormatDescription {
+    let parameterSets = [[UInt8](sequenceParameterSet), [0x68, 0xCE, 0x38, 0x80]]
+    var formatDescription: CMVideoFormatDescription?
+    let status = parameterSets[0].withUnsafeBufferPointer { sps in
+        parameterSets[1].withUnsafeBufferPointer { pps in
+            var pointers = [sps.baseAddress, pps.baseAddress].compactMap { $0 }
+            var sizes = [sps.count, pps.count]
+            return CMVideoFormatDescriptionCreateFromH264ParameterSets(
+                allocator: kCFAllocatorDefault,
+                parameterSetCount: 2,
+                parameterSetPointers: &pointers,
+                parameterSetSizes: &sizes,
+                nalUnitHeaderLength: 4,
+                formatDescriptionOut: &formatDescription
+            )
+        }
+    }
+    guard status == noErr, let formatDescription else {
+        throw H264TestEncodeError.encoder(status)
+    }
+    return formatDescription
+}
+
+private func firstTranscriptFrame(_ fixture: String) throws -> RDPGraphicsFrameSnapshot {
+    let url = try #require(Bundle.module.url(forResource: fixture, withExtension: "json", subdirectory: "Fixtures"))
+    let events = try JSONDecoder().decode([RDPWireEvent].self, from: Data(contentsOf: url))
+    let credentials = RDPCredentials(username: "rdp-user", password: "rdp-user")
+    let server = try RDPTranscriptReplayServer.start(transcript: events, credentials: credentials)
+    defer { server.stop() }
+    let report = RDPPreflightClient().run(
+        configuration: RDPConnectionConfiguration(
+            host: "127.0.0.1",
+            port: server.port,
+            credentials: credentials,
+            timeoutSeconds: 10,
+            hideCertificateWarnings: true,
+            desktopWidth: 1280,
+            desktopHeight: 720,
+            clipboardEnabled: false,
+            graphicsCapabilityProfile: .avcThinClient
+        )
+    )
+    return try #require(report.rdpGraphicsFirstFrame)
+}
+
+private func hexData(_ value: String) -> Data {
+    Data(value.split(separator: " ").compactMap { UInt8($0, radix: 16) })
 }
 
 private enum PixelReadError: Error {
