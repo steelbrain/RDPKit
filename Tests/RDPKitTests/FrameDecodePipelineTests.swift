@@ -373,6 +373,59 @@ import Testing
     #expect(try bgraPixel(atX: 4, y: 10, in: presentation.imageBuffer) == [0, 0, 0, 0])
 }
 
+/// On a surface mapped to scaled output, text drawn over video is merged into the unscaled
+/// surface and scaled with it, and later video keeps it.
+@Test func decodedVideoCompositorKeepsTextDrawnOverScaledVideo() throws {
+    let compositor = RDPDecodedVideoSurfaceCompositor()
+    let surfaceRect = RDPFrameRect(left: 0, top: 0, right: 2, bottom: 2)
+    let outputRect = RDPFrameRect(left: 0, top: 0, right: 4, bottom: 4)
+    let video: [UInt8] = [0x10, 0x20, 0x30, 0xFF]
+    let text: [UInt8] = [0xA0, 0xB0, 0xC0, 0xFF]
+    _ = try compositor.presentation(
+        for: videoFrame(
+            id: 1,
+            graphicsOutputRect: outputRect,
+            surfaceRect: surfaceRect,
+            mappedOutputRect: outputRect,
+            destinationRect: surfaceRect,
+            regionRects: [surfaceRect]
+        ),
+        decodedImageBuffer: try bgraPixelBuffer(width: 2, height: 2, pixel: video)
+    )
+
+    var textFrame = bitmapFrame(id: 2, width: 2, height: 2, pixel: text, graphicsOutputRect: outputRect)
+    textFrame.surfaceRect = surfaceRect
+    textFrame.mappedOutputRect = outputRect
+    textFrame.regionRects = [RDPFrameRect(left: 1, top: 0, right: 2, bottom: 1)]
+    let textPresentation = try compositor.presentation(for: textFrame, decodedImageBuffer: bgraPixelBuffer(
+        width: 2,
+        height: 2,
+        pixel: text
+    ))
+    #expect(textPresentation.frame.regionRects == [RDPFrameRect(left: 2, top: 0, right: 4, bottom: 2)])
+    #expect(try bgraPixel(atX: 2, y: 0, in: textPresentation.imageBuffer) == text)
+    #expect(try bgraPixel(atX: 3, y: 1, in: textPresentation.imageBuffer) == text)
+    #expect(try bgraPixel(atX: 1, y: 1, in: textPresentation.imageBuffer) == video)
+    #expect(try bgraPixel(atX: 3, y: 3, in: textPresentation.imageBuffer) == video)
+
+    let laterVideo: [UInt8] = [0x11, 0x21, 0x31, 0xFF]
+    let videoPresentation = try compositor.presentation(
+        for: videoFrame(
+            id: 3,
+            graphicsOutputRect: outputRect,
+            surfaceRect: surfaceRect,
+            mappedOutputRect: outputRect,
+            destinationRect: surfaceRect,
+            regionRects: [RDPFrameRect(left: 0, top: 1, right: 2, bottom: 2)],
+            nalUnitTypes: [1]
+        ),
+        decodedImageBuffer: try bgraPixelBuffer(width: 2, height: 2, pixel: laterVideo)
+    )
+    #expect(try bgraPixel(atX: 3, y: 1, in: videoPresentation.imageBuffer) == text)
+    #expect(try bgraPixel(atX: 0, y: 0, in: videoPresentation.imageBuffer) == video)
+    #expect(try bgraPixel(atX: 0, y: 3, in: videoPresentation.imageBuffer) == laterVideo)
+}
+
 @Test func decodedVideoCompositorClearsStaleSurfaceOnFullResyncFrame() throws {
     let compositor = RDPDecodedVideoSurfaceCompositor()
     _ = try compositor.presentation(

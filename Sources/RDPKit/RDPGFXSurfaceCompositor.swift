@@ -341,34 +341,7 @@ final class RDPGFXSurfaceCompositor {
             return nil
         }
 
-        let bitmapData: Data
-        let bitmapBytesPerRow: Int
-        let regionRects: [RDPFrameRect]
-        if let mappedOutputRect {
-            let targetWidth = Int(mappedOutputRect.width)
-            bitmapData = Self.scaleBGRA(
-                surface.data,
-                sourceWidth: surface.width,
-                sourceHeight: surface.height,
-                targetWidth: targetWidth,
-                targetHeight: Int(mappedOutputRect.height)
-            )
-            bitmapBytesPerRow = targetWidth * 4
-            regionRects = surface.dirtyRects.map {
-                scaledRegionRect($0, sourceWidth: surface.width, sourceHeight: surface.height, targetRect: mappedOutputRect)
-            }
-        } else {
-            bitmapData = surface.data
-            bitmapBytesPerRow = surface.bytesPerRow
-            regionRects = surface.dirtyRects.map {
-                RDPFrameRect(
-                    left: surfaceRect.left + $0.left,
-                    top: surfaceRect.top + $0.top,
-                    right: surfaceRect.left + $0.right,
-                    bottom: surfaceRect.top + $0.bottom
-                )
-            }
-        }
+        // Unscaled, like video: the decoder scales the surface it composes.
         return RDPGraphicsFrameSnapshot(
             frameID: frameID,
             surfaceID: surface.surfaceID,
@@ -378,12 +351,19 @@ final class RDPGFXSurfaceCompositor {
             graphicsOutputRect: graphicsOutputRect,
             surfaceRect: surfaceRect,
             mappedOutputRect: mappedOutputRect,
-            destinationRect: mappedOutputRect ?? surfaceRect,
-            regionRects: regionRects,
+            destinationRect: surfaceRect,
+            regionRects: surface.dirtyRects.map {
+                RDPFrameRect(
+                    left: surfaceRect.left + $0.left,
+                    top: surfaceRect.top + $0.top,
+                    right: surfaceRect.left + $0.right,
+                    bottom: surfaceRect.top + $0.bottom
+                )
+            },
             encodedVideoData: Data(),
             contentKind: .bitmap,
-            decodedBitmapData: bitmapData,
-            decodedBitmapBytesPerRow: bitmapBytesPerRow
+            decodedBitmapData: surface.data,
+            decodedBitmapBytesPerRow: surface.bytesPerRow
         )
     }
 
@@ -468,7 +448,7 @@ final class RDPGFXSurfaceCompositor {
     }
 
     private func mapSurfaceToScaledOutput(_ pdu: RDPGFXMapSurfaceToScaledOutputPDU) throws {
-        // Every frame of the surface allocates the scaled target; bound it like a surface.
+        // The decoder allocates the scaled target for every frame; bound it like a surface.
         guard pdu.targetWidth <= RDPGFXResetGraphicsPDU.maximumDimension,
               pdu.targetHeight <= RDPGFXResetGraphicsPDU.maximumDimension,
               Int(pdu.targetWidth) * Int(pdu.targetHeight) * 4 <= Self.maximumSurfaceByteCount
@@ -728,58 +708,6 @@ final class RDPGFXSurfaceCompositor {
                 ))
             }
         }
-    }
-
-    private func scaledRegionRect(
-        _ rect: RDPGFXRect16,
-        sourceWidth: Int,
-        sourceHeight: Int,
-        targetRect: RDPFrameRect
-    ) -> RDPFrameRect {
-        let targetWidth = Int(targetRect.width)
-        let targetHeight = Int(targetRect.height)
-        let left = Int(targetRect.left) + Int(rect.left) * targetWidth / sourceWidth
-        let top = Int(targetRect.top) + Int(rect.top) * targetHeight / sourceHeight
-        let right = Int(targetRect.left) + (Int(rect.right) * targetWidth + sourceWidth - 1) / sourceWidth
-        let bottom = Int(targetRect.top) + (Int(rect.bottom) * targetHeight + sourceHeight - 1) / sourceHeight
-        return RDPFrameRect(
-            left: UInt16(left),
-            top: UInt16(top),
-            right: min(targetRect.right, UInt16(right)),
-            bottom: min(targetRect.bottom, UInt16(bottom))
-        )
-    }
-
-    /// Nearest-neighbor scales a packed BGRA bitmap.
-    private static func scaleBGRA(
-        _ source: Data,
-        sourceWidth: Int,
-        sourceHeight: Int,
-        targetWidth: Int,
-        targetHeight: Int
-    ) -> Data {
-        guard sourceWidth != targetWidth || sourceHeight != targetHeight else {
-            return source
-        }
-
-        var destination = Data(count: targetWidth * targetHeight * 4)
-        source.withUnsafeBytes { sourceBuffer in
-            destination.withUnsafeMutableBytes { destinationBuffer in
-                for targetY in 0 ..< targetHeight {
-                    let sourceRowOffset = min(sourceHeight - 1, targetY * sourceHeight / targetHeight) * sourceWidth * 4
-                    for targetX in 0 ..< targetWidth {
-                        let sourceX = min(sourceWidth - 1, targetX * sourceWidth / targetWidth)
-                        let pixel = sourceBuffer.loadUnaligned(fromByteOffset: sourceRowOffset + sourceX * 4, as: UInt32.self)
-                        destinationBuffer.storeBytes(
-                            of: pixel,
-                            toByteOffset: (targetY * targetWidth + targetX) * 4,
-                            as: UInt32.self
-                        )
-                    }
-                }
-            }
-        }
-        return destination
     }
 }
 

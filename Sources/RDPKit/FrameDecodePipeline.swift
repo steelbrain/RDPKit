@@ -150,11 +150,26 @@ final class RDPDecodedVideoSurfaceCompositor {
                 )
             }
             let bitmap = bitmapSurface(from: frame)
-            if frame.mappedOutputRect == nil, frame.graphicsOutputRect != nil, let bitmap, let surfaceRect = frame.surfaceRect {
+            if frame.graphicsOutputRect != nil, let bitmap, let surfaceRect = frame.surfaceRect {
                 try materializeDirectSurface(surfaceID: frame.surfaceID)
                 let surface = merge(bitmap, regionRects: frame.regionRects, surfaceRect: surfaceRect, into: frame.surfaceID)
                 surfacesWithBitmapContent.insert(frame.surfaceID)
-                return try graphicsOutputPresentation(from: frame, displayedSurface: surface)
+                guard let mappedOutputRect = frame.mappedOutputRect else {
+                    return try graphicsOutputPresentation(from: frame, displayedSurface: surface)
+                }
+                var scaledFrame = frame
+                scaledFrame.destinationRect = mappedOutputRect
+                scaledFrame.regionRects = frame.regionRects.map {
+                    scaledOutputRegionRect($0, sourceRect: surfaceRect, targetRect: mappedOutputRect)
+                }
+                return try graphicsOutputPresentation(
+                    from: scaledFrame,
+                    displayedSurface: scaledSurface(
+                        surface,
+                        width: Int(mappedOutputRect.width),
+                        height: Int(mappedOutputRect.height)
+                    )
+                )
             }
             directSurfaces[frame.surfaceID] = nil
             surfaces[frame.surfaceID] = frame.mappedOutputRect == nil ? bitmap : nil

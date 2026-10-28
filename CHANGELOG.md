@@ -17,6 +17,10 @@
 - `RDPGraphicsFrameSnapshot`: remove the `h264AnnexBData`, `h264ByteCount` and
   `h264NalUnitTypes` aliases; use `encodedVideoData`, `videoByteCount` and
   `videoNalUnitTypes`.
+- `RDPGraphicsFrameSnapshot`: a bitmap snapshot of a surface mapped to scaled
+  output carries the unscaled surface, as video snapshots do. Its
+  `destinationRect` and `regionRects` are in unscaled output coordinates, and
+  `mappedOutputRect` says where the surface is scaled to.
 - `RDPGFXMessageSummary`: remove the per-command detail fields nothing read,
   such as the cache, fill, surface-to-surface, monitor and ClearCodec subcodec
   fields.
@@ -98,8 +102,8 @@
   video surface. Before, those updates were dropped whenever the same frame also
   carried video. Now the surface snapshot carries only the areas other codecs
   drew last. `RDPFrameDecodeQueue` merges those areas over the decoded video and
-  keeps them through later partial video updates. Surfaces mapped to scaled
-  output still replace their video with the snapshot.
+  keeps them through later partial video updates, on surfaces mapped to
+  scaled output too.
 - Acknowledge every RDPGFX EndFrame and every surface frame marker, including
   after an update that fails to decode, and ignore cosmetic RDPGFX and DVC
   fields instead of ending the session.

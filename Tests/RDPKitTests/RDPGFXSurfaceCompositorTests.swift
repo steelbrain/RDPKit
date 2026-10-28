@@ -644,9 +644,10 @@ import Testing
     #expect(frame.surfaceRect == RDPFrameRect(left: 40, top: 50, right: 43, bottom: 52))
     #expect(frame.mappedOutputRect == RDPFrameRect(left: 40, top: 50, right: 46, bottom: 54))
     #expect(compositor.mappedOutputRect(surfaceID: 19) == RDPFrameRect(left: 40, top: 50, right: 46, bottom: 54))
-    #expect(frame.destinationRect == RDPFrameRect(left: 40, top: 50, right: 46, bottom: 54))
-    #expect(frame.regionRects == [RDPFrameRect(left: 42, top: 50, right: 46, bottom: 54)])
-    #expect(frame.decodedBitmapBytesPerRow == 24)
+    // The snapshot is unscaled, like video; the decoder scales what it composes.
+    #expect(frame.destinationRect == RDPFrameRect(left: 40, top: 50, right: 43, bottom: 52))
+    #expect(frame.regionRects == [RDPFrameRect(left: 41, top: 50, right: 43, bottom: 52)])
+    #expect(frame.decodedBitmapBytesPerRow == 12)
 }
 
 @Test func compositorBlitsUncompressedBitmapIntoMappedSurface() throws {
