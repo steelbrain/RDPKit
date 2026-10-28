@@ -4,11 +4,13 @@ private enum RDPFinalizationPDUType {
     static let control: UInt8 = 0x14
     static let synchronize: UInt8 = 0x1F
     static let fontList: UInt8 = 0x27
+    static let fontMap: UInt8 = 0x28
     static let frameAcknowledge: UInt8 = 0x38
 }
 
 private enum RDPControlAction {
     static let requestControl: UInt16 = 0x0001
+    static let grantedControl: UInt16 = 0x0002
     static let cooperate: UInt16 = 0x0004
 }
 
@@ -20,7 +22,7 @@ struct RDPClientSynchronizePDU: Equatable, Sendable {
     var shareID: UInt32
     var targetUser: UInt16
 
-    init(shareID: UInt32, targetUser: UInt16 = 1002) {
+    init(shareID: UInt32, targetUser: UInt16 = RDPServerChannelID.fixed) {
         self.shareID = shareID
         self.targetUser = targetUser
     }
@@ -148,80 +150,33 @@ struct RDPClientFrameAcknowledgePDU: Equatable, Sendable {
     }
 }
 
-/// Tracks server Share Data PDUs observed during Connection Finalization
-/// ([MS-RDPBCGR] 1.3.1.1 / 2.2.1.19–2.2.1.22).
-///
-/// Client-to-server finalization PDUs have **no** dependencies on server PDUs and
-/// may be sent as a single batch after Confirm Active. Server orderings vary
-/// across Windows, KRDP, and GNOME (optional Monitor Layout / Save Session Info,
-/// Synchronize/Cooperate ordering, interleaving with client Font List). This
-/// tracker accepts the MS-legal superset without server-family branching.
+/// Server Share Data PDUs seen during Connection Finalization ([MS-RDPBCGR]
+/// 1.3.1.1, 2.2.1.19-2.2.1.22). Servers order Synchronize and Cooperate
+/// differently and may interleave Monitor Layout or Save Session Info; only
+/// Font Map ends the phase.
 struct RDPConnectionFinalizationTracker: Equatable, Sendable {
-    private(set) var observedTypeNames: [String] = []
+    private(set) var receivedServerSynchronize = false
+    private(set) var receivedControlCooperate = false
+    private(set) var receivedControlGranted = false
+    private(set) var receivedFontMap = false
 
     mutating func observe(_ shareData: RDPShareDataPDU) {
-        observedTypeNames.append(shareData.typeName)
+        switch (shareData.pduType2, shareData.controlAction) {
+        case (RDPFinalizationPDUType.synchronize, _):
+            receivedServerSynchronize = true
+        case (RDPFinalizationPDUType.control, RDPControlAction.cooperate):
+            receivedControlCooperate = true
+        case (RDPFinalizationPDUType.control, RDPControlAction.grantedControl):
+            receivedControlGranted = true
+        case (RDPFinalizationPDUType.fontMap, _):
+            receivedFontMap = true
+        default:
+            break
+        }
     }
 
-    mutating func observe(typeName: String) {
-        observedTypeNames.append(typeName)
-    }
-
-    var receivedServerSynchronize: Bool {
-        observedTypeNames.contains("server-synchronize")
-    }
-
-    var receivedControlCooperate: Bool {
-        observedTypeNames.contains("control-cooperate")
-    }
-
-    var receivedControlGranted: Bool {
-        observedTypeNames.contains("control-granted-control")
-    }
-
-    var receivedFontMap: Bool {
-        observedTypeNames.contains("font-map")
-    }
-
-    /// Font Map ends connection finalization ([MS-RDPBCGR] 2.2.1.22).
     var isComplete: Bool {
         receivedFontMap
-    }
-
-    /// Optional intervening PDUs (Save Session Info, Monitor Layout, status, etc.)
-    /// must not alone satisfy finalization; only Font Map (or an explicit grant
-    /// path that still ends at Font Map) completes the phase.
-    static func isConnectionFinalizationShareDataType(_ typeName: String) -> Bool {
-        switch typeName {
-        case "server-synchronize",
-             "control-cooperate",
-             "control-granted-control",
-             "font-map":
-            true
-        default:
-            false
-        }
-    }
-
-    /// Whether a server Share Data type is a non-releasing intervening PDU that
-    /// may legally appear before or during finalization without completing it.
-    static func isOptionalInterveningShareDataType(_ typeName: String) -> Bool {
-        switch typeName {
-        case "save-session-info",
-             "monitor-layout",
-             "set-error-info",
-             "status-info",
-             "play-sound",
-             "set-keyboard-indicators",
-             "set-keyboard-ime-status",
-             "auto-reconnect-status",
-             "update",
-             "pointer",
-             "input":
-            true
-        default:
-            false
-        }
     }
 }
 

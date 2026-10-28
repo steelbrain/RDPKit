@@ -63,50 +63,54 @@ struct KRDPRegressionCoverageTests {
 
 @Test func regression06ServerControlCooperateBeforeSynchronizeCompletesViaShippedTracker() throws {
     var tracker = RDPConnectionFinalizationTracker()
-    tracker.observe(typeName: "control-cooperate")
-    tracker.observe(typeName: "server-synchronize")
-    tracker.observe(typeName: "control-granted-control")
-    tracker.observe(typeName: "font-map")
+    for packet in [
+        shareDataPacket(type: 0x14, payload: controlPayload(action: 0x0004)),
+        shareDataPacket(type: 0x1F, payload: synchronizePayload(targetUser: 1006)),
+        shareDataPacket(type: 0x14, payload: controlPayload(action: 0x0002)),
+        shareDataPacket(type: 0x28, payload: Data([0, 0, 0, 0, 3, 0, 4, 0])),
+    ] {
+        try tracker.observe(#require(try RDPShareDataPDU.parseIfPresent(fromTPKT: packet)))
+    }
 
-    #expect(tracker.observedTypeNames.prefix(2) == ["control-cooperate", "server-synchronize"])
+    #expect(tracker.receivedControlCooperate)
+    #expect(tracker.receivedServerSynchronize)
     #expect(tracker.isComplete)
-    // Wire-level pin: reverse ordering still parses as Share Data from real TPKT bytes.
-    let cooperate = try #require(try RDPShareDataPDU.parseIfPresent(
-        fromTPKT: shareDataPacket(type: 0x14, payload: controlPayload(action: 0x0004))
-    ))
-    let synchronize = try #require(try RDPShareDataPDU.parseIfPresent(
-        fromTPKT: shareDataPacket(type: 0x1F, payload: synchronizePayload(targetUser: 1006))
-    ))
-    #expect(cooperate.typeName == "control-cooperate")
-    #expect(synchronize.typeName == "server-synchronize")
 }
 
 @Test func regression07SaveSessionInfoBeforeSynchronizeDoesNotCompleteFinalization() throws {
     var tracker = RDPConnectionFinalizationTracker()
-    tracker.observe(typeName: "save-session-info")
-    tracker.observe(typeName: "server-synchronize")
+    var plainNotify = Data()
+    plainNotify.appendLittleEndianUInt32(0x0000_0002)
+    plainNotify.append(Data(repeating: 0, count: 576))
+    for packet in [
+        shareDataPacket(type: 0x26, payload: plainNotify),
+        shareDataPacket(type: 0x1F, payload: synchronizePayload(targetUser: 1006)),
+    ] {
+        try tracker.observe(#require(try RDPShareDataPDU.parseIfPresent(fromTPKT: packet)))
+    }
 
     #expect(tracker.isComplete == false)
-    #expect(RDPConnectionFinalizationTracker.isOptionalInterveningShareDataType("save-session-info"))
-    #expect(RDPConnectionFinalizationTracker.isConnectionFinalizationShareDataType("server-synchronize"))
 }
 
 @Test func regression08MonitorLayoutBeforeSynchronizeDoesNotCompleteFinalization() throws {
     var tracker = RDPConnectionFinalizationTracker()
-    tracker.observe(typeName: "monitor-layout")
-    tracker.observe(typeName: "server-synchronize")
+    for packet in [monitorLayoutPacket(), shareDataPacket(type: 0x1F, payload: synchronizePayload(targetUser: 1006))] {
+        try tracker.observe(#require(try RDPShareDataPDU.parseIfPresent(fromTPKT: packet)))
+    }
 
     #expect(tracker.isComplete == false)
-    #expect(RDPConnectionFinalizationTracker.isOptionalInterveningShareDataType("monitor-layout"))
 }
 
 @Test func regression09UnrelatedShareDataBeforeSynchronizeDoesNotCompleteFinalization() throws {
     var tracker = RDPConnectionFinalizationTracker()
-    tracker.observe(typeName: "set-error-info")
-    tracker.observe(typeName: "server-synchronize")
+    for packet in [
+        shareDataPacket(type: 0x2F, payload: Data([0x09, 0x00, 0x00, 0x00])),
+        shareDataPacket(type: 0x1F, payload: synchronizePayload(targetUser: 1006)),
+    ] {
+        try tracker.observe(#require(try RDPShareDataPDU.parseIfPresent(fromTPKT: packet)))
+    }
 
     #expect(tracker.isComplete == false)
-    #expect(RDPConnectionFinalizationTracker.isOptionalInterveningShareDataType("set-error-info"))
 }
 
 @Test func regression10PostConfirmResponseOrderMatchesKRDPFixture() throws {
