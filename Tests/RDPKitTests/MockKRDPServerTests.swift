@@ -377,6 +377,32 @@ struct MockKRDPServerTests {
     #expect(report.error == nil)
 }
 
+/// A connect-time auto-detect run made only of requests without a response
+/// must not fail the connection (C R0).
+@Test func preflightContinuesAfterAutoDetectRequestsWithoutResponses() throws {
+    let server = try MockKRDPServer.start(autoDetectBehavior: .noReplyRequestOnly)
+    defer { server.stop() }
+
+    let report = RDPPreflightClient().run(
+        configuration: RDPConnectionConfiguration(
+            host: "127.0.0.1",
+            port: server.port,
+            credentials: RDPCredentials(username: "rdp-user", password: "secret"),
+            timeoutSeconds: 5,
+            hideCertificateWarnings: true,
+            graphicsFrameCaptureLimit: 1,
+            desktopWidth: 1280,
+            desktopHeight: 720,
+            clipboardEnabled: false
+        )
+    )
+
+    #expect(report.status == "success")
+    #expect(report.rdpAutoDetectRequestType == "connect-time-bandwidth-measure-start")
+    #expect(report.rdpAutoDetectResponseHex == nil)
+    #expect(report.rdpGraphicsFirstFrame?.codecName == "avc420")
+}
+
 @Test func preflightHandlesMultiStepBandwidthAutoDetectBeforeActivation() throws {
     let server = try MockKRDPServer.start(autoDetectBehavior: .bandwidthMeasure)
     defer { server.stop() }

@@ -1041,14 +1041,14 @@ public final class RDPClipboardSession: @unchecked Sendable {
         return nil
     }
 
-    func updateServerCapabilities(_ capabilities: RDPClipboardCapabilitiesPDU) {
+    private func updateServerCapabilities(_ capabilities: RDPClipboardCapabilitiesPDU) {
         lock.lock()
         serverGeneralFlags = capabilities.generalFlags
         lock.unlock()
     }
 
     /// Long names are used only when both endpoints advertised them (MS-RDPECLIP 2.2.2.1.1.1).
-    var usesLongFormatNames: Bool {
+    private var usesLongFormatNames: Bool {
         lock.lock()
         defer { lock.unlock() }
         return negotiatedGeneralFlags & RDPClipboardCapabilityFlags.useLongFormatNames != 0
@@ -1056,7 +1056,7 @@ public final class RDPClipboardSession: @unchecked Sendable {
 
     /// Answers the Monitor Ready PDU (MS-RDPECLIP 3.2.5.1.2): Capabilities when the server sent
     /// its own, the Temporary Directory, then the mandatory Format List of the local content.
-    func respondToMonitorReady() {
+    private func respondToMonitorReady() {
         lock.lock()
         let serverGeneralFlags = serverGeneralFlags
         if let serverGeneralFlags {
@@ -1081,7 +1081,7 @@ public final class RDPClipboardSession: @unchecked Sendable {
         serverGeneralFlags & RDPClipboardCapabilitiesPDU.defaultGeneralFlags
     }
 
-    func sendFormatListResponse(ok: Bool) {
+    private func sendFormatListResponse(ok: Bool) {
         send(RDPClipboardPDU(
             messageType: RDPClipboardMessageType.formatListResponse,
             messageFlags: ok ? RDPClipboardMessageFlags.responseOK : RDPClipboardMessageFlags.responseFail
@@ -1121,7 +1121,7 @@ public final class RDPClipboardSession: @unchecked Sendable {
         return pendingFormatDataResponses.isEmpty ? nil : pendingFormatDataResponses.removeFirst()
     }
 
-    func respondToFormatDataRequest(_ request: RDPClipboardFormatDataRequestPDU) {
+    private func respondToFormatDataRequest(_ request: RDPClipboardFormatDataRequestPDU) {
         switch currentContent() {
         case let .unicodeText(text) where request.formatID == RDPClipboardFormatID.unicodeText:
             guard let response = RDPClipboardFormatDataResponsePDU.unicodeTextIfEncodable(text) else {

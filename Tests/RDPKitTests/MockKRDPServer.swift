@@ -187,6 +187,9 @@ enum MockKRDPGraphicsCapabilitySelection {
 enum MockKRDPAutoDetectBehavior {
     case singleRTT
     case bandwidthMeasure
+    /// Only a connect-time Bandwidth Measure Start, which has no response
+    /// ([MS-RDPBCGR] 2.2.14.1.2), then licensing.
+    case noReplyRequestOnly
 }
 
 enum MockKRDPLicensingBehavior {
@@ -1214,6 +1217,13 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
 
         case .clientInfo:
             try MockKRDPFixtures.expectSendDataRequest(packet, channelID: MockKRDPConstants.ioChannelID)
+            if autoDetectBehavior == .noReplyRequestOnly {
+                writePacket(MockKRDPFixtures.autoDetectRequest(requestType: 0x1014), context: context)
+                writePacket(MockKRDPFixtures.licenseValidClient(), context: context)
+                writePacket(MockKRDPFixtures.demandActive(), context: context)
+                stage = .confirmActive
+                break
+            }
             writePacket(MockKRDPFixtures.autoDetectRequest(), context: context)
             stage = .autoDetectResponse
 
@@ -2030,14 +2040,14 @@ private enum MockKRDPFixtures {
         return X224DataTPDU.wrap(data)
     }
 
-    static func autoDetectRequest() -> Data {
+    static func autoDetectRequest(requestType: UInt16 = 0x1001) -> Data {
         var payload = Data()
         payload.appendLittleEndianUInt16(0x1000)
         payload.appendLittleEndianUInt16(0)
         payload.appendUInt8(0x06)
         payload.appendUInt8(0x00)
         payload.appendLittleEndianUInt16(1)
-        payload.appendLittleEndianUInt16(0x1001)
+        payload.appendLittleEndianUInt16(requestType)
         return mcsSendDataIndication(
             channelID: MockKRDPConstants.messageChannelID,
             userData: payload
