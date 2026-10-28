@@ -102,8 +102,8 @@ private func parseGCCServerData(
     expectedRequestedProtocols: RDPSecurityProtocols?,
     expectedMessageChannelAdvertised: Bool
 ) throws {
-    // The client must ignore the ConnectData::connectPDU length (servers send 0x2A),
-    // so locate the server H.221 key instead of walking the PER header.
+    // GRD, KRdp and Windows (MS-RDPBCGR 4.1.4) send a wrong GCC ConnectPDU length
+    // (0x2A); do not validate it. Locate the server H.221 key instead.
     let serverKey = "McDn"
     guard let keyRange = data.range(of: Data(serverKey.utf8)) else {
         throw RDPDecodeError.invalidMCSConnectResponseHeader

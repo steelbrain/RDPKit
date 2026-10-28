@@ -43,6 +43,7 @@ struct MCSSendDataIndicationPDU: Equatable, Sendable {
             throw RDPDecodeError.invalidMCSSendDataIndication
         }
 
+        // GRD/KRdp set initiator to the client's own user ID; do not validate it.
         let initiatorOffset = try cursor.readBigEndianUInt16()
         let channelID = try cursor.readBigEndianUInt16()
         let flags = try cursor.readUInt8()

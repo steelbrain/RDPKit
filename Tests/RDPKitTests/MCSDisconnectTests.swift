@@ -30,15 +30,22 @@ import Testing
     }
 }
 
-@Test func parsesMCSDisconnectProviderUltimatumThreeBitReason() throws {
-    let pdu = try #require(try MCSDisconnectProviderUltimatumPDU.parseIfPresent(fromTPKT: Data([
-        0x03, 0x00, 0x00, 0x09,
-        0x02, 0xF0, 0x80,
-        0x22, 0x00,
-    ])))
-
-    #expect(pdu.reason == 4)
-    #expect(pdu.reasonName == "rn-channel-purged")
+@Test func parsesEveryMCSDisconnectProviderUltimatumReason() throws {
+    // T.125 Reason is a 3-bit PER enumeration after the 6-bit choice (8).
+    let expectations: [(bytes: [UInt8], name: String)] = [
+        ([0x20, 0x00], "rn-domain-disconnected"),
+        ([0x20, 0x80], "rn-provider-initiated"),
+        ([0x21, 0x00], "rn-token-purged"),
+        ([0x21, 0x80], "rn-user-requested"),
+        ([0x22, 0x00], "rn-channel-purged"),
+    ]
+    for (reason, expectation) in expectations.enumerated() {
+        let pdu = try #require(try MCSDisconnectProviderUltimatumPDU.parseIfPresent(
+            fromTPKT: Data([0x03, 0x00, 0x00, 0x09, 0x02, 0xF0, 0x80] + expectation.bytes)
+        ))
+        #expect(pdu.reason == UInt8(reason))
+        #expect(pdu.reasonName == expectation.name)
+    }
 }
 
 @Test func parsesMCSDisconnectProviderUltimatumFromDataSlice() throws {
