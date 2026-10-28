@@ -24,10 +24,19 @@ import Testing
     #expect(request.priorityChargeData.isEmpty)
 }
 
+@Test func answersNewerDynamicVirtualChannelCapabilitiesVersionWithHighestSupported() throws {
+    let request = try #require(try RDPDynamicVirtualChannelCapabilitiesRequest.parseIfPresent(
+        from: Data([0x50, 0x00, 0x04, 0x00, 0x33, 0x33, 0x11, 0x11, 0x3D, 0x0A, 0xA7, 0x04, 0x01, 0x00])
+    ))
+
+    #expect(request.version == 4)
+    #expect(RDPDynamicVirtualChannelCapabilitiesResponse(requestedVersion: request.version).version == 3)
+}
+
 @Test func rejectsDynamicVirtualChannelCapabilitiesRequestWithInvalidVersionOrPriorityLength() {
     #expect(throws: RDPDecodeError.invalidDynamicVirtualChannelPDU) {
         try RDPDynamicVirtualChannelCapabilitiesRequest.parseIfPresent(
-            from: Data([0x50, 0x00, 0x04, 0x00])
+            from: Data([0x50, 0x00, 0x00, 0x00])
         )
     }
     #expect(throws: RDPDecodeError.invalidDynamicVirtualChannelPDU) {

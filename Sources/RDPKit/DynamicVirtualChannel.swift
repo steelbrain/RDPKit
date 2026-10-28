@@ -106,6 +106,8 @@ struct RDPDynamicVirtualChannelCapabilitiesRequest: Equatable, Sendable {
         let version = try cursor.readLittleEndianUInt16()
         let priorityChargeData = cursor.readRemainingData()
         switch version {
+        case 0:
+            throw RDPDecodeError.invalidDynamicVirtualChannelPDU
         case 1:
             guard priorityChargeData.isEmpty else {
                 throw RDPDecodeError.invalidDynamicVirtualChannelPDU
@@ -115,7 +117,9 @@ struct RDPDynamicVirtualChannelCapabilitiesRequest: Equatable, Sendable {
                 throw RDPDecodeError.invalidDynamicVirtualChannelPDU
             }
         default:
-            throw RDPDecodeError.invalidDynamicVirtualChannelPDU
+            // A newer version: the client answers with the highest version it supports and
+            // the server adjusts to it (MS-RDPEDYC 1.7, 2.2.1).
+            break
         }
 
         return RDPDynamicVirtualChannelCapabilitiesRequest(
