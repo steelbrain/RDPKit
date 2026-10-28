@@ -148,17 +148,6 @@ import Testing
     }
 }
 
-@Test func staticVirtualChannelRejectsChunkedPDUWithoutShowProtocol() {
-    var userData = Data()
-    userData.appendLittleEndianUInt32(8)
-    userData.appendLittleEndianUInt32(RDPStaticVirtualChannelFlags.first)
-    userData.append(contentsOf: [0x50, 0x00, 0x02, 0x00])
-
-    #expect(throws: RDPDecodeError.invalidStaticVirtualChannelPDU) {
-        try RDPStaticVirtualChannelPDU.parse(fromUserData: userData)
-    }
-}
-
 @Test func staticVirtualChannelParsesStandaloneNoFlagPDU() throws {
     let pdu = try RDPStaticVirtualChannelPDU.parse(fromUserData: staticChannelUserData(
         totalLength: 4,
@@ -168,85 +157,52 @@ import Testing
 
     #expect(!pdu.isComplete)
     #expect(pdu.isStandalone)
+    #expect(pdu.canDispatchPayload)
     #expect(pdu.payload == Data([0x50, 0x00, 0x02, 0x00]))
 }
 
-@Test func staticVirtualChannelRejectsNoFlagPartialPDUWithoutShowProtocol() {
-    #expect(throws: RDPDecodeError.invalidStaticVirtualChannelPDU) {
-        try RDPStaticVirtualChannelPDU.parse(fromUserData: staticChannelUserData(
-            totalLength: 8,
-            flags: 0,
-            payload: Data([0x50, 0x00, 0x02, 0x00])
-        ))
-    }
-}
-
-@Test func staticVirtualChannelParsesEmptySuspendAndResumePDUs() throws {
+@Test func staticVirtualChannelNeverDispatchesSuspendOrResumePDUs() throws {
     for flag in [RDPStaticVirtualChannelFlags.suspend, RDPStaticVirtualChannelFlags.resume] {
-        let pdu = try RDPStaticVirtualChannelPDU.parse(fromUserData: staticChannelUserData(
+        let empty = try RDPStaticVirtualChannelPDU.parse(fromUserData: staticChannelUserData(
             totalLength: 0,
             flags: flag,
             payload: Data()
         ))
-
-        #expect(pdu.isFlowControl)
-        #expect(!pdu.isComplete)
-        #expect(!pdu.isStandalone)
-    }
-}
-
-@Test func staticVirtualChannelRejectsFlowControlPDUWithPayload() {
-    #expect(throws: RDPDecodeError.invalidStaticVirtualChannelPDU) {
-        try RDPStaticVirtualChannelPDU.parse(fromUserData: staticChannelUserData(
+        let withDataFlags = try RDPStaticVirtualChannelPDU.parse(fromUserData: staticChannelUserData(
             totalLength: 1,
-            flags: RDPStaticVirtualChannelFlags.suspend,
+            flags: flag | RDPStaticVirtualChannelFlags.complete,
             payload: Data([0x00])
         ))
-    }
-}
 
-@Test func staticVirtualChannelRejectsFlowControlPDUWithDataFlags() {
-    #expect(throws: RDPDecodeError.invalidStaticVirtualChannelPDU) {
-        try RDPStaticVirtualChannelPDU.parse(fromUserData: staticChannelUserData(
-            totalLength: 0,
-            flags: RDPStaticVirtualChannelFlags.suspend | RDPStaticVirtualChannelFlags.first,
-            payload: Data()
-        ))
-    }
-    #expect(throws: RDPDecodeError.invalidStaticVirtualChannelPDU) {
-        try RDPStaticVirtualChannelPDU.parse(fromUserData: staticChannelUserData(
-            totalLength: 0,
-            flags: RDPStaticVirtualChannelFlags.suspend | RDPStaticVirtualChannelFlags.resume,
-            payload: Data()
-        ))
+        #expect(empty.isFlowControl)
+        #expect(!empty.canDispatchPayload)
+        #expect(withDataFlags.isFlowControl)
+        #expect(!withDataFlags.canDispatchPayload)
     }
 }
 
 @Test func staticVirtualChannelReassemblesChunkedPDUs() throws {
-    var reassembler = RDPStaticVirtualChannelReassembler()
-    #expect(try reassembler.append(try chunk(totalLength: 9, flags: .first, payload: [1, 2, 3])) == nil)
-    #expect(try reassembler.append(try chunk(totalLength: 9, flags: 0, payload: [4, 5, 6])) == nil)
+    for extraFlags in [0, RDPStaticVirtualChannelFlags.showProtocol] {
+        var reassembler = RDPStaticVirtualChannelReassembler()
+        let first = try chunk(totalLength: 9, flags: .first | extraFlags, payload: [1, 2, 3])
+        let middle = try chunk(totalLength: 9, flags: extraFlags, payload: [4, 5, 6])
+        let last = try chunk(totalLength: 9, flags: .last | extraFlags, payload: [7, 8, 9])
 
-    let complete = try #require(try reassembler.append(try chunk(totalLength: 9, flags: .last, payload: [7, 8, 9])))
+        #expect(try reassembler.append(first) == nil)
+        #expect(try reassembler.append(middle) == nil)
+        let complete = try #require(try reassembler.append(last))
 
-    #expect(complete.totalLength == 9)
-    #expect(complete.flags == RDPStaticVirtualChannelFlags.completeWithShowProtocol)
-    #expect(complete.payload == Data([1, 2, 3, 4, 5, 6, 7, 8, 9]))
-    #expect(complete.isComplete)
+        #expect(complete.totalLength == 9)
+        #expect(complete.flags == RDPStaticVirtualChannelFlags.complete)
+        #expect(complete.payload == Data([1, 2, 3, 4, 5, 6, 7, 8, 9]))
+        #expect(complete.isComplete)
+    }
 }
 
 @Test func staticVirtualChannelReassemblerReturnsStandalonePDUAndIgnoresFlowControl() throws {
     var reassembler = RDPStaticVirtualChannelReassembler()
-    let suspend = try RDPStaticVirtualChannelPDU.parse(fromUserData: staticChannelUserData(
-        totalLength: 0,
-        flags: RDPStaticVirtualChannelFlags.suspend,
-        payload: Data()
-    ))
-    let standalone = try RDPStaticVirtualChannelPDU.parse(fromUserData: staticChannelUserData(
-        totalLength: 3,
-        flags: 0,
-        payload: Data([1, 2, 3])
-    ))
+    let suspend = try chunk(totalLength: 0, flags: RDPStaticVirtualChannelFlags.suspend, payload: [])
+    let standalone = try chunk(totalLength: 3, flags: 0, payload: [1, 2, 3])
 
     #expect(try reassembler.append(suspend) == nil)
     #expect(try reassembler.append(standalone) == standalone)
@@ -273,6 +229,15 @@ import Testing
     var missingFirst = RDPStaticVirtualChannelReassembler()
     #expect(throws: RDPDecodeError.invalidStaticVirtualChannelPDU) {
         try missingFirst.append(try chunk(totalLength: 4, flags: .last, payload: [1, 2]))
+    }
+    #expect(throws: RDPDecodeError.invalidStaticVirtualChannelPDU) {
+        try missingFirst.append(try chunk(totalLength: 4, flags: 0, payload: [1, 2]))
+    }
+
+    var restartedSequence = RDPStaticVirtualChannelReassembler()
+    _ = try restartedSequence.append(try chunk(totalLength: 4, flags: .first, payload: [1, 2]))
+    #expect(throws: RDPDecodeError.invalidStaticVirtualChannelPDU) {
+        try restartedSequence.append(try chunk(totalLength: 2, flags: .first | .last, payload: [3, 4]))
     }
 
     var mismatchedLength = RDPStaticVirtualChannelReassembler()
@@ -316,7 +281,7 @@ private func staticVirtualChannelPacket(
 private func chunk(totalLength: UInt32, flags: UInt32, payload: [UInt8]) throws -> RDPStaticVirtualChannelPDU {
     try RDPStaticVirtualChannelPDU.parse(fromUserData: staticChannelUserData(
         totalLength: totalLength,
-        flags: flags | RDPStaticVirtualChannelFlags.showProtocol,
+        flags: flags,
         payload: Data(payload)
     ))
 }
