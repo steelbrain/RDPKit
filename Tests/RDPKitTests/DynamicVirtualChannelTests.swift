@@ -392,6 +392,31 @@ import Testing
     #expect(packets[0].count == 1_600)
 }
 
+@Test func dynamicVirtualChannelDataPDUHoldsDecompressedPayloadLargerThanOnePDU() {
+    let payload = Data(repeating: 0xAA, count: 8_192)
+
+    #expect(RDPDynamicVirtualChannelDataPDU(channelID: 7, payload: payload).payload.count == 8_192)
+}
+
+@Test func rejectsUncompressedDynamicVirtualChannelDataPDULargerThan1600Bytes() {
+    #expect(throws: RDPDecodeError.invalidDynamicVirtualChannelPDU) {
+        try RDPDynamicVirtualChannelDataPDU.parseIfPresent(
+            from: Data([0x30, 0x07]) + Data(repeating: 0, count: 1_599)
+        )
+    }
+}
+
+@Test func packetizesDataSliceWithNonZeroStartIndex() throws {
+    let backing = Data((0 ..< 2_100).map { UInt8(truncatingIfNeeded: $0) })
+    let payload = backing[100...]
+    let packets = RDPDynamicVirtualChannelDataPacketizer(channelID: 7, payload: payload).encodedPDUs()
+    let first = try #require(try RDPDynamicVirtualChannelDataFirstPDU.parseIfPresent(from: packets[0]))
+    let second = try #require(try RDPDynamicVirtualChannelDataPDU.parseIfPresent(from: packets[1]))
+
+    #expect(packets.count == 2)
+    #expect(first.payload + second.payload == Data(payload))
+}
+
 @Test func packetizesLargeDynamicVirtualChannelDataPDUWithDataFirst() throws {
     let payload = Data((0 ..< 2_000).map { UInt8(truncatingIfNeeded: $0) })
     let packets = RDPDynamicVirtualChannelDataPacketizer(channelID: 7, payload: payload).encodedPDUs()

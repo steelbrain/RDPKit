@@ -459,16 +459,12 @@ struct RDPMouseCursorCapsAdvertisePDU: Equatable, Sendable {
 }
 
 struct RDPDynamicVirtualChannelDataPDU: Equatable, Sendable {
+    /// Largest DVC PDU on the wire ([MS-RDPEDYC] 2.2.3). Decompressed payloads
+    /// can be larger ([MS-RDPEDYC] 2.2.3.4), so the initializer does not cap them.
     static let maximumPacketByteCount = 1_600
 
     var channelID: UInt32
     var payload: Data
-
-    init(channelID: UInt32, payload: Data) {
-        precondition(payload.count <= Self.maximumPayloadByteCount(channelID: channelID))
-        self.channelID = channelID
-        self.payload = payload
-    }
 
     var typeName: String {
         "dynvc-data"
@@ -501,6 +497,9 @@ struct RDPDynamicVirtualChannelDataPDU: Equatable, Sendable {
         guard header.command == .data else {
             return nil
         }
+        guard data.count <= maximumPacketByteCount else {
+            throw RDPDecodeError.invalidDynamicVirtualChannelPDU
+        }
 
         return try RDPDynamicVirtualChannelDataPDU(
             channelID: cursor.readDynamicVirtualChannelID(lengthCode: header.channelIDLength),
@@ -530,21 +529,20 @@ struct RDPDynamicVirtualChannelDataPacketizer: Equatable, Sendable {
         ))
         precondition(firstPayloadLength > 0)
 
-        var pdus: [Data] = []
-        pdus.append(encodedDataFirstPDU(
+        var pdus = [encodedDataFirstPDU(
             totalLength: UInt32(payload.count),
             lengthCode: lengthCode,
             payload: payload.prefix(firstPayloadLength)
-        ))
-
-        var offset = firstPayloadLength
-        while offset < payload.count {
-            let endIndex = min(offset + singlePayloadLimit, payload.count)
+        )]
+        var start = payload.index(payload.startIndex, offsetBy: firstPayloadLength)
+        while start < payload.endIndex {
+            let end = payload.index(start, offsetBy: singlePayloadLimit, limitedBy: payload.endIndex)
+                ?? payload.endIndex
             pdus.append(RDPDynamicVirtualChannelDataPDU(
                 channelID: channelID,
-                payload: payload.subdata(in: offset ..< endIndex)
+                payload: payload.subdata(in: start ..< end)
             ).encoded())
-            offset = endIndex
+            start = end
         }
         return pdus
     }
