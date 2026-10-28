@@ -124,6 +124,7 @@ enum MockKRDPGraphicsBehavior: Equatable {
     case sendGnomeRemoteDesktopCAPROGRESSIVEFrame
     case sendVideoBeforeBitmapCompositionFrame
     case sendMultipleVideoUpdatesInFrame
+    case sendTwoFramesInOnePayload
     case sendMultipleBitmapSurfacesInFrame
     case sendMalformedAVCFrame
     case sendInvalidGraphicsPDU
@@ -133,6 +134,7 @@ enum MockKRDPGraphicsBehavior: Equatable {
     case sendUnknownCloseBeforeFrame
     case sendEmptyFrameThenStall
     case closeAfterFirstFrame
+    case setErrorInfoThenCloseAfterFirstFrame
     case setErrorInfoLogoffBeforeFrame
     case stallAfterCapsConfirm
 }
@@ -1442,6 +1444,7 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
                  .sendGnomeRemoteDesktopCAPROGRESSIVEFrame,
                  .sendVideoBeforeBitmapCompositionFrame,
                  .sendMultipleVideoUpdatesInFrame,
+                 .sendTwoFramesInOnePayload,
                  .sendMultipleBitmapSurfacesInFrame,
                  .sendMalformedAVCFrame,
                  .sendInvalidGraphicsPDU,
@@ -1450,6 +1453,7 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
                  .sendSoftSyncBeforeFrame,
                  .sendUnknownCloseBeforeFrame,
                  .closeAfterFirstFrame,
+                 .setErrorInfoThenCloseAfterFirstFrame,
                  .setErrorInfoLogoffBeforeFrame:
                 releaseGraphicsFrame(context: context)
                 stage = .graphicsFrameAcknowledge
@@ -1463,6 +1467,11 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
         case .graphicsFrameAcknowledge:
             _ = try MockKRDPFixtures.staticVirtualChannelPayload(from: packet)
             if graphicsBehavior == .closeAfterFirstFrame {
+                context.close(promise: nil)
+            }
+            if graphicsBehavior == .setErrorInfoThenCloseAfterFirstFrame {
+                // ERRINFO_DISCONNECTED_BY_OTHERCONNECTION, then TCP close.
+                writePacket(MockKRDPFixtures.setErrorInfo(0x0000_0005), context: context)
                 context.close(promise: nil)
             }
             stage = .done
@@ -1547,7 +1556,9 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
         }
         if let request = try RDPClipboardFormatDataRequestPDU.parseIfPresent(from: clipboardPDU) {
             let response = clipboardFormatDataResponse(for: request)
-            writePacket(MockKRDPFixtures.clipboardPacket(response.encoded()), context: context)
+            for chunk in MockKRDPFixtures.clipboardPackets(response.encoded()) {
+                writePacket(chunk, context: context)
+            }
             return true
         }
 
@@ -2367,6 +2378,17 @@ private enum MockKRDPFixtures {
         staticVirtualChannelPacket(payload, channelID: MockKRDPConstants.clipboardChannelID)
     }
 
+    /// Splits a payload into the 1,600-byte chunks the client advertises
+    /// (VCChunkSize, [MS-RDPBCGR] 2.2.7.1.10, 3.1.5.2.1).
+    static func clipboardPackets(_ payload: Data) -> [Data] {
+        let chunkSize = RDPStaticVirtualChannelPDU.defaultChunkByteCount
+        return fragmentedStaticVirtualChannelPackets(
+            payload,
+            chunkSizes: Array(repeating: chunkSize, count: payload.count / chunkSize + 1),
+            channelID: MockKRDPConstants.clipboardChannelID
+        )
+    }
+
     static func graphicsCreateRequest() -> Data {
         staticVirtualChannelPacket(graphicsCreateRequestPayload())
     }
@@ -2526,7 +2548,8 @@ private enum MockKRDPFixtures {
         case .sendFirstFrame,
              .sendCompressedCapsConfirmFirstFrame,
              .sendFragmentedCompressedCapsConfirmFirstFrame,
-             .closeAfterFirstFrame:
+             .closeAfterFirstFrame,
+             .setErrorInfoThenCloseAfterFirstFrame:
             [graphicsDynamicPacket(segmentedGraphicsData(avc420FrameMessages()))]
         case .sendPointerUpdatesBeforeFirstFrame:
             [pointerColorUpdate(), cachedPointerUpdate(), graphicsDynamicPacket(segmentedGraphicsData(avc420FrameMessages()))]
@@ -2548,6 +2571,13 @@ private enum MockKRDPFixtures {
             [graphicsDynamicPacket(segmentedGraphicsData(videoBeforeBitmapCompositionFrameMessages()))]
         case .sendMultipleVideoUpdatesInFrame:
             [graphicsDynamicPacket(segmentedGraphicsData(multipleVideoUpdatesInFrameMessages()))]
+        case .sendTwoFramesInOnePayload:
+            [graphicsDynamicPacket(segmentedGraphicsData(
+                avc420FrameMessages()
+                    + startFrameMessage(frameID: 2)
+                    + wireToSurfaceMessage()
+                    + endFrameMessage(frameID: 2)
+            ))]
         case .sendMultipleBitmapSurfacesInFrame:
             [graphicsDynamicPacket(segmentedGraphicsData(multipleBitmapSurfacesInFrameMessages()))]
         case .sendMalformedAVCFrame:

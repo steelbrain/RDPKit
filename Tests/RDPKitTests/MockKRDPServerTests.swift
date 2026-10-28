@@ -1536,6 +1536,40 @@ struct MockKRDPServerTests {
     #expect(observed.frames.map(\.surfaceID) == [1, 2])
 }
 
+/// Two complete frames in one DVC message are each delivered and acknowledged
+/// ([MS-RDPEGFX] 3.2.5.12).
+@Test func preflightDeliversAndAcknowledgesTwoFramesFromOnePayload() throws {
+    let server = try MockKRDPServer.start(graphicsBehavior: .sendTwoFramesInOnePayload)
+    defer { server.stop() }
+
+    let observed = MockKRDPObservedEvents()
+    let report = RDPPreflightClient().run(
+        configuration: RDPConnectionConfiguration(
+            host: "127.0.0.1",
+            port: server.port,
+            credentials: RDPCredentials(username: "rdp-user", password: "secret"),
+            timeoutSeconds: 5,
+            hideCertificateWarnings: true,
+            graphicsFrameCaptureLimit: 2,
+            desktopWidth: 1280,
+            desktopHeight: 720,
+            clipboardEnabled: false
+        ),
+        onGraphicsFrame: { frame in
+            observed.record(frame)
+        }
+    )
+
+    #expect(report.status == "success")
+    #expect(observed.frames.map(\.frameID) == [1, 2])
+    let acknowledgedFrameIDs = try (report.rdpGraphicsFrameAcknowledgeHexes ?? []).map { hex in
+        let packet = try #require(Data(rdpHexString: hex))
+        // RDPGFX_FRAME_ACKNOWLEDGE_PDU ends with frameId, totalFramesDecoded.
+        return packet.suffix(8).prefix(4).reversed().reduce(UInt32(0)) { $0 << 8 | UInt32($1) }
+    }
+    #expect(acknowledgedFrameIDs == [1, 2])
+}
+
 @Test func preflightEmitsEveryDirtyBitmapSurfaceWithinOneRDPGFXFrame() throws {
     let server = try MockKRDPServer.start(graphicsBehavior: .sendMultipleBitmapSurfacesInFrame)
     defer { server.stop() }
@@ -1805,6 +1839,32 @@ struct MockKRDPServerTests {
     #expect(report.error == nil)
 }
 
+/// A close after a non-clean Set Error Info is the server ending the session
+/// with that error, not a clean disconnect ([MS-RDPBCGR] 2.2.5.1.1).
+@Test func livePreflightReportsNonCleanSetErrorInfoBeforeCloseAsFailure() throws {
+    let server = try MockKRDPServer.start(graphicsBehavior: .setErrorInfoThenCloseAfterFirstFrame)
+    defer { server.stop() }
+
+    let report = RDPPreflightClient().run(
+        configuration: RDPConnectionConfiguration(
+            host: "127.0.0.1",
+            port: server.port,
+            credentials: RDPCredentials(username: "rdp-user", password: "secret"),
+            timeoutSeconds: 5,
+            hideCertificateWarnings: true,
+            graphicsFrameCaptureLimit: nil,
+            desktopWidth: 1280,
+            desktopHeight: 720,
+            clipboardEnabled: false
+        )
+    )
+
+    #expect(report.status == "failure")
+    #expect(report.rdpGraphicsFirstFrame?.codecName == "avc420")
+    #expect(report.rdpRemoteTerminationErrorInfo == 0x0000_0005)
+    #expect(report.error == "server ended the session with ERRINFO_0x00000005")
+}
+
 private enum MockGraphicsFrameHandlerError: Error, CustomStringConvertible {
     case failed
 
@@ -1934,9 +1994,40 @@ private enum MockGraphicsFrameHandlerError: Error, CustomStringConvertible {
     #expect(report.error == nil)
 }
 
+/// After Monitor Ready the client MUST send a Format List ([MS-RDPECLIP]
+/// 3.2.5.1.2), with or without an onClipboardReady handler.
+@Test func preflightAnswersClipboardMonitorReadyWithoutHandlers() throws {
+    let server = try MockKRDPServer.start(remoteClipboardText: "remote")
+    defer { server.stop() }
+
+    let report = RDPPreflightClient().run(
+        configuration: RDPConnectionConfiguration(
+            host: "127.0.0.1",
+            port: server.port,
+            credentials: RDPCredentials(username: "rdp-user", password: "secret"),
+            timeoutSeconds: 5,
+            hideCertificateWarnings: true,
+            graphicsFrameCaptureLimit: 1,
+            desktopWidth: 1280,
+            desktopHeight: 720,
+            clipboardEnabled: true
+        )
+    )
+
+    #expect(report.status == "success")
+    let sent = server.transcript.snapshot.clientClipboardMessages.map(\.typeName)
+    #expect(Array(sent.prefix(3)) == [
+        "clipboard-capabilities",
+        "clipboard-temporary-directory",
+        "clipboard-format-list",
+    ])
+    #expect(sent.contains("clipboard-format-list-response"))
+}
+
 @Test func preflightVerifiesWindowsCompatibilityBehaviorsWithMockServer() throws {
     let localClipboardText = "mock_local_clip"
-    let remoteClipboardText = "mock_remote_clip"
+    // About 4 KB of UTF-16: the Format Data Response arrives as FIRST, middle and LAST chunks.
+    let remoteClipboardText = String(repeating: "mock_remote_clip ", count: 120)
     let inputText = "mock_input"
     let server = try MockKRDPServer.start(
         remoteClipboardText: remoteClipboardText,
