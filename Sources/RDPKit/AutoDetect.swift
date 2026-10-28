@@ -59,7 +59,10 @@ struct RDPServerAutoDetectRequest: Equatable, Sendable {
     /// Bandwidth Measure Start/Payload and Network Characteristics Result
     /// have none; the Network Characteristics Sync response is reserved for
     /// auto-reconnect with previously measured values (2.2.14.2.3).
-    func response(measuredByteCount: UInt32? = nil) -> RDPClientAutoDetectResponsePDU? {
+    func response(
+        measuredByteCount: UInt32? = nil,
+        measuredMilliseconds: UInt32 = 1
+    ) -> RDPClientAutoDetectResponsePDU? {
         switch requestType {
         case 0x0001, 0x1001:
             return RDPClientAutoDetectResponsePDU(sequenceNumber: sequenceNumber)
@@ -67,13 +70,15 @@ struct RDPServerAutoDetectRequest: Equatable, Sendable {
             return RDPClientAutoDetectResponsePDU(
                 sequenceNumber: sequenceNumber,
                 responseType: RDPClientAutoDetectResponsePDU.ResponseType.bandwidthMeasureResults,
-                bandwidthByteCount: measuredByteCount ?? measuredByteCountContribution
+                bandwidthByteCount: measuredByteCount ?? measuredByteCountContribution,
+                bandwidthMilliseconds: measuredMilliseconds
             )
         case 0x0429:
             return RDPClientAutoDetectResponsePDU(
                 sequenceNumber: sequenceNumber,
                 responseType: RDPClientAutoDetectResponsePDU.ResponseType.continuousBandwidthMeasureResults,
-                bandwidthByteCount: measuredByteCount ?? measuredByteCountContribution
+                bandwidthByteCount: measuredByteCount ?? measuredByteCountContribution,
+                bandwidthMilliseconds: measuredMilliseconds
             )
         default:
             return nil
@@ -116,6 +121,44 @@ struct RDPServerAutoDetectRequest: Equatable, Sendable {
             requestType: requestType,
             payloadByteCount: payloadByteCount
         )
+    }
+}
+
+/// Answers a run of auto-detect requests, measuring each bandwidth test:
+/// Bandwidth Measure Results report the bytes and the milliseconds between
+/// receipt of the Start and Stop requests ([MS-RDPBCGR] 2.2.14.2.2).
+struct RDPAutoDetectBandwidthMeter: Sendable {
+    private var startedAt: ContinuousClock.Instant?
+    private var byteCount: UInt32 = 0
+
+    mutating func response(
+        to request: RDPServerAutoDetectRequest,
+        receivedAt now: ContinuousClock.Instant = .now
+    ) -> RDPClientAutoDetectResponsePDU? {
+        if request.resetsMeasuredByteCount {
+            startedAt = now
+            byteCount = 0
+        }
+        let (total, overflow) = byteCount.addingReportingOverflow(request.measuredByteCountContribution)
+        byteCount = overflow ? .max : total
+
+        guard let response = request.response(
+            measuredByteCount: byteCount,
+            measuredMilliseconds: startedAt.map { Self.milliseconds(now - $0) } ?? 1
+        ) else {
+            return nil
+        }
+        if case .bandwidth = response.payload {
+            startedAt = nil
+            byteCount = 0
+        }
+        return response
+    }
+
+    private static func milliseconds(_ duration: Duration) -> UInt32 {
+        let (seconds, attoseconds) = duration.components
+        let milliseconds = seconds * 1000 + attoseconds / 1_000_000_000_000_000
+        return UInt32(clamping: milliseconds)
     }
 }
 

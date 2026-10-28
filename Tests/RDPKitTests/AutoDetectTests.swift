@@ -275,3 +275,20 @@ import Testing
         0x04, 0x00, 0x00, 0x00,
     ]))
 }
+
+@Test func bandwidthMeterReportsBytesAndTimeBetweenStartAndStop() {
+    func request(_ type: UInt16, payload: Int = 0) -> RDPServerAutoDetectRequest {
+        RDPServerAutoDetectRequest(channelID: 1005, sequenceNumber: 7, requestType: type, payloadByteCount: payload)
+    }
+    let start = ContinuousClock.now
+    var meter = RDPAutoDetectBandwidthMeter()
+
+    #expect(meter.response(to: request(0x1014), receivedAt: start) == nil)
+    #expect(meter.response(to: request(0x0002, payload: 1000), receivedAt: start + .milliseconds(40)) == nil)
+    let results = meter.response(to: request(0x002B, payload: 500), receivedAt: start + .milliseconds(250))
+    #expect(results?.payload == .bandwidth(byteCount: 1516, milliseconds: 250))
+
+    let unstarted = meter.response(to: request(0x002B, payload: 4), receivedAt: start + .seconds(5))
+    #expect(unstarted?.payload == .bandwidth(byteCount: 12, milliseconds: 1))
+    #expect(meter.response(to: request(0x1001), receivedAt: start)?.payload == .rtt)
+}
