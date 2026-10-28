@@ -702,8 +702,8 @@ import Testing
         sentMessageHandler: sent.record
     )
 
-    session.updateServerCapabilities(RDPClipboardCapabilitiesPDU())
-    session.sendClientCapabilities()
+    #expect(try session.receive(RDPClipboardPDU.parse(from: RDPClipboardCapabilitiesPDU().encoded())) == nil)
+    #expect(try session.receive(RDPClipboardPDU(messageType: RDPClipboardMessageType.monitorReady)) == .ready)
 
     #expect(sent.summaries.map(\.typeName) == [
         "clipboard-capabilities",
@@ -711,6 +711,55 @@ import Testing
         "clipboard-format-list",
     ])
     #expect(try clipboardPayload(fromPackets: sent.packets[2]) == RDPClipboardFormatListPDU(entries: []).encoded())
+    _ = try channel.finish()
+}
+
+@Test func clipboardSessionSkipsCapabilitiesWhenServerSentNoneAndUsesShortNames() throws {
+    let channel = EmbeddedChannel()
+    let sent = ClipboardSentMessages()
+    let session = RDPClipboardSession(
+        userChannelID: 1006,
+        staticChannelID: 1007,
+        channel: channel,
+        sentMessageHandler: sent.record
+    )
+
+    session.publishLocalUnicodeText("hello")
+    #expect(try session.receive(RDPClipboardPDU(messageType: RDPClipboardMessageType.monitorReady)) == .ready)
+
+    #expect(sent.summaries.map(\.typeName) == [
+        "clipboard-temporary-directory",
+        "clipboard-format-list",
+    ])
+    #expect(try clipboardPayload(fromPackets: sent.packets[1]) == RDPClipboardFormatListPDU(entries: [
+        RDPClipboardFormatListEntry(formatID: RDPClipboardFormatID.unicodeText),
+    ]).encoded(useLongFormatNames: false))
+    _ = try channel.finish()
+}
+
+@Test func clipboardSessionRequestsAnnouncedTextAndDropsUnsolicitedResponses() throws {
+    let channel = EmbeddedChannel()
+    let sent = ClipboardSentMessages()
+    let session = RDPClipboardSession(
+        userChannelID: 1006,
+        staticChannelID: 1007,
+        channel: channel,
+        sentMessageHandler: sent.record
+    )
+    let formatList = RDPClipboardFormatListPDU(entries: [
+        RDPClipboardFormatListEntry(formatID: RDPClipboardFormatID.unicodeText),
+    ]).encoded()
+    let textResponse = RDPClipboardFormatDataResponsePDU.unicodeText("hello").encoded()
+
+    _ = try session.receive(RDPClipboardPDU.parse(from: RDPClipboardCapabilitiesPDU().encoded()))
+    _ = try session.receive(RDPClipboardPDU(messageType: RDPClipboardMessageType.monitorReady))
+    #expect(try session.receive(RDPClipboardPDU.parse(from: formatList)) == nil)
+    #expect(try session.receive(RDPClipboardPDU.parse(from: textResponse)) == .text("hello"))
+    #expect(try session.receive(RDPClipboardPDU.parse(from: textResponse)) == nil)
+    #expect(sent.summaries.suffix(2).map(\.typeName) == [
+        "clipboard-format-list-response",
+        "clipboard-format-data-request",
+    ])
     _ = try channel.finish()
 }
 

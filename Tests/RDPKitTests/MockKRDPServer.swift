@@ -1829,8 +1829,8 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
         writePacket(MockKRDPFixtures.controlGranted(), context: context)
         writePacket(MockKRDPFixtures.fontMap(), context: context)
         if clipboardEnabled {
-            writePacket(MockKRDPFixtures.clipboardMonitorReady(), context: context)
             writePacket(MockKRDPFixtures.clipboardCapabilities(), context: context)
+            writePacket(MockKRDPFixtures.clipboardMonitorReady(), context: context)
             writePacket(
                 MockKRDPFixtures.clipboardFormatList(
                     includeFiles: clipboardFiles.isEmpty == false,

@@ -964,7 +964,12 @@ public final class RDPClipboardSession: @unchecked Sendable {
     private let lock = NSLock()
     private var localContent = RDPClipboardLocalContent.empty
     private var pendingFormatDataResponses: [RDPClipboardRequestedFormatDataResponse] = []
-    private var serverGeneralFlags: UInt32 = 0
+    /// nil until the server sends its Clipboard Capabilities PDU.
+    private var serverGeneralFlags: UInt32?
+    /// Flags this client advertised; 0, the protocol default, when it sent no Capabilities PDU.
+    private var negotiatedGeneralFlags: UInt32 = 0
+    /// Format Lists wait for the initialization sequence (MS-RDPECLIP 1.3.2.1).
+    private var hasAnsweredMonitorReady = false
     private var staticChannelReassembler = RDPStaticVirtualChannelReassembler()
 
     init(
@@ -994,30 +999,94 @@ public final class RDPClipboardSession: @unchecked Sendable {
         return try staticChannelReassembler.append(pdu, maximumChunkByteCount: maximumChunkByteCount)?.payload
     }
 
+    /// Handles one complete cliprdr PDU from the server, sends the replies the protocol
+    /// requires, and returns what the application should be told about.
+    func receive(_ pdu: RDPClipboardPDU) throws -> RDPClipboardEvent? {
+        if let capabilities = try RDPClipboardCapabilitiesPDU.parseIfPresent(from: pdu) {
+            updateServerCapabilities(capabilities)
+            return nil
+        }
+        if pdu.header.messageType == RDPClipboardMessageType.monitorReady {
+            respondToMonitorReady()
+            return .ready
+        }
+        if let formatList = try RDPClipboardFormatListPDU.parseIfPresent(
+            from: pdu,
+            useLongFormatNames: usesLongFormatNames
+        ) {
+            sendFormatListResponse(ok: true)
+            if let formatID = formatList.fileGroupDescriptorWFormatID {
+                requestFileGroupDescriptorW(formatID: formatID)
+            } else if formatList.formatIDs.contains(RDPClipboardFormatID.unicodeText) {
+                requestUnicodeText()
+            }
+            return nil
+        }
+        if let request = try RDPClipboardFormatDataRequestPDU.parseIfPresent(from: pdu) {
+            respondToFormatDataRequest(request)
+            return nil
+        }
+        if let request = try RDPClipboardFileContentsRequestPDU.parseIfPresent(from: pdu) {
+            respondToFileContentsRequest(request)
+            return nil
+        }
+        if let response = try RDPClipboardFileContentsResponsePDU.parseIfPresent(from: pdu) {
+            return .fileContents(response.response)
+        }
+        if let response = try RDPClipboardFormatDataResponsePDU.parseIfPresent(from: pdu) {
+            // A response with no outstanding request has nothing to decode against and is dropped.
+            guard let pending = takePendingFormatDataResponse(), response.ok else {
+                return nil
+            }
+            switch pending {
+            case .unicodeText:
+                return try .text(response.decodedUnicodeText())
+            case .fileGroupDescriptorW:
+                return try .fileGroupDescriptor(response.decodedFileGroupDescriptorW())
+            }
+        }
+        return nil
+    }
+
     func updateServerCapabilities(_ capabilities: RDPClipboardCapabilitiesPDU) {
         lock.lock()
         serverGeneralFlags = capabilities.generalFlags
         lock.unlock()
     }
 
+    /// Long names are used only when both endpoints advertised them (MS-RDPECLIP 2.2.2.1.1.1).
     var usesLongFormatNames: Bool {
         lock.lock()
         defer { lock.unlock() }
-        return serverGeneralFlags & RDPClipboardCapabilityFlags.useLongFormatNames != 0
+        return negotiatedGeneralFlags & RDPClipboardCapabilityFlags.useLongFormatNames != 0
     }
 
-    /// Answers the Monitor Ready PDU: Capabilities, Temporary Directory, then the
-    /// mandatory Format List of the current local content (MS-RDPECLIP 3.2.5.1.2).
-    func sendClientCapabilities() {
-        send(RDPClipboardCapabilitiesPDU(generalFlags: clientGeneralFlags).encoded())
-        send(RDPClipboardTemporaryDirectoryPDU().encoded())
-        send(formatList(for: currentContent()))
-    }
-
-    var clientGeneralFlags: UInt32 {
+    /// Answers the Monitor Ready PDU (MS-RDPECLIP 3.2.5.1.2): Capabilities when the server sent
+    /// its own, the Temporary Directory, then the mandatory Format List of the local content.
+    func respondToMonitorReady() {
         lock.lock()
-        defer { lock.unlock() }
-        return Self.clientGeneralFlags(serverGeneralFlags: serverGeneralFlags)
+        let serverGeneralFlags = serverGeneralFlags
+        if let serverGeneralFlags {
+            negotiatedGeneralFlags = Self.clientGeneralFlags(serverGeneralFlags: serverGeneralFlags)
+        }
+        let clientGeneralFlags = negotiatedGeneralFlags
+        lock.unlock()
+
+        if serverGeneralFlags != nil {
+            send(RDPClipboardCapabilitiesPDU(generalFlags: clientGeneralFlags).encoded())
+        }
+        send(RDPClipboardTemporaryDirectoryPDU().encoded())
+
+        lock.lock()
+        hasAnsweredMonitorReady = true
+        let content = localContent
+        lock.unlock()
+        send(formatList(for: content))
+    }
+
+    /// Kept until ConnectionPreflight calls `receive(_:)` or `respondToMonitorReady()`.
+    func sendClientCapabilities() {
+        respondToMonitorReady()
     }
 
     static func clientGeneralFlags(serverGeneralFlags: UInt32) -> UInt32 {
@@ -1141,8 +1210,11 @@ public final class RDPClipboardSession: @unchecked Sendable {
     private func publish(_ content: RDPClipboardLocalContent) {
         lock.lock()
         localContent = content
+        let hasAnsweredMonitorReady = hasAnsweredMonitorReady
         lock.unlock()
-        send(formatList(for: content))
+        if hasAnsweredMonitorReady {
+            send(formatList(for: content))
+        }
     }
 
     private func formatList(for content: RDPClipboardLocalContent) -> Data {
@@ -1210,6 +1282,14 @@ private enum RDPClipboardLocalContent: Equatable, Sendable {
 enum RDPClipboardRequestedFormatDataResponse: Equatable, Sendable {
     case unicodeText
     case fileGroupDescriptorW(formatID: UInt32)
+}
+
+enum RDPClipboardEvent: Equatable, Sendable {
+    /// Monitor Ready was answered; the session can publish local content.
+    case ready
+    case text(String)
+    case fileGroupDescriptor(RDPClipboardFileGroupDescriptorW)
+    case fileContents(RDPClipboardFileContentsResponse)
 }
 
 private func encodedClipboardUnicodeText(_ text: String) -> Data {
