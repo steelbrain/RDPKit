@@ -178,6 +178,22 @@ import Testing
     #expect(cursor.remaining == 0)
 }
 
+@Test func clientNewLicenseRequestSendsNonASCIINamesAsUTF8() throws {
+    let request = RDPClientNewLicenseRequestPDU(
+        channelID: 1003,
+        clientRandom: Data(repeating: 0x11, count: 32),
+        encryptedPremasterSecret: Data([0xE6, 0x0A]),
+        username: "José",
+        machineName: "Büro-Mac"
+    )
+    var cursor = try ByteCursor(request.encodedUserData())
+    _ = try cursor.readData(count: 8 + 8 + 32)
+    _ = try readLicenseBlob(&cursor)
+
+    #expect(try readLicenseBlob(&cursor).data == Data("José\u{0}".utf8))
+    #expect(try readLicenseBlob(&cursor).data == Data("Büro-Mac\u{0}".utf8))
+}
+
 @Test func storedClientLicenseMatchesServerLicenseRequestProductAndScope() throws {
     let license = try #require(try RDPServerLicensePDU.parseIfPresent(fromTPKT: mcsSendDataIndication(
         channelID: 1003,
