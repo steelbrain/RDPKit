@@ -629,7 +629,10 @@ public struct RDPClipboardRemoteFileTransferFile: Equatable, Sendable {
         var candidate = sanitized as String
         var suffix = 2
         while usedFileNames.contains(candidate.lowercased()) {
-            candidate = Self.fileName(sanitized.deletingPathExtension, suffix: "-\(suffix)\(extensionText)")
+            // Check the name the initializer stores, which sanitizes again.
+            candidate = sanitizedFileName(
+                Self.fileName(sanitized.deletingPathExtension, suffix: "-\(suffix)\(extensionText)")
+            )
             suffix += 1
         }
         usedFileNames.insert(candidate.lowercased())
@@ -649,15 +652,18 @@ public struct RDPClipboardRemoteFileTransferFile: Equatable, Sendable {
         for scalar in lastPathComponent.unicodeScalars {
             sanitizedScalars.append(invalidCharacters.contains(scalar) ? "_" : scalar)
         }
-        let sanitized = String(sanitizedScalars).trimmingCharacters(in: .whitespacesAndNewlines)
+        var sanitized = String(sanitizedScalars).trimmingCharacters(in: .whitespacesAndNewlines)
+        if sanitized.utf8.count > maximumFileNameByteCount {
+            let name = sanitized as NSString
+            sanitized = Self.fileName(
+                name.deletingPathExtension,
+                suffix: name.pathExtension.isEmpty ? "" : ".\(name.pathExtension)"
+            ).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
         guard sanitized.isEmpty == false, sanitized != ".", sanitized != ".." else {
             return "remote-file"
         }
-        guard sanitized.utf8.count > maximumFileNameByteCount else {
-            return sanitized
-        }
-        let name = sanitized as NSString
-        return Self.fileName(name.deletingPathExtension, suffix: name.pathExtension.isEmpty ? "" : ".\(name.pathExtension)")
+        return sanitized
     }
 
     /// Joins `baseName` and `suffix`, shortening the base name to fit the file name byte limit.
@@ -666,12 +672,13 @@ public struct RDPClipboardRemoteFileTransferFile: Equatable, Sendable {
         return utf8Prefix(baseName + suffix, maximumByteCount: maximumFileNameByteCount)
     }
 
+    /// Cuts by Unicode scalar, so one oversized grapheme cluster is shortened rather than dropped.
     private static func utf8Prefix(_ text: String, maximumByteCount: Int) -> String {
         var byteCount = 0
-        return String(text.prefix { character in
-            byteCount += character.utf8.count
+        return String(String.UnicodeScalarView(text.unicodeScalars.prefix { scalar in
+            byteCount += UTF8.width(scalar)
             return byteCount <= maximumByteCount
-        })
+        }))
     }
 }
 

@@ -671,6 +671,23 @@ import Testing
     #expect(names.allSatisfy { $0 != "." && $0 != ".." && !$0.contains("/") })
 }
 
+@Test func clipboardRemoteFileNamesStayUniqueWhenOversizedGraphemesAreCut() throws {
+    // One grapheme of 401 UTF-8 bytes fits the 260-unit cFileName but not a 255-byte file name.
+    let marks = String(repeating: "\u{301}", count: 200)
+    let rawNames = ["..e" + marks, "e" + marks, ".e" + marks, "remote-file", "remote-file"]
+    let names = try RDPClipboardFileGroupDescriptorW(descriptors: rawNames.map { fileDescriptor(fileName: $0) })
+        .remoteFileTransferFiles()
+        .map(\.fileName)
+
+    #expect(Set(names.map { $0.lowercased() }).count == names.count)
+    #expect(names.allSatisfy { !$0.isEmpty && $0 != "." && $0 != ".." && $0.utf8.count <= 255 })
+    #expect(names[1] == "e" + String(repeating: "\u{301}", count: 127))
+    for rawName in rawNames {
+        let name = RDPClipboardRemoteFileTransferFile(fileIndex: 0, fileName: rawName).fileName
+        #expect(!name.isEmpty && name != "." && name != "..")
+    }
+}
+
 @Test func clipboardRemoteFileTransferFilesRejectInvalidPlans() {
     #expect(throws: RDPClipboardRemoteFileTransferPlanningError.emptyFileList) {
         try RDPClipboardFileGroupDescriptorW(descriptors: []).remoteFileTransferFiles()
