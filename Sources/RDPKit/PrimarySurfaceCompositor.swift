@@ -2,6 +2,7 @@ import Foundation
 
 final class RDPPrimarySurfaceCompositor {
     private static let maximumCompletedFrameIDCount = 256
+    private static let maximumDirtyRectCount = 256
 
     private let width: Int
     private let height: Int
@@ -22,13 +23,22 @@ final class RDPPrimarySurfaceCompositor {
         data = Data(count: Int(width) * Int(height) * 4)
     }
 
+    /// Applies the commands in order. A surface bits command that fails to
+    /// decode is skipped so later frame markers still end their frames (each
+    /// needs its acknowledgement); the first error is thrown afterwards, and
+    /// the changes it would have delivered go into the next snapshot.
     func process(_ commands: [RDPSurfaceCommand]) throws -> [RDPGraphicsFrameSnapshot] {
         var frames: [RDPGraphicsFrameSnapshot] = []
+        var firstError: Error?
         for command in commands {
             switch command {
             case .setSurfaceBits(let bits),
                  .streamSurfaceBits(let bits):
-                try blit(bits)
+                do {
+                    try blit(bits)
+                } catch {
+                    firstError = firstError ?? error
+                }
             case .frameMarker(let marker):
                 if marker.frameAction == 0 {
                     if activeFrameID == nil,
@@ -48,6 +58,13 @@ final class RDPPrimarySurfaceCompositor {
                     completedFrameIDs.append(marker.frameID)
                 }
             }
+        }
+        if let firstError {
+            dirtyRects = frames.flatMap(\.regionRects) + dirtyRects
+            if dirtyRects.count > Self.maximumDirtyRectCount {
+                dirtyRects = [RDPFrameRect(left: 0, top: 0, right: UInt16(width), bottom: UInt16(height))]
+            }
+            throw firstError
         }
         if activeFrameID == nil,
            let frame = makeFrame(frameID: nil)

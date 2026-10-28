@@ -93,3 +93,47 @@ import Testing
     #expect(compositor.takeCompletedFrameIDs() == [7])
     #expect(compositor.takeCompletedFrameIDs().isEmpty)
 }
+
+/// A surface bits command that fails to decode must not swallow the frame
+/// markers after it: every frame still needs its acknowledgement
+/// ([MS-RDPRFX] 2.2.3.3), and the good bits reach the next snapshot.
+@Test func primarySurfaceCompositorEndsFramesAfterUndecodableSurfaceBits() throws {
+    func bits(left: UInt16, width: UInt16, pixel: UInt8) -> RDPSurfaceCommand {
+        .setSurfaceBits(RDPSurfaceBitsCommand(
+            destinationLeft: left,
+            destinationTop: 0,
+            destinationRight: left + width,
+            destinationBottom: 1,
+            bitmapData: RDPExtendedBitmapData(
+                bitsPerPixel: 32,
+                flags: 0,
+                codecID: 0,
+                width: width,
+                height: 1,
+                extendedCompressionHeader: nil,
+                bitmapData: Data(repeating: pixel, count: 4)
+            )
+        ))
+    }
+    let compositor = RDPPrimarySurfaceCompositor(width: 2, height: 1)
+
+    #expect(throws: RDPDecodeError.invalidGraphicsUpdatePDU) {
+        try compositor.process([
+            .frameMarker(RDPSurfaceFrameMarkerCommand(frameAction: 0, frameID: 1)),
+            bits(left: 0, width: 1, pixel: 0x11),
+            .frameMarker(RDPSurfaceFrameMarkerCommand(frameAction: 1, frameID: 1)),
+            .frameMarker(RDPSurfaceFrameMarkerCommand(frameAction: 0, frameID: 2)),
+            bits(left: 1, width: 2, pixel: 0x22),
+            .frameMarker(RDPSurfaceFrameMarkerCommand(frameAction: 1, frameID: 2)),
+        ])
+    }
+    #expect(compositor.takeCompletedFrameIDs() == [1, 2])
+
+    let frames = try compositor.process([
+        .frameMarker(RDPSurfaceFrameMarkerCommand(frameAction: 0, frameID: 3)),
+        .frameMarker(RDPSurfaceFrameMarkerCommand(frameAction: 1, frameID: 3)),
+    ])
+    #expect(frames.count == 1)
+    #expect(frames.first?.regionRects == [RDPFrameRect(left: 0, top: 0, right: 1, bottom: 1)])
+    #expect(frames.first?.decodedBitmapData?.prefix(4) == Data(repeating: 0x11, count: 4))
+}
