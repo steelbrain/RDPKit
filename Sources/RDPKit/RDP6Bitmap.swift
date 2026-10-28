@@ -85,6 +85,8 @@ enum RDP6BitmapDecoder {
                         var red = clamp(y + (co >> 1) - (cg >> 1))
                         let green = clamp(y + (cg >> 1))
                         var blue = clamp(y - (co >> 1) - (cg >> 1))
+                        // MS-RDPEGDI 3.1.9.1.2: Windows servers convert 24 bpp (no-alpha) bitmaps
+                        // with color loss incorrectly, so decoders MUST swap red and blue.
                         if !hasAlpha {
                             swap(&red, &blue)
                         }
