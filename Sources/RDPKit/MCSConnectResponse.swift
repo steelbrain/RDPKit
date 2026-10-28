@@ -275,10 +275,6 @@ private func parseServerSecurityData(_ body: Data) throws -> ServerSecurityData 
     )
 }
 
-func validateRDPServerCertificate(_ data: Data) throws {
-    _ = try rdpServerCertificatePublicKey(data)
-}
-
 func rdpServerCertificatePublicKey(_ data: Data) throws -> RDPRSAPublicKey {
     var cursor = ByteCursor(data)
     let version = try cursor.readLittleEndianUInt32()

@@ -1077,11 +1077,6 @@ public final class RDPClipboardSession: @unchecked Sendable {
         send(formatList(for: content))
     }
 
-    /// Kept until ConnectionPreflight calls `receive(_:)` or `respondToMonitorReady()`.
-    func sendClientCapabilities() {
-        respondToMonitorReady()
-    }
-
     static func clientGeneralFlags(serverGeneralFlags: UInt32) -> UInt32 {
         serverGeneralFlags & RDPClipboardCapabilitiesPDU.defaultGeneralFlags
     }

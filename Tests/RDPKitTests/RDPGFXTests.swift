@@ -84,23 +84,23 @@ import Testing
 @Test func logicalFrameTrackerAcceptsFramedGraphicsCommands() throws {
     var tracker = RDPGFXLogicalFrameTracker()
 
-    #expect(try tracker.shouldProcess(RDPGFXHeader.parse(from: startFrameMessage(frameID: 42))))
+    try tracker.track(RDPGFXHeader.parse(from: startFrameMessage(frameID: 42)))
     #expect(tracker.activeFrameID == 42)
-    #expect(try tracker.shouldProcess(RDPGFXHeader.parse(from: solidFillMessage())))
+    try tracker.track(RDPGFXHeader.parse(from: solidFillMessage()))
     #expect(tracker.activeFrameID == 42)
-    #expect(try tracker.shouldProcess(RDPGFXHeader.parse(from: endFrameMessage(frameID: 42))))
+    try tracker.track(RDPGFXHeader.parse(from: endFrameMessage(frameID: 42)))
     #expect(tracker.activeFrameID == nil)
 }
 
 @Test func logicalFrameTrackerKeepsEveryMessageAndAdoptsNestedFrames() throws {
     var tracker = RDPGFXLogicalFrameTracker()
 
-    #expect(try tracker.shouldProcess(RDPGFXHeader.parse(from: solidFillMessage())))
+    try tracker.track(RDPGFXHeader.parse(from: solidFillMessage()))
     #expect(tracker.activeFrameID == nil)
     try tracker.track(RDPGFXHeader.parse(from: startFrameMessage(frameID: 42)))
     try tracker.track(RDPGFXHeader.parse(from: startFrameMessage(frameID: 43)))
     #expect(tracker.activeFrameID == 43)
-    #expect(try tracker.shouldProcess(RDPGFXHeader.parse(from: endFrameMessage(frameID: 42))))
+    try tracker.track(RDPGFXHeader.parse(from: endFrameMessage(frameID: 42)))
     #expect(tracker.activeFrameID == nil)
 }
 

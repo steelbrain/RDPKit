@@ -212,12 +212,6 @@ struct RDPGFXLogicalFrameTracker: Equatable, Sendable {
             break
         }
     }
-
-    /// Always true; kept until ConnectionPreflight calls `track(_:)`.
-    mutating func shouldProcess(_ message: RDPGFXHeader) throws -> Bool {
-        try track(message)
-        return true
-    }
 }
 
 struct RDPGFXRect16: Equatable, Sendable {

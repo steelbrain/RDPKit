@@ -97,9 +97,7 @@ struct MCSConnectInitialConfiguration: Equatable, Sendable {
     var requestedProtocols: RDPSecurityProtocols
     var channels: [RDPStaticVirtualChannel]
     var advertiseMessageChannel: Bool
-    var audioPlaybackEnabled: Bool
     var redirectedSessionID: UInt32?
-    var storedClientLicense: RDPStoredClientLicense?
 
     init(
         desktopWidth: UInt16 = 1280,
@@ -109,9 +107,7 @@ struct MCSConnectInitialConfiguration: Equatable, Sendable {
         requestedProtocols: RDPSecurityProtocols = [.tls, .credSSP],
         channels: [RDPStaticVirtualChannel] = [.drdynvc],
         advertiseMessageChannel: Bool = false,
-        audioPlaybackEnabled: Bool = false,
-        redirectedSessionID: UInt32? = nil,
-        storedClientLicense: RDPStoredClientLicense? = nil
+        redirectedSessionID: UInt32? = nil
     ) {
         precondition(!channels.isEmpty)
         precondition(channels.count <= 31)
@@ -125,9 +121,7 @@ struct MCSConnectInitialConfiguration: Equatable, Sendable {
         self.requestedProtocols = requestedProtocols
         self.channels = channels
         self.advertiseMessageChannel = advertiseMessageChannel
-        self.audioPlaybackEnabled = audioPlaybackEnabled
         self.redirectedSessionID = redirectedSessionID
-        self.storedClientLicense = storedClientLicense
     }
 }
 

@@ -240,10 +240,6 @@ enum RDPCredSSPCertificate {
 enum RDPSPNEGO {
     private static let ntlmSignature = Data("NTLMSSP\u{0}".utf8)
 
-    static func negTokenResponse(responseToken: Data) -> Data {
-        RDPASN1.context(1, RDPASN1.sequence(RDPASN1.context(2, RDPASN1.octetString(responseToken))))
-    }
-
     static func mechanismToken(from token: Data) throws -> Data {
         if token.starts(with: ntlmSignature) {
             return token
@@ -277,7 +273,6 @@ enum RDPSPNEGO {
 
 enum RDPCredSSPError: Error, CustomStringConvertible {
     case missingCredentials
-    case unsupportedVersion(Int)
     case missingToken
     case missingPubKeyAuth
     case ntlm(String)
@@ -288,8 +283,6 @@ enum RDPCredSSPError: Error, CustomStringConvertible {
         switch self {
         case .missingCredentials:
             "CredSSP requires credentials"
-        case let .unsupportedVersion(version):
-            "CredSSP version \(version) is not supported"
         case .missingToken:
             "CredSSP server did not provide a negotiation token"
         case .missingPubKeyAuth:

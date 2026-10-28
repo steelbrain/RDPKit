@@ -85,11 +85,11 @@ import Testing
 }
 
 @Test func deviceRedirectionClientNameEncodesUnicodeComputerName() {
-    let encoded = RDPDeviceRedirectionClientNameRequest(computerName: "KRDPSWIFT").encoded()
+    let encoded = RDPDeviceRedirectionClientNameRequest(computerName: "RDPKIT").encoded()
 
     #expect(encoded.rdpHexString == """
-    72 44 4e 43 01 00 00 00 00 00 00 00 14 00 00 00 \
-    4b 00 52 00 44 00 50 00 53 00 57 00 49 00 46 00 54 00 00 00
+    72 44 4e 43 01 00 00 00 00 00 00 00 0e 00 00 00 \
+    52 00 44 00 50 00 4b 00 49 00 54 00 00 00
     """)
 }
 

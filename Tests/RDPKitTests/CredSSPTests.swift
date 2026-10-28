@@ -71,19 +71,15 @@ import Testing
     }
 }
 
-@Test func spnegoWrapsAndExtractsNTLMResponseToken() throws {
+@Test func spnegoExtractsNTLMResponseTokenFromNegTokenResp() throws {
     let token = Data("NTLMSSP\u{0}response".utf8)
-    let spnego = RDPSPNEGO.negTokenResponse(responseToken: token)
+    // NegTokenResp with only responseToken [2] (MS-CSSP 2.2.1.1, RFC 4178 4.2.2).
+    let spnego = Data([0xA1, 0x16, 0x30, 0x14, 0xA2, 0x12, 0x04, 0x10]) + token
 
-    #expect(spnego.prefix(5) == Data([
-        0xA1, 0x16,
-        0x30, 0x14,
-        0xA2,
-    ]))
     #expect(try RDPSPNEGO.mechanismToken(from: spnego) == token)
 }
 
-@Test func spnegoStillAcceptsRawNTLMTokenForCompatibility() throws {
+@Test func spnegoAcceptsRawNTLMToken() throws {
     let token = Data("NTLMSSP\u{0}raw".utf8)
 
     #expect(try RDPSPNEGO.mechanismToken(from: token) == token)

@@ -482,7 +482,8 @@ final class MockCredSSPServer {
             stage = .authenticate
             return RDPCredSSPTSRequest(
                 version: 6,
-                negoTokens: [RDPSPNEGO.negTokenResponse(responseToken: challengeMessage())]
+                // Windows and FreeRDP-based servers send the raw NTLM challenge.
+                negoTokens: [challengeMessage()]
             ).encoded()
 
         case .authenticate:
