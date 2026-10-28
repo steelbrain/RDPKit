@@ -24,30 +24,13 @@ final class RDPTranscriptReplayServer {
         var appEvents: [RDPWireEvent]
     }
 
-    /// Application-layer TPKTs the client sent, in order, across connections.
-    final class ClientPacketLog: @unchecked Sendable {
-        private let lock = NSLock()
-        private var storage: [Data] = []
-
-        var packets: [Data] {
-            lock.lock()
-            defer { lock.unlock() }
-            return storage
-        }
-
-        func append(_ packet: Data) {
-            lock.lock()
-            defer { lock.unlock() }
-            storage.append(packet)
-        }
-    }
-
     let port: UInt16
-    let clientPackets: ClientPacketLog
+    /// Application-layer packets the client sent, in order, across connections.
+    let clientPackets: Locked<[Data]>
     private let group: MultiThreadedEventLoopGroup
     private let channel: Channel
 
-    private init(port: UInt16, clientPackets: ClientPacketLog, group: MultiThreadedEventLoopGroup, channel: Channel) {
+    private init(port: UInt16, clientPackets: Locked<[Data]>, group: MultiThreadedEventLoopGroup, channel: Channel) {
         self.port = port
         self.clientPackets = clientPackets
         self.group = group
@@ -62,8 +45,8 @@ final class RDPTranscriptReplayServer {
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
         do {
             let tlsContext = try NIOSSLContext(configuration: MockKRDPTLS.configuration())
-            let connectionLog = MockKRDPConnectionLog()
-            let clientPackets = ClientPacketLog()
+            let connectionCount = Locked(0)
+            let clientPackets = Locked<[Data]>([])
             let channel = try ServerBootstrap(group: group)
                 .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
                 .childChannelInitializer { channel in
@@ -71,7 +54,7 @@ final class RDPTranscriptReplayServer {
                         tlsContext: tlsContext,
                         credentials: credentials,
                         segments: segments,
-                        connectionLog: connectionLog,
+                        connectionCount: connectionCount,
                         clientPackets: clientPackets
                     ))
                 }
@@ -150,12 +133,12 @@ private final class RDPTranscriptReplayHandler: ChannelInboundHandler {
     private let tlsContext: NIOSSLContext
     private let credentials: RDPCredentials
     private let segments: [RDPTranscriptReplayServer.ConnectionSegment]
-    private let connectionLog: MockKRDPConnectionLog
-    private let clientPackets: RDPTranscriptReplayServer.ClientPacketLog
+    private let connectionCount: Locked<Int>
+    private let clientPackets: Locked<[Data]>
 
     private var segment: RDPTranscriptReplayServer.ConnectionSegment?
     private var stage = Stage.x224
-    private var received = Data()
+    private var received = ClientByteStream()
     private var credSSPServer: MockCredSSPServer?
     /// Cursor into the active segment's application events.
     private var appIndex = 0
@@ -176,20 +159,20 @@ private final class RDPTranscriptReplayHandler: ChannelInboundHandler {
         tlsContext: NIOSSLContext,
         credentials: RDPCredentials,
         segments: [RDPTranscriptReplayServer.ConnectionSegment],
-        connectionLog: MockKRDPConnectionLog,
-        clientPackets: RDPTranscriptReplayServer.ClientPacketLog
+        connectionCount: Locked<Int>,
+        clientPackets: Locked<[Data]>
     ) {
         self.tlsContext = tlsContext
         self.credentials = credentials
         self.segments = segments
-        self.connectionLog = connectionLog
+        self.connectionCount = connectionCount
         self.clientPackets = clientPackets
     }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
         var buffer = unwrapInboundIn(data)
         if let bytes = buffer.readBytes(length: buffer.readableBytes) {
-            received.append(contentsOf: bytes)
+            received.append(bytes)
         }
         do {
             try process(context: context)
@@ -207,27 +190,30 @@ private final class RDPTranscriptReplayHandler: ChannelInboundHandler {
         while true {
             switch stage {
             case .x224:
-                guard let packet = nextTPKT() else { return }
+                guard let packet = try received.nextPacket() else { return }
                 try handleX224(packet, context: context)
             case .credSSP:
-                guard let message = try nextASN1Message() else { return }
+                guard let message = try received.nextCredSSPMessage() else { return }
                 try handleCredSSP(message, context: context)
             case .application:
-                guard let packet = nextTPKT() else { return }
-                clientPackets.append(packet)
+                guard let packet = try received.nextPacket() else { return }
+                clientPackets.withLock { $0.append(packet) }
                 advanceClientBarrier()
                 pumpServerEvents(context: context)
             case .done:
                 // Record, but do not answer, trailing client packets.
-                guard let packet = nextTPKT() else { return }
-                clientPackets.append(packet)
+                guard let packet = try received.nextPacket() else { return }
+                clientPackets.withLock { $0.append(packet) }
             }
         }
     }
 
     private func handleX224(_ packet: Data, context: ChannelHandlerContext) throws {
         _ = try TPKT.unwrap(packet)
-        let index = connectionLog.registerConnection() - 1
+        let index = connectionCount.withLock { count in
+            count += 1
+            return count - 1
+        }
         guard index < segments.count else {
             throw MockKRDPServerError.invalidClientPDU
         }
@@ -240,7 +226,7 @@ private final class RDPTranscriptReplayHandler: ChannelInboundHandler {
         try context.channel.pipeline.syncOperations.addHandler(tlsHandler, position: .first)
 
         if segment.usesCredSSP {
-            credSSPServer = try MockCredSSPServer(credentials: credentials, transcript: MockKRDPServerTranscript())
+            credSSPServer = try MockCredSSPServer(credentials: credentials)
             stage = .credSSP
         } else {
             stage = .application
@@ -294,48 +280,6 @@ private final class RDPTranscriptReplayHandler: ChannelInboundHandler {
         if appIndex >= segment.appEvents.count {
             stage = .done
         }
-    }
-
-    private func nextTPKT() -> Data? {
-        guard received.count >= 4 else { return nil }
-        let length = Int(received[received.index(received.startIndex, offsetBy: 2)]) << 8
-            | Int(received[received.index(received.startIndex, offsetBy: 3)])
-        guard length >= 4, received.count >= length else { return nil }
-        let packet = Data(received.prefix(length))
-        received.removeFirst(length)
-        return packet
-    }
-
-    private func nextASN1Message() throws -> Data? {
-        guard received.count >= 2 else { return nil }
-        guard received[received.startIndex] == 0x30 else {
-            throw MockKRDPServerError.invalidClientPDU
-        }
-        let firstLengthByte = received[received.index(after: received.startIndex)]
-        let headerLength: Int
-        let payloadLength: Int
-        if firstLengthByte & 0x80 == 0 {
-            headerLength = 2
-            payloadLength = Int(firstLengthByte)
-        } else {
-            let lengthByteCount = Int(firstLengthByte & 0x7F)
-            guard lengthByteCount > 0, lengthByteCount <= 4 else {
-                throw MockKRDPServerError.invalidClientPDU
-            }
-            headerLength = 2 + lengthByteCount
-            guard received.count >= headerLength else { return nil }
-            var length = 0
-            for offset in 0 ..< lengthByteCount {
-                let byte = received[received.index(received.startIndex, offsetBy: 2 + offset)]
-                length = (length << 8) | Int(byte)
-            }
-            payloadLength = length
-        }
-        let totalLength = headerLength + payloadLength
-        guard received.count >= totalLength else { return nil }
-        let message = Data(received.prefix(totalLength))
-        received.removeFirst(totalLength)
-        return message
     }
 
     @discardableResult

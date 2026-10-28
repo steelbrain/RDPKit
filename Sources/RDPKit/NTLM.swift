@@ -592,7 +592,7 @@ final class RDPCredSSPNTLMContext {
         | negotiateSign
 }
 
-private final class RDPNTLMRC4 {
+final class RDPNTLMRC4 {
     private var i = 0
     private var j = 0
     private var state = [UInt8](0 ... 255)

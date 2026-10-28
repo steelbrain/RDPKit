@@ -281,5 +281,61 @@ func replayTranscriptFixture(_ name: String) throws -> (report: RDPPreflightRepo
         clipboardEnabled: false,
         graphicsCapabilityProfile: .avcThinClient
     ))
-    return (report, server.clientPackets.packets)
+    return (report, server.clientPackets.value)
+}
+
+// MARK: Test servers
+
+/// The bytes a test server has received from the client, split the way the
+/// client splits what it receives: TPKT or fast-path packets, or the DER
+/// TSRequests of the CredSSP exchange.
+struct ClientByteStream {
+    private var bytes = Data()
+
+    mutating func append(_ received: [UInt8]) {
+        bytes.append(contentsOf: received)
+    }
+
+    mutating func nextPacket() throws -> Data? {
+        try take(RDPTransportPacketFraming.packetLength(from: bytes))
+    }
+
+    mutating func nextCredSSPMessage() throws -> Data? {
+        let bytes = bytes
+        return try take(RDPTransportPacketFraming.credSSPMessageLength(readableByteCount: bytes.count) {
+            bytes[bytes.startIndex + $0]
+        })
+    }
+
+    private mutating func take(_ length: Int?) -> Data? {
+        guard let length, bytes.count >= length else {
+            return nil
+        }
+        let message = Data(bytes.prefix(length))
+        bytes.removeFirst(length)
+        return message
+    }
+}
+
+// MARK: Shared state
+
+/// A value that callbacks on other threads update and the test then reads.
+final class Locked<Value>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: Value
+
+    init(_ value: Value) {
+        storage = value
+    }
+
+    var value: Value {
+        withLock { $0 }
+    }
+
+    @discardableResult
+    func withLock<Result>(_ body: (inout Value) throws -> Result) rethrows -> Result {
+        lock.lock()
+        defer { lock.unlock() }
+        return try body(&storage)
+    }
 }
