@@ -10,6 +10,11 @@ final class RemoteInputCaptureNSView: NSView {
                 releasePressedInputs()
             }
         }
+        didSet {
+            if inputSession != nil, inputSession !== oldValue, window?.firstResponder === self {
+                synchronizeToggleKeys(NSEvent.modifierFlags)
+            }
+        }
     }
 
     private var trackingArea: NSTrackingArea?
@@ -49,6 +54,14 @@ final class RemoteInputCaptureNSView: NSView {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         startObservingWindow()
+    }
+
+    override func becomeFirstResponder() -> Bool {
+        let didBecomeFirstResponder = super.becomeFirstResponder()
+        if didBecomeFirstResponder {
+            synchronizeToggleKeys(NSEvent.modifierFlags)
+        }
+        return didBecomeFirstResponder
     }
 
     override func resignFirstResponder() -> Bool {
@@ -149,6 +162,10 @@ final class RemoteInputCaptureNSView: NSView {
     }
 
     override func flagsChanged(with event: NSEvent) {
+        if Int(event.keyCode) == kVK_CapsLock {
+            synchronizeToggleKeys(event.modifierFlags)
+            return
+        }
         guard let modifier = MacRDPModifierKey(keyCode: event.keyCode) else {
             return
         }
@@ -169,6 +186,12 @@ final class RemoteInputCaptureNSView: NSView {
             name: NSWindow.didResignKeyNotification,
             object: window
         )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(windowDidBecomeKey(_:)),
+            name: NSWindow.didBecomeKeyNotification,
+            object: window
+        )
         // AppKit never dispatches keyUp to the window while Command is held, which would leave
         // keys pressed during a Command chord stuck down on the server.
         commandKeyUpMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyUp) { [weak self] event in
@@ -182,6 +205,7 @@ final class RemoteInputCaptureNSView: NSView {
     private func stopObservingWindow() {
         if let window {
             NotificationCenter.default.removeObserver(self, name: NSWindow.didResignKeyNotification, object: window)
+            NotificationCenter.default.removeObserver(self, name: NSWindow.didBecomeKeyNotification, object: window)
         }
         if let commandKeyUpMonitor {
             NSEvent.removeMonitor(commandKeyUpMonitor)
@@ -191,6 +215,20 @@ final class RemoteInputCaptureNSView: NSView {
 
     @objc private func windowDidResignKey(_: Notification) {
         releasePressedInputs()
+    }
+
+    @objc private func windowDidBecomeKey(_: Notification) {
+        if window?.firstResponder === self {
+            synchronizeToggleKeys(NSEvent.modifierFlags)
+        }
+    }
+
+    /// MS-RDPBCGR 2.2.8.1.1.3.1.1.5: on focus gain, send the toggle-key state followed by the
+    /// keys still held, since the server's state may have changed while focus was elsewhere.
+    private func synchronizeToggleKeys(_ modifierFlags: NSEvent.ModifierFlags) {
+        inputSession?.send(inputState.synchronizationEvents(
+            toggleFlags: MacRDPKeyboardMapping.toggleFlags(for: modifierFlags)
+        ))
     }
 
     private func forwardCommandKeyUp(_ event: NSEvent) {
@@ -352,6 +390,11 @@ struct MacRDPModifierKey {
 }
 
 enum MacRDPKeyboardMapping {
+    /// Mac keypads always type digits, so the server's Num Lock is kept on for the keypad scancodes.
+    static func toggleFlags(for modifierFlags: NSEvent.ModifierFlags) -> RDPToggleKeyFlags {
+        modifierFlags.contains(.capsLock) ? [.numLock, .capsLock] : [.numLock]
+    }
+
     static func scancode(forKeyCode keyCode: UInt16) -> RDPKeyboardScancode? {
         scancodes[Int(keyCode)]
     }

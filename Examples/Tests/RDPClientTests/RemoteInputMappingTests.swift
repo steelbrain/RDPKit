@@ -71,6 +71,11 @@ import Testing
     ])
 }
 
+@Test func focusSynchronizationKeepsNumLockOnAndMirrorsCapsLock() {
+    #expect(MacRDPKeyboardMapping.toggleFlags(for: []) == [.numLock])
+    #expect(MacRDPKeyboardMapping.toggleFlags(for: [.capsLock, .shift]) == [.numLock, .capsLock])
+}
+
 @Test func horizontalScrollUsesRDPRightPositiveDirection() {
     var accumulator = RDPScrollWheelAccumulator()
     let point = RDPRemotePoint(x: 10, y: 20)
