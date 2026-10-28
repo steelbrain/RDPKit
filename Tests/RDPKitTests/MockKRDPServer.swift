@@ -206,6 +206,9 @@ enum MockKRDPRedirectionBehavior {
     /// cookie, no target host) on the first connection only, so the client
     /// reconnects to the same server with the token attached.
     case redirectFirstConnection
+    /// Windows connection brokers redirect right after licensing, in place
+    /// of the Demand Active ([MS-RDPBCGR] 1.3.1.1, 3.1.5.2).
+    case redirectInsteadOfDemandActive
 }
 
 enum MockKRDPFinalizationBehavior: Equatable {
@@ -1222,6 +1225,11 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
                 break
             }
             switch licensingBehavior {
+            case .validClientThenDemandActive where redirectionBehavior == .redirectInsteadOfDemandActive
+                && connectionIndex == 1:
+                writePacket(MockKRDPFixtures.licenseValidClient(), context: context)
+                writePacket(MockKRDPFixtures.serverRedirection(), context: context)
+                stage = .done
             case .validClientThenDemandActive, .validClientThenDemandActiveWithMonitorLayout:
                 writePacket(MockKRDPFixtures.licenseValidClient(), context: context)
                 writePacket(MockKRDPFixtures.demandActive(), context: context)
@@ -1257,6 +1265,11 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
             let request = try MockKRDPFixtures.expectSendDataRequest(packet, channelID: MockKRDPConstants.messageChannelID)
             try MockKRDPFixtures.expectAutoDetectBandwidthResult(request.userData)
             switch licensingBehavior {
+            case .validClientThenDemandActive where redirectionBehavior == .redirectInsteadOfDemandActive
+                && connectionIndex == 1:
+                writePacket(MockKRDPFixtures.licenseValidClient(), context: context)
+                writePacket(MockKRDPFixtures.serverRedirection(), context: context)
+                stage = .done
             case .validClientThenDemandActive, .validClientThenDemandActiveWithMonitorLayout:
                 writePacket(MockKRDPFixtures.licenseValidClient(), context: context)
                 writePacket(MockKRDPFixtures.demandActive(), context: context)

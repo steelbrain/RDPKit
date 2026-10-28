@@ -353,6 +353,30 @@ struct MockKRDPServerTests {
     #expect(report.error == nil)
 }
 
+@Test func preflightFollowsRedirectionSentInsteadOfDemandActive() throws {
+    let server = try MockKRDPServer.start(redirectionBehavior: .redirectInsteadOfDemandActive)
+    defer { server.stop() }
+
+    let report = RDPPreflightClient().run(
+        configuration: RDPConnectionConfiguration(
+            host: "127.0.0.1",
+            port: server.port,
+            credentials: RDPCredentials(username: "rdp-user", password: "secret"),
+            timeoutSeconds: 5,
+            hideCertificateWarnings: true,
+            graphicsFrameCaptureLimit: 1,
+            desktopWidth: 1280,
+            desktopHeight: 720,
+            clipboardEnabled: false
+        )
+    )
+
+    #expect(server.connectionCount == 2)
+    #expect(report.status == "success")
+    #expect(report.rdpGraphicsFirstFrame?.codecName == "avc420")
+    #expect(report.error == nil)
+}
+
 @Test func preflightHandlesMultiStepBandwidthAutoDetectBeforeActivation() throws {
     let server = try MockKRDPServer.start(autoDetectBehavior: .bandwidthMeasure)
     defer { server.stop() }
