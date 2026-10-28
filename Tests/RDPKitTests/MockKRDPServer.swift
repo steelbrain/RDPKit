@@ -2129,7 +2129,7 @@ private enum MockKRDPFixtures {
         let totalLength = UInt16(8 + Int(redirectionLength))
         var payload = Data()
         payload.appendLittleEndianUInt16(totalLength)
-        payload.appendLittleEndianUInt16(0x000A)
+        payload.appendLittleEndianUInt16(0x001A)
         payload.appendLittleEndianUInt16(0)
         payload.appendLittleEndianUInt16(0)
         payload.appendLittleEndianUInt16(0x0400)

@@ -13,17 +13,22 @@ enum RDPClientInfoEncodingError: Error, Equatable, CustomStringConvertible {
 
 struct RDPClientInfoPDU: Equatable, Sendable {
     var credentials: RDPCredentials?
+    /// A Server Redirection password cookie (`RDPServerRedirectionPDU.passwordCookie`),
+    /// sent verbatim in place of the credentials' password when reconnecting.
+    var passwordCookie: Data?
     var clientAddress: String
     var clientDirectory: String
     var audioPlaybackEnabled: Bool
 
     init(
         credentials: RDPCredentials?,
+        passwordCookie: Data? = nil,
         clientAddress: String = "0.0.0.0",
         clientDirectory: String = "KRDPSwift",
         audioPlaybackEnabled: Bool = false
     ) {
         self.credentials = credentials
+        self.passwordCookie = passwordCookie
         self.clientAddress = clientAddress
         self.clientDirectory = clientDirectory
         self.audioPlaybackEnabled = audioPlaybackEnabled
@@ -44,8 +49,8 @@ struct RDPClientInfoPDU: Equatable, Sendable {
             name: "username",
             maxBytesIncludingNull: RDPClientInfoLimits.standardFieldByteCount
         )
-        let password = try rdpUnicodeString(
-            credentials?.password ?? "",
+        let password = try rdpUnicodeField(
+            passwordCookie ?? utf16LittleEndian(credentials?.password ?? ""),
             name: "password",
             maxBytesIncludingNull: RDPClientInfoLimits.standardFieldByteCount
         )
@@ -110,7 +115,7 @@ struct RDPClientInfoPDU: Equatable, Sendable {
         var flags: UInt32 = 0
         flags |= RDPClientInfoFlags.mouse
         flags |= RDPClientInfoFlags.disableCtrlAltDel
-        if credentials != nil {
+        if credentials != nil || passwordCookie != nil {
             flags |= RDPClientInfoFlags.autoLogon
         }
         flags |= RDPClientInfoFlags.unicode
@@ -165,10 +170,24 @@ private func rdpUnicodeString(
     name: String,
     maxBytesIncludingNull: Int
 ) throws -> RDPUnicodeString {
+    try rdpUnicodeField(utf16LittleEndian(value), name: name, maxBytesIncludingNull: maxBytesIncludingNull)
+}
+
+private func utf16LittleEndian(_ value: String) -> Data {
     var bytes = Data()
     for codeUnit in value.utf16 {
         bytes.appendLittleEndianUInt16(codeUnit)
     }
+    return bytes
+}
+
+/// Appends the mandatory null terminator to the field's character data.
+private func rdpUnicodeField(
+    _ characterData: Data,
+    name: String,
+    maxBytesIncludingNull: Int
+) throws -> RDPUnicodeString {
+    var bytes = characterData
     bytes.appendLittleEndianUInt16(0)
 
     guard bytes.count <= maxBytesIncludingNull else {

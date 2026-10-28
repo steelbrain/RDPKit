@@ -29,8 +29,10 @@ struct RDPServerRedirectionPDU: Equatable, Sendable {
     var targetNetAddress: String?
     var username: String?
     var domain: String?
-    var password: String?
-    var encryptedPassword: Data?
+    /// The raw Password field: a null-terminated Unicode password or an opaque cookie
+    /// (encrypted for the target when `passwordIsPKEncrypted` is set) that is passed
+    /// back verbatim in the Client Info PDU.
+    var passwordCookie: Data?
     var targetFQDN: String?
     var targetNetBIOSName: String?
     var targetNetAddresses: [String] = []
@@ -54,11 +56,22 @@ struct RDPServerRedirectionPDU: Equatable, Sendable {
         targetFQDN ?? targetNetAddress ?? targetNetAddresses.first ?? targetNetBIOSName
     }
 
-    static func parseIfPresent(fromTPKT packet: Data) throws -> RDPServerRedirectionPDU? {
-        guard let indication = try? MCSSendDataIndicationPDU.parse(fromTPKT: packet) else {
+    /// `passwordCookie` read as text; nil when it is PK-encrypted. A binary cookie
+    /// decodes to garbage here, so reconnects should send `passwordCookie` instead.
+    var password: String? {
+        guard !flags.contains(.passwordIsPKEncrypted) else {
             return nil
         }
-        guard indication.userData.count >= 20 else {
+        return passwordCookie.map(decodeUTF16LEString)
+    }
+
+    /// Parses a Server Redirection PDU from an MCS Send Data Indication, or returns nil
+    /// for other packets, including any not sent on `channelID` (the I/O channel) when given.
+    static func parseIfPresent(fromTPKT packet: Data, channelID: UInt16? = nil) throws -> RDPServerRedirectionPDU? {
+        guard let indication = try? MCSSendDataIndicationPDU.parse(fromTPKT: packet),
+              channelID == nil || channelID == indication.channelID,
+              indication.userData.count >= 20
+        else {
             return nil
         }
 
@@ -69,9 +82,7 @@ struct RDPServerRedirectionPDU: Equatable, Sendable {
         guard pduType & 0x000F == 0x000A else {
             return nil
         }
-        let pduVersion = pduType >> 4
-        // PDUVersion 1 is sent by gnome-remote-desktop; 0 is the documented value here.
-        guard (pduVersion == 0 || pduVersion == 1),
+        guard pduType >> 4 == 1, // TS_PROTOCOL_VERSION
               Int(totalLength) >= 20,
               Int(totalLength) <= indication.userData.count
         else {
@@ -83,7 +94,8 @@ struct RDPServerRedirectionPDU: Equatable, Sendable {
         let redirectionLength = try cursor.readLittleEndianUInt16()
         let availableRedirectionBytes = Int(totalLength) - 12
         let declaredRedirectionBodyBytes = Int(redirectionLength) - 4
-        // gnome-remote-desktop overstates the redirection packet Length by 2.
+        // gnome-remote-desktop overstates the redirection packet Length by 2
+        // (Fixtures/gnome-negotiation-transcript.json, sequence 58).
         guard redirectionPacketFlags == 0x0400,
               redirectionLength >= 12,
               availableRedirectionBytes >= 8,
@@ -118,11 +130,7 @@ struct RDPServerRedirectionPDU: Equatable, Sendable {
             pdu.domain = try redirectionCursor.readLengthPrefixedUTF16String()
         }
         if flags.contains(.password) {
-            if flags.contains(.passwordIsPKEncrypted) {
-                pdu.encryptedPassword = try redirectionCursor.readLengthPrefixedBytes()
-            } else {
-                pdu.password = try redirectionCursor.readLengthPrefixedUTF16String()
-            }
+            pdu.passwordCookie = try redirectionCursor.readLengthPrefixedBytes()
         }
         if flags.contains(.targetFQDN) {
             pdu.targetFQDN = try redirectionCursor.readLengthPrefixedUTF16String()

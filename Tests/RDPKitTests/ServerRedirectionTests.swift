@@ -10,7 +10,7 @@ import Testing
     let redirectionLength = UInt16(12 + 4 + cookie.count + 4 + username.count + 4 + netbios.count)
     let totalLength = UInt16(8 + Int(redirectionLength))
     userData.appendLittleEndianUInt16(totalLength)
-    userData.appendLittleEndianUInt16(0x000A)
+    userData.appendLittleEndianUInt16(0x001A)
     userData.appendLittleEndianUInt16(0)
     userData.appendLittleEndianUInt16(0)
     userData.appendLittleEndianUInt16(0x0400)
@@ -155,24 +155,45 @@ import Testing
     #expect(pdu.targetFQDN == "desktop.example.test")
 }
 
-@Test func parsesGnomeEnhancedRedirectionWithVersionOneShareHeader() throws {
+@Test func parsesCapturedGnomeRedirection() throws {
+    // Fixtures/gnome-negotiation-transcript.json, sequence 58: TS_PROTOCOL_VERSION 1 in
+    // the Share Control header and a redirection Length overstated by 2.
+    let packet = try #require(Data(rdpHexString: """
+    03 00 00 42 02 f0 80 68 00 05 03 eb 70 34 34 00 1a 00 00 00 00 00 00 04 2e 00 00 00
+    04 00 02 00 00 00 1c 00 00 00 43 6f 6f 6b 69 65 3a 20 6d 73 74 73 3d 6c 6f 61 64 2d
+    62 61 6c 61 6e 63 65 64 0d 0a
+    """))
+
+    let pdu = try #require(try RDPServerRedirectionPDU.parseIfPresent(fromTPKT: packet, channelID: 1003))
+    #expect(pdu.routingToken == Data("Cookie: msts=load-balanced\r\n".utf8))
+    #expect(try RDPServerRedirectionPDU.parseIfPresent(fromTPKT: packet, channelID: 1004) == nil)
+}
+
+@Test func rejectsServerRedirectionWithVersionZeroShareHeader() throws {
     var packet = redirectionUserData(
         sessionID: 4,
         flags: RDPServerRedirectionPDU.Flags.loadBalanceInfo.rawValue,
         fields: lengthPrefixed(Data("Cookie: mststs=load-balanced\r\n".utf8))
     )
-    packet.replaceSubrange(2 ..< 4, with: Data([0x1A, 0x00]))
+    packet.replaceSubrange(2 ..< 4, with: Data([0x0A, 0x00]))
 
-    let pdu = try #require(try RDPServerRedirectionPDU.parseIfPresent(fromTPKT: mcsSendDataIndication(
-        channelID: 1003,
-        userData: packet
+    #expect(throws: RDPDecodeError.invalidShareControlHeader) {
+        try RDPServerRedirectionPDU.parseIfPresent(fromTPKT: mcsSendDataIndication(
+            channelID: 1003,
+            userData: packet
+        ))
+    }
+}
+
+@Test func keepsBinaryRedirectionPasswordCookieVerbatim() throws {
+    let cookie = Data([0x01, 0x00, 0x00, 0x00, 0xD8, 0x00, 0xFF, 0xFE, 0x00, 0x00, 0x41])
+
+    let pdu = try #require(try RDPServerRedirectionPDU.parseIfPresent(fromTPKT: redirectionIndication(
+        flags: RDPServerRedirectionPDU.Flags.password.rawValue,
+        fields: lengthPrefixed(cookie)
     )))
 
-    // MS-RDPBCGR specifies PDUVersion zero for this PDU, but
-    // gnome-remote-desktop has been observed sending the Share Control version
-    // one nibble. Keep following the routing token when the packet body is
-    // otherwise valid.
-    #expect(pdu.routingToken == Data("Cookie: mststs=load-balanced\r\n".utf8))
+    #expect(pdu.passwordCookie == cookie)
 }
 
 @Test func parsesGnomeRedirectionWithOverstatedEmbeddedLength() throws {
@@ -307,7 +328,7 @@ import Testing
     #expect(pdu.routingToken == cookie)
     #expect(pdu.username == "rdp-user")
     #expect(pdu.password == nil)
-    #expect(pdu.encryptedPassword == encryptedPassword)
+    #expect(pdu.passwordCookie == encryptedPassword)
     #expect(pdu.redirectionGuid == guid)
     #expect(pdu.targetCertificate == certificate)
 }
@@ -403,7 +424,7 @@ private func redirectionUserData(
     let totalLength = UInt16(8 + Int(redirectionLength))
     var userData = Data()
     userData.appendLittleEndianUInt16(totalLength)
-    userData.appendLittleEndianUInt16(0x000A)
+    userData.appendLittleEndianUInt16(0x001A)
     userData.appendLittleEndianUInt16(0)
     userData.appendLittleEndianUInt16(0)
     userData.appendLittleEndianUInt16(0x0400)

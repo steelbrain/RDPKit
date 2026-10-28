@@ -76,6 +76,20 @@ import Testing
     #expect(flags == 0x000A_4153)
 }
 
+@Test func clientInfoSendsRedirectionPasswordCookieVerbatim() throws {
+    let credentials = RDPCredentials(username: "rdp-user", domain: "LAB", password: "secret")
+    let cookie = Data([0x01, 0x00, 0x00, 0x00, 0xD8, 0x00, 0xFF])
+    let pduData = try RDPClientInfoPDU(credentials: credentials, passwordCookie: cookie).encodedPDUData()
+    let passwordOffset = 22 + 8 + 18
+
+    #expect(littleEndianUInt16(in: pduData, at: 16) == UInt16(cookie.count))
+    #expect(Data(pduData[passwordOffset ..< passwordOffset + cookie.count + 2]) == cookie + Data([0, 0]))
+    #expect(pduData.range(of: utf16LENullTerminated("secret")) == nil)
+
+    let cookieOnly = try RDPClientInfoPDU(credentials: nil, passwordCookie: cookie).encodedPDUData()
+    #expect(littleEndianUInt16(in: cookieOnly, at: 8) & 0x0008 != 0) // INFO_AUTOLOGON
+}
+
 @Test func clientInfoUsesBasicSecurityHeaderForEnhancedSecurity() throws {
     let pduData = try RDPClientInfoPDU(credentials: nil).encodedPDUData()
     let securityFlags = littleEndianUInt16(in: pduData, at: 0)
