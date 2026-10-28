@@ -7,6 +7,7 @@ public struct RDPRemotePointerImage: Equatable, Sendable {
     public var height: UInt16
     public var xorBitsPerPixel: UInt16
     public var xorMaskData: Data
+    /// Empty for a 32-bpp pointer sent without an AND mask; its XOR alpha channel alone defines the shape.
     public var andMaskData: Data
 
     public init(
@@ -89,12 +90,14 @@ struct RDPColorPointerAttribute: Equatable, Sendable {
         let andMaskLength = try isLarge ? Int(cursor.readLittleEndianUInt32()) : Int(cursor.readLittleEndianUInt16())
         let xorMaskLength = try isLarge ? Int(cursor.readLittleEndianUInt32()) : Int(cursor.readLittleEndianUInt16())
         let maximumDimension: UInt16 = isLarge ? 384 : 96
+        // KRdp sends 32-bpp pointers without an AND mask (lengthAndMask = 0).
+        let omitsAndMask = andMaskLength == 0 && xorBitsPerPixel == 32
         guard width > 0,
               height > 0,
               width <= maximumDimension,
               height <= maximumDimension,
               xorMaskLength == pointerMaskByteCount(width: width, height: height, bitsPerPixel: xorBitsPerPixel),
-              andMaskLength == pointerMaskByteCount(width: width, height: height, bitsPerPixel: 1),
+              omitsAndMask || andMaskLength == pointerMaskByteCount(width: width, height: height, bitsPerPixel: 1),
               xorMaskLength + andMaskLength <= cursor.remaining
         else {
             throw RDPDecodeError.invalidPointerPDU

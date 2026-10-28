@@ -209,6 +209,54 @@ import Testing
     }
 }
 
+@Test func decodesKRDPFastPathNewPointerWithoutAndMask() throws {
+    let url = try #require(Bundle.module.url(
+        forResource: "krdp-negotiation-transcript",
+        withExtension: "json",
+        subdirectory: "Fixtures"
+    ))
+    let events = try JSONDecoder().decode([RDPWireEvent].self, from: Data(contentsOf: url))
+    let newPointerBytes = try #require(events.first { $0.sequence == 36 }?.bytes)
+    let cachedPointerBytes = try #require(events.first { $0.sequence == 37 }?.bytes)
+
+    let newPointer = try RDPFastPathOutputPDU.parse(newPointerBytes)
+    let cachedPointer = try RDPFastPathOutputPDU.parse(cachedPointerBytes)
+    guard case let .pointer(pointer) = try #require(newPointer.updates.first?.pointerUpdate) else {
+        Issue.record("Expected a fast-path new pointer")
+        return
+    }
+    #expect(pointer.xorBitsPerPixel == 32)
+    #expect(pointer.colorPointer.width == 46)
+    #expect(pointer.colorPointer.height == 46)
+    #expect(pointer.colorPointer.hotSpot == RDPPoint16(x: 7, y: 3))
+    #expect(pointer.colorPointer.xorMaskData.count == 46 * 46 * 4)
+    #expect(pointer.colorPointer.andMaskData.isEmpty)
+
+    let state = RDPRemotePointerState()
+    guard case let .image(image) = try state.apply(.pointer(pointer)) else {
+        Issue.record("Expected a resolved pointer image")
+        return
+    }
+    let cachedUpdate = try #require(cachedPointer.updates.first?.pointerUpdate)
+    #expect(try state.apply(cachedUpdate) == .cachedImage(image))
+}
+
+@Test func rejectsMissingAndMaskBelowThirtyTwoBitsPerPixel() {
+    var cursor = ByteCursor(Data([
+        0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x01, 0x00,
+        0x01, 0x00,
+        0x00, 0x00,
+        0x04, 0x00,
+        0x01, 0x02, 0x03, 0x00,
+    ]))
+
+    #expect(throws: RDPDecodeError.invalidPointerPDU) {
+        try RDPColorPointerAttribute.parse(from: &cursor)
+    }
+}
+
 @Test func rejectsInvalidPointerUpdates() {
     #expect(throws: RDPDecodeError.invalidPointerPDU) {
         try RDPServerPointerUpdate.parsePayload(Data([0x02, 0x00, 0x00, 0x00]))
