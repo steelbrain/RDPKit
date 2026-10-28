@@ -26,7 +26,7 @@ let package = Package(
         ),
     ],
     dependencies: [
-        .package(path: ".."),
+        .package(name: "RDPKit", path: ".."),
     ],
     targets: [
         .executableTarget(
