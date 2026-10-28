@@ -1,4 +1,5 @@
 import Foundation
+import NIOEmbedded
 @testable import RDPKit
 import Testing
 
@@ -53,37 +54,41 @@ import Testing
     }
 }
 
-@Test func clipboardCapabilitiesRejectUnknownCapabilityType() throws {
+@Test func clipboardCapabilitiesSkipUnknownCapabilitySets() throws {
     var payload = Data()
-    payload.appendLittleEndianUInt16(1)
+    payload.appendLittleEndianUInt16(2)
     payload.appendLittleEndianUInt16(0)
     payload.appendLittleEndianUInt16(0xBEEF)
-    payload.appendLittleEndianUInt16(4)
+    payload.appendLittleEndianUInt16(6)
+    payload.appendLittleEndianUInt16(0xAAAA)
+    payload.append(clipboardGeneralCapabilityPayload().dropFirst(4))
     let pdu = try RDPClipboardPDU.parse(from: RDPClipboardPDU(
         messageType: RDPClipboardMessageType.clipboardCapabilities,
         payload: payload
     ).encoded())
 
-    #expect(throws: RDPDecodeError.invalidClipboardPDU) {
-        try RDPClipboardCapabilitiesPDU.parseIfPresent(from: pdu)
-    }
+    let capabilities = try #require(try RDPClipboardCapabilitiesPDU.parseIfPresent(from: pdu))
+    #expect(capabilities.generalFlags == RDPClipboardCapabilityFlags.useLongFormatNames)
 }
 
-@Test func clipboardCapabilitiesTreatVersionAsInformationalAndRejectUnknownFlags() throws {
+@Test func clipboardCapabilitiesTreatVersionAsInformationalAndIgnoreUnknownFlags() throws {
     let futureVersion = try RDPClipboardPDU.parse(from: RDPClipboardPDU(
         messageType: RDPClipboardMessageType.clipboardCapabilities,
         payload: clipboardGeneralCapabilityPayload(version: 3)
     ).encoded())
     let unknownFlag = try RDPClipboardPDU.parse(from: RDPClipboardPDU(
         messageType: RDPClipboardMessageType.clipboardCapabilities,
-        payload: clipboardGeneralCapabilityPayload(generalFlags: 0x0000_0040)
+        payload: clipboardGeneralCapabilityPayload(
+            generalFlags: RDPClipboardCapabilityFlags.useLongFormatNames | 0x0000_0040
+        )
     ).encoded())
 
     let capabilities = try #require(try RDPClipboardCapabilitiesPDU.parseIfPresent(from: futureVersion))
+    let unknownFlagCapabilities = try #require(try RDPClipboardCapabilitiesPDU.parseIfPresent(from: unknownFlag))
     #expect(capabilities.version == 3)
-    #expect(throws: RDPDecodeError.invalidClipboardPDU) {
-        try RDPClipboardCapabilitiesPDU.parseIfPresent(from: unknownFlag)
-    }
+    #expect(RDPClipboardSession.clientGeneralFlags(
+        serverGeneralFlags: unknownFlagCapabilities.generalFlags
+    ) == RDPClipboardCapabilityFlags.useLongFormatNames)
 }
 
 @Test func clipboardCapabilitiesRejectDuplicateGeneralCapabilitySet() throws {
@@ -112,7 +117,7 @@ import Testing
         serverGeneralFlags: RDPClipboardCapabilityFlags.useLongFormatNames
     ) == RDPClipboardCapabilityFlags.useLongFormatNames)
     #expect(RDPClipboardSession.clientGeneralFlags(
-        serverGeneralFlags: RDPClipboardCapabilityFlags.supportedMask
+        serverGeneralFlags: 0x0000_003E
     ) == RDPClipboardCapabilitiesPDU.defaultGeneralFlags)
 }
 
@@ -153,7 +158,9 @@ import Testing
 }
 
 @Test func clipboardUnicodeFormatListEncodesLongFormatNameEntry() {
-    #expect(RDPClipboardFormatListPDU.unicodeText().encoded() == hexData("""
+    #expect(RDPClipboardFormatListPDU(entries: [
+        RDPClipboardFormatListEntry(formatID: RDPClipboardFormatID.unicodeText),
+    ]).encoded() == hexData("""
     02 00 00 00 06 00 00 00 0d 00 00 00 00 00
     """))
 }
@@ -251,7 +258,6 @@ import Testing
     #expect(parsed.entries == list.entries)
     #expect(parsed.formatIDs == [0xC006, 0xC007, RDPClipboardFormatID.unicodeText])
     #expect(parsed.fileGroupDescriptorWFormatID == 0xC006)
-    #expect(parsed.fileContentsFormatID == 0xC007)
 }
 
 @Test func clipboardFormatListParsesASCIINamedFormats() throws {
@@ -343,73 +349,14 @@ import Testing
 @Test func clipboardFormatDataResponseRejectsOversizedUnicodeText() throws {
     let maximumCodeUnitCount = RDPClipboardLimits.maximumUnicodeTextUTF16CodeUnitCount
     let fittingText = String(repeating: "a", count: maximumCodeUnitCount)
-    let fittingResponse = try #require(RDPClipboardFormatDataResponsePDU.unicodeTextIfEncodable(fittingText))
 
+    #expect(RDPClipboardLimits.maximumUnicodeTextByteCount == (maximumCodeUnitCount + 1) * 2)
     #expect(RDPClipboardLimits.canPublishUnicodeText(fittingText))
-    #expect(RDPStaticVirtualChannelPDU.canEncodeSinglePayload(fittingResponse.encoded()))
 
     let oversizedText = fittingText + "a"
 
     #expect(!RDPClipboardLimits.canPublishUnicodeText(oversizedText))
     #expect(RDPClipboardFormatDataResponsePDU.unicodeTextIfEncodable(oversizedText) == nil)
-}
-
-@Test func clipboardLockClipDataEncodesAndParsesClipDataID() throws {
-    let lock = RDPClipboardLockClipDataPDU(clipDataID: 0xAABB_CCDD)
-    let pdu = try RDPClipboardPDU.parse(from: lock.encoded())
-    let parsed = try #require(try RDPClipboardLockClipDataPDU.parseIfPresent(from: pdu))
-
-    #expect(pdu.typeName == "clipboard-lock-clipdata")
-    #expect(pdu.encoded() == hexData("""
-    0a 00 00 00 04 00 00 00 dd cc bb aa
-    """))
-    #expect(parsed == lock)
-}
-
-@Test func clipboardUnlockClipDataEncodesAndParsesClipDataID() throws {
-    let unlock = RDPClipboardUnlockClipDataPDU(clipDataID: 0x1122_3344)
-    let pdu = try RDPClipboardPDU.parse(from: unlock.encoded())
-    let parsed = try #require(try RDPClipboardUnlockClipDataPDU.parseIfPresent(from: pdu))
-
-    #expect(pdu.typeName == "clipboard-unlock-clipdata")
-    #expect(pdu.encoded() == hexData("""
-    0b 00 00 00 04 00 00 00 44 33 22 11
-    """))
-    #expect(parsed == unlock)
-}
-
-@Test func clipboardLockAndUnlockClipDataRejectInvalidHeadersAndPayloads() throws {
-    let invalidLockFlags = try RDPClipboardPDU.parse(from: RDPClipboardPDU(
-        messageType: RDPClipboardMessageType.lockClipdata,
-        messageFlags: RDPClipboardMessageFlags.responseOK,
-        payload: Data([0x01, 0x00, 0x00, 0x00])
-    ).encoded())
-    let invalidUnlockFlags = try RDPClipboardPDU.parse(from: RDPClipboardPDU(
-        messageType: RDPClipboardMessageType.unlockClipdata,
-        messageFlags: RDPClipboardMessageFlags.responseOK,
-        payload: Data([0x01, 0x00, 0x00, 0x00])
-    ).encoded())
-    let invalidLockPayloadLength = try RDPClipboardPDU.parse(from: RDPClipboardPDU(
-        messageType: RDPClipboardMessageType.lockClipdata,
-        payload: Data([0x01, 0x00, 0x00])
-    ).encoded())
-    let invalidUnlockPayloadLength = try RDPClipboardPDU.parse(from: RDPClipboardPDU(
-        messageType: RDPClipboardMessageType.unlockClipdata,
-        payload: Data([0x01, 0x00, 0x00])
-    ).encoded())
-
-    #expect(throws: RDPDecodeError.invalidClipboardPDU) {
-        _ = try RDPClipboardLockClipDataPDU.parseIfPresent(from: invalidLockFlags)
-    }
-    #expect(throws: RDPDecodeError.invalidClipboardPDU) {
-        _ = try RDPClipboardUnlockClipDataPDU.parseIfPresent(from: invalidUnlockFlags)
-    }
-    #expect(throws: RDPDecodeError.invalidClipboardPDU) {
-        _ = try RDPClipboardLockClipDataPDU.parseIfPresent(from: invalidLockPayloadLength)
-    }
-    #expect(throws: RDPDecodeError.invalidClipboardPDU) {
-        _ = try RDPClipboardUnlockClipDataPDU.parseIfPresent(from: invalidUnlockPayloadLength)
-    }
 }
 
 @Test func clipboardFormatDataResponseRoundTripsFileGroupDescriptor() throws {
@@ -453,8 +400,6 @@ import Testing
     #expect(parsed.descriptors.count == 2)
     #expect(parsed.descriptors[0].fileName == "notes.txt")
     #expect(parsed.descriptors[0].fileAttributes == 0x0000_0020)
-    #expect(parsed.descriptors[0].creationTime == 0)
-    #expect(parsed.descriptors[0].lastAccessTime == 0)
     #expect(parsed.descriptors[0].lastWriteTime == 0x2122_2324_2526_2728)
     #expect(parsed.descriptors[0].fileSize == 0x0000_0001_0000_0002)
     #expect(parsed.descriptors[0].isDirectory == false)
@@ -496,27 +441,23 @@ import Testing
     let descriptor = RDPClipboardFileDescriptorW(
         flags: RDPClipboardFileDescriptorFlags.attributes
             | RDPClipboardFileDescriptorFlags.fileSize
-            | RDPClipboardFileDescriptorFlags.creationTime
-            | RDPClipboardFileDescriptorFlags.lastAccessTime
             | RDPClipboardFileDescriptorFlags.lastWriteTime
             | RDPClipboardFileDescriptorFlags.unicode,
         fileAttributes: RDPClipboardFileAttributes.archive,
-        creationTime: 0x0102_0304_0506_0708,
-        lastAccessTime: 0x1112_1314_1516_1718,
         lastWriteTime: 0x2122_2324_2526_2728,
-        fileSize: 5,
+        fileSize: 0x0000_0001_0000_0005,
         fileName: "notes.txt"
     )
     let encoded = descriptor.encoded()
     var cursor = ByteCursor(encoded)
     let parsed = try RDPClipboardFileDescriptorW.parse(from: &cursor)
 
+    #expect(encoded.count == RDPClipboardFileDescriptorW.byteCount)
     #expect(encoded[4 ..< 36].allSatisfy { $0 == 0 })
     #expect(encoded[40 ..< 56].allSatisfy { $0 == 0 })
     #expect(encoded[56 ..< 64] == Data([0x28, 0x27, 0x26, 0x25, 0x24, 0x23, 0x22, 0x21]))
-    #expect(parsed.creationTime == 0)
-    #expect(parsed.lastAccessTime == 0)
-    #expect(parsed.lastWriteTime == 0x2122_2324_2526_2728)
+    #expect(encoded[64 ..< 72] == Data([0x01, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00]))
+    #expect(parsed == descriptor)
 }
 
 @Test func clipboardFileContentsSizeRequestEncodesAndParses() throws {
@@ -539,18 +480,14 @@ import Testing
     #expect(parsed == request)
 }
 
-@Test func clipboardFileContentsRangeRequestEncodesAndParsesClipDataID() throws {
+@Test func clipboardFileContentsRangeRequestEncodesAndIgnoresServerClipDataID() throws {
     let request = RDPClipboardFileContentsRequestPDU.range(
         streamID: 7,
         fileIndex: 3,
         position: 0x0000_0001_0000_0004,
-        requestedByteCount: 0x1000,
-        clipDataID: 0xAABB_CCDD
+        requestedByteCount: 0x1000
     )
-    let pdu = try RDPClipboardPDU.parse(from: request.encoded())
-    let parsed = try #require(try RDPClipboardFileContentsRequestPDU.parseIfPresent(from: pdu))
-
-    #expect(pdu.encoded() == hexData("""
+    let serverRequestWithClipDataID = try RDPClipboardPDU.parse(from: hexData("""
     08 00 00 00 1c 00 00 00
     07 00 00 00
     03 00 00 00
@@ -559,7 +496,16 @@ import Testing
     00 10 00 00
     dd cc bb aa
     """))
-    #expect(parsed == request)
+
+    #expect(try request.encoded() == hexData("""
+    08 00 00 00 18 00 00 00
+    07 00 00 00
+    03 00 00 00
+    02 00 00 00
+    04 00 00 00 01 00 00 00
+    00 10 00 00
+    """))
+    #expect(try RDPClipboardFileContentsRequestPDU.parseIfPresent(from: serverRequestWithClipDataID) == request)
 }
 
 @Test func clipboardFileContentsRequestRejectsInvalidFlags() {
@@ -703,6 +649,28 @@ import Testing
     ])
 }
 
+@Test func clipboardRemoteFileTransferFilesNeverEscapeTheDownloadDirectory() throws {
+    let longName = String(repeating: "\u{3042}", count: 200) + ".txt"
+    let list = RDPClipboardFileGroupDescriptorW(descriptors: [
+        fileDescriptor(fileName: ".."),
+        fileDescriptor(fileName: "."),
+        fileDescriptor(fileName: "Folder\\.."),
+        fileDescriptor(fileName: "../../"),
+        fileDescriptor(fileName: "C:secret.txt"),
+        fileDescriptor(fileName: longName),
+        fileDescriptor(fileName: longName),
+    ])
+
+    let names = try list.remoteFileTransferFiles().map(\.fileName)
+
+    #expect(Array(names.prefix(5)) == ["remote-file", "remote-file-2", "remote-file-3", "remote-file-4", "C_secret.txt"])
+    #expect(names[5].utf8.count <= 255)
+    #expect(names[5].hasSuffix(".txt"))
+    #expect(names[6].utf8.count <= 255)
+    #expect(names[6].hasSuffix("-2.txt"))
+    #expect(names.allSatisfy { $0 != "." && $0 != ".." && !$0.contains("/") })
+}
+
 @Test func clipboardRemoteFileTransferFilesRejectInvalidPlans() {
     #expect(throws: RDPClipboardRemoteFileTransferPlanningError.emptyFileList) {
         try RDPClipboardFileGroupDescriptorW(descriptors: []).remoteFileTransferFiles()
@@ -722,6 +690,130 @@ import Testing
             fileDescriptor(fileSize: 8, fileName: "too-large.bin"),
         ]).remoteFileTransferFiles(maximumTotalByteCount: 7)
     }
+}
+
+@Test func clipboardSessionAnswersMonitorReadyWithCapabilitiesTemporaryDirectoryAndFormatList() throws {
+    let channel = EmbeddedChannel()
+    let sent = ClipboardSentMessages()
+    let session = RDPClipboardSession(
+        userChannelID: 1006,
+        staticChannelID: 1007,
+        channel: channel,
+        sentMessageHandler: sent.record
+    )
+
+    session.updateServerCapabilities(RDPClipboardCapabilitiesPDU())
+    session.sendClientCapabilities()
+
+    #expect(sent.summaries.map(\.typeName) == [
+        "clipboard-capabilities",
+        "clipboard-temporary-directory",
+        "clipboard-format-list",
+    ])
+    #expect(try clipboardPayload(fromPackets: sent.packets[2]) == RDPClipboardFormatListPDU(entries: []).encoded())
+    _ = try channel.finish()
+}
+
+@Test func clipboardSessionMatchesFormatDataResponsesToRequestsInOrder() throws {
+    let channel = EmbeddedChannel()
+    let session = RDPClipboardSession(userChannelID: 1006, staticChannelID: 1007, channel: channel)
+
+    session.requestFileGroupDescriptorW(formatID: 0xC006)
+    session.requestUnicodeText()
+
+    #expect(session.takePendingFormatDataResponse() == .fileGroupDescriptorW(formatID: 0xC006))
+    #expect(session.takePendingFormatDataResponse() == .unicodeText)
+    #expect(session.takePendingFormatDataResponse() == nil)
+    _ = try channel.finish()
+}
+
+@Test func clipboardSessionReturnsRemainingBytesWhenRangeRunsPastEndOfFile() throws {
+    let channel = EmbeddedChannel()
+    let sent = ClipboardSentMessages()
+    let session = RDPClipboardSession(
+        userChannelID: 1006,
+        staticChannelID: 1007,
+        channel: channel,
+        sentMessageHandler: sent.record
+    )
+
+    session.publishLocalFiles([RDPClipboardLocalFile(fileName: "notes.txt", contents: Data([1, 2, 3, 4, 5]))])
+    session.respondToFileContentsRequest(.range(streamID: 9, fileIndex: 0, position: 3, requestedByteCount: 0x1000))
+    session.respondToFileContentsRequest(.range(streamID: 10, fileIndex: 0, position: 6, requestedByteCount: 1))
+
+    let responses = try sent.packets.suffix(2).map { packets in
+        try RDPClipboardFileContentsResponsePDU.parseIfPresent(
+            from: RDPClipboardPDU.parse(from: clipboardPayload(fromPackets: packets))
+        )
+    }
+    #expect(responses == [
+        .range(streamID: 9, data: Data([4, 5])),
+        .failure(streamID: 10),
+    ])
+    _ = try channel.finish()
+}
+
+@Test func clipboardSessionChunksAndReassemblesMessagesLargerThanOneChannelChunk() throws {
+    let channel = EmbeddedChannel()
+    let session = RDPClipboardSession(userChannelID: 1006, staticChannelID: 1007, channel: channel)
+    let message = RDPClipboardFormatDataResponsePDU.unicodeText(String(repeating: "x", count: 3_000)).encoded()
+
+    let packets = RDPClipboardSession.encodedPackets(message, userChannelID: 1006, staticChannelID: 1007)
+    let chunks = try packets.map { try RDPStaticVirtualChannelPDU.parse(fromUserData: sendDataRequestUserData(from: $0)) }
+    var reassembled: [Data] = []
+    for chunk in chunks {
+        if let payload = try session.reassembledPayload(
+            from: chunk,
+            maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumPayloadByteCount
+        ) {
+            reassembled.append(payload)
+        }
+    }
+
+    #expect(chunks.map(\.flags) == [
+        RDPStaticVirtualChannelFlags.first | RDPStaticVirtualChannelFlags.showProtocol,
+        RDPStaticVirtualChannelFlags.showProtocol,
+        RDPStaticVirtualChannelFlags.showProtocol,
+        RDPStaticVirtualChannelFlags.last | RDPStaticVirtualChannelFlags.showProtocol,
+    ])
+    #expect(chunks.allSatisfy { $0.totalLength == UInt32(message.count) })
+    #expect(reassembled == [message])
+    _ = try channel.finish()
+}
+
+private final class ClipboardSentMessages {
+    var summaries: [RDPClipboardMessageSummary] = []
+    var packets: [Data] = []
+
+    func record(_ summary: RDPClipboardMessageSummary, _ packets: Data) {
+        summaries.append(summary)
+        self.packets.append(packets)
+    }
+}
+
+private func sendDataRequestUserData(from packet: Data) throws -> Data {
+    var cursor = try ByteCursor(X224DataTPDU.unwrap(packet))
+    _ = try cursor.readUInt8()
+    _ = try cursor.readBigEndianUInt16()
+    _ = try cursor.readBigEndianUInt16()
+    _ = try cursor.readUInt8()
+    return try cursor.readData(count: cursor.readPERLength())
+}
+
+private func clipboardPayload(fromPackets data: Data) throws -> Data {
+    var reassembler = RDPStaticVirtualChannelReassembler()
+    var offset = data.startIndex
+    while offset < data.endIndex {
+        let length = Int(data[offset + 2]) << 8 | Int(data[offset + 3])
+        let chunk = try RDPStaticVirtualChannelPDU.parse(
+            fromUserData: sendDataRequestUserData(from: data.subdata(in: offset ..< offset + length))
+        )
+        if let pdu = try reassembler.append(chunk) {
+            return pdu.payload
+        }
+        offset += length
+    }
+    throw RDPDecodeError.invalidStaticVirtualChannelPDU
 }
 
 private func hexData(_ value: String) -> Data {

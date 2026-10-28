@@ -1,10 +1,6 @@
 import Foundation
 @preconcurrency import NIOCore
 
-enum RDPClipboardChannel {
-    static let name = "cliprdr"
-}
-
 enum RDPClipboardFormatID {
     static let unicodeText: UInt32 = 13
 }
@@ -20,11 +16,7 @@ enum RDPClipboardLocalFormatID {
 }
 
 public enum RDPClipboardFileDescriptorFlags {
-    public static let classID: UInt32 = 0x0000_0001
-    public static let sizePoint: UInt32 = 0x0000_0002
     public static let attributes: UInt32 = 0x0000_0004
-    public static let creationTime: UInt32 = 0x0000_0008
-    public static let lastAccessTime: UInt32 = 0x0000_0010
     public static let lastWriteTime: UInt32 = 0x0000_0020
     public static let fileSize: UInt32 = 0x0000_0040
     public static let unicode: UInt32 = 0x8000_0000
@@ -58,14 +50,6 @@ enum RDPClipboardMessageFlags {
 enum RDPClipboardCapabilityFlags {
     static let useLongFormatNames: UInt32 = 0x0000_0002
     static let streamFileClipEnabled: UInt32 = 0x0000_0004
-    static let fileClipNoFilePaths: UInt32 = 0x0000_0008
-    static let canLockClipData: UInt32 = 0x0000_0010
-    static let hugeFileSupportEnabled: UInt32 = 0x0000_0020
-    static let supportedMask: UInt32 = useLongFormatNames
-        | streamFileClipEnabled
-        | fileClipNoFilePaths
-        | canLockClipData
-        | hugeFileSupportEnabled
 }
 
 private enum RDPClipboardCapabilitySetType {
@@ -180,7 +164,7 @@ struct RDPClipboardPDU: Equatable, Sendable {
     }
 
     static func parse(from data: Data) throws -> RDPClipboardPDU {
-        guard data.count >= 8 else {
+        guard data.count >= headerByteCount else {
             throw RDPDecodeError.invalidClipboardPDU
         }
 
@@ -191,16 +175,14 @@ struct RDPClipboardPDU: Equatable, Sendable {
         else {
             throw RDPDecodeError.invalidClipboardPDU
         }
+        // Windows Server 2003 through 2012 R2 append four bytes that dataLen
+        // does not count (MS-RDPECLIP 2.2.1, Appendix A <1>).
         let trailingByteCount = cursor.remaining - dataLength
         guard trailingByteCount == 0 || trailingByteCount == 4 else {
             throw RDPDecodeError.invalidClipboardPDU
         }
-        let payload = try cursor.readData(count: dataLength)
-        if trailingByteCount > 0 {
-            _ = try cursor.readData(count: trailingByteCount)
-        }
 
-        return RDPClipboardPDU(header: header, payload: payload)
+        return try RDPClipboardPDU(header: header, payload: cursor.readData(count: dataLength))
     }
 
     func encoded() -> Data {
@@ -226,18 +208,7 @@ struct RDPClipboardTemporaryDirectoryPDU: Equatable, Sendable {
 
     func encoded() -> Data {
         var payload = Data()
-        let maximumPathCodeUnitCount = Self.pathBufferUTF16CodeUnitCount - 1
-        for codeUnit in path.utf16.prefix(maximumPathCodeUnitCount) {
-            payload.appendLittleEndianUInt16(codeUnit)
-        }
-        payload.appendLittleEndianUInt16(0)
-        if payload.count < Self.pathBufferUTF16CodeUnitCount * 2 {
-            payload.append(Data(
-                repeating: 0,
-                count: Self.pathBufferUTF16CodeUnitCount * 2 - payload.count
-            ))
-        }
-
+        appendFixedUnicodeString(path, codeUnitCount: Self.pathBufferUTF16CodeUnitCount, to: &payload)
         return RDPClipboardPDU(
             messageType: RDPClipboardMessageType.temporaryDirectory,
             payload: payload
@@ -284,23 +255,19 @@ struct RDPClipboardCapabilitiesPDU: Equatable, Sendable {
                 throw RDPDecodeError.invalidClipboardPDU
             }
             let body = try cursor.readData(count: length - 4)
+            // CLIPRDR_CAPS_SET is a type-length wrapper (MS-RDPECLIP 2.2.2.1.1), so
+            // unknown sets are skipped; unknown generalFlags bits are simply not used.
             guard type == RDPClipboardCapabilitySetType.general else {
-                throw RDPDecodeError.invalidClipboardPDU
+                continue
             }
-            guard body.count == 8 else {
-                throw RDPDecodeError.invalidClipboardPDU
-            }
-            guard generalCapability == nil else {
+            guard body.count == 8, generalCapability == nil else {
                 throw RDPDecodeError.invalidClipboardPDU
             }
             var bodyCursor = ByteCursor(body)
-            let version = try bodyCursor.readLittleEndianUInt32()
-            let generalFlags = try bodyCursor.readLittleEndianUInt32()
-            guard generalFlags & ~RDPClipboardCapabilityFlags.supportedMask == 0
-            else {
-                throw RDPDecodeError.invalidClipboardPDU
-            }
-            generalCapability = RDPClipboardCapabilitiesPDU(version: version, generalFlags: generalFlags)
+            generalCapability = try RDPClipboardCapabilitiesPDU(
+                version: bodyCursor.readLittleEndianUInt32(),
+                generalFlags: bodyCursor.readLittleEndianUInt32()
+            )
         }
         guard cursor.remaining == 0 else {
             throw RDPDecodeError.invalidClipboardPDU
@@ -344,25 +311,10 @@ struct RDPClipboardFormatListPDU: Equatable, Sendable {
         self.entries = entries
     }
 
-    init(formatIDs: [UInt32]) {
-        entries = formatIDs.map { RDPClipboardFormatListEntry(formatID: $0) }
-    }
-
-    static func unicodeText() -> RDPClipboardFormatListPDU {
-        RDPClipboardFormatListPDU(formatIDs: [RDPClipboardFormatID.unicodeText])
-    }
-
     var fileGroupDescriptorWFormatID: UInt32? {
-        formatID(named: RDPClipboardRegisteredFormatName.fileGroupDescriptorW)
-    }
-
-    var fileContentsFormatID: UInt32? {
-        formatID(named: RDPClipboardRegisteredFormatName.fileContents)
-    }
-
-    func formatID(named formatName: String) -> UInt32? {
         entries.first { entry in
-            entry.formatName?.caseInsensitiveCompare(formatName) == .orderedSame
+            entry.formatName?.caseInsensitiveCompare(RDPClipboardRegisteredFormatName.fileGroupDescriptorW)
+                == .orderedSame
         }?.formatID
     }
 
@@ -381,14 +333,9 @@ struct RDPClipboardFormatListPDU: Equatable, Sendable {
         if pdu.payload.isEmpty {
             return RDPClipboardFormatListPDU(entries: [])
         }
-        if pdu.header.messageFlags == RDPClipboardMessageFlags.asciiNames {
-            guard pdu.payload.count.isMultiple(of: 36) else {
-                throw RDPDecodeError.invalidClipboardPDU
-            }
-            return try parseShortASCIIFormatNames(from: pdu.payload)
-        }
-        if !useLongFormatNames {
-            return try parseShortUnicodeFormatNames(from: pdu.payload)
+        let hasASCIINames = pdu.header.messageFlags == RDPClipboardMessageFlags.asciiNames
+        if hasASCIINames || !useLongFormatNames {
+            return try parseShortFormatNames(from: pdu.payload, ascii: hasASCIINames)
         }
 
         var cursor = ByteCursor(pdu.payload)
@@ -411,7 +358,7 @@ struct RDPClipboardFormatListPDU: Equatable, Sendable {
             }
             entries.append(RDPClipboardFormatListEntry(
                 formatID: formatID,
-                formatName: decodeClipboardUnicodeFormatName(formatNameCodeUnits)
+                formatName: String(decoding: formatNameCodeUnits, as: UTF16.self)
             ))
         }
         return RDPClipboardFormatListPDU(entries: entries)
@@ -438,21 +385,8 @@ struct RDPClipboardFormatListPDU: Equatable, Sendable {
         ).encoded()
     }
 
-    private static func parseShortASCIIFormatNames(from payload: Data) throws -> RDPClipboardFormatListPDU {
-        var cursor = ByteCursor(payload)
-        var entries: [RDPClipboardFormatListEntry] = []
-        while cursor.remaining > 0 {
-            let formatID = try cursor.readLittleEndianUInt32()
-            let nameData = try cursor.readData(count: 32)
-            entries.append(RDPClipboardFormatListEntry(
-                formatID: formatID,
-                formatName: decodeClipboardASCIIFormatName(nameData)
-            ))
-        }
-        return RDPClipboardFormatListPDU(entries: entries)
-    }
-
-    private static func parseShortUnicodeFormatNames(from payload: Data) throws -> RDPClipboardFormatListPDU {
+    /// Short Format Name variant: 32-byte names, ASCII when CB_ASCII_NAMES is set and UTF-16LE otherwise.
+    private static func parseShortFormatNames(from payload: Data, ascii: Bool) throws -> RDPClipboardFormatListPDU {
         guard payload.count.isMultiple(of: 36) else {
             throw RDPDecodeError.invalidClipboardPDU
         }
@@ -462,9 +396,11 @@ struct RDPClipboardFormatListPDU: Equatable, Sendable {
         while cursor.remaining > 0 {
             let formatID = try cursor.readLittleEndianUInt32()
             let nameData = try cursor.readData(count: 32)
-            entries.append(RDPClipboardFormatListEntry(
+            entries.append(try RDPClipboardFormatListEntry(
                 formatID: formatID,
-                formatName: try decodeClipboardFixedUnicodeString(nameData)
+                formatName: ascii
+                    ? String(decoding: nameData.prefix { $0 != 0 }, as: UTF8.self)
+                    : decodeNullTerminatedUTF16(nameData)
             ))
         }
         return RDPClipboardFormatListPDU(entries: entries)
@@ -514,9 +450,6 @@ struct RDPClipboardFormatDataRequestPDU: Equatable, Sendable {
 }
 
 struct RDPClipboardFormatDataResponsePDU: Equatable, Sendable {
-    static let maximumDataByteCount = RDPStaticVirtualChannelPDU.maximumPayloadByteCount
-        - RDPClipboardPDU.headerByteCount
-
     var ok: Bool
     var data: Data
 
@@ -536,13 +469,7 @@ struct RDPClipboardFormatDataResponsePDU: Equatable, Sendable {
     }
 
     static func unicodeTextIfEncodable(_ text: String) -> RDPClipboardFormatDataResponsePDU? {
-        guard let byteCount = encodedClipboardUnicodeTextByteCount(text),
-              byteCount <= maximumDataByteCount
-        else {
-            return nil
-        }
-
-        return unicodeText(text)
+        RDPClipboardLimits.canPublishUnicodeText(text) ? unicodeText(text) : nil
     }
 
     static func fileGroupDescriptorW(
@@ -564,7 +491,7 @@ struct RDPClipboardFormatDataResponsePDU: Equatable, Sendable {
     }
 
     func decodedUnicodeText() throws -> String {
-        try decodeClipboardUnicodeText(data)
+        try decodeNullTerminatedUTF16(data)
     }
 
     func decodedFileGroupDescriptorW() throws -> RDPClipboardFileGroupDescriptorW {
@@ -572,60 +499,6 @@ struct RDPClipboardFormatDataResponsePDU: Equatable, Sendable {
             throw RDPDecodeError.invalidClipboardPDU
         }
         return try RDPClipboardFileGroupDescriptorW.parse(from: data)
-    }
-}
-
-struct RDPClipboardLockClipDataPDU: Equatable, Sendable {
-    var clipDataID: UInt32
-
-    static func parseIfPresent(from pdu: RDPClipboardPDU) throws -> RDPClipboardLockClipDataPDU? {
-        guard pdu.header.messageType == RDPClipboardMessageType.lockClipdata else {
-            return nil
-        }
-        guard pdu.header.messageFlags == 0,
-              pdu.payload.count == 4
-        else {
-            throw RDPDecodeError.invalidClipboardPDU
-        }
-
-        var cursor = ByteCursor(pdu.payload)
-        return try RDPClipboardLockClipDataPDU(clipDataID: cursor.readLittleEndianUInt32())
-    }
-
-    func encoded() -> Data {
-        var payload = Data()
-        payload.appendLittleEndianUInt32(clipDataID)
-        return RDPClipboardPDU(
-            messageType: RDPClipboardMessageType.lockClipdata,
-            payload: payload
-        ).encoded()
-    }
-}
-
-struct RDPClipboardUnlockClipDataPDU: Equatable, Sendable {
-    var clipDataID: UInt32
-
-    static func parseIfPresent(from pdu: RDPClipboardPDU) throws -> RDPClipboardUnlockClipDataPDU? {
-        guard pdu.header.messageType == RDPClipboardMessageType.unlockClipdata else {
-            return nil
-        }
-        guard pdu.header.messageFlags == 0,
-              pdu.payload.count == 4
-        else {
-            throw RDPDecodeError.invalidClipboardPDU
-        }
-
-        var cursor = ByteCursor(pdu.payload)
-        return try RDPClipboardUnlockClipDataPDU(clipDataID: cursor.readLittleEndianUInt32())
-    }
-
-    func encoded() -> Data {
-        var payload = Data()
-        payload.appendLittleEndianUInt32(clipDataID)
-        return RDPClipboardPDU(
-            messageType: RDPClipboardMessageType.unlockClipdata,
-            payload: payload
-        ).encoded()
     }
 }
 
@@ -743,45 +616,61 @@ public struct RDPClipboardRemoteFileTransferFile: Equatable, Sendable {
         self.declaredByteCount = declaredByteCount
     }
 
+    /// Longest file name, in UTF-8 bytes, that APFS and HFS+ accept.
+    private static let maximumFileNameByteCount = 255
+
     fileprivate static func uniqueFileName(
         _ fileName: String,
         usedFileNames: inout Set<String>
     ) -> String {
-        let sanitized = sanitizedFileName(fileName)
-        let sanitizedNSString = sanitized as NSString
-        let baseName = sanitizedNSString.deletingPathExtension
-        let pathExtension = sanitizedNSString.pathExtension
-        var candidate = sanitized
+        let sanitized = sanitizedFileName(fileName) as NSString
+        let extensionText = sanitized.pathExtension.isEmpty ? "" : ".\(sanitized.pathExtension)"
+        var candidate = sanitized as String
         var suffix = 2
         while usedFileNames.contains(candidate.lowercased()) {
-            let suffixText = "-\(suffix)"
-            let extensionText = pathExtension.isEmpty ? "" : ".\(pathExtension)"
-            let maximumBaseLength = max(1, 255 - suffixText.count - extensionText.count)
-            let truncatedBaseName = String(baseName.prefix(maximumBaseLength))
-            candidate = String("\(truncatedBaseName)\(suffixText)\(extensionText)".prefix(255))
+            candidate = Self.fileName(sanitized.deletingPathExtension, suffix: "-\(suffix)\(extensionText)")
             suffix += 1
         }
         usedFileNames.insert(candidate.lowercased())
         return candidate
     }
 
+    /// Reduces a remote, untrusted name to a single file name component that cannot be "." or "..".
     private static func sanitizedFileName(_ fileName: String) -> String {
-        let fallback = "remote-file"
         let lastPathComponent = fileName
-            .trimmingCharacters(in: .whitespacesAndNewlines)
             .split(whereSeparator: { $0 == "/" || $0 == "\\" })
             .last
             .map(String.init) ?? ""
-        let baseName = lastPathComponent.isEmpty ? fallback : lastPathComponent
-        let invalidCharacters = CharacterSet(charactersIn: "/\\:")
+        let invalidCharacters = CharacterSet(charactersIn: ":")
             .union(.controlCharacters)
             .union(.newlines)
         var sanitizedScalars = String.UnicodeScalarView()
-        for scalar in baseName.unicodeScalars {
+        for scalar in lastPathComponent.unicodeScalars {
             sanitizedScalars.append(invalidCharacters.contains(scalar) ? "_" : scalar)
         }
         let sanitized = String(sanitizedScalars).trimmingCharacters(in: .whitespacesAndNewlines)
-        return String((sanitized.isEmpty ? fallback : sanitized).prefix(255))
+        guard sanitized.isEmpty == false, sanitized != ".", sanitized != ".." else {
+            return "remote-file"
+        }
+        guard sanitized.utf8.count > maximumFileNameByteCount else {
+            return sanitized
+        }
+        let name = sanitized as NSString
+        return Self.fileName(name.deletingPathExtension, suffix: name.pathExtension.isEmpty ? "" : ".\(name.pathExtension)")
+    }
+
+    /// Joins `baseName` and `suffix`, shortening the base name to fit the file name byte limit.
+    private static func fileName(_ baseName: String, suffix: String) -> String {
+        let baseName = utf8Prefix(baseName, maximumByteCount: max(1, maximumFileNameByteCount - suffix.utf8.count))
+        return utf8Prefix(baseName + suffix, maximumByteCount: maximumFileNameByteCount)
+    }
+
+    private static func utf8Prefix(_ text: String, maximumByteCount: Int) -> String {
+        var byteCount = 0
+        return String(text.prefix { character in
+            byteCount += character.utf8.count
+            return byteCount <= maximumByteCount
+        })
     }
 }
 
@@ -791,8 +680,6 @@ public struct RDPClipboardFileDescriptorW: Equatable, Sendable {
 
     public var flags: UInt32
     public var fileAttributes: UInt32
-    public var creationTime: UInt64
-    public var lastAccessTime: UInt64
     public var lastWriteTime: UInt64
     public var fileSize: UInt64
     public var fileName: String
@@ -800,16 +687,12 @@ public struct RDPClipboardFileDescriptorW: Equatable, Sendable {
     public init(
         flags: UInt32,
         fileAttributes: UInt32,
-        creationTime: UInt64 = 0,
-        lastAccessTime: UInt64 = 0,
         lastWriteTime: UInt64 = 0,
         fileSize: UInt64,
         fileName: String
     ) {
         self.flags = flags
         self.fileAttributes = fileAttributes
-        self.creationTime = creationTime
-        self.lastAccessTime = lastAccessTime
         self.lastWriteTime = lastWriteTime
         self.fileSize = fileSize
         self.fileName = fileName
@@ -819,12 +702,13 @@ public struct RDPClipboardFileDescriptorW: Equatable, Sendable {
         fileAttributes & RDPClipboardFileAttributes.directory != 0
     }
 
+    /// CLIPRDR_FILEDESCRIPTOR (MS-RDPECLIP 2.2.5.2.3.1); reserved1 and reserved2 are ignored.
     static func parse(from cursor: inout ByteCursor) throws -> RDPClipboardFileDescriptorW {
         let flags = try cursor.readLittleEndianUInt32()
         _ = try cursor.readData(count: 32)
         let fileAttributes = try cursor.readLittleEndianUInt32()
         _ = try cursor.readData(count: 16)
-        let lastWriteTime = try readFileTime(from: &cursor)
+        let lastWriteTime = try cursor.readLittleEndianUInt64()
         let fileSizeHigh = try cursor.readLittleEndianUInt32()
         let fileSizeLow = try cursor.readLittleEndianUInt32()
         let fileNameData = try cursor.readData(count: maximumFileNameCodeUnitCount * 2)
@@ -834,7 +718,7 @@ public struct RDPClipboardFileDescriptorW: Equatable, Sendable {
             fileAttributes: fileAttributes,
             lastWriteTime: lastWriteTime,
             fileSize: UInt64(fileSizeHigh) << 32 | UInt64(fileSizeLow),
-            fileName: decodeClipboardFixedUnicodeString(fileNameData)
+            fileName: decodeNullTerminatedUTF16(fileNameData)
         )
     }
 
@@ -844,17 +728,11 @@ public struct RDPClipboardFileDescriptorW: Equatable, Sendable {
         data.append(Data(repeating: 0, count: 32))
         data.appendLittleEndianUInt32(fileAttributes)
         data.append(Data(repeating: 0, count: 16))
-        data.appendClipboardUInt64(lastWriteTime)
-        data.appendLittleEndianUInt32(UInt32((fileSize >> 32) & 0xFFFF_FFFF))
-        data.appendLittleEndianUInt32(UInt32(fileSize & 0xFFFF_FFFF))
-        appendFixedUnicodeFileName(fileName, to: &data)
+        data.appendLittleEndianUInt64(lastWriteTime)
+        data.appendLittleEndianUInt32(UInt32(fileSize >> 32))
+        data.appendLittleEndianUInt32(UInt32(truncatingIfNeeded: fileSize))
+        appendFixedUnicodeString(fileName, codeUnitCount: Self.maximumFileNameCodeUnitCount, to: &data)
         return data
-    }
-
-    private static func readFileTime(from cursor: inout ByteCursor) throws -> UInt64 {
-        let low = try cursor.readLittleEndianUInt32()
-        let high = try cursor.readLittleEndianUInt32()
-        return UInt64(high) << 32 | UInt64(low)
     }
 }
 
@@ -885,15 +763,13 @@ public struct RDPClipboardLocalFile: Equatable, Sendable {
 }
 
 public enum RDPClipboardLimits {
-    public static let maximumUnicodeTextByteCount = RDPClipboardFormatDataResponsePDU.maximumDataByteCount
+    /// Largest CF_UNICODETEXT payload, terminator included, that the session sends.
+    public static let maximumUnicodeTextByteCount = 16 * 1024 * 1024
 
-    public static let maximumUnicodeTextUTF16CodeUnitCount = max(0, maximumUnicodeTextByteCount / 2 - 1)
+    public static let maximumUnicodeTextUTF16CodeUnitCount = maximumUnicodeTextByteCount / 2 - 1
 
     public static func canPublishUnicodeText(_ text: String) -> Bool {
-        guard let byteCount = encodedClipboardUnicodeTextByteCount(text) else {
-            return false
-        }
-        return byteCount <= maximumUnicodeTextByteCount
+        text.utf16.count <= maximumUnicodeTextUTF16CodeUnitCount
     }
 }
 
@@ -903,20 +779,14 @@ struct RDPClipboardFileContentsRequestPDU: Equatable, Sendable {
     var flags: UInt32
     var position: UInt64
     var requestedByteCount: UInt32
-    var clipDataID: UInt32?
 
-    static func size(
-        streamID: UInt32,
-        fileIndex: Int32,
-        clipDataID: UInt32? = nil
-    ) -> RDPClipboardFileContentsRequestPDU {
+    static func size(streamID: UInt32, fileIndex: Int32) -> RDPClipboardFileContentsRequestPDU {
         RDPClipboardFileContentsRequestPDU(
             streamID: streamID,
             fileIndex: fileIndex,
             flags: RDPClipboardFileContentsFlags.size,
             position: 0,
-            requestedByteCount: 8,
-            clipDataID: clipDataID
+            requestedByteCount: 8
         )
     }
 
@@ -924,16 +794,14 @@ struct RDPClipboardFileContentsRequestPDU: Equatable, Sendable {
         streamID: UInt32,
         fileIndex: Int32,
         position: UInt64,
-        requestedByteCount: UInt32,
-        clipDataID: UInt32? = nil
+        requestedByteCount: UInt32
     ) -> RDPClipboardFileContentsRequestPDU {
         RDPClipboardFileContentsRequestPDU(
             streamID: streamID,
             fileIndex: fileIndex,
             flags: RDPClipboardFileContentsFlags.range,
             position: position,
-            requestedByteCount: requestedByteCount,
-            clipDataID: clipDataID
+            requestedByteCount: requestedByteCount
         )
     }
 
@@ -941,6 +809,8 @@ struct RDPClipboardFileContentsRequestPDU: Equatable, Sendable {
         guard pdu.header.messageType == RDPClipboardMessageType.fileContentsRequest else {
             return nil
         }
+        // The trailing clipDataId is only meaningful with CB_CAN_LOCK_CLIPDATA, which this client
+        // never advertises, so it is accepted and ignored (MS-RDPECLIP 2.2.5.3).
         guard pdu.header.messageFlags == 0,
               pdu.payload.count == 24 || pdu.payload.count == 28
         else {
@@ -952,9 +822,8 @@ struct RDPClipboardFileContentsRequestPDU: Equatable, Sendable {
             streamID: cursor.readLittleEndianUInt32(),
             fileIndex: Int32(bitPattern: cursor.readLittleEndianUInt32()),
             flags: cursor.readLittleEndianUInt32(),
-            position: readClipboardUInt64(from: &cursor),
-            requestedByteCount: cursor.readLittleEndianUInt32(),
-            clipDataID: cursor.remaining == 4 ? cursor.readLittleEndianUInt32() : nil
+            position: cursor.readLittleEndianUInt64(),
+            requestedByteCount: cursor.readLittleEndianUInt32()
         )
         try request.validate()
         return request
@@ -967,11 +836,8 @@ struct RDPClipboardFileContentsRequestPDU: Equatable, Sendable {
         payload.appendLittleEndianUInt32(streamID)
         payload.appendLittleEndianUInt32(UInt32(bitPattern: fileIndex))
         payload.appendLittleEndianUInt32(flags)
-        payload.appendClipboardUInt64(position)
+        payload.appendLittleEndianUInt64(position)
         payload.appendLittleEndianUInt32(requestedByteCount)
-        if let clipDataID {
-            payload.appendLittleEndianUInt32(clipDataID)
-        }
         return RDPClipboardPDU(
             messageType: RDPClipboardMessageType.fileContentsRequest,
             payload: payload
@@ -1051,7 +917,7 @@ struct RDPClipboardFileContentsResponsePDU: Equatable, Sendable {
         byteCount: UInt64
     ) -> RDPClipboardFileContentsResponsePDU {
         var data = Data()
-        data.appendClipboardUInt64(byteCount)
+        data.appendLittleEndianUInt64(byteCount)
         return RDPClipboardFileContentsResponsePDU(streamID: streamID, ok: true, data: data)
     }
 
@@ -1087,7 +953,7 @@ private func decodeClipboardFileSize(ok: Bool, data: Data) throws -> UInt64 {
         throw RDPDecodeError.invalidClipboardPDU
     }
     var cursor = ByteCursor(data)
-    return try readClipboardUInt64(from: &cursor)
+    return try cursor.readLittleEndianUInt64()
 }
 
 public final class RDPClipboardSession: @unchecked Sendable {
@@ -1097,8 +963,9 @@ public final class RDPClipboardSession: @unchecked Sendable {
     private let sentMessageHandler: RDPClipboardSentMessageHandler?
     private let lock = NSLock()
     private var localContent = RDPClipboardLocalContent.empty
-    private var pendingFormatDataResponse: RDPClipboardRequestedFormatDataResponse?
+    private var pendingFormatDataResponses: [RDPClipboardRequestedFormatDataResponse] = []
     private var serverGeneralFlags: UInt32 = 0
+    private var staticChannelReassembler = RDPStaticVirtualChannelReassembler()
 
     init(
         userChannelID: UInt16,
@@ -1113,41 +980,18 @@ public final class RDPClipboardSession: @unchecked Sendable {
     }
 
     public func publishLocalUnicodeText(_ text: String?) {
-        lock.lock()
-        if let text {
-            localContent = .unicodeText(text)
-        } else {
-            localContent = .empty
-        }
-        lock.unlock()
-
-        if text == nil {
-            send(RDPClipboardFormatListPDU(formatIDs: []).encoded(useLongFormatNames: usesLongFormatNames))
-        } else {
-            send(RDPClipboardFormatListPDU.unicodeText().encoded(useLongFormatNames: usesLongFormatNames))
-        }
+        publish(text.map { .unicodeText($0) } ?? .empty)
     }
 
     public func publishLocalFiles(_ files: [RDPClipboardLocalFile]) {
-        guard files.isEmpty == false else {
-            publishLocalUnicodeText(nil)
-            return
-        }
+        publish(files.isEmpty ? .empty : .files(files))
+    }
 
+    /// Reassembles cliprdr channel chunks (MS-RDPBCGR 3.1.5.2.2); returns the payload once complete.
+    func reassembledPayload(from pdu: RDPStaticVirtualChannelPDU, maximumChunkByteCount: Int) throws -> Data? {
         lock.lock()
-        localContent = .files(files)
-        lock.unlock()
-
-        send(RDPClipboardFormatListPDU(entries: [
-            RDPClipboardFormatListEntry(
-                formatID: RDPClipboardLocalFormatID.fileGroupDescriptorW,
-                formatName: RDPClipboardRegisteredFormatName.fileGroupDescriptorW
-            ),
-            RDPClipboardFormatListEntry(
-                formatID: RDPClipboardLocalFormatID.fileContents,
-                formatName: RDPClipboardRegisteredFormatName.fileContents
-            ),
-        ]).encoded(useLongFormatNames: usesLongFormatNames))
+        defer { lock.unlock() }
+        return try staticChannelReassembler.append(pdu, maximumChunkByteCount: maximumChunkByteCount)?.payload
     }
 
     func updateServerCapabilities(_ capabilities: RDPClipboardCapabilitiesPDU) {
@@ -1162,9 +1006,12 @@ public final class RDPClipboardSession: @unchecked Sendable {
         return serverGeneralFlags & RDPClipboardCapabilityFlags.useLongFormatNames != 0
     }
 
+    /// Answers the Monitor Ready PDU: Capabilities, Temporary Directory, then the
+    /// mandatory Format List of the current local content (MS-RDPECLIP 3.2.5.1.2).
     func sendClientCapabilities() {
         send(RDPClipboardCapabilitiesPDU(generalFlags: clientGeneralFlags).encoded())
         send(RDPClipboardTemporaryDirectoryPDU().encoded())
+        send(formatList(for: currentContent()))
     }
 
     var clientGeneralFlags: UInt32 {
@@ -1185,45 +1032,36 @@ public final class RDPClipboardSession: @unchecked Sendable {
     }
 
     func requestUnicodeText() {
-        updatePendingFormatDataResponse(.unicodeText)
-        send(RDPClipboardFormatDataRequestPDU(formatID: RDPClipboardFormatID.unicodeText).encoded())
+        requestFormatData(formatID: RDPClipboardFormatID.unicodeText, expecting: .unicodeText)
     }
 
     func requestFileGroupDescriptorW(formatID: UInt32) {
-        updatePendingFormatDataResponse(.fileGroupDescriptorW(formatID: formatID))
-        send(RDPClipboardFormatDataRequestPDU(formatID: formatID).encoded())
+        requestFormatData(formatID: formatID, expecting: .fileGroupDescriptorW(formatID: formatID))
     }
 
-    public func requestRemoteFileSize(streamID: UInt32, fileIndex: Int32, clipDataID: UInt32? = nil) throws {
-        try send(RDPClipboardFileContentsRequestPDU.size(
-            streamID: streamID,
-            fileIndex: fileIndex,
-            clipDataID: clipDataID
-        ).encoded())
+    public func requestRemoteFileSize(streamID: UInt32, fileIndex: Int32) throws {
+        try send(RDPClipboardFileContentsRequestPDU.size(streamID: streamID, fileIndex: fileIndex).encoded())
     }
 
     public func requestRemoteFileRange(
         streamID: UInt32,
         fileIndex: Int32,
         position: UInt64,
-        requestedByteCount: UInt32,
-        clipDataID: UInt32? = nil
+        requestedByteCount: UInt32
     ) throws {
         try send(RDPClipboardFileContentsRequestPDU.range(
             streamID: streamID,
             fileIndex: fileIndex,
             position: position,
-            requestedByteCount: requestedByteCount,
-            clipDataID: clipDataID
+            requestedByteCount: requestedByteCount
         ).encoded())
     }
 
+    /// Format Data Responses arrive in request order, so the oldest outstanding request is answered first.
     func takePendingFormatDataResponse() -> RDPClipboardRequestedFormatDataResponse? {
         lock.lock()
         defer { lock.unlock() }
-        let pending = pendingFormatDataResponse
-        pendingFormatDataResponse = nil
-        return pending
+        return pendingFormatDataResponses.isEmpty ? nil : pendingFormatDataResponses.removeFirst()
     }
 
     func respondToFormatDataRequest(_ request: RDPClipboardFormatDataRequestPDU) {
@@ -1263,21 +1101,76 @@ public final class RDPClipboardSession: @unchecked Sendable {
             return
         }
 
-        guard request.flags & RDPClipboardFileContentsFlags.range != 0,
-              request.position <= UInt64(file.contents.count),
-              UInt64(request.requestedByteCount) <= UInt64(file.contents.count) - request.position,
-              let lowerBound = Int(exactly: request.position),
-              let requestedByteCount = Int(exactly: request.requestedByteCount)
-        else {
+        // cbRequested is an upper bound; a range that runs past the end of the
+        // file returns the bytes that remain (MS-RDPECLIP 2.2.5.3).
+        guard request.position <= UInt64(file.contents.count) else {
             send(RDPClipboardFileContentsResponsePDU.failure(streamID: request.streamID).encoded())
             return
         }
-
-        let upperBound = lowerBound + requestedByteCount
+        let lowerBound = file.contents.startIndex + Int(request.position)
+        let upperBound = lowerBound + min(Int(request.requestedByteCount), file.contents.endIndex - lowerBound)
         send(RDPClipboardFileContentsResponsePDU.range(
             streamID: request.streamID,
             data: file.contents.subdata(in: lowerBound ..< upperBound)
         ).encoded())
+    }
+
+    static func encodedPackets(_ payload: Data, userChannelID: UInt16, staticChannelID: UInt16) -> [Data] {
+        // Messages larger than one chunk are split, with CHANNEL_FLAG_FIRST and
+        // CHANNEL_FLAG_LAST marking the ends (MS-RDPBCGR 3.1.5.2.1).
+        let chunkByteCount = RDPStaticVirtualChannelPDU.maximumPayloadByteCount
+        var packets: [Data] = []
+        var lowerBound = payload.startIndex
+        repeat {
+            let upperBound = min(lowerBound + chunkByteCount, payload.endIndex)
+            var flags = RDPStaticVirtualChannelFlags.showProtocol
+            if lowerBound == payload.startIndex {
+                flags |= RDPStaticVirtualChannelFlags.first
+            }
+            if upperBound == payload.endIndex {
+                flags |= RDPStaticVirtualChannelFlags.last
+            }
+            var chunk = RDPStaticVirtualChannelPDU(payload: payload.subdata(in: lowerBound ..< upperBound), flags: flags)
+            chunk.totalLength = UInt32(payload.count)
+            packets.append(chunk.encodedTPKT(initiator: userChannelID, channelID: staticChannelID))
+            lowerBound = upperBound
+        } while lowerBound < payload.endIndex
+        return packets
+    }
+
+    private func publish(_ content: RDPClipboardLocalContent) {
+        lock.lock()
+        localContent = content
+        lock.unlock()
+        send(formatList(for: content))
+    }
+
+    private func formatList(for content: RDPClipboardLocalContent) -> Data {
+        let entries: [RDPClipboardFormatListEntry] = switch content {
+        case .empty:
+            []
+        case .unicodeText:
+            [RDPClipboardFormatListEntry(formatID: RDPClipboardFormatID.unicodeText)]
+        case .files:
+            [
+                RDPClipboardFormatListEntry(
+                    formatID: RDPClipboardLocalFormatID.fileGroupDescriptorW,
+                    formatName: RDPClipboardRegisteredFormatName.fileGroupDescriptorW
+                ),
+                RDPClipboardFormatListEntry(
+                    formatID: RDPClipboardLocalFormatID.fileContents,
+                    formatName: RDPClipboardRegisteredFormatName.fileContents
+                ),
+            ]
+        }
+        return RDPClipboardFormatListPDU(entries: entries).encoded(useLongFormatNames: usesLongFormatNames)
+    }
+
+    private func requestFormatData(formatID: UInt32, expecting response: RDPClipboardRequestedFormatDataResponse) {
+        lock.lock()
+        pendingFormatDataResponses.append(response)
+        lock.unlock()
+        send(RDPClipboardFormatDataRequestPDU(formatID: formatID).encoded())
     }
 
     private func currentContent() -> RDPClipboardLocalContent {
@@ -1286,39 +1179,25 @@ public final class RDPClipboardSession: @unchecked Sendable {
         return localContent
     }
 
-    private func updatePendingFormatDataResponse(_ pending: RDPClipboardRequestedFormatDataResponse) {
-        lock.lock()
-        pendingFormatDataResponse = pending
-        lock.unlock()
-    }
-
-    @discardableResult
-    private func send(_ payload: Data) -> Bool {
-        guard RDPStaticVirtualChannelPDU.canEncodeSinglePayload(payload) else {
-            return false
-        }
-
-        let packet = RDPStaticVirtualChannelPDU(
-            payload: payload,
-            flags: RDPStaticVirtualChannelFlags.first
-                | RDPStaticVirtualChannelFlags.last
-                | RDPStaticVirtualChannelFlags.showProtocol
-        )
-            .encodedTPKT(initiator: userChannelID, channelID: staticChannelID)
-        if let sentMessageHandler,
-           let pdu = try? RDPClipboardPDU.parse(from: payload)
-        {
-            sentMessageHandler(.summarize(pdu), packet)
+    private func send(_ payload: Data) {
+        let packets = Self.encodedPackets(payload, userChannelID: userChannelID, staticChannelID: staticChannelID)
+        if let sentMessageHandler, let pdu = try? RDPClipboardPDU.parse(from: payload) {
+            // The handler is not Sendable; serialize calls made from the app and the session loop.
+            lock.lock()
+            sentMessageHandler(.summarize(pdu), packets.reduce(into: Data()) { $0.append($1) })
+            lock.unlock()
         }
         channel.eventLoop.execute {
             guard self.channel.isActive else {
                 return
             }
-            var buffer = self.channel.allocator.buffer(capacity: packet.count)
-            buffer.writeBytes(packet)
-            self.channel.writeAndFlush(buffer, promise: nil)
+            for packet in packets {
+                var buffer = self.channel.allocator.buffer(capacity: packet.count)
+                buffer.writeBytes(packet)
+                self.channel.write(buffer, promise: nil)
+            }
+            self.channel.flush()
         }
-        return true
     }
 }
 
@@ -1334,94 +1213,33 @@ enum RDPClipboardRequestedFormatDataResponse: Equatable, Sendable {
 }
 
 private func encodedClipboardUnicodeText(_ text: String) -> Data {
-    var data = Data()
-    for codeUnit in text.utf16 {
-        data.appendLittleEndianUInt16(codeUnit)
-    }
-    data.appendLittleEndianUInt16(0)
-    return data
-}
-
-private func encodedClipboardUnicodeTextByteCount(_ text: String) -> Int? {
-    let (codeUnitCountWithTerminator, didOverflowTerminator) = text.utf16.count.addingReportingOverflow(1)
-    guard !didOverflowTerminator else {
-        return nil
-    }
-
-    let (byteCount, didOverflowBytes) = codeUnitCountWithTerminator.multipliedReportingOverflow(by: 2)
-    guard !didOverflowBytes else {
-        return nil
-    }
-    return byteCount
-}
-
-private func decodeClipboardUnicodeText(_ data: Data) throws -> String {
-    guard data.count.isMultiple(of: 2) else {
-        throw RDPDecodeError.invalidClipboardPDU
-    }
-    var cursor = ByteCursor(data)
-    var codeUnits: [UInt16] = []
-    while cursor.remaining > 0 {
-        let codeUnit = try cursor.readLittleEndianUInt16()
-        guard codeUnit != 0 else {
-            break
-        }
-        codeUnits.append(codeUnit)
-    }
-    return String(decoding: codeUnits, as: UTF16.self)
-}
-
-private func decodeClipboardFixedUnicodeString(_ data: Data) throws -> String {
-    guard data.count.isMultiple(of: 2) else {
-        throw RDPDecodeError.invalidClipboardPDU
-    }
-    var cursor = ByteCursor(data)
-    var codeUnits: [UInt16] = []
-    while cursor.remaining > 0 {
-        let codeUnit = try cursor.readLittleEndianUInt16()
-        guard codeUnit != 0 else {
-            break
-        }
-        codeUnits.append(codeUnit)
-    }
-    return String(decoding: codeUnits, as: UTF16.self)
-}
-
-private func appendFixedUnicodeFileName(_ fileName: String, to data: inout Data) {
-    var codeUnits = Array(fileName.utf16.prefix(259))
+    var codeUnits = text.utf16.map(\.littleEndian)
     codeUnits.append(0)
+    return codeUnits.withUnsafeBytes { Data($0) }
+}
+
+/// Decodes UTF-16LE up to the first NUL, as used by CF_UNICODETEXT and fixed-size name fields.
+private func decodeNullTerminatedUTF16(_ data: Data) throws -> String {
+    guard data.count.isMultiple(of: 2) else {
+        throw RDPDecodeError.invalidClipboardPDU
+    }
+    var codeUnits: [UInt16] = []
+    codeUnits.reserveCapacity(data.count / 2)
+    for index in stride(from: data.startIndex, to: data.endIndex, by: 2) {
+        let codeUnit = UInt16(data[index]) | UInt16(data[index + 1]) << 8
+        guard codeUnit != 0 else {
+            break
+        }
+        codeUnits.append(codeUnit)
+    }
+    return String(decoding: codeUnits, as: UTF16.self)
+}
+
+/// Writes a NUL-terminated UTF-16LE string into a zero-padded field of `codeUnitCount` code units.
+private func appendFixedUnicodeString(_ text: String, codeUnitCount: Int, to data: inout Data) {
+    let codeUnits = text.utf16.prefix(codeUnitCount - 1)
     for codeUnit in codeUnits {
         data.appendLittleEndianUInt16(codeUnit)
     }
-    for _ in codeUnits.count ..< 260 {
-        data.appendLittleEndianUInt16(0)
-    }
-}
-
-private func readClipboardUInt64(from cursor: inout ByteCursor) throws -> UInt64 {
-    let low = try cursor.readLittleEndianUInt32()
-    let high = try cursor.readLittleEndianUInt32()
-    return UInt64(high) << 32 | UInt64(low)
-}
-
-private func decodeClipboardASCIIFormatName(_ data: Data) -> String? {
-    let bytes = data.prefix { $0 != 0 }
-    guard bytes.isEmpty == false else {
-        return nil
-    }
-    return String(data: Data(bytes), encoding: .ascii)
-}
-
-private extension Data {
-    mutating func appendClipboardUInt64(_ value: UInt64) {
-        appendLittleEndianUInt32(UInt32(value & 0xFFFF_FFFF))
-        appendLittleEndianUInt32(UInt32((value >> 32) & 0xFFFF_FFFF))
-    }
-}
-
-private func decodeClipboardUnicodeFormatName(_ codeUnits: [UInt16]) -> String? {
-    guard codeUnits.isEmpty == false else {
-        return nil
-    }
-    return String(decoding: codeUnits, as: UTF16.self)
+    data.append(Data(count: (codeUnitCount - codeUnits.count) * 2))
 }
