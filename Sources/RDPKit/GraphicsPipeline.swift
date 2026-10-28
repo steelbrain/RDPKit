@@ -76,8 +76,8 @@ extension RDPClientConnection {
         }
         graphicsCompositor = RDPGFXSurfaceCompositor(
             capabilitySet: confirm.capabilitySet,
-            outputWidth: configuration.desktopWidth,
-            outputHeight: configuration.desktopHeight
+            outputWidth: desktopWidth,
+            outputHeight: desktopHeight
         )
     }
 

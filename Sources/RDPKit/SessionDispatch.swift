@@ -273,14 +273,23 @@ extension RDPClientConnection {
     private func activate(_ demandActive: RDPDemandActivePDU) throws {
         licensingComplete = true
         isDeactivated = false
+        // A reactivation means the server is not disconnecting after all.
+        isTerminating = false
+        termination = nil
         stage = .confirmActive
         report.rdpDemandActiveShareID = demandActive.shareID
         report.rdpDemandActiveCapabilitySets = demandActive.capabilitySets
+        // The client confirms the desktop size the server set ([MS-RDPBCGR] 2.2.7.1.2).
+        if let width = demandActive.desktopWidth, let height = demandActive.desktopHeight,
+           (1 ... 8192).contains(width), (1 ... 8192).contains(height)
+        {
+            resizeDesktop(width: width, height: height)
+        }
 
         let confirmActive = RDPClientConfirmActivePDU(
             shareID: demandActive.shareID,
-            desktopWidth: configuration.desktopWidth,
-            desktopHeight: configuration.desktopHeight
+            desktopWidth: desktopWidth,
+            desktopHeight: desktopHeight
         )
         let confirmActivePacket = confirmActive.encodedTPKT(userChannelID: userChannelID, ioChannelID: ioChannelID)
         report.rdpConfirmActiveRequestHex = confirmActivePacket.rdpHexString
@@ -341,7 +350,7 @@ extension RDPClientConnection {
     private func handleDeactivateAll() throws {
         isDeactivated = true
         if let termination, termination.errorInfo != nil {
-            if termination.isClean, graphicsCompositor != nil {
+            if termination.isClean, graphicsOpened {
                 try endSession(by: termination)
             } else {
                 isTerminating = true
@@ -354,7 +363,6 @@ extension RDPClientConnection {
     /// Ends the session for a termination: a clean one after the graphics
     /// pipeline opened is a normal end, anything else a failure.
     func endSession(by termination: RDPRemoteTermination) throws {
-        let graphicsOpened = graphicsCompositor != nil || report.rdpGraphicsFirstFrame != nil
         if termination.isClean, graphicsOpened {
             sessionEnded = true
             return
@@ -408,6 +416,11 @@ extension RDPClientConnection {
             break
         }
         throw RDPPreflightError.receive("\(awaitedMessage) timed out after \(configuration.timeoutSeconds) seconds")
+    }
+
+    /// Graphics flow: RDPGFX capabilities are confirmed, or a frame arrived without RDPGFX.
+    private var graphicsOpened: Bool {
+        graphicsCompositor != nil || report.rdpGraphicsFirstFrame != nil
     }
 
     private var deactivatedMessage: String {

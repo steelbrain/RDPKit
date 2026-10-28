@@ -56,8 +56,7 @@ extension RDPClientConnection {
     /// Sends a DRDYNVC PDU on the drdynvc static channel.
     @discardableResult
     func sendDynamicChannelControl(_ payload: Data) throws -> Data {
-        guard let channelID = staticChannelNames.first(where: { $0.value == RDPStaticVirtualChannel.drdynvc.name })?.key
-        else {
+        guard let channelID = drdynvcChannelID else {
             throw RDPPreflightError.protocolViolation("drdynvc channel is not joined")
         }
         return try sendStaticChannelPayload(payload, channelID: channelID)
@@ -109,10 +108,6 @@ extension RDPClientConnection {
                 channel: channel
             )
         }
-    }
-
-    private var drdynvcChannelID: UInt16? {
-        staticChannelNames.first { $0.value == RDPStaticVirtualChannel.drdynvc.name }?.key
     }
 
     /// Answers a server Close with a Close for a channel this client opened ([MS-RDPEDYC] 3.2.5.2).

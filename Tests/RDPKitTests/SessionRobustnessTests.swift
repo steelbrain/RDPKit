@@ -59,6 +59,49 @@ import Testing
     #expect(run.report.warnings.contains { $0.code == "auto-detect-error" })
 }
 
+/// A non-clean Set Error Info and Deactivate All followed by a Demand Active
+/// is a reactivation ([MS-RDPBCGR] 1.3.1.3): the session goes on past the
+/// one-second wait for a disconnect, at the new desktop size.
+@Test func reactivationContinuesAtTheNewDesktopSize() throws {
+    let events = try KRdpCapture.events()
+    var errorInfo = Data()
+    errorInfo.appendLittleEndianUInt32(0x0000_0007)
+    var deactivate = Data()
+    deactivate.appendLittleEndianUInt32(KRdpCapture.shareID)
+    deactivate.append(contentsOf: [0x01, 0x00, 0x00])
+    let demandActive = try KRdpCapture.settingDesktopSize(of: #require(events[19].bytes), width: 1600, height: 900)
+    let finalization = try [21, 22, 27, 28].map { try #require(events[$0].bytes) }
+    // Fast-path frames before and well after the reactivation, the second
+    // in the corner of the new desktop, outside the old one.
+    let corner = KRdpCapture.fastPathSurfaceBits(left: 1599, top: 899, pixel: Data([1, 2, 3, 0xFF]))
+
+    let run = try KRdpCapture.run(
+        appending: [
+            KRdpCapture.fastPathSurfaceBits(left: 0, top: 0, pixel: Data([1, 2, 3, 0xFF])),
+            KRdpCapture.ioPacket(KRdpCapture.shareData(pduType2: 0x2F, payload: errorInfo)),
+            KRdpCapture.ioPacket(KRdpCapture.shareControl(type: 0x6, body: deactivate)),
+            demandActive,
+        ] + finalization,
+        frameCaptureLimit: 2
+    ) { channel in
+        channel.eventLoop.scheduleTask(in: .milliseconds(1500)) {
+            var buffer = channel.allocator.buffer(capacity: corner.count)
+            buffer.writeBytes(corner)
+            channel.writeAndFlush(buffer, promise: nil)
+        }
+    }
+
+    #expect(run.report.error == nil)
+    #expect(run.report.rdpRemoteTerminationErrorInfo == nil)
+    #expect(run.clientPackets.compactMap(KRdpCapture.confirmActiveDesktopSize).map { [$0.width, $0.height] }
+        == [[1280, 720], [1600, 900]])
+    let primaryFrames = run.report.rdpGraphicsFrames?.filter { $0.codecName == "surface-bgra" } ?? []
+    #expect(primaryFrames.map(\.regionRects) == [
+        [RDPFrameRect(left: 0, top: 0, right: 1, bottom: 1)],
+        [RDPFrameRect(left: 1599, top: 899, right: 1600, bottom: 900)],
+    ])
+}
+
 // MARK: - KRdp capture harness
 
 /// The KRdp capture's channels: I/O 1003, drdynvc 1004, message 1005, and
@@ -232,6 +275,73 @@ enum KRdpCapture {
 
     static func emptyGraphicsFrame(id: UInt32) -> Data {
         graphicsPacket(startFrame(id: id) + endFrame(id: id))
+    }
+
+    /// A fast-path Set Surface Bits update of one uncompressed 32 bpp pixel ([MS-RDPBCGR] 2.2.9.2.1).
+    static func fastPathSurfaceBits(left: UInt16, top: UInt16, pixel: Data) -> Data {
+        var command = Data()
+        command.appendLittleEndianUInt16(0x0001)
+        command.appendLittleEndianUInt16(left)
+        command.appendLittleEndianUInt16(top)
+        command.appendLittleEndianUInt16(left + 1)
+        command.appendLittleEndianUInt16(top + 1)
+        command.append(contentsOf: [32, 0, 0, 0])
+        command.appendLittleEndianUInt16(1)
+        command.appendLittleEndianUInt16(1)
+        command.appendLittleEndianUInt32(UInt32(pixel.count))
+        command.append(pixel)
+        var update = Data([0x04])
+        update.appendLittleEndianUInt16(UInt16(command.count))
+        update.append(command)
+        let length = 3 + update.count
+        return Data([0x00, 0x80 | UInt8(length >> 8), UInt8(length & 0xFF)]) + update
+    }
+
+    /// `demandActive` with its Bitmap Capability Set's desktop size replaced ([MS-RDPBCGR] 2.2.7.1.2).
+    static func settingDesktopSize(of demandActive: Data, width: UInt16, height: UInt16) throws -> Data {
+        var packet = demandActive
+        let offset = try #require(bitmapCapabilityOffset(in: packet))
+        packet.replaceSubrange(offset + 12 ..< offset + 16, with: [
+            UInt8(width & 0xFF), UInt8(width >> 8), UInt8(height & 0xFF), UInt8(height >> 8),
+        ])
+        return packet
+    }
+
+    /// The desktop size in a client Confirm Active PDU's Bitmap Capability Set.
+    static func confirmActiveDesktopSize(_ packet: Data) -> (width: UInt16, height: UInt16)? {
+        let bytes = [UInt8](packet)
+        guard bytes.count > 22, bytes[7] == 0x64, let offset = bitmapCapabilityOffset(in: packet) else {
+            return nil
+        }
+        return (UInt16(bytes[offset + 12]) | UInt16(bytes[offset + 13]) << 8,
+                UInt16(bytes[offset + 14]) | UInt16(bytes[offset + 15]) << 8)
+    }
+
+    /// Where the Bitmap Capability Set starts in a Demand or Confirm Active TPKT.
+    private static func bitmapCapabilityOffset(in packet: Data) -> Int? {
+        let bytes = [UInt8](packet)
+        func uint16(_ offset: Int) -> Int {
+            Int(bytes[offset]) | Int(bytes[offset + 1]) << 8
+        }
+        // TPKT (4), X.224 Data (3), MCS header (5), PER length (1 or 2).
+        let userData = 13 + (bytes[13] & 0x80 == 0 ? 1 : 2)
+        guard bytes.count > userData + 14, uint16(userData + 2) & 0xF == 0x3 || uint16(userData + 2) & 0xF == 0x1 else {
+            return nil
+        }
+        // Share Control header (6), shareID (4), then the descriptor lengths;
+        // Confirm Active has an originatorID (2) before them.
+        let lengths = userData + 10 + (uint16(userData + 2) & 0xF == 0x3 ? 2 : 0)
+        var offset = lengths + 4 + uint16(lengths) + 4
+        for _ in 0 ..< uint16(lengths + 4 + uint16(lengths)) {
+            guard offset + 4 <= bytes.count else {
+                return nil
+            }
+            if uint16(offset) == 0x0002 {
+                return offset
+            }
+            offset += uint16(offset + 2)
+        }
+        return nil
     }
 
     /// A fast-path hidden-pointer update: traffic that advances no milestone.

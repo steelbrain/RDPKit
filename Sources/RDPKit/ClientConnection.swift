@@ -22,6 +22,7 @@ final class RDPClientConnection {
     var ioChannelID: UInt16 = 0
     var messageChannelID: UInt16?
     var staticChannelNames: [UInt16: String] = [:]
+    var drdynvcChannelID: UInt16?
     var serverCertificatePublicKey: RDPRSAPublicKey?
     let clientName = MCSConnectInitialConfiguration().clientName
 
@@ -38,6 +39,10 @@ final class RDPClientConnection {
     /// disconnecting, and only the disconnect reason is still to come.
     var isTerminating = false
     var sessionEnded = false
+    /// The session's desktop size: the one requested, then each Demand
+    /// Active's ([MS-RDPBCGR] 1.3.1.3, 2.2.7.1.2).
+    var desktopWidth: UInt16
+    var desktopHeight: UInt16
 
     // Static virtual channels.
     var maximumChunkByteCount = RDPStaticVirtualChannelPDU.maximumPayloadByteCount
@@ -62,10 +67,8 @@ final class RDPClientConnection {
     var graphicsFrameTracker = RDPGFXLogicalFrameTracker()
     var pendingGraphicsFrames: [RDPGraphicsFrameSnapshot] = []
     var graphicsFramesDecoded: UInt32 = 0
-    lazy var primarySurface = RDPPrimarySurfaceCompositor(
-        width: configuration.desktopWidth,
-        height: configuration.desktopHeight
-    )
+    /// Created on first use at the current desktop size, again after a resize.
+    private var primarySurfaceStorage: RDPPrimarySurfaceCompositor?
     var fastPathReassembler = RDPFastPathOutputFragmentReassembler(
         maximumBufferedByteCount: RDPStaticVirtualChannelReassembler.defaultMaximumTotalLength
     )
@@ -76,6 +79,8 @@ final class RDPClientConnection {
         self.configuration = configuration
         self.callbacks = callbacks
         targetFrameCount = configuration.graphicsFrameCaptureLimit.map { max(1, $0) }
+        desktopWidth = configuration.desktopWidth
+        desktopHeight = configuration.desktopHeight
         let request = configuration.connectionRequest
         report = RDPPreflightReport(
             status: "failure",
@@ -93,6 +98,25 @@ final class RDPClientConnection {
 
     deinit {
         transport?.close()
+    }
+
+    var primarySurface: RDPPrimarySurfaceCompositor {
+        if let primarySurfaceStorage {
+            return primarySurfaceStorage
+        }
+        let surface = RDPPrimarySurfaceCompositor(width: desktopWidth, height: desktopHeight)
+        primarySurfaceStorage = surface
+        return surface
+    }
+
+    /// Takes the desktop size a Demand Active sets; a new size replaces the primary surface.
+    func resizeDesktop(width: UInt16, height: UInt16) {
+        guard (width, height) != (desktopWidth, desktopHeight) else {
+            return
+        }
+        desktopWidth = width
+        desktopHeight = height
+        primarySurfaceStorage = nil
     }
 
     /// Connects and runs the X.224 negotiation ([MS-RDPBCGR] 3.2.5.3.1-2).

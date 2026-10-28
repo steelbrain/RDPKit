@@ -20,6 +20,9 @@ struct RDPDemandActivePDU: Equatable, Sendable {
     var capabilitySets: [RDPCapabilitySetSummary]
     var serverInputFlags: UInt16?
     var serverVirtualChannelChunkSize: Int?
+    /// The session's desktop size from the Bitmap Capability Set ([MS-RDPBCGR] 2.2.7.1.2).
+    var desktopWidth: UInt16?
+    var desktopHeight: UInt16?
     var sessionID: UInt32?
 
     var sourceDescriptorText: String {
@@ -61,6 +64,7 @@ struct RDPDemandActivePDU: Equatable, Sendable {
         var capabilitySets: [RDPCapabilitySetSummary] = []
         var serverInputFlags: UInt16?
         var serverVirtualChannelChunkSize: Int?
+        var desktopSize: (width: UInt16, height: UInt16)?
         capabilitySets.reserveCapacity(capabilityCount)
         for _ in 0 ..< capabilityCount {
             guard capabilityCursor.remaining >= 4 else {
@@ -82,6 +86,10 @@ struct RDPDemandActivePDU: Equatable, Sendable {
             let inputFlags = try parseServerInputFlags(capabilityType: type, capabilityData: capabilityData)
             if let inputFlags {
                 serverInputFlags = inputFlags
+            }
+            if type == RDPCapabilitySetType.bitmap, capabilityData.count >= 12 {
+                var bitmapCursor = ByteCursor(capabilityData.dropFirst(8))
+                desktopSize = try (bitmapCursor.readLittleEndianUInt16(), bitmapCursor.readLittleEndianUInt16())
             }
             capabilitySets.append(RDPCapabilitySetSummary(type: type, length: length))
         }
@@ -105,6 +113,8 @@ struct RDPDemandActivePDU: Equatable, Sendable {
             capabilitySets: capabilitySets,
             serverInputFlags: serverInputFlags,
             serverVirtualChannelChunkSize: serverVirtualChannelChunkSize,
+            desktopWidth: desktopSize?.width,
+            desktopHeight: desktopSize?.height,
             sessionID: sessionID
         )
     }

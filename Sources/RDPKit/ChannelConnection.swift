@@ -90,6 +90,9 @@ extension RDPClientConnection {
         }
         for assignment in connectResponse.staticChannelAssignments {
             staticChannelNames[assignment.channelID] = assignment.name
+            if assignment.name == RDPStaticVirtualChannel.drdynvc.name {
+                drdynvcChannelID = assignment.channelID
+            }
         }
         openStaticChannelSessions()
     }
