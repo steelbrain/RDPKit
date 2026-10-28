@@ -845,10 +845,13 @@ final class RDPRemoteFXDecoder {
         }
     }
 
+    /// TS_RFX_CODEC_VERSIONS (MS-RDPRFX 2.2.2.2.2): one codec, ID 1, version 1.0.
     private static func parseCodecVersions(_ data: Data) throws {
         var cursor = ByteCursor(data)
         guard cursor.remaining == 4,
-              try cursor.readUInt8() == 1
+              try cursor.readUInt8() == 1,
+              try cursor.readUInt8() == 1,
+              try cursor.readLittleEndianUInt16() == 0x0100
         else {
             throw RDPDecodeError.invalidRDPGFXPDU
         }

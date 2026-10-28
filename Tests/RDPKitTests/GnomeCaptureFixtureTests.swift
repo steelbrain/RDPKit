@@ -656,6 +656,7 @@ import Testing
 }
 
 @Test func gnomeRemoteDesktopCAPROGRESSIVEIgnoresOverstatedRegionCount() throws {
+    // The decoder SHOULD ignore a regionCount above the regions present (MS-RDPEGFX 2.2.4.2.1.2).
     var frameBeginBody = Data()
     frameBeginBody.appendLittleEndianUInt32(16)
     frameBeginBody.appendLittleEndianUInt16(2)
@@ -698,6 +699,7 @@ import Testing
 }
 
 @Test func gnomeRemoteDesktopCAPROGRESSIVEIgnoresRegionOutsideFrame() throws {
+    // Regions outside FRAME_BEGIN/FRAME_END MUST be ignored (MS-RDPEGFX 2.2.4.2.1.5).
     let bitmapStream = caprogressiveRemoteFXGrayRegionBlock(
         tiles: [CAPROGRESSIVERemoteFXGrayTile(xIndex: 0, yIndex: 0)]
     )
@@ -709,6 +711,7 @@ import Testing
 }
 
 @Test func gnomeRemoteDesktopCAPROGRESSIVEIgnoresUnknownEnvelopeBlock() throws {
+    // Unknown block types SHOULD be skipped (MS-RDPEGFX 2.2.4.2.1).
     let bitmapStream = caprogressiveRemoteFXEnvelope(
         frameIndex: 10,
         regions: [
@@ -832,6 +835,7 @@ import Testing
 }
 
 @Test func gnomeRemoteDesktopCAPROGRESSIVEIgnoresSyncMagic() throws {
+    // The decoder SHOULD ignore the progressive sync magic (MS-RDPEGFX 2.2.4.2.1.1).
     let bitmapStream = caprogressiveRemoteFXEnvelope(
         frameIndex: 13,
         syncMagic: 0,
@@ -857,6 +861,7 @@ import Testing
 }
 
 @Test func cavideoRemoteFXIgnoresRegionFlags() throws {
+    // lrf SHOULD and the reserved bits MUST be ignored (MS-RDPRFX 2.2.2.3.3).
     for regionFlags: UInt8 in [0, 0xFE] {
         let frame = try RDPRemoteFXDecoder().decode(cavideoRemoteFXGrayTileStream(
             regionFlags: regionFlags
@@ -866,13 +871,16 @@ import Testing
     }
 }
 
-@Test func cavideoRemoteFXIgnoresCodecVersionProperties() throws {
-    let frame = try RDPRemoteFXDecoder().decode(cavideoRemoteFXGrayTileStream(
-        codecVersionID: 42,
-        codecVersion: 42
-    ))
-
-    #expect(frame.tiles.count == 1)
+@Test func cavideoRemoteFXRejectsUnknownCodecVersion() throws {
+    // TS_RFX_CODEC_VERSIONT MUST carry codec ID 1, version 0x0100 (MS-RDPRFX 2.2.2.2.2).
+    for (codecVersionID, codecVersion): (UInt8, UInt16) in [(42, 0x0100), (1, 42)] {
+        #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
+            _ = try RDPRemoteFXDecoder().decode(cavideoRemoteFXGrayTileStream(
+                codecVersionID: codecVersionID,
+                codecVersion: codecVersion
+            ))
+        }
+    }
 }
 
 @Test func cavideoRemoteFXTracksFrameSequenceAcrossPayloads() throws {
