@@ -215,7 +215,7 @@ import Testing
         RDPStaticVirtualChannel.rdpdr,
         RDPStaticVirtualChannel.rdpsnd,
     ] {
-        #expect(channel.options & ChannelOptions.compress == 0)
+        #expect(channel.options & 0x0040_0000 == 0) // CHANNEL_OPTION_COMPRESS
     }
 }
 

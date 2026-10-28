@@ -75,7 +75,8 @@ private enum MCSSendDataFlags {
     }
 }
 
-private func mcsUserID(fromOffset offset: UInt16) throws -> UInt16 {
+/// T.125 UserId is a PER integer constrained to 1001...65535, sent as an offset from 1001.
+func mcsUserID(fromOffset offset: UInt16) throws -> UInt16 {
     guard offset <= UInt16.max - 1001 else {
         throw RDPDecodeError.invalidBERLength
     }

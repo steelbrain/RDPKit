@@ -23,10 +23,6 @@ struct RDPServerRedirectionPDU: Equatable, Sendable {
     }
 
     var channelID: UInt16
-    var totalLength: UInt16
-    var pduSource: UInt16
-    var redirectionPacketFlags: UInt16
-    var redirectionLength: UInt16
     var sessionID: UInt32
     var flags: Flags
     var loadBalanceInfo: Data?
@@ -69,11 +65,12 @@ struct RDPServerRedirectionPDU: Equatable, Sendable {
         var cursor = ByteCursor(indication.userData)
         let totalLength = try cursor.readLittleEndianUInt16()
         let pduType = try cursor.readLittleEndianUInt16()
-        let pduSource = try cursor.readLittleEndianUInt16()
+        _ = try cursor.readLittleEndianUInt16() // pduSource
         guard pduType & 0x000F == 0x000A else {
             return nil
         }
         let pduVersion = pduType >> 4
+        // PDUVersion 1 is sent by gnome-remote-desktop; 0 is the documented value here.
         guard (pduVersion == 0 || pduVersion == 1),
               Int(totalLength) >= 20,
               Int(totalLength) <= indication.userData.count
@@ -81,11 +78,12 @@ struct RDPServerRedirectionPDU: Equatable, Sendable {
             throw RDPDecodeError.invalidShareControlHeader
         }
 
-        _ = try cursor.readLittleEndianUInt16()
+        _ = try cursor.readLittleEndianUInt16() // pad2Octets
         let redirectionPacketFlags = try cursor.readLittleEndianUInt16()
         let redirectionLength = try cursor.readLittleEndianUInt16()
         let availableRedirectionBytes = Int(totalLength) - 12
         let declaredRedirectionBodyBytes = Int(redirectionLength) - 4
+        // gnome-remote-desktop overstates the redirection packet Length by 2.
         guard redirectionPacketFlags == 0x0400,
               redirectionLength >= 12,
               availableRedirectionBytes >= 8,
@@ -98,33 +96,11 @@ struct RDPServerRedirectionPDU: Equatable, Sendable {
         var redirectionCursor = ByteCursor(try cursor.readData(count: availableRedirectionBytes))
         let sessionID = try redirectionCursor.readLittleEndianUInt32()
         let flags = Flags(rawValue: try redirectionCursor.readLittleEndianUInt32())
-        var pdu = RDPServerRedirectionPDU(
-            channelID: indication.channelID,
-            totalLength: totalLength,
-            pduSource: pduSource,
-            redirectionPacketFlags: redirectionPacketFlags,
-            redirectionLength: redirectionLength,
-            sessionID: sessionID,
-            flags: flags,
-            loadBalanceInfo: nil,
-            targetNetAddress: nil,
-            username: nil,
-            domain: nil,
-            password: nil,
-            encryptedPassword: nil,
-            targetFQDN: nil,
-            targetNetBIOSName: nil,
-            targetNetAddresses: [],
-            tsvURL: nil,
-            redirectionGuid: nil,
-            targetCertificate: nil
-        )
+        var pdu = RDPServerRedirectionPDU(channelID: indication.channelID, sessionID: sessionID, flags: flags)
 
-        // Optional redirection fields appear on the wire in ascending flag-bit
-        // order. If the server set a flag we don't recognize, we can't know the
-        // layout of (or skip past) its field, so parsing any later field risks
-        // misalignment. Bail out before reading optionals rather than follow a
-        // redirection we can't fully interpret.
+        // Optional fields follow in a fixed order (ascending flag bits, except
+        // TargetNetAddresses last). An unknown flag may add a field we cannot
+        // skip, so leave the optionals unread rather than misparse them.
         guard flags.rawValue & ~Flags.knownFieldMask == 0 else {
             return pdu
         }

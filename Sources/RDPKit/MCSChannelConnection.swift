@@ -112,13 +112,6 @@ struct MCSChannelJoinConfirm: Equatable, Sendable {
     }
 }
 
-private func mcsUserID(fromOffset offset: UInt16) throws -> UInt16 {
-    guard offset <= UInt16.max - 1001 else {
-        throw RDPDecodeError.invalidBERLength
-    }
-    return 1001 + offset
-}
-
 public struct RDPChannelJoinReport: Encodable, Equatable, Sendable {
     public var name: String
     public var channelID: UInt16

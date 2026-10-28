@@ -34,8 +34,6 @@ import Testing
     )))
 
     #expect(pdu.channelID == 1003)
-    #expect(pdu.redirectionPacketFlags == 0x0400)
-    #expect(pdu.redirectionLength == redirectionLength)
     #expect(pdu.sessionID == 4)
     #expect(pdu.flags.contains(.loadBalanceInfo))
     #expect(pdu.routingToken == cookie)
@@ -153,8 +151,6 @@ import Testing
         fields: lengthPrefixed(utf16LE("desktop.example.test"))
     )))
 
-    #expect(pdu.pduSource == 0)
-    #expect(pdu.redirectionPacketFlags == 0x0400)
     #expect(pdu.sessionID == 0x1234_5678)
     #expect(pdu.targetFQDN == "desktop.example.test")
 }
@@ -197,7 +193,6 @@ import Testing
         userData: packet
     )))
 
-    #expect(pdu.redirectionLength == overstatedLength)
     #expect(pdu.routingToken == cookie)
 }
 

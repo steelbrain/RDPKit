@@ -42,15 +42,7 @@ struct RDPStaticVirtualChannel: Equatable, Sendable {
 enum ChannelOptions {
     static let initialized: UInt32 = 0x8000_0000
     static let encryptRDP: UInt32 = 0x4000_0000
-    static let encryptServerToClient: UInt32 = 0x2000_0000
-    static let encryptClientToServer: UInt32 = 0x1000_0000
-    static let highPriority: UInt32 = 0x0800_0000
-    static let mediumPriority: UInt32 = 0x0400_0000
-    static let lowPriority: UInt32 = 0x0200_0000
     static let compressRDP: UInt32 = 0x0080_0000
-    static let compress: UInt32 = 0x0040_0000
-    static let showProtocol: UInt32 = 0x0020_0000
-    static let remoteControlPersistent: UInt32 = 0x0010_0000
 }
 
 private enum ClientEarlyCapabilityFlags {

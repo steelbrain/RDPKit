@@ -19,7 +19,7 @@ struct MCSConnectResponse: Equatable, Sendable {
     var serverEarlyCapabilityFlags: UInt32?
     var ioChannelID: UInt16?
     var messageChannelID: UInt16?
-    var staticChannelAssignments: [RDPStaticVirtualChannelAssignment]
+    var staticChannelAssignments: [RDPStaticVirtualChannelAssignment] = []
     var serverCertificatePublicKey: RDPRSAPublicKey?
 
     var resultName: String {
@@ -49,58 +49,26 @@ struct MCSConnectResponse: Equatable, Sendable {
         guard resultValue <= UInt8.max else {
             throw RDPDecodeError.invalidBERLength
         }
-        let result = UInt8(resultValue)
-
+        var response = MCSConnectResponse(result: UInt8(resultValue))
         guard mcsCursor.remaining > 0 else {
-            return MCSConnectResponse(
-                result: result,
-                calledConnectID: nil,
-                serverUserDataKey: nil,
-                clientRequestedProtocols: nil,
-                serverEarlyCapabilityFlags: nil,
-                ioChannelID: nil,
-                messageChannelID: nil,
-                staticChannelAssignments: [],
-                serverCertificatePublicKey: nil
-            )
+            return response
         }
 
         let calledConnectIDValue = try mcsCursor.readBERInteger()
         guard calledConnectIDValue <= UInt16.max else {
             throw RDPDecodeError.invalidBERLength
         }
-        let calledConnectID = UInt16(calledConnectIDValue)
+        response.calledConnectID = UInt16(calledConnectIDValue)
         _ = try mcsCursor.readBERSequenceData()
-        let userData = try mcsCursor.readBEROctetString()
-        let serverData = try parseGCCServerData(
-            userData,
+        try parseGCCServerData(
+            mcsCursor.readBEROctetString(),
+            into: &response,
             requestedChannels: requestedChannels,
             expectedRequestedProtocols: expectedRequestedProtocols,
             expectedMessageChannelAdvertised: expectedMessageChannelAdvertised
         )
-
-        return MCSConnectResponse(
-            result: result,
-            calledConnectID: calledConnectID,
-            serverUserDataKey: serverData.key,
-            clientRequestedProtocols: serverData.clientRequestedProtocols,
-            serverEarlyCapabilityFlags: serverData.serverEarlyCapabilityFlags,
-            ioChannelID: serverData.ioChannelID,
-            messageChannelID: serverData.messageChannelID,
-            staticChannelAssignments: serverData.staticChannelAssignments,
-            serverCertificatePublicKey: serverData.serverSecurityData?.serverCertificatePublicKey
-        )
+        return response
     }
-}
-
-private struct GCCServerData {
-    var key: String?
-    var clientRequestedProtocols: RDPSecurityProtocols?
-    var serverEarlyCapabilityFlags: UInt32?
-    var serverSecurityData: ServerSecurityData?
-    var ioChannelID: UInt16?
-    var messageChannelID: UInt16?
-    var staticChannelAssignments: [RDPStaticVirtualChannelAssignment]
 }
 
 private struct ServerSecurityData {
@@ -129,79 +97,64 @@ struct RDPRSAPublicKey: Equatable, Sendable {
 
 private func parseGCCServerData(
     _ data: Data,
+    into response: inout MCSConnectResponse,
     requestedChannels: [RDPStaticVirtualChannel],
     expectedRequestedProtocols: RDPSecurityProtocols?,
     expectedMessageChannelAdvertised: Bool
-) throws -> GCCServerData {
-    let serverKey = Data([0x4D, 0x63, 0x44, 0x6E])
-    guard let keyRange = data.range(of: serverKey) else {
+) throws {
+    // The client must ignore the ConnectData::connectPDU length (servers send 0x2A),
+    // so locate the server H.221 key instead of walking the PER header.
+    let serverKey = "McDn"
+    guard let keyRange = data.range(of: Data(serverKey.utf8)) else {
         throw RDPDecodeError.invalidMCSConnectResponseHeader
     }
 
-    var cursor = ByteCursor(Data(data[keyRange.upperBound...]))
+    var cursor = ByteCursor(data[keyRange.upperBound...])
     let userDataLength = try cursor.readPERLength()
     let serverBlocks = try cursor.readData(count: userDataLength)
     guard cursor.remaining == 0 else {
         throw RDPDecodeError.invalidMCSConnectResponseHeader
     }
-    let serverData = try parseServerDataBlocks(from: serverBlocks)
+    response.serverUserDataKey = serverKey
+    let (channelIDs, serverSecurityData) = try parseServerDataBlocks(serverBlocks, into: &response)
     if let expectedRequestedProtocols {
-        let actualRequestedProtocols = serverData.clientRequestedProtocols ?? RDPSecurityProtocols(rawValue: 0)
+        let actualRequestedProtocols = response.clientRequestedProtocols ?? RDPSecurityProtocols(rawValue: 0)
         guard actualRequestedProtocols == expectedRequestedProtocols else {
             throw RDPDecodeError.invalidMCSConnectResponseHeader
         }
-        if expectedRequestedProtocols.rawValue != 0, let securityData = serverData.serverSecurityData {
-            guard securityData.encryptionMethod == 0, securityData.encryptionLevel == 0 else {
+        if expectedRequestedProtocols.rawValue != 0, let serverSecurityData {
+            guard serverSecurityData.encryptionMethod == 0, serverSecurityData.encryptionLevel == 0 else {
                 throw RDPDecodeError.invalidMCSConnectResponseHeader
             }
         }
     }
-    if serverData.messageChannelID != nil {
+    if response.messageChannelID != nil {
         guard expectedMessageChannelAdvertised else {
             throw RDPDecodeError.invalidMCSConnectResponseHeader
         }
     }
     if !requestedChannels.isEmpty {
-        guard serverData.channelIDs.count == requestedChannels.count else {
+        guard channelIDs.count == requestedChannels.count else {
             throw RDPDecodeError.invalidMCSConnectResponseHeader
         }
     }
 
-    let assignments = serverData.channelIDs.enumerated().map { index, channelID in
+    response.serverCertificatePublicKey = serverSecurityData?.serverCertificatePublicKey
+    response.staticChannelAssignments = channelIDs.enumerated().map { index, channelID in
         let name = requestedChannels.indices.contains(index)
             ? requestedChannels[index].name
             : "channel-\(index)"
         return RDPStaticVirtualChannelAssignment(name: name, channelID: channelID)
     }
-
-    return GCCServerData(
-        key: "McDn",
-        clientRequestedProtocols: serverData.clientRequestedProtocols,
-        serverEarlyCapabilityFlags: serverData.serverEarlyCapabilityFlags,
-        serverSecurityData: serverData.serverSecurityData,
-        ioChannelID: serverData.ioChannelID,
-        messageChannelID: serverData.messageChannelID,
-        staticChannelAssignments: assignments
-    )
 }
 
 private func parseServerDataBlocks(
-    from serverBlocks: Data
-) throws -> (
-    clientRequestedProtocols: RDPSecurityProtocols?,
-    serverEarlyCapabilityFlags: UInt32?,
-    serverSecurityData: ServerSecurityData?,
-    ioChannelID: UInt16?,
-    channelIDs: [UInt16],
-    messageChannelID: UInt16?
-) {
+    _ serverBlocks: Data,
+    into response: inout MCSConnectResponse
+) throws -> (channelIDs: [UInt16], serverSecurityData: ServerSecurityData?) {
     var cursor = ByteCursor(serverBlocks)
-    var clientRequestedProtocols: RDPSecurityProtocols?
-    var serverEarlyCapabilityFlags: UInt32?
     var serverSecurityData: ServerSecurityData?
-    var ioChannelID: UInt16?
     var channelIDs: [UInt16] = []
-    var messageChannelID: UInt16?
     var seenKnownBlockTypes = Set<UInt16>()
 
     while cursor.remaining >= 4 {
@@ -222,13 +175,15 @@ private func parseServerDataBlocks(
             guard body.count == 4 || body.count == 8 || body.count == 12 else {
                 throw RDPDecodeError.invalidMCSConnectResponseHeader
             }
-            if body.count >= 8 {
-                var bodyCursor = ByteCursor(body)
-                _ = try bodyCursor.readLittleEndianUInt32()
-                clientRequestedProtocols = RDPSecurityProtocols(rawValue: try bodyCursor.readLittleEndianUInt32())
-                if body.count == 12 {
-                    serverEarlyCapabilityFlags = try bodyCursor.readLittleEndianUInt32()
-                }
+            var bodyCursor = ByteCursor(body)
+            _ = try bodyCursor.readLittleEndianUInt32()
+            if bodyCursor.remaining > 0 {
+                response.clientRequestedProtocols = try RDPSecurityProtocols(
+                    rawValue: bodyCursor.readLittleEndianUInt32()
+                )
+            }
+            if bodyCursor.remaining > 0 {
+                response.serverEarlyCapabilityFlags = try bodyCursor.readLittleEndianUInt32()
             }
         case 0x0C02:
             serverSecurityData = try parseServerSecurityData(body)
@@ -237,28 +192,21 @@ private func parseServerDataBlocks(
                 throw RDPDecodeError.invalidMCSConnectResponseHeader
             }
             var bodyCursor = ByteCursor(body)
-            ioChannelID = try bodyCursor.readLittleEndianUInt16()
+            response.ioChannelID = try bodyCursor.readLittleEndianUInt16()
             let channelCount = try Int(bodyCursor.readLittleEndianUInt16())
-            channelIDs = []
             for _ in 0 ..< channelCount {
                 try channelIDs.append(bodyCursor.readLittleEndianUInt16())
             }
-            if channelCount.isMultiple(of: 2) {
-                guard bodyCursor.remaining == 0 else {
-                    throw RDPDecodeError.invalidMCSConnectResponseHeader
-                }
-            } else {
-                guard bodyCursor.remaining == 2 else {
-                    throw RDPDecodeError.invalidMCSConnectResponseHeader
-                }
-                _ = try bodyCursor.readLittleEndianUInt16()
+            // MS-RDPBCGR 2.2.1.4.4: Pad is present exactly when channelCount is odd.
+            guard bodyCursor.remaining == (channelCount.isMultiple(of: 2) ? 0 : 2) else {
+                throw RDPDecodeError.invalidMCSConnectResponseHeader
             }
         case 0x0C04:
             guard body.count == 2 else {
                 throw RDPDecodeError.invalidMCSConnectResponseHeader
             }
             var bodyCursor = ByteCursor(body)
-            messageChannelID = try bodyCursor.readLittleEndianUInt16()
+            response.messageChannelID = try bodyCursor.readLittleEndianUInt16()
         case 0x0C08:
             guard body.count == 4 else {
                 throw RDPDecodeError.invalidMCSConnectResponseHeader
@@ -273,15 +221,7 @@ private func parseServerDataBlocks(
     guard seenKnownBlockTypes.isSuperset(of: [0x0C01, 0x0C02, 0x0C03]) else {
         throw RDPDecodeError.invalidMCSConnectResponseHeader
     }
-
-    return (
-        clientRequestedProtocols,
-        serverEarlyCapabilityFlags,
-        serverSecurityData,
-        ioChannelID,
-        channelIDs,
-        messageChannelID
-    )
+    return (channelIDs, serverSecurityData)
 }
 
 private func isKnownServerDataBlock(_ type: UInt16) -> Bool {
