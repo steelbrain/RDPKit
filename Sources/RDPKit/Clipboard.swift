@@ -1078,10 +1078,9 @@ public final class RDPClipboardSession: @unchecked Sendable {
         send(RDPClipboardTemporaryDirectoryPDU().encoded())
 
         lock.lock()
+        defer { lock.unlock() }
         hasAnsweredMonitorReady = true
-        let content = localContent
-        lock.unlock()
-        send(formatList(for: content))
+        sendFormatList(for: localContent)
     }
 
     static func clientGeneralFlags(serverGeneralFlags: UInt32) -> UInt32 {
@@ -1204,15 +1203,16 @@ public final class RDPClipboardSession: @unchecked Sendable {
 
     private func publish(_ content: RDPClipboardLocalContent) {
         lock.lock()
+        defer { lock.unlock() }
         localContent = content
-        let hasAnsweredMonitorReady = hasAnsweredMonitorReady
-        lock.unlock()
         if hasAnsweredMonitorReady {
-            send(formatList(for: content))
+            sendFormatList(for: content)
         }
     }
 
-    private func formatList(for content: RDPClipboardLocalContent) -> Data {
+    /// Callers hold `lock`, so Format Lists go out in the order the local content
+    /// changed and the server's last one always matches `localContent`.
+    private func sendFormatList(for content: RDPClipboardLocalContent) {
         let entries: [RDPClipboardFormatListEntry] = switch content {
         case .empty:
             []
@@ -1230,7 +1230,8 @@ public final class RDPClipboardSession: @unchecked Sendable {
                 ),
             ]
         }
-        return RDPClipboardFormatListPDU(entries: entries).encoded(useLongFormatNames: usesLongFormatNames)
+        let useLongFormatNames = negotiatedGeneralFlags & RDPClipboardCapabilityFlags.useLongFormatNames != 0
+        send(RDPClipboardFormatListPDU(entries: entries).encoded(useLongFormatNames: useLongFormatNames))
     }
 
     private func requestFormatData(formatID: UInt32, expecting response: RDPClipboardRequestedFormatDataResponse) {

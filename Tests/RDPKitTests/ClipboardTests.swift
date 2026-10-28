@@ -1,4 +1,5 @@
 import Foundation
+import NIOCore
 import NIOEmbedded
 @testable import RDPKit
 import Testing
@@ -729,6 +730,63 @@ import Testing
     ])
     #expect(try clipboardPayload(fromPackets: sent.packets[2]) == RDPClipboardFormatListPDU(entries: []).encoded())
     _ = try channel.finish()
+}
+
+/// The app can publish while the session is answering Monitor Ready; the server's last
+/// Format List must still describe the latest content (MS-RDPECLIP 3.1.5.2.1).
+@Test func clipboardFormatListsReachTheServerInTheOrderTheContentChanged() async throws {
+    let channel = NIOAsyncTestingChannel()
+    try await channel.connect(to: SocketAddress(ipAddress: "127.0.0.1", port: 3389))
+    let race = ClipboardPublishRace()
+    let session = RDPClipboardSession(userChannelID: 1006, staticChannelID: 1007, channel: channel) { summary, _ in
+        // Publish from another thread while the Monitor Ready Format List is being sent.
+        guard summary.typeName == "clipboard-format-list", race.start() else {
+            return
+        }
+        race.publishing.enter()
+        Thread.detachNewThread {
+            race.session?.publishLocalUnicodeText("new")
+            race.publishing.leave()
+        }
+        _ = race.publishing.wait(timeout: .now() + 0.2)
+    }
+    race.session = session
+
+    _ = try session.receive(RDPClipboardPDU(messageType: RDPClipboardMessageType.monitorReady))
+    race.waitUntilPublished()
+    await channel.testingEventLoop.run()
+
+    var formatLists: [Data] = []
+    while let packet = try await channel.readOutbound(as: ByteBuffer.self) {
+        let payload = try clipboardPayload(fromPackets: Data(packet.readableBytesView))
+        if try RDPClipboardPDU.parse(from: payload).header.messageType == RDPClipboardMessageType.formatList {
+            formatLists.append(payload)
+        }
+    }
+    #expect(formatLists == [
+        RDPClipboardFormatListPDU(entries: []).encoded(useLongFormatNames: false),
+        RDPClipboardFormatListPDU(entries: [
+            RDPClipboardFormatListEntry(formatID: RDPClipboardFormatID.unicodeText),
+        ]).encoded(useLongFormatNames: false),
+    ])
+}
+
+private final class ClipboardPublishRace: @unchecked Sendable {
+    private let lock = NSLock()
+    private var started = false
+    weak var session: RDPClipboardSession?
+    let publishing = DispatchGroup()
+
+    func start() -> Bool {
+        lock.withLock {
+            defer { started = true }
+            return !started
+        }
+    }
+
+    func waitUntilPublished() {
+        publishing.wait()
+    }
 }
 
 @Test func clipboardSessionSkipsCapabilitiesWhenServerSentNoneAndUsesShortNames() throws {

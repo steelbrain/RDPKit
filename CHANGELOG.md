@@ -75,7 +75,9 @@
 - Reject dynamic channels the client does not implement with E_NOTIMPL,
   instead of accepting the Windows input, mouse-cursor and microphone channels.
 - Follow the cliprdr and rdpdr initialization sequences, accept any rdpdr minor
-  version, and fix clipboard chunking and remote file names.
+  version, and fix clipboard chunking and remote file names. Format Lists go
+  out in the order the local clipboard changed, so a publish while the
+  session answers Monitor Ready no longer leaves the server a stale one.
 - Send one Confirm Active capability list to every server, including the
   mandatory Sound capability set KRdp checks for.
 - Report licensing failures with the server's error code, keep reading
