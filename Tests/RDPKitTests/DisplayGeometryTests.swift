@@ -25,6 +25,16 @@ import Testing
     #expect(viewport.remotePoint(from: CGPoint(x: 100, y: 49)) == nil)
 }
 
+@Test func remoteDisplayViewportKeepsBottomLeftContentEdgeOnLastRemoteRow() {
+    let viewport = RDPRemoteDisplayViewport(
+        remotePixelSize: CGSize(width: 100, height: 50),
+        bounds: CGRect(x: 0, y: 0, width: 200, height: 200),
+        coordinateOrigin: .bottomLeft
+    )
+
+    #expect(viewport.remotePoint(from: CGPoint(x: 0, y: 50)) == RDPRemotePoint(x: 0, y: 49))
+}
+
 @Test func remoteDisplayViewportMapsTopLeftCoordinatesToRemotePoint() {
     let viewport = RDPRemoteDisplayViewport(
         remotePixelSize: CGSize(width: 100, height: 50),
