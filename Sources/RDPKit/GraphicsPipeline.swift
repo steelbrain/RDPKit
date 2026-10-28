@@ -84,11 +84,11 @@ extension RDPClientConnection {
     /// Applies one RDPGFX PDU; returns the frame ID when it ends a frame.
     private func processGraphicsMessage(_ message: RDPGFXHeader, compositor: RDPGFXSurfaceCompositor) throws -> UInt32? {
         try graphicsFrameTracker.track(message)
-        if let summary = try? RDPGFXMessageSummary.summarize(message, includeVideoDetails: targetFrameCount != nil) {
-            report.rdpGraphicsUpdateMessages.appendIfRoom(
-                summary,
-                limit: recordedGraphicsMessageLimit(targetFrameCount: targetFrameCount)
-            )
+        let messageLimit = recordedGraphicsMessageLimit(targetFrameCount: targetFrameCount)
+        if report.rdpGraphicsUpdateMessages.hasRoom(limit: messageLimit),
+           let summary = try? RDPGFXMessageSummary.summarize(message, includeVideoDetails: targetFrameCount != nil)
+        {
+            report.rdpGraphicsUpdateMessages.appendIfRoom(summary, limit: messageLimit)
         }
         try compositor.process(message, clearCodec: clearCodec)
 
@@ -232,8 +232,11 @@ extension RDPClientConnection {
     func handleFastPath(_ packet: Data) throws {
         let pdu = try RDPFastPathOutputPDU.parse(packet)
         recordGraphicsUpdatePacket(packet)
-        for summary in pdu.summaries {
-            report.rdpFastPathUpdateMessages.appendIfRoom(summary, limit: recordedGraphicsMessageLimit(targetFrameCount: nil))
+        let messageLimit = recordedGraphicsMessageLimit(targetFrameCount: nil)
+        if report.rdpFastPathUpdateMessages.hasRoom(limit: messageLimit) {
+            for summary in pdu.summaries {
+                report.rdpFastPathUpdateMessages.appendIfRoom(summary, limit: messageLimit)
+            }
         }
         for fragment in pdu.updates where !sessionEnded {
             guard let update = try fastPathReassembler.append(fragment) else {

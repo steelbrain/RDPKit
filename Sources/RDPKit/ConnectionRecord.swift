@@ -78,25 +78,38 @@ enum RDPRecordLimit {
     static let warnings = 32
 }
 
-extension Optional {
+extension Array {
     /// Appends to a diagnostic list, dropping the oldest entries past `limit`.
-    mutating func appendCapped<Element>(_ element: Element, limit: Int) where Wrapped == [Element] {
-        var list = self ?? []
-        list.append(element)
-        if list.count > limit {
-            list.removeFirst(list.count - limit)
+    mutating func appendCapped(_ element: Element, limit: Int) {
+        append(element)
+        if count > limit {
+            removeFirst(count - limit)
         }
-        self = list
+    }
+}
+
+extension Optional {
+    mutating func appendCapped<Element>(_ element: Element, limit: Int) where Wrapped == [Element] {
+        if self == nil {
+            self = []
+        }
+        self?.appendCapped(element, limit: limit)
     }
 
-    /// Appends to a diagnostic list until it holds `limit` entries.
-    mutating func appendIfRoom<Element>(_ element: Element, limit: Int) where Wrapped == [Element] {
-        var list = self ?? []
-        guard list.count < limit else {
+    /// Appends to a diagnostic list until it holds `limit` entries; `element`
+    /// is only built when it is kept, since most calls come once the list is full.
+    mutating func appendIfRoom<Element>(_ element: @autoclosure () -> Element, limit: Int) where Wrapped == [Element] {
+        guard hasRoom(limit: limit) else {
             return
         }
-        list.append(element)
-        self = list
+        if self == nil {
+            self = []
+        }
+        self?.append(element())
+    }
+
+    func hasRoom<Element>(limit: Int) -> Bool where Wrapped == [Element] {
+        (self?.count ?? 0) < limit
     }
 }
 
@@ -107,10 +120,7 @@ final class RDPClipboardSentLog: @unchecked Sendable {
 
     func append(_ summary: RDPClipboardMessageSummary) {
         lock.withLock {
-            messages.append(summary)
-            if messages.count > RDPRecordLimit.messages {
-                messages.removeFirst()
-            }
+            messages.appendCapped(summary, limit: RDPRecordLimit.messages)
         }
     }
 

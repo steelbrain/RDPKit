@@ -241,10 +241,7 @@ final class RDPClientConnection {
     }
 
     func appendWarning(code: String, message: String) {
-        report.warnings.append(RDPProbeWarning(code: code, message: message))
-        if report.warnings.count > RDPRecordLimit.warnings {
-            report.warnings.removeFirst()
-        }
+        report.warnings.appendCapped(RDPProbeWarning(code: code, message: message), limit: RDPRecordLimit.warnings)
     }
 }
 
