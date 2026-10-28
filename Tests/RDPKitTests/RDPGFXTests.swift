@@ -137,7 +137,7 @@ import Testing
     }
 }
 
-@Test func rejectsRDPGFXHeaderWithNonzeroFlags() {
+@Test func ignoresRDPGFXHeaderFlags() throws {
     let bytes = Data([
         0x13, 0x00, 0x01, 0x00,
         0x14, 0x00, 0x00, 0x00,
@@ -146,9 +146,7 @@ import Testing
         0x12, 0x00, 0x00, 0x00,
     ])
 
-    #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
-        try RDPGFXHeader.parse(from: bytes)
-    }
+    #expect(try RDPGFXHeader.parse(from: bytes).commandID == RDPGFXCommandID.capsConfirm)
 }
 
 @Test func rejectsCapsConfirmCapabilitySetWithTrailingBytes() {
@@ -257,7 +255,7 @@ import Testing
     }
 }
 
-@Test func rejectsKnownCapabilitySetWithUndefinedFlagsForVersion() {
+@Test func ignoresCapabilitySetFlagsUndefinedForVersion() throws {
     let cases: [(version: UInt32, flags: UInt32)] = [
         (RDPGFXCapabilityVersion.version8, RDPGFXCapabilityFlags.avc420Enabled),
         (RDPGFXCapabilityVersion.version81, RDPGFXCapabilityFlags.avcDisabled),
@@ -275,9 +273,7 @@ import Testing
         bytes.appendLittleEndianUInt32(4)
         bytes.appendLittleEndianUInt32(testCase.flags)
 
-        #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
-            try RDPGFXCapabilitySet.parse(from: bytes)
-        }
+        #expect(try RDPGFXCapabilitySet.parse(from: bytes).flags == 0)
     }
 }
 
@@ -448,7 +444,7 @@ import Testing
     #expect(startFrame.frameID == 42)
 }
 
-@Test func rejectsStartFrameTimestampOutsideSpecLimits() {
+@Test func acceptsStartFrameTimestampOutsideSpecLimits() throws {
     let invalidTimestamps = [
         startFrameTimestamp(milliseconds: 1000, seconds: 0, minutes: 0, hours: 0),
         startFrameTimestamp(milliseconds: 0, seconds: 60, minutes: 0, hours: 0),
@@ -461,12 +457,11 @@ import Testing
         payload.appendLittleEndianUInt32(timestamp)
         payload.appendLittleEndianUInt32(42)
 
-        #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
-            try RDPGFXStartFramePDU.parse(from: RDPGFXHeader.parse(from: graphicsMessage(
-                commandID: RDPGFXCommandID.startFrame,
-                payload: payload
-            )))
-        }
+        let startFrame = try RDPGFXStartFramePDU.parse(from: RDPGFXHeader.parse(from: graphicsMessage(
+            commandID: RDPGFXCommandID.startFrame,
+            payload: payload
+        )))
+        #expect(startFrame.frameID == 42)
     }
 }
 
@@ -640,28 +635,26 @@ import Testing
     #expect(window == RDPGFXMessageSummary(typeName: "rdpgfx-map-surface-to-window"))
 }
 
-@Test func rejectsMapSurfaceToOutputWithNonzeroReservedField() {
-    #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
-        try RDPGFXMapSurfaceToOutputPDU.parse(from: RDPGFXHeader.parse(from: mapSurfaceToOutputMessage(
-            surfaceID: 7,
-            reserved: 1,
-            x: 10,
-            y: 20
-        )))
-    }
-}
-
-@Test func rejectsMapSurfaceToScaledOutputWithNonzeroReservedField() {
-    #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
-        try RDPGFXMapSurfaceToScaledOutputPDU.parse(from: RDPGFXHeader.parse(from: mapSurfaceToScaledOutputMessage(
+@Test func ignoresMapSurfaceReservedFields() throws {
+    let map = try RDPGFXMapSurfaceToOutputPDU.parse(from: RDPGFXHeader.parse(from: mapSurfaceToOutputMessage(
+        surfaceID: 7,
+        reserved: 1,
+        x: 10,
+        y: 20
+    )))
+    let scaled = try RDPGFXMapSurfaceToScaledOutputPDU.parse(from: RDPGFXHeader.parse(
+        from: mapSurfaceToScaledOutputMessage(
             surfaceID: 7,
             reserved: 1,
             x: 10,
             y: 20,
             targetWidth: 1920,
             targetHeight: 1080
-        )))
-    }
+        )
+    ))
+
+    #expect(map.outputOriginX == 10)
+    #expect(scaled.targetWidth == 1920)
 }
 
 @Test func summarizesSurfaceCacheAndFillGraphicsMessages() throws {
@@ -1060,28 +1053,15 @@ import Testing
     #expect(stream.encodedBitstream == Data([0x00, 0x00, 0x01, 0x65]))
 }
 
-@Test func rejectsAVC420QuantQualityAboveSpecRange() {
-    var excessiveQP = Data()
-    excessiveQP.appendLittleEndianUInt32(1)
-    excessiveQP.append(rectangleBytes(left: 0, top: 0, right: 64, bottom: 32))
-    excessiveQP.appendUInt8(52)
-    excessiveQP.appendUInt8(100)
-    excessiveQP.append(Data([0x00, 0x00, 0x01, 0x65]))
-
-    #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
-        try RDPGFXAVC420BitmapStream.parse(from: excessiveQP)
-    }
-
+@Test func ignoresAVC420QuantQualityAboveSpecRange() throws {
     var bitmapData = Data()
     bitmapData.appendLittleEndianUInt32(1)
     bitmapData.append(rectangleBytes(left: 0, top: 0, right: 64, bottom: 32))
-    bitmapData.appendUInt8(26)
+    bitmapData.appendUInt8(52)
     bitmapData.appendUInt8(101)
     bitmapData.append(Data([0x00, 0x00, 0x01, 0x65]))
 
-    #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
-        try RDPGFXAVC420BitmapStream.parse(from: bitmapData)
-    }
+    #expect(try RDPGFXAVC420BitmapStream.parse(from: bitmapData).encodedBitstream == Data([0x00, 0x00, 0x01, 0x65]))
 }
 
 @Test func parsesHEVCAnnexBNALUnitTypes() {

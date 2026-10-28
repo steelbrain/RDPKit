@@ -118,12 +118,13 @@ struct RDPGFXCapabilitySet: Equatable, Sendable {
         return bytes
     }
 
+    /// Flags the version does not define are dropped; like FreeRDP, the client ignores them.
     var flags: UInt32? {
         guard version != RDPGFXCapabilityVersion.version101 else {
             return nil
         }
         var cursor = ByteCursor(data)
-        return try? cursor.readLittleEndianUInt32()
+        return (try? cursor.readLittleEndianUInt32()).map { $0 & (Self.definedFlags(for: version) ?? .max) }
     }
 
     static func parse(from data: Data) throws -> RDPGFXCapabilitySet {
@@ -194,16 +195,12 @@ struct RDPGFXCapabilitySet: Equatable, Sendable {
         guard data.count == expectedDataLength else {
             return false
         }
-        guard let definedFlags = definedFlags(for: version) else {
+        guard let flags = RDPGFXCapabilitySet(version: version, data: data).flags else {
             return data.allSatisfy { $0 == 0 }
-        }
-        var cursor = ByteCursor(data)
-        guard let flags = try? cursor.readLittleEndianUInt32() else {
-            return false
         }
         // AVC_THINCLIENT and AVC_DISABLED MUST NOT be set together (MS-RDPEGFX 2.2.3.6).
         let avcFlags = RDPGFXCapabilityFlags.avcDisabled | RDPGFXCapabilityFlags.avcThinClient
-        return flags & ~definedFlags == 0 && flags & avcFlags != avcFlags
+        return flags & avcFlags != avcFlags
     }
 }
 

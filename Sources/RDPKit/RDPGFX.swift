@@ -184,12 +184,9 @@ struct RDPGFXHeader: Equatable, Sendable {
         }
 
         let commandID = try cursor.readLittleEndianUInt16()
-        let flags = try cursor.readLittleEndianUInt16()
+        _ = try cursor.readLittleEndianUInt16() // flags: unused (MS-RDPEGFX 2.2.1.5)
         let pduLength = try Int(cursor.readLittleEndianUInt32())
-        guard flags == 0,
-              pduLength >= 8,
-              pduLength - 8 <= cursor.remaining
-        else {
+        guard pduLength >= 8, pduLength - 8 <= cursor.remaining else {
             throw RDPDecodeError.invalidRDPGFXPDU
         }
         return try RDPGFXHeader(commandID: commandID, payload: cursor.readData(count: pduLength - 8))
@@ -375,10 +372,7 @@ struct RDPGFXMapSurfaceToOutputPDU: Equatable, Sendable {
 
         var cursor = ByteCursor(message.payload)
         let surfaceID = try cursor.readLittleEndianUInt16()
-        let reserved = try cursor.readLittleEndianUInt16()
-        guard reserved == 0 else {
-            throw RDPDecodeError.invalidRDPGFXPDU
-        }
+        _ = try cursor.readLittleEndianUInt16() // reserved
         return try RDPGFXMapSurfaceToOutputPDU(
             surfaceID: surfaceID,
             outputOriginX: cursor.readLittleEndianUInt32(),
@@ -403,10 +397,7 @@ struct RDPGFXMapSurfaceToScaledOutputPDU: Equatable, Sendable {
 
         var cursor = ByteCursor(message.payload)
         let surfaceID = try cursor.readLittleEndianUInt16()
-        let reserved = try cursor.readLittleEndianUInt16()
-        guard reserved == 0 else {
-            throw RDPDecodeError.invalidRDPGFXPDU
-        }
+        _ = try cursor.readLittleEndianUInt16() // reserved
         return try RDPGFXMapSurfaceToScaledOutputPDU(
             surfaceID: surfaceID,
             outputOriginX: cursor.readLittleEndianUInt32(),
@@ -554,26 +545,12 @@ struct RDPGFXStartFramePDU: Equatable, Sendable {
             throw RDPDecodeError.invalidRDPGFXPDU
         }
 
+        // Nothing reads the timestamp, so its field ranges (MS-RDPEGFX 2.2.2.11) are not checked.
         var cursor = ByteCursor(message.payload)
-        let timestamp = try cursor.readLittleEndianUInt32()
-        guard isValidTimestamp(timestamp) else {
-            throw RDPDecodeError.invalidRDPGFXPDU
-        }
         return try RDPGFXStartFramePDU(
-            timestamp: timestamp,
+            timestamp: cursor.readLittleEndianUInt32(),
             frameID: cursor.readLittleEndianUInt32()
         )
-    }
-
-    private static func isValidTimestamp(_ timestamp: UInt32) -> Bool {
-        let milliseconds = timestamp & 0x03FF
-        let seconds = (timestamp >> 10) & 0x003F
-        let minutes = (timestamp >> 16) & 0x003F
-        let hours = (timestamp >> 22) & 0x03FF
-        return milliseconds <= 999
-            && seconds <= 59
-            && minutes <= 59
-            && hours <= 23
     }
 }
 

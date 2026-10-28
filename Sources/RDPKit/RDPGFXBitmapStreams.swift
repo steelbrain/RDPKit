@@ -17,15 +17,8 @@ struct RDPGFXAVC420BitmapStream: Equatable, Sendable {
         for _ in 0 ..< regionCount {
             try regionRects.append(RDPGFXRect16.parse(&cursor))
         }
-        // The quantization values are informational (MS-RDPEGFX 2.2.4.4.1); only
-        // their ranges are checked (2.2.4.4.2).
-        for _ in 0 ..< regionCount {
-            let qpVal = try cursor.readUInt8()
-            let qualityVal = try cursor.readUInt8()
-            guard qpVal & 0x3F <= 51, qualityVal <= 100 else {
-                throw RDPDecodeError.invalidRDPGFXPDU
-            }
-        }
+        // The quantization values are informational (MS-RDPEGFX 2.2.4.4.1).
+        _ = try cursor.readData(count: Int(regionCount) * 2)
 
         let encodedBitstream = cursor.readRemainingData()
         guard !encodedBitstream.isEmpty else {
