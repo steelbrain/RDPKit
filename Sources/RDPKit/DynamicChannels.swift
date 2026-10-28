@@ -229,7 +229,8 @@ extension RDPClientConnection {
             dynamicChannelFragments[channelID] = RDPDynamicChannelFragment(totalLength: Int(totalLength), payload: data)
             return nil
         }
-        guard var fragment = dynamicChannelFragments[channelID] else {
+        // Taken out of the dictionary so the append does not copy the partial message.
+        guard var fragment = dynamicChannelFragments.removeValue(forKey: channelID) else {
             return data
         }
         fragment.payload.append(data)
@@ -240,7 +241,6 @@ extension RDPClientConnection {
             dynamicChannelFragments[channelID] = fragment
             return nil
         }
-        dynamicChannelFragments[channelID] = nil
         return fragment.payload
     }
 

@@ -12,15 +12,14 @@ extension RDPClientConnection {
                 fromUserData: indication.userData,
                 maximumChunkByteCount: maximumChunkByteCount
             )
-            var reassembler = staticChannelReassemblers[indication.channelID] ?? RDPStaticVirtualChannelReassembler()
-            let message = try reassembler.append(chunk, maximumChunkByteCount: maximumChunkByteCount)
-            staticChannelReassemblers[indication.channelID] = reassembler
-            guard let message else {
+            // Appended in place: a copy out of the dictionary would copy the partial message per chunk.
+            guard let message = try staticChannelReassemblers[indication.channelID, default: .init()]
+                .append(chunk, maximumChunkByteCount: maximumChunkByteCount)
+            else {
                 return
             }
             payload = message.payload
         } catch {
-            staticChannelReassemblers[indication.channelID] = nil
             if isDynamicChannelTransport {
                 throw error
             }
