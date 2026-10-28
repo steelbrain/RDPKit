@@ -97,22 +97,6 @@ struct RDPStaticVirtualChannelPDU: Equatable, Sendable {
         ).encodedTPKT()
     }
 
-    static func parseIfPresent(
-        fromTPKT packet: Data,
-        channelID expectedChannelID: UInt16,
-        maximumChunkByteCount: Int
-    ) throws -> RDPStaticVirtualChannelPDU? {
-        guard let indication = try? MCSSendDataIndicationPDU.parse(fromTPKT: packet),
-              indication.channelID == expectedChannelID
-        else {
-            return nil
-        }
-        return try parse(
-            fromUserData: indication.userData,
-            maximumChunkByteCount: maximumChunkByteCount
-        )
-    }
-
     static func parse(
         fromUserData userData: Data,
         maximumChunkByteCount: Int

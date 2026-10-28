@@ -233,24 +233,6 @@ struct RDPShareControlPDU: Equatable, Sendable {
         }
     }
 
-    static func parseIfPresent(fromTPKT packet: Data) throws -> RDPShareControlPDU? {
-        guard let indication = try? MCSSendDataIndicationPDU.parse(fromTPKT: packet) else {
-            return nil
-        }
-        return try parseIfPresent(from: indication)
-    }
-
-    /// Parses only Send Data Indications on `channelID` (the I/O channel), so
-    /// static virtual channel chunks are never misread as Share Control PDUs.
-    static func parseIfPresent(fromTPKT packet: Data, channelID: UInt16) throws -> RDPShareControlPDU? {
-        guard let indication = try? MCSSendDataIndicationPDU.parse(fromTPKT: packet),
-              indication.channelID == channelID
-        else {
-            return nil
-        }
-        return try parseIfPresent(from: indication)
-    }
-
     static func parseIfPresent(from indication: MCSSendDataIndicationPDU) throws -> RDPShareControlPDU? {
         guard indication.userData.count >= 6 else {
             return nil
@@ -461,24 +443,6 @@ struct RDPShareDataPDU: Equatable, Sendable {
         default:
             return "0x\(String(format: "%04x", controlAction))"
         }
-    }
-
-    static func parseIfPresent(fromTPKT packet: Data) throws -> RDPShareDataPDU? {
-        guard let indication = try? MCSSendDataIndicationPDU.parse(fromTPKT: packet) else {
-            return nil
-        }
-        return try parseIfPresent(from: indication)
-    }
-
-    /// Parses only Send Data Indications on `channelID` (the I/O channel), so
-    /// static virtual channel chunks are never misread as Share Data.
-    static func parseIfPresent(fromTPKT packet: Data, channelID: UInt16) throws -> RDPShareDataPDU? {
-        guard let indication = try? MCSSendDataIndicationPDU.parse(fromTPKT: packet),
-              indication.channelID == channelID
-        else {
-            return nil
-        }
-        return try parseIfPresent(from: indication)
     }
 
     static func parseIfPresent(from indication: MCSSendDataIndicationPDU) throws -> RDPShareDataPDU? {

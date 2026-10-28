@@ -37,11 +37,12 @@ import Testing
         0x50, 0x00, 0x02, 0x00,
     ])
 
-    let pdu = try #require(try RDPStaticVirtualChannelPDU.parseIfPresent(
-        fromTPKT: packet,
-        channelID: 1004,
+    let indication = try MCSSendDataIndicationPDU.parse(fromTPKT: packet)
+    #expect(indication.channelID == 1004)
+    let pdu = try RDPStaticVirtualChannelPDU.parse(
+        fromUserData: indication.userData,
         maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumPayloadByteCount
-    ))
+    )
 
     #expect(pdu.totalLength == 4)
     #expect(pdu.flags == 0x0000_0003)
@@ -85,11 +86,10 @@ import Testing
         channelID: 1004
     )
 
-    let pdu = try #require(try RDPStaticVirtualChannelPDU.parseIfPresent(
-        fromTPKT: packet,
-        channelID: 1004,
+    let pdu = try RDPStaticVirtualChannelPDU.parse(
+        fromUserData: MCSSendDataIndicationPDU.parse(fromTPKT: packet).userData,
         maximumChunkByteCount: payload.count
-    ))
+    )
 
     #expect(pdu.totalLength == UInt32(payload.count))
     #expect(pdu.payload == payload)

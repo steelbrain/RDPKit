@@ -690,3 +690,28 @@ private func utf16LE(_ value: String, nullTerminated: Bool) -> Data {
     }
     return data
 }
+
+// TPKT entry points for tests. The client routes by MCS channel first and
+// parses the indication (SessionDispatch.swift); unfiltered, a static channel
+// chunk can read as a Share Control header.
+extension RDPShareControlPDU {
+    static func parseIfPresent(fromTPKT packet: Data, channelID: UInt16? = nil) throws -> RDPShareControlPDU? {
+        guard let indication = try? MCSSendDataIndicationPDU.parse(fromTPKT: packet),
+              channelID.map({ indication.channelID == $0 }) ?? true
+        else {
+            return nil
+        }
+        return try parseIfPresent(from: indication)
+    }
+}
+
+extension RDPShareDataPDU {
+    static func parseIfPresent(fromTPKT packet: Data, channelID: UInt16? = nil) throws -> RDPShareDataPDU? {
+        guard let indication = try? MCSSendDataIndicationPDU.parse(fromTPKT: packet),
+              channelID.map({ indication.channelID == $0 }) ?? true
+        else {
+            return nil
+        }
+        return try parseIfPresent(from: indication)
+    }
+}
