@@ -528,7 +528,7 @@ final class RDPVideoToolboxSequenceDecoder {
     /// SPS and PPS for H.264; VPS, SPS, and PPS for HEVC.
     private var parameterSets: [Data?]
     private var formatDescription: CMVideoFormatDescription?
-    private var session: VTDecompressionSession?
+    private(set) var session: VTDecompressionSession?
     private var usesHardwareAcceleration: Bool?
     private let output = VideoToolboxDecodeOutput()
 
@@ -562,15 +562,36 @@ final class RDPVideoToolboxSequenceDecoder {
         if session == nil || parameterSetsChanged {
             try rebuildSession()
         }
+
+        let videoToolboxStartedAt = Date()
+        let imageBuffer: CVImageBuffer
+        do {
+            imageBuffer = try decode(sample.lengthPrefixedData)
+        } catch let RDPVideoDecodeError.videoToolbox(_, status) where status == kVTInvalidSessionErr {
+            // iOS invalidates decompression sessions while the app is in the background.
+            try rebuildSession()
+            imageBuffer = try decode(sample.lengthPrefixedData)
+        }
+        let videoToolboxFinishedAt = Date()
+
+        return RDPVideoToolboxDecodeResult(
+            imageBuffer: imageBuffer,
+            samplePreparationMilliseconds: videoToolboxStartedAt.timeIntervalSince(samplePreparationStartedAt) * 1000,
+            videoToolboxMilliseconds: videoToolboxFinishedAt.timeIntervalSince(videoToolboxStartedAt) * 1000,
+            imageConversionMilliseconds: 0,
+            decodedPixelFormat: CVPixelBufferGetPixelFormatType(imageBuffer),
+            usesHardwareAcceleration: usesHardwareAcceleration
+        )
+    }
+
+    private func decode(_ lengthPrefixedData: Data) throws -> CVImageBuffer {
         guard let formatDescription, let session else {
             throw RDPVideoDecodeError.missingParameterSets(codec)
         }
         let sampleBuffer = try makeSampleBuffer(
             formatDescription: formatDescription,
-            lengthPrefixedData: sample.lengthPrefixedData
+            lengthPrefixedData: lengthPrefixedData
         )
-
-        let videoToolboxStartedAt = Date()
         output.status = noErr
         output.imageBuffer = nil
         defer {
@@ -586,20 +607,11 @@ final class RDPVideoToolboxSequenceDecoder {
             ),
             operation: "decode \(codec.displayName) frame"
         )
-        let videoToolboxFinishedAt = Date()
         try check(output.status, operation: "finish \(codec.displayName) decode")
         guard let imageBuffer = output.imageBuffer else {
             throw RDPVideoDecodeError.missingImageBuffer
         }
-
-        return RDPVideoToolboxDecodeResult(
-            imageBuffer: imageBuffer,
-            samplePreparationMilliseconds: videoToolboxStartedAt.timeIntervalSince(samplePreparationStartedAt) * 1000,
-            videoToolboxMilliseconds: videoToolboxFinishedAt.timeIntervalSince(videoToolboxStartedAt) * 1000,
-            imageConversionMilliseconds: 0,
-            decodedPixelFormat: CVPixelBufferGetPixelFormatType(imageBuffer),
-            usesHardwareAcceleration: usesHardwareAcceleration
-        )
+        return imageBuffer
     }
 
     private func prepareSample(_ annexBData: Data) -> (lengthPrefixedData: Data, parameterSets: [Data?]) {

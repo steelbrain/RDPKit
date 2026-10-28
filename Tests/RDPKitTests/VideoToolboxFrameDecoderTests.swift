@@ -87,6 +87,17 @@ import VideoToolbox
     #expect(abs(Int(luma) - 20) <= 2)
 }
 
+@Test func sequenceDecoderRecreatesInvalidatedSession() throws {
+    let accessUnits = try encodeH264AnnexB(frames: [(luma: 60, chroma: 128)])
+    let decoder = RDPVideoToolboxSequenceDecoder(codec: .h264)
+    _ = try decoder.decodeDetailed(accessUnits[0])
+
+    VTDecompressionSessionInvalidate(try #require(decoder.session))
+
+    let result = try decoder.decodeDetailed(accessUnits[0])
+    #expect(CVPixelBufferGetWidth(result.imageBuffer) == 64)
+}
+
 private func bitmapFrame(pixels: [UInt8]) -> RDPGraphicsFrameSnapshot {
     RDPGraphicsFrameSnapshot(
         frameID: 1,
