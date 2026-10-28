@@ -75,6 +75,13 @@ import Testing
     #expect(decoded == Data(luma.flatMap { [$0, $0, $0, 0xFF] }))
 }
 
+@Test func decodesNSCodecStreamFromDataSlice() throws {
+    let stream = nsCodecStream(y: Data([100]), co: Data([10]), cg: Data([5]), alpha: Data([0x7F]))
+    let slice = (Data([0xAA]) + stream).dropFirst()
+
+    #expect(try RDPNSCodecDecoder.decode(slice, width: 1, height: 1) == Data([85, 105, 105, 0x7F]))
+}
+
 @Test func rejectsMalformedNSCodecStreams() {
     let malformed = [
         Data(),

@@ -146,6 +146,23 @@ func rlgrDecodesSpecEncoderOutput(algorithm: RDPRemoteFXDecoder.EntropyAlgorithm
     #expect(frame.tiles.allSatisfy { $0.bgraData.prefix(4) == Data([0x80, 0x80, 0x80, 0xFF]) })
 }
 
+@Test func remoteFXDecodersAcceptDataSlices() throws {
+    let progressive = caprogressiveRemoteFXGrayTilesStream(
+        regionWidth: 256,
+        regionHeight: 128,
+        tiles: (0 ..< 8).map { CAPROGRESSIVERemoteFXGrayTile(xIndex: UInt16($0 % 4), yIndex: UInt16($0 / 4)) }
+    )
+    let classic = cavideoRemoteFXGrayTileStream()
+
+    let progressiveSlice = (Data([0xAA, 0xBB]) + progressive).dropFirst(2)
+    let classicSlice = (Data([0xAA, 0xBB]) + classic).dropFirst(2)
+
+    #expect(progressiveSlice.startIndex == 2)
+    #expect(try RDPRemoteFXDecoder().decodeProgressive(progressiveSlice)
+        == RDPRemoteFXDecoder().decodeProgressive(progressive))
+    #expect(try RDPRemoteFXDecoder().decode(classicSlice) == RDPRemoteFXDecoder().decode(classic))
+}
+
 private func differentialLL3(_ values: [Int16]) -> [Int16] {
     var encoded = values
     for index in 4016 ..< 4096 {
