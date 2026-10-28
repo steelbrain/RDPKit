@@ -350,6 +350,29 @@ import Testing
     #expect(coveringPresentation.imageBuffer === coveringBuffer)
 }
 
+/// Only the block a partial update copies is converted from the YUV picture, at the rows
+/// the regions name (Core Image counts rows from the bottom).
+@Test func decodedVideoCompositorCopiesPartialUpdatesFromYUVPictures() throws {
+    let compositor = RDPDecodedVideoSurfaceCompositor()
+    let surfaceRect = RDPFrameRect(left: 0, top: 0, right: 32, bottom: 32)
+    let presentation = try compositor.presentation(
+        for: videoFrame(
+            id: 1,
+            surfaceRect: surfaceRect,
+            destinationRect: RDPFrameRect(left: 0, top: 0, right: 32, bottom: 20),
+            regionRects: [RDPFrameRect(left: 4, top: 4, right: 12, bottom: 10)]
+        ),
+        decodedImageBuffer: try yuvPixelBuffer(width: 32, height: 32, darkRows: 0 ..< 8)
+    )
+
+    #expect(try bgraPixel(atX: 4, y: 4, in: presentation.imageBuffer)[1] < 40)
+    #expect(try bgraPixel(atX: 11, y: 7, in: presentation.imageBuffer)[1] < 40)
+    #expect(try bgraPixel(atX: 4, y: 8, in: presentation.imageBuffer)[1] > 215)
+    #expect(try bgraPixel(atX: 11, y: 9, in: presentation.imageBuffer)[1] > 215)
+    #expect(try bgraPixel(atX: 3, y: 8, in: presentation.imageBuffer) == [0, 0, 0, 0])
+    #expect(try bgraPixel(atX: 4, y: 10, in: presentation.imageBuffer) == [0, 0, 0, 0])
+}
+
 @Test func decodedVideoCompositorClearsStaleSurfaceOnFullResyncFrame() throws {
     let compositor = RDPDecodedVideoSurfaceCompositor()
     _ = try compositor.presentation(
@@ -648,6 +671,42 @@ private func bgraPixelBuffer(width: Int, height: Int, pixel: [UInt8]) throws -> 
             rowBase[offset + 2] = pixel[2]
             rowBase[offset + 3] = pixel[3]
         }
+    }
+    return pixelBuffer
+}
+
+/// A full-range 4:2:0 picture, black in `darkRows` and white elsewhere.
+private func yuvPixelBuffer(width: Int, height: Int, darkRows: Range<Int>) throws -> CVPixelBuffer {
+    var pixelBuffer: CVPixelBuffer?
+    let status = CVPixelBufferCreate(
+        kCFAllocatorDefault,
+        width,
+        height,
+        kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
+        [kCVPixelBufferIOSurfacePropertiesKey: [:]] as CFDictionary,
+        &pixelBuffer
+    )
+    guard status == kCVReturnSuccess, let pixelBuffer else {
+        throw PixelBufferTestError.createFailed(status)
+    }
+    CVPixelBufferLockBaseAddress(pixelBuffer, [])
+    defer {
+        CVPixelBufferUnlockBaseAddress(pixelBuffer, [])
+    }
+    guard let luma = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 0),
+          let chroma = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 1)
+    else {
+        throw PixelBufferTestError.missingBaseAddress
+    }
+    for row in 0 ..< height {
+        memset(
+            luma.advanced(by: row * CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 0)),
+            darkRows.contains(row) ? 0 : 255,
+            width
+        )
+    }
+    for row in 0 ..< height / 2 {
+        memset(chroma.advanced(by: row * CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 1)), 128, width)
     }
     return pixelBuffer
 }

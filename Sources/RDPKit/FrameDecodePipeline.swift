@@ -130,6 +130,7 @@ final class RDPDecodedVideoSurfaceCompositor {
     private var surfacesWithBitmapContent = Set<UInt16>()
     private var graphicsOutput: Surface?
     private let imageConverter = RDPDecodedImageBufferConverter()
+    private let pixelBufferPool = RDPBGRAPixelBufferPool()
 
     func presentation(
         for frame: RDPGraphicsFrameSnapshot,
@@ -210,36 +211,34 @@ final class RDPDecodedVideoSurfaceCompositor {
         }
 
         try materializeDirectSurface(surfaceID: frame.surfaceID)
-        var surface = surface(for: frame.surfaceID, width: surfaceWidth, height: surfaceHeight)
-        let source = try imageConverter.bgraData(from: decodedImageBuffer)
         let copyRegions = videoCopyRegions(
             updateRect: updateRect,
             regionRects: frame.regionRects + frame.auxiliaryRegionRects,
-            sourceWidth: source.width,
-            sourceHeight: source.height,
-            surfaceWidth: surface.width,
-            surfaceHeight: surface.height
+            sourceWidth: CVPixelBufferGetWidth(decodedImageBuffer),
+            sourceHeight: CVPixelBufferGetHeight(decodedImageBuffer),
+            surfaceWidth: max(surfaceWidth, surfaces[frame.surfaceID]?.width ?? 0),
+            surfaceHeight: max(surfaceHeight, surfaces[frame.surfaceID]?.height ?? 0)
         )
-        guard copyRegions.isEmpty == false else {
-            return try presentation(from: frame, surface: surface, surfaceRect: surfaceRect)
-        }
-
-        for region in copyRegions {
-            copy(
-                source: source.data,
-                sourceBytesPerRow: source.bytesPerRow,
-                destination: &surface.data,
-                destinationBytesPerRow: surface.bytesPerRow,
-                sourceX: region.sourceX,
-                sourceY: region.sourceY,
-                destinationX: region.destinationX,
-                destinationY: region.destinationY,
-                width: region.width,
-                height: region.height
-            )
+        // Only the part of the picture the regions copy is converted.
+        let source = try copyRegions.sourceBounds.map { try imageConverter.bgraData(from: decodedImageBuffer, in: $0) }
+        var surface = takeSurface(for: frame.surfaceID, width: surfaceWidth, height: surfaceHeight)
+        if let source {
+            for region in copyRegions {
+                copy(
+                    source: source.data,
+                    sourceBytesPerRow: source.bytesPerRow,
+                    destination: &surface.data,
+                    destinationBytesPerRow: surface.bytesPerRow,
+                    sourceX: region.sourceX - source.x,
+                    sourceY: region.sourceY - source.y,
+                    destinationX: region.destinationX,
+                    destinationY: region.destinationY,
+                    width: region.width,
+                    height: region.height
+                )
+            }
         }
         surfaces[frame.surfaceID] = surface
-
         return try presentation(from: frame, surface: surface, surfaceRect: surfaceRect)
     }
 
@@ -292,9 +291,7 @@ final class RDPDecodedVideoSurfaceCompositor {
             surfaces[surfaceID] = bitmap
             return bitmap
         }
-        var surface = surface(for: surfaceID, width: bitmap.width, height: bitmap.height)
-        // Leaves `surface` the only owner of its pixels, so the copies below need no full copy.
-        surfaces[surfaceID] = nil
+        var surface = takeSurface(for: surfaceID, width: bitmap.width, height: bitmap.height)
         for region in regionRects {
             let left = max(Int(region.left) - Int(surfaceRect.left), 0)
             let top = max(Int(region.top) - Int(surfaceRect.top), 0)
@@ -378,7 +375,7 @@ final class RDPDecodedVideoSurfaceCompositor {
             return
         }
         let source = try imageConverter.bgraData(from: directSurface.imageBuffer)
-        var surface = surface(
+        var surface = takeSurface(
             for: surfaceID,
             width: directSurface.width,
             height: directSurface.height
@@ -413,16 +410,19 @@ final class RDPDecodedVideoSurfaceCompositor {
         graphicsOutput = surfaces[entry.key]
     }
 
-    private func surface(for surfaceID: UInt16, width: Int, height: Int) -> Surface {
-        if let existing = surfaces[surfaceID],
+    /// The surface, grown to at least `width` x `height`, taken out of `surfaces`: the caller
+    /// owns its pixels and stores it back, so writing to them copies none of the rest.
+    private func takeSurface(for surfaceID: UInt16, width: Int, height: Int) -> Surface {
+        let existing = surfaces.removeValue(forKey: surfaceID)
+        if let existing,
            existing.width >= width,
            existing.height >= height
         {
             return existing
         }
 
-        let nextWidth = max(width, surfaces[surfaceID]?.width ?? 0)
-        let nextHeight = max(height, surfaces[surfaceID]?.height ?? 0)
+        let nextWidth = max(width, existing?.width ?? 0)
+        let nextHeight = max(height, existing?.height ?? 0)
         let bytesPerRow = nextWidth * 4
         var surface = Surface(
             width: nextWidth,
@@ -431,7 +431,7 @@ final class RDPDecodedVideoSurfaceCompositor {
             data: Data(repeating: 0, count: bytesPerRow * nextHeight)
         )
 
-        if let existing = surfaces[surfaceID] {
+        if let existing {
             copy(
                 source: existing.data,
                 sourceBytesPerRow: existing.bytesPerRow,
@@ -445,7 +445,6 @@ final class RDPDecodedVideoSurfaceCompositor {
                 height: existing.height
             )
         }
-        surfaces[surfaceID] = surface
         return surface
     }
 
@@ -476,9 +475,7 @@ final class RDPDecodedVideoSurfaceCompositor {
             destinationRect: destinationRect,
             regionRects: regionRects.isEmpty ? [destinationRect] : regionRects,
             encodedVideoData: Data(),
-            contentKind: .bitmap,
-            decodedBitmapData: displayedSurface.data,
-            decodedBitmapBytesPerRow: displayedSurface.bytesPerRow
+            contentKind: .bitmap
         )
     }
 
@@ -513,18 +510,7 @@ final class RDPDecodedVideoSurfaceCompositor {
             throw RDPBitmapFrameDecodeError.invalidBitmapLayout
         }
 
-        var output = graphicsOutput
-        if output?.width != outputWidth || output?.height != outputHeight {
-            output = Surface(
-                width: outputWidth,
-                height: outputHeight,
-                bytesPerRow: outputWidth * 4,
-                data: Data(repeating: 0, count: outputWidth * outputHeight * 4)
-            )
-        }
-        guard var output else {
-            throw RDPBitmapFrameDecodeError.invalidBitmapLayout
-        }
+        var output = takeGraphicsOutput(width: outputWidth, height: outputHeight)
         blit(displayedSurface, destinationRect: frame.destinationRect, to: &output)
         graphicsOutput = output
 
@@ -541,14 +527,26 @@ final class RDPDecodedVideoSurfaceCompositor {
             destinationRect: outputRect,
             regionRects: regionRects.isEmpty ? [outputRect] : regionRects,
             encodedVideoData: Data(),
-            contentKind: .bitmap,
-            decodedBitmapData: output.data,
-            decodedBitmapBytesPerRow: output.bytesPerRow
+            contentKind: .bitmap
         )
+        // The pixels go out only in the image buffer: a frame holding the output's
+        // pixels too would make the next blit copy all of them first.
         return RDPDecodedFramePresentation(
             frame: outputFrame,
             imageBuffer: try makePixelBuffer(surface: output)
         )
+    }
+
+    /// The graphics output, taken like a surface so the blit writes in place; a new, black
+    /// one when its size changed.
+    private func takeGraphicsOutput(width: Int, height: Int) -> Surface {
+        defer {
+            graphicsOutput = nil
+        }
+        if let graphicsOutput, graphicsOutput.width == width, graphicsOutput.height == height {
+            return graphicsOutput
+        }
+        return Surface(width: width, height: height, bytesPerRow: width * 4, data: Data(count: width * height * 4))
     }
 
     private func bitmapSurface(from frame: RDPGraphicsFrameSnapshot) -> Surface? {
@@ -632,7 +630,8 @@ final class RDPDecodedVideoSurfaceCompositor {
             width: surface.width,
             height: surface.height,
             copying: surface.data,
-            bytesPerRow: surface.bytesPerRow
+            bytesPerRow: surface.bytesPerRow,
+            pool: pixelBufferPool
         )
     }
 }
@@ -644,6 +643,18 @@ private struct RDPVideoCopyRegion {
     var destinationY: Int
     var width: Int
     var height: Int
+}
+
+private extension [RDPVideoCopyRegion] {
+    /// The smallest block of the decoded picture holding every region's source.
+    var sourceBounds: CGRect? {
+        guard let first else {
+            return nil
+        }
+        return dropFirst().reduce(CGRect(x: first.sourceX, y: first.sourceY, width: first.width, height: first.height)) {
+            $0.union(CGRect(x: $1.sourceX, y: $1.sourceY, width: $1.width, height: $1.height))
+        }
+    }
 }
 
 private func inferredSurfaceRect(from updateRect: RDPFrameRect) -> RDPFrameRect {
@@ -813,7 +824,10 @@ private func clippedOutputRect(_ rect: RDPFrameRect, outputRect: RDPFrameRect) -
     return RDPFrameRect(left: left, top: top, right: right, bottom: bottom)
 }
 
+/// Converted pixels of a decoded picture's `width` x `height` block at (`x`, `y`).
 private struct RDPDecodedBGRAImage {
+    var x: Int
+    var y: Int
     var width: Int
     var height: Int
     var bytesPerRow: Int
@@ -822,37 +836,49 @@ private struct RDPDecodedBGRAImage {
 
 private final class RDPDecodedImageBufferConverter {
     private let ciContext = CIContext()
+    /// Reused between pictures; allocating a frame's worth of pixels costs more than filling them.
+    private var pixels = Data()
 
-    func bgraData(from imageBuffer: CVImageBuffer) throws -> RDPDecodedBGRAImage {
-        let width = CVPixelBufferGetWidth(imageBuffer)
-        let height = CVPixelBufferGetHeight(imageBuffer)
-        guard width > 0, height > 0 else {
+    /// The pixels of `imageBuffer` inside `bounds` (top-left origin, the whole picture by
+    /// default) as packed BGRA rows. They are valid until the next call.
+    func bgraData(from imageBuffer: CVImageBuffer, in bounds: CGRect? = nil) throws -> RDPDecodedBGRAImage {
+        let pictureWidth = CVPixelBufferGetWidth(imageBuffer)
+        let pictureHeight = CVPixelBufferGetHeight(imageBuffer)
+        let bounds = bounds ?? CGRect(x: 0, y: 0, width: pictureWidth, height: pictureHeight)
+        let x = Int(bounds.minX)
+        let y = Int(bounds.minY)
+        let width = Int(bounds.width)
+        let height = Int(bounds.height)
+        guard width > 0, height > 0, x >= 0, y >= 0, x + width <= pictureWidth, y + height <= pictureHeight else {
             throw RDPBitmapFrameDecodeError.invalidBitmapLayout
+        }
+        let bytesPerRow = width * 4
+        if pixels.count < bytesPerRow * height {
+            pixels = Data(count: bytesPerRow * height)
         }
 
         if CVPixelBufferGetPixelFormatType(imageBuffer) == kCVPixelFormatType_32BGRA {
-            return try copyBGRAData(from: imageBuffer, width: width, height: height)
-        }
-
-        let bytesPerRow = width * 4
-        var data = Data(repeating: 0, count: bytesPerRow * height)
-        data.withUnsafeMutableBytes { buffer in
-            guard let baseAddress = buffer.baseAddress else {
-                return
+            try copyBGRARows(from: imageBuffer, x: x, y: y, width: width, height: height)
+        } else {
+            pixels.withUnsafeMutableBytes { buffer in
+                guard let baseAddress = buffer.baseAddress else {
+                    return
+                }
+                // Core Image puts the origin at the bottom left.
+                ciContext.render(
+                    CIImage(cvImageBuffer: imageBuffer),
+                    toBitmap: baseAddress,
+                    rowBytes: bytesPerRow,
+                    bounds: CGRect(x: x, y: pictureHeight - y - height, width: width, height: height),
+                    format: .BGRA8,
+                    colorSpace: CGColorSpaceCreateDeviceRGB()
+                )
             }
-            ciContext.render(
-                CIImage(cvImageBuffer: imageBuffer),
-                toBitmap: baseAddress,
-                rowBytes: bytesPerRow,
-                bounds: CGRect(x: 0, y: 0, width: width, height: height),
-                format: .BGRA8,
-                colorSpace: CGColorSpaceCreateDeviceRGB()
-            )
         }
-        return RDPDecodedBGRAImage(width: width, height: height, bytesPerRow: bytesPerRow, data: data)
+        return RDPDecodedBGRAImage(x: x, y: y, width: width, height: height, bytesPerRow: bytesPerRow, data: pixels)
     }
 
-    private func copyBGRAData(from imageBuffer: CVImageBuffer, width: Int, height: Int) throws -> RDPDecodedBGRAImage {
+    private func copyBGRARows(from imageBuffer: CVImageBuffer, x: Int, y: Int, width: Int, height: Int) throws {
         CVPixelBufferLockBaseAddress(imageBuffer, .readOnly)
         defer {
             CVPixelBufferUnlockBaseAddress(imageBuffer, .readOnly)
@@ -860,23 +886,19 @@ private final class RDPDecodedImageBufferConverter {
         guard let source = CVPixelBufferGetBaseAddress(imageBuffer) else {
             throw RDPBitmapFrameDecodeError.missingBaseAddress
         }
-
         let sourceBytesPerRow = CVPixelBufferGetBytesPerRow(imageBuffer)
-        let bytesPerRow = width * 4
-        var data = Data(repeating: 0, count: bytesPerRow * height)
-        data.withUnsafeMutableBytes { buffer in
+        pixels.withUnsafeMutableBytes { buffer in
             guard let destination = buffer.baseAddress else {
                 return
             }
             for row in 0 ..< height {
                 memcpy(
-                    destination.advanced(by: row * bytesPerRow),
-                    source.advanced(by: row * sourceBytesPerRow),
-                    bytesPerRow
+                    destination.advanced(by: row * width * 4),
+                    source.advanced(by: (y + row) * sourceBytesPerRow + x * 4),
+                    width * 4
                 )
             }
         }
-        return RDPDecodedBGRAImage(width: width, height: height, bytesPerRow: bytesPerRow, data: data)
     }
 }
 

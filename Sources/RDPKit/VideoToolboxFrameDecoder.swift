@@ -162,22 +162,28 @@ private final class RDPBitmapFrameDecoder {
 }
 
 /// Creates an IOSurface-backed, Metal-compatible BGRA pixel buffer, optionally filled with
-/// `height` rows of `width * 4` bytes read from `source` at `bytesPerRow` stride.
+/// `height` rows of `width * 4` bytes read from `source` at `bytesPerRow` stride. A `pool`
+/// reuses buffers its earlier ones were released into.
 func rdpMakeBGRAPixelBuffer(
     width: Int,
     height: Int,
     copying source: Data? = nil,
-    bytesPerRow: Int = 0
+    bytesPerRow: Int = 0,
+    pool: RDPBGRAPixelBufferPool? = nil
 ) throws -> CVPixelBuffer {
     var pixelBuffer: CVPixelBuffer?
-    let status = CVPixelBufferCreate(
-        kCFAllocatorDefault,
-        width,
-        height,
-        kCVPixelFormatType_32BGRA,
-        rdpVideoPixelBufferAttributes() as CFDictionary,
-        &pixelBuffer
-    )
+    let status = if let pool {
+        try CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool.pool(width: width, height: height), &pixelBuffer)
+    } else {
+        CVPixelBufferCreate(
+            kCFAllocatorDefault,
+            width,
+            height,
+            kCVPixelFormatType_32BGRA,
+            rdpVideoPixelBufferAttributes() as CFDictionary,
+            &pixelBuffer
+        )
+    }
     guard status == kCVReturnSuccess, let pixelBuffer else {
         throw RDPBitmapFrameDecodeError.coreVideo(operation: "create BGRA pixel buffer", status: status)
     }
@@ -206,6 +212,32 @@ func rdpMakeBGRAPixelBuffer(
         }
     }
     return pixelBuffer
+}
+
+/// BGRA pixel buffers of the size last asked for. Creating an IOSurface for every frame
+/// costs several times more than filling one; a pool hands back released buffers.
+final class RDPBGRAPixelBufferPool {
+    private var pool: CVPixelBufferPool?
+    private var width = 0
+    private var height = 0
+
+    fileprivate func pool(width: Int, height: Int) throws -> CVPixelBufferPool {
+        if let pool, width == self.width, height == self.height {
+            return pool
+        }
+        var attributes = rdpVideoPixelBufferAttributes(pixelFormat: kCVPixelFormatType_32BGRA)
+        attributes[kCVPixelBufferWidthKey] = width
+        attributes[kCVPixelBufferHeightKey] = height
+        var pool: CVPixelBufferPool?
+        let status = CVPixelBufferPoolCreate(kCFAllocatorDefault, nil, attributes as CFDictionary, &pool)
+        guard status == kCVReturnSuccess, let pool else {
+            throw RDPBitmapFrameDecodeError.coreVideo(operation: "create BGRA pixel buffer pool", status: status)
+        }
+        self.pool = pool
+        self.width = width
+        self.height = height
+        return pool
+    }
 }
 
 func rdpVideoPixelBufferAttributes(pixelFormat: OSType? = nil) -> [CFString: Any] {
