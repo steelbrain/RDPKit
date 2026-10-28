@@ -99,6 +99,16 @@ import Testing
     #expect(core.littleEndianUInt16(at: 54) == 0)
 }
 
+@Test func clientCoreDataDoesNotSplitSurrogatePairWhenTruncatingClientName() {
+    let pdu = MCSConnectInitialPDU(configuration: MCSConnectInitialConfiguration(
+        clientName: "ABCDEFGHIJKLMN\u{1F600}"
+    ))
+    let core = pdu.encodedClientCoreData()
+
+    #expect(core.littleEndianUInt16(at: 50) == 0x004E)
+    #expect(core.littleEndianUInt16(at: 52) == 0)
+}
+
 @Test func clientCoreDataAdvertisesDynamicGraphicsOnlyWithDrdynvcChannel() {
     let defaultCore = MCSConnectInitialPDU().encodedClientCoreData()
     let clipboardOnlyCore = MCSConnectInitialPDU(configuration: MCSConnectInitialConfiguration(

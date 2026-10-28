@@ -365,28 +365,23 @@ private func berBoolean(_ value: Bool) -> Data {
 }
 
 private func fixedASCII(_ string: String, byteCount: Int) -> Data {
-    let bytes = Array(string.utf8)
+    let bytes = Data(string.utf8)
     precondition(bytes.count <= byteCount)
-    precondition(bytes.allSatisfy { $0 < 0x80 })
-
-    var data = Data(bytes)
-    while data.count < byteCount {
-        data.appendUInt8(0)
-    }
-    return data
+    return bytes + Data(count: byteCount - bytes.count)
 }
 
+/// Null-terminated UTF-16LE in a fixed field, truncated (never mid surrogate pair) to fit.
 private func fixedUTF16LE(_ string: String, codeUnitCount: Int) -> Data {
-    precondition(codeUnitCount > 0)
+    var codeUnits = Array(string.utf16.prefix(codeUnitCount - 1))
+    if let last = codeUnits.last, UTF16.isLeadSurrogate(last) {
+        codeUnits.removeLast()
+    }
 
     var data = Data()
-    for codeUnit in string.utf16.prefix(codeUnitCount - 1) {
+    for codeUnit in codeUnits {
         data.appendLittleEndianUInt16(codeUnit)
     }
-    while data.count < codeUnitCount * 2 {
-        data.appendUInt8(0)
-    }
-    return data
+    return data + Data(count: codeUnitCount * 2 - data.count)
 }
 
 private extension Data {

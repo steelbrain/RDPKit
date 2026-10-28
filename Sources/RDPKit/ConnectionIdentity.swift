@@ -10,7 +10,7 @@ public enum RDPConnectionValidationError: Error, Equatable, CustomStringConverti
         case .missingHost:
             "Host is required."
         case .invalidPort:
-            "Port must be between 0 and 65535."
+            "Port must be between 1 and 65535."
         case .invalidDesktopSize:
             "Display size must be between 640x480 and 8192x8192."
         }
@@ -25,6 +25,9 @@ public struct RDPConnectionTarget: Equatable, Hashable, Sendable {
         let trimmedHost = host.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmedHost.isEmpty == false else {
             throw RDPConnectionValidationError.missingHost
+        }
+        guard port != 0 else {
+            throw RDPConnectionValidationError.invalidPort
         }
 
         self.host = trimmedHost

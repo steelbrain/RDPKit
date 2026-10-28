@@ -95,6 +95,12 @@ import Testing
             _ = try RDPConnectionTarget(host: "server.local", portText: "99999")
         }
     )
+    #expect(
+        throws: RDPConnectionValidationError.invalidPort,
+        performing: {
+            _ = try RDPConnectionTarget(host: "server.local", portText: "0")
+        }
+    )
 }
 
 @Test func desktopSizeValidatesProtocolRange() throws {
