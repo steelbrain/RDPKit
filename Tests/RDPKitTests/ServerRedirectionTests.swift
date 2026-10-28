@@ -357,6 +357,24 @@ import Testing
     }
 }
 
+@Test func doesNotUseLoadBalanceInfoThatCannotFitInConnectionRequest() throws {
+    // A longer token used to trip the X.224 length precondition when reconnecting.
+    let fitting = Data(repeating: 0x41, count: 238) + Data("\r\n".utf8)
+    let oversized = Data(repeating: 0x41, count: 239) + Data("\r\n".utf8)
+
+    for (cookie, expected) in [(fitting, fitting), (oversized, nil)] {
+        let pdu = try #require(try RDPServerRedirectionPDU.parseIfPresent(fromTPKT: redirectionIndication(
+            flags: RDPServerRedirectionPDU.Flags.loadBalanceInfo.rawValue,
+            fields: lengthPrefixed(cookie)
+        )))
+        #expect(pdu.loadBalanceInfo == cookie)
+        #expect(pdu.routingToken == expected)
+    }
+    let packet = X224ConnectionRequest(routingToken: fitting).encodedTPKT()
+    #expect(packet.count == 4 + 255)
+    #expect(packet[4] == 254)
+}
+
 @Test func ignoresNonRedirectionShareControlPacket() throws {
     var userData = Data()
     userData.appendLittleEndianUInt16(6)

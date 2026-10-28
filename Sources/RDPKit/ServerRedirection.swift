@@ -37,13 +37,18 @@ struct RDPServerRedirectionPDU: Equatable, Sendable {
     var encryptedPassword: Data?
     var targetFQDN: String?
     var targetNetBIOSName: String?
-    var targetNetAddresses: [String]
+    var targetNetAddresses: [String] = []
     var tsvURL: String?
     var redirectionGuid: Data?
     var targetCertificate: Data?
 
+    /// LoadBalanceInfo is replayed as the X.224 routing token only when no
+    /// TargetNetAddress is given, and only if it fits in the Connection Request.
     var routingToken: Data? {
-        guard !flags.contains(.targetNetAddress) else {
+        guard !flags.contains(.targetNetAddress),
+              let loadBalanceInfo,
+              X224ConnectionRequest.canCarry(routingToken: loadBalanceInfo)
+        else {
             return nil
         }
         return loadBalanceInfo
