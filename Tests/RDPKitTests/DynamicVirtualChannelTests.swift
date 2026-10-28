@@ -112,7 +112,7 @@ import Testing
     #expect(contexts[8] != nil)
 }
 
-@Test func detectsDynamicVirtualChannelSoftSyncPDUs() throws {
+@Test func detectsDynamicVirtualChannelSoftSyncRequest() throws {
     let request = try #require(try RDPDynamicVirtualChannelSoftSyncPDU.parseIfPresent(
         from: Data([
             0x80, 0x00,
@@ -121,27 +121,7 @@ import Testing
             0x00, 0x00,
         ])
     ))
-    let response = try #require(try RDPDynamicVirtualChannelSoftSyncPDU.parseIfPresent(
-        from: Data([
-            0x90, 0x00,
-            0x00, 0x00, 0x00, 0x00,
-        ])
-    ))
-
-    #expect(request.command == .softSyncRequest)
-    #expect(request.typeName == "dynvc-soft-sync-request")
-    #expect(request.flags == 0x0001)
-    #expect(request.channelLists.isEmpty)
-    #expect(request.tunnelsToSwitch.isEmpty)
-    #expect(response.command == .softSyncResponse)
-    #expect(response.typeName == "dynvc-soft-sync-response")
-    #expect(response.flags == nil)
-    #expect(response.channelLists.isEmpty)
-    #expect(response.tunnelsToSwitch.isEmpty)
-}
-
-@Test func parsesDynamicVirtualChannelSoftSyncChannelListsAndResponseTunnels() throws {
-    let request = try #require(try RDPDynamicVirtualChannelSoftSyncPDU.parseIfPresent(
+    let requestWithChannelList = try RDPDynamicVirtualChannelSoftSyncPDU.parseIfPresent(
         from: Data([
             0x80, 0x00,
             0x16, 0x00, 0x00, 0x00,
@@ -152,139 +132,23 @@ import Testing
             0x07, 0x00, 0x00, 0x00,
             0x08, 0x00, 0x00, 0x00,
         ])
-    ))
-    let response = try #require(try RDPDynamicVirtualChannelSoftSyncPDU.parseIfPresent(
-        from: Data([
-            0x90, 0x00,
-            0x02, 0x00, 0x00, 0x00,
-            0x01, 0x00, 0x00, 0x00,
-            0x03, 0x00, 0x00, 0x00,
-        ])
-    ))
+    )
 
-    #expect(request.flags == 0x0003)
-    #expect(request.channelLists == [
-        RDPDynamicVirtualChannelSoftSyncChannelList(
-            tunnelType: 1,
-            channelIDs: [7, 8]
-        ),
-    ])
-    #expect(response.tunnelsToSwitch == [1, 3])
+    #expect(request.typeName == "dynvc-soft-sync-request")
+    #expect(requestWithChannelList != nil)
+    #expect(try RDPDynamicVirtualChannelSoftSyncPDU.parseIfPresent(
+        from: Data([0x90, 0x00, 0x00, 0x00, 0x00, 0x00])
+    ) == nil)
 }
 
-@Test func rejectsInvalidDynamicVirtualChannelSoftSyncPDU() {
-    #expect(throws: RDPDecodeError.invalidDynamicVirtualChannelPDU) {
-        try RDPDynamicVirtualChannelSoftSyncPDU.parseIfPresent(
-            from: Data([
-                0x84, 0x00,
-                0x08, 0x00, 0x00, 0x00,
-                0x01, 0x00,
-                0x00, 0x00,
-            ])
-        )
-    }
-    #expect(throws: RDPDecodeError.invalidDynamicVirtualChannelPDU) {
-        try RDPDynamicVirtualChannelSoftSyncPDU.parseIfPresent(
-            from: Data([
-                0x80, 0x00,
-                0x08, 0x00, 0x00, 0x00,
-                0x00, 0x00,
-                0x00, 0x00,
-            ])
-        )
-    }
-    #expect(throws: RDPDecodeError.invalidDynamicVirtualChannelPDU) {
-        try RDPDynamicVirtualChannelSoftSyncPDU.parseIfPresent(
-            from: Data([
-                0x80, 0x00,
-                0x08, 0x00, 0x00, 0x00,
-                0x03, 0x00,
-                0x00, 0x00,
-            ])
-        )
-    }
-    #expect(throws: RDPDecodeError.invalidDynamicVirtualChannelPDU) {
-        try RDPDynamicVirtualChannelSoftSyncPDU.parseIfPresent(
-            from: Data([
-                0x80, 0x00,
-                0x08, 0x00, 0x00, 0x00,
-                0x01, 0x00,
-                0x01, 0x00,
-            ])
-        )
-    }
+@Test func rejectsDynamicVirtualChannelSoftSyncRequestWithWrongLength() {
     #expect(throws: RDPDecodeError.invalidDynamicVirtualChannelPDU) {
         try RDPDynamicVirtualChannelSoftSyncPDU.parseIfPresent(
             from: Data([
                 0x80, 0x00,
                 0x0e, 0x00, 0x00, 0x00,
-                0x03, 0x00,
                 0x01, 0x00,
-                0x01, 0x00, 0x00, 0x00,
-                0x01, 0x00,
-            ])
-        )
-    }
-    #expect(throws: RDPDecodeError.invalidDynamicVirtualChannelPDU) {
-        try RDPDynamicVirtualChannelSoftSyncPDU.parseIfPresent(
-            from: Data([
-                0x80, 0x00,
-                0x08, 0x00, 0x00, 0x00,
-                0x05, 0x00,
                 0x00, 0x00,
-            ])
-        )
-    }
-    #expect(throws: RDPDecodeError.invalidDynamicVirtualChannelPDU) {
-        try RDPDynamicVirtualChannelSoftSyncPDU.parseIfPresent(
-            from: Data([
-                0x80, 0x00,
-                0x0e, 0x00, 0x00, 0x00,
-                0x03, 0x00,
-                0x01, 0x00,
-                0x02, 0x00, 0x00, 0x00,
-                0x00, 0x00,
-            ])
-        )
-    }
-    #expect(throws: RDPDecodeError.invalidDynamicVirtualChannelPDU) {
-        try RDPDynamicVirtualChannelSoftSyncPDU.parseIfPresent(
-            from: Data([
-                0x80, 0x00,
-                0x1c, 0x00, 0x00, 0x00,
-                0x03, 0x00,
-                0x02, 0x00,
-                0x01, 0x00, 0x00, 0x00,
-                0x01, 0x00,
-                0x07, 0x00, 0x00, 0x00,
-                0x01, 0x00, 0x00, 0x00,
-                0x01, 0x00,
-                0x08, 0x00, 0x00, 0x00,
-            ])
-        )
-    }
-    #expect(throws: RDPDecodeError.invalidDynamicVirtualChannelPDU) {
-        try RDPDynamicVirtualChannelSoftSyncPDU.parseIfPresent(
-            from: Data([
-                0x80, 0x00,
-                0x1c, 0x00, 0x00, 0x00,
-                0x03, 0x00,
-                0x02, 0x00,
-                0x01, 0x00, 0x00, 0x00,
-                0x01, 0x00,
-                0x07, 0x00, 0x00, 0x00,
-                0x03, 0x00, 0x00, 0x00,
-                0x01, 0x00,
-                0x07, 0x00, 0x00, 0x00,
-            ])
-        )
-    }
-    #expect(throws: RDPDecodeError.invalidDynamicVirtualChannelPDU) {
-        try RDPDynamicVirtualChannelSoftSyncPDU.parseIfPresent(
-            from: Data([
-                0x90, 0x00,
-                0x01, 0x00, 0x00, 0x00,
-                0x02, 0x00, 0x00, 0x00,
             ])
         )
     }
@@ -466,7 +330,7 @@ import Testing
     ))
 
     #expect(pdu.protocolVersion == .version300)
-    #expect(pdu.supportedFeatures == RDPInputServerReadyFeatures.multipenInjectionSupported)
+    #expect(pdu.supportedFeatures == 0x0000_0001)
 }
 
 @Test func parsesRDPInputServerReadyPDUWithoutOptionalVersionThreeFeatures() throws {
@@ -503,16 +367,6 @@ import Testing
             ])
         )
     }
-    #expect(throws: RDPDecodeError.invalidDynamicVirtualChannelPDU) {
-        try RDPInputServerReadyPDU.parseIfPresent(
-            from: Data([
-                0x01, 0x00,
-                0x0e, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x03, 0x00,
-                0x02, 0x00, 0x00, 0x00,
-            ])
-        )
-    }
 }
 
 @Test func encodesRDPInputClientReadyPDU() {
@@ -533,19 +387,6 @@ import Testing
 
     #expect(RDPInputClientReadyPDU(serverReady: serverReady).encoded().rdpHexString == (
         "02 00 10 00 00 00 00 00 00 00 00 00 03 00 00 00"
-    ))
-}
-
-@Test func encodesRDPInputClientReadyPDUWithFlagsAndMaxTouchContacts() {
-    let flags = RDPInputClientReadyFlags.showTouchVisuals
-        | RDPInputClientReadyFlags.disableTimestampInjection
-        | RDPInputClientReadyFlags.enableMultipenInjection
-    #expect(RDPInputClientReadyPDU(
-        flags: flags,
-        protocolVersion: .version300,
-        maxTouchContacts: 10
-    ).encoded().rdpHexString == (
-        "02 00 10 00 00 00 07 00 00 00 00 00 03 00 0a 00"
     ))
 }
 

@@ -281,17 +281,6 @@ enum RDPInputEventID {
     static let resumeInput: UInt16 = 0x0005
 }
 
-enum RDPInputClientReadyFlags {
-    static let showTouchVisuals: UInt32 = 0x0000_0001
-    static let disableTimestampInjection: UInt32 = 0x0000_0002
-    static let enableMultipenInjection: UInt32 = 0x0000_0004
-}
-
-enum RDPInputServerReadyFeatures {
-    static let multipenInjectionSupported: UInt32 = 0x0000_0001
-    static let supportedMask: UInt32 = multipenInjectionSupported
-}
-
 struct RDPInputServerReadyPDU: Equatable, Sendable {
     var protocolVersion: RDPInputProtocolVersion
     var supportedFeatures: UInt32?
@@ -326,11 +315,7 @@ struct RDPInputServerReadyPDU: Equatable, Sendable {
             guard protocolVersion == .version300 else {
                 throw RDPDecodeError.invalidDynamicVirtualChannelPDU
             }
-            let featureFlags = try cursor.readLittleEndianUInt32()
-            guard featureFlags & ~RDPInputServerReadyFeatures.supportedMask == 0 else {
-                throw RDPDecodeError.invalidDynamicVirtualChannelPDU
-            }
-            supportedFeatures = featureFlags
+            supportedFeatures = try cursor.readLittleEndianUInt32()
         } else {
             supportedFeatures = nil
         }
@@ -344,85 +329,53 @@ struct RDPInputServerReadyPDU: Equatable, Sendable {
 
 struct RDPInputSuspendPDU: Equatable, Sendable {
     static func parseIfPresent(from data: Data) throws -> RDPInputSuspendPDU? {
-        guard try parseHeaderOnlyInputPDU(data, eventID: RDPInputEventID.suspendInput) != nil else {
-            return nil
-        }
-        return RDPInputSuspendPDU()
+        try isHeaderOnlyInputPDU(data, eventID: RDPInputEventID.suspendInput) ? RDPInputSuspendPDU() : nil
     }
 }
 
 struct RDPInputResumePDU: Equatable, Sendable {
     static func parseIfPresent(from data: Data) throws -> RDPInputResumePDU? {
-        guard try parseHeaderOnlyInputPDU(data, eventID: RDPInputEventID.resumeInput) != nil else {
-            return nil
-        }
-        return RDPInputResumePDU()
+        try isHeaderOnlyInputPDU(data, eventID: RDPInputEventID.resumeInput) ? RDPInputResumePDU() : nil
     }
 }
 
+/// RDPINPUT_CS_READY_PDU ([MS-RDPEI] 2.2.3.2). The client injects no touch or
+/// pen input, so flags and maxTouchContacts are always zero.
 struct RDPInputClientReadyPDU: Equatable, Sendable {
-    var flags: UInt32
     var protocolVersion: RDPInputProtocolVersion
-    var maxTouchContacts: UInt16
 
-    init(
-        flags: UInt32 = 0,
-        protocolVersion: RDPInputProtocolVersion = .version100,
-        maxTouchContacts: UInt16 = 0
-    ) {
-        self.flags = flags
+    init(protocolVersion: RDPInputProtocolVersion = .version100) {
         self.protocolVersion = protocolVersion
-        self.maxTouchContacts = maxTouchContacts
     }
 
-    init(serverReady: RDPInputServerReadyPDU, maxTouchContacts: UInt16 = 0) {
-        self.init(
-            protocolVersion: RDPInputClientReadyPDU.clientProtocolVersion(for: serverReady.protocolVersion),
-            maxTouchContacts: maxTouchContacts
-        )
+    init(serverReady: RDPInputServerReadyPDU) {
+        protocolVersion = serverReady.protocolVersion
     }
 
     func encoded() -> Data {
         var data = Data()
         data.appendLittleEndianUInt16(RDPInputEventID.clientReady)
         data.appendLittleEndianUInt32(16)
-        data.appendLittleEndianUInt32(flags)
+        data.appendLittleEndianUInt32(0)
         data.appendLittleEndianUInt32(protocolVersion.rawValue)
-        data.appendLittleEndianUInt16(maxTouchContacts)
+        data.appendLittleEndianUInt16(0)
         return data
-    }
-
-    private static func clientProtocolVersion(for serverVersion: RDPInputProtocolVersion) -> RDPInputProtocolVersion {
-        switch serverVersion {
-        case .version100:
-            .version100
-        case .version101:
-            .version101
-        case .version200:
-            .version200
-        case .version300:
-            .version300
-        }
     }
 }
 
-private func parseHeaderOnlyInputPDU(_ data: Data, eventID expectedEventID: UInt16) throws -> Void? {
+private func isHeaderOnlyInputPDU(_ data: Data, eventID expectedEventID: UInt16) throws -> Bool {
     guard data.count >= 6 else {
-        return nil
+        return false
     }
 
     var cursor = ByteCursor(data)
-    let eventID = try cursor.readLittleEndianUInt16()
-    guard eventID == expectedEventID else {
-        return nil
+    guard try cursor.readLittleEndianUInt16() == expectedEventID else {
+        return false
     }
-    let pduLength = try cursor.readLittleEndianUInt32()
-    guard pduLength == UInt32(data.count),
-          data.count == 6
-    else {
+    guard try cursor.readLittleEndianUInt32() == 6, data.count == 6 else {
         throw RDPDecodeError.invalidDynamicVirtualChannelPDU
     }
-    return ()
+    return true
 }
 
 enum RDPCoreInputChannel {
@@ -568,12 +521,6 @@ struct RDPDynamicVirtualChannelDataFirstPDU: Equatable, Sendable {
     var totalLength: UInt32
     var payload: Data
 
-    init(channelID: UInt32, totalLength: UInt32, payload: Data) {
-        self.channelID = channelID
-        self.totalLength = totalLength
-        self.payload = payload
-    }
-
     var typeName: String {
         "dynvc-data-first"
     }
@@ -672,31 +619,12 @@ struct RDPDynamicVirtualChannelCompressedDataPDU: Equatable, Sendable {
     }
 }
 
-struct RDPDynamicVirtualChannelSoftSyncChannelList: Equatable, Sendable {
-    var tunnelType: UInt32
-    var channelIDs: [UInt32]
-}
-
-private enum RDPDynamicVirtualChannelSoftSync {
-    static let tcpFlushedFlag: UInt16 = 0x0001
-    static let channelListPresentFlag: UInt16 = 0x0002
-    static let supportedFlags: UInt16 = tcpFlushedFlag | channelListPresentFlag
-    static let udpReliableTunnel: UInt32 = 0x0000_0001
-    static let udpLossyTunnel: UInt32 = 0x0000_0003
-
-    static func isSupportedTunnelType(_ tunnelType: UInt32) -> Bool {
-        tunnelType == udpReliableTunnel || tunnelType == udpLossyTunnel
-    }
-}
-
+/// DYNVC_SOFT_SYNC_REQUEST ([MS-RDPEDYC] 2.2.5.1). Soft-Sync only switches
+/// channels onto multitransport tunnels, which this client never creates, so
+/// the request is recognized and otherwise ignored.
 struct RDPDynamicVirtualChannelSoftSyncPDU: Equatable, Sendable {
-    var command: RDPDynamicVirtualChannelCommand
-    var flags: UInt16?
-    var channelLists: [RDPDynamicVirtualChannelSoftSyncChannelList]
-    var tunnelsToSwitch: [UInt32]
-
     var typeName: String {
-        command.typeName
+        RDPDynamicVirtualChannelCommand.softSyncRequest.typeName
     }
 
     static func parseIfPresent(from data: Data) throws -> RDPDynamicVirtualChannelSoftSyncPDU? {
@@ -706,117 +634,15 @@ struct RDPDynamicVirtualChannelSoftSyncPDU: Equatable, Sendable {
 
         var cursor = ByteCursor(data)
         let header = try RDPDynamicVirtualChannelHeader(byte: cursor.readUInt8())
-        guard header.command == .softSyncRequest || header.command == .softSyncResponse else {
+        guard header.command == .softSyncRequest else {
             return nil
         }
-        guard header.channelIDLength == 0, header.sp == 0 else {
+        _ = try cursor.readUInt8()
+        guard try cursor.readLittleEndianUInt32() == UInt32(data.count - 2) else {
             throw RDPDecodeError.invalidDynamicVirtualChannelPDU
         }
-        guard try cursor.readUInt8() == 0 else {
-            throw RDPDecodeError.invalidDynamicVirtualChannelPDU
-        }
-
-        switch header.command {
-        case .softSyncRequest:
-            let length = try cursor.readLittleEndianUInt32()
-            guard length >= 8,
-                  Int(length) == data.count - 2
-            else {
-                throw RDPDecodeError.invalidDynamicVirtualChannelPDU
-            }
-            let flags = try cursor.readLittleEndianUInt16()
-            guard flags & RDPDynamicVirtualChannelSoftSync.tcpFlushedFlag != 0,
-                  flags & ~RDPDynamicVirtualChannelSoftSync.supportedFlags == 0
-            else {
-                throw RDPDecodeError.invalidDynamicVirtualChannelPDU
-            }
-            let tunnelCount = try Int(cursor.readLittleEndianUInt16())
-            let channelLists: [RDPDynamicVirtualChannelSoftSyncChannelList]
-            if flags & RDPDynamicVirtualChannelSoftSync.channelListPresentFlag != 0 {
-                guard tunnelCount > 0 else {
-                    throw RDPDecodeError.invalidDynamicVirtualChannelPDU
-                }
-                channelLists = try parseSoftSyncChannelLists(from: &cursor, count: tunnelCount)
-            } else {
-                guard tunnelCount == 0 else {
-                    throw RDPDecodeError.invalidDynamicVirtualChannelPDU
-                }
-                channelLists = []
-            }
-            guard cursor.remaining == 0 else {
-                throw RDPDecodeError.invalidDynamicVirtualChannelPDU
-            }
-            return RDPDynamicVirtualChannelSoftSyncPDU(
-                command: header.command,
-                flags: flags,
-                channelLists: channelLists,
-                tunnelsToSwitch: []
-            )
-        case .softSyncResponse:
-            let tunnelCount = try Int(cursor.readLittleEndianUInt32())
-            guard cursor.remaining == tunnelCount * 4 else {
-                throw RDPDecodeError.invalidDynamicVirtualChannelPDU
-            }
-            var tunnelsToSwitch: [UInt32] = []
-            tunnelsToSwitch.reserveCapacity(tunnelCount)
-            for _ in 0 ..< tunnelCount {
-                let tunnelType = try cursor.readLittleEndianUInt32()
-                guard RDPDynamicVirtualChannelSoftSync.isSupportedTunnelType(tunnelType) else {
-                    throw RDPDecodeError.invalidDynamicVirtualChannelPDU
-                }
-                tunnelsToSwitch.append(tunnelType)
-            }
-            return RDPDynamicVirtualChannelSoftSyncPDU(
-                command: header.command,
-                flags: nil,
-                channelLists: [],
-                tunnelsToSwitch: tunnelsToSwitch
-            )
-        default:
-            break
-        }
-
-        throw RDPDecodeError.invalidDynamicVirtualChannelPDU
+        return RDPDynamicVirtualChannelSoftSyncPDU()
     }
-}
-
-private func parseSoftSyncChannelLists(
-    from cursor: inout ByteCursor,
-    count: Int
-) throws -> [RDPDynamicVirtualChannelSoftSyncChannelList] {
-    var channelLists: [RDPDynamicVirtualChannelSoftSyncChannelList] = []
-    channelLists.reserveCapacity(count)
-    var seenTunnelTypes = Set<UInt32>()
-    var seenChannelIDs = Set<UInt32>()
-    for _ in 0 ..< count {
-        guard cursor.remaining >= 6 else {
-            throw RDPDecodeError.invalidDynamicVirtualChannelPDU
-        }
-        let tunnelType = try cursor.readLittleEndianUInt32()
-        guard RDPDynamicVirtualChannelSoftSync.isSupportedTunnelType(tunnelType),
-              seenTunnelTypes.insert(tunnelType).inserted
-        else {
-            throw RDPDecodeError.invalidDynamicVirtualChannelPDU
-        }
-        let channelCount = try Int(cursor.readLittleEndianUInt16())
-        guard cursor.remaining >= channelCount * 4 else {
-            throw RDPDecodeError.invalidDynamicVirtualChannelPDU
-        }
-        var channelIDs: [UInt32] = []
-        channelIDs.reserveCapacity(channelCount)
-        for _ in 0 ..< channelCount {
-            let channelID = try cursor.readLittleEndianUInt32()
-            guard seenChannelIDs.insert(channelID).inserted else {
-                throw RDPDecodeError.invalidDynamicVirtualChannelPDU
-            }
-            channelIDs.append(channelID)
-        }
-        channelLists.append(RDPDynamicVirtualChannelSoftSyncChannelList(
-            tunnelType: tunnelType,
-            channelIDs: channelIDs
-        ))
-    }
-    return channelLists
 }
 
 func dynamicVirtualChannelIDLengthCode(_ channelID: UInt32) -> UInt8 {
@@ -860,7 +686,7 @@ func dynamicVirtualChannelDataFirstPayloadLength(
     let headerLength = 1
         + dynamicVirtualChannelFieldByteCount(lengthCode: channelIDLengthCode)
         + dynamicVirtualChannelFieldByteCount(lengthCode: lengthCode)
-    return min(totalLength, 1_600 - headerLength)
+    return min(totalLength, UInt32(RDPDynamicVirtualChannelDataPDU.maximumPacketByteCount) - headerLength)
 }
 
 extension ByteCursor {
