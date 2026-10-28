@@ -1,7 +1,7 @@
 import Foundation
 
 /// The connection sequence phases ([MS-RDPBCGR] 1.3.1.1), reported as
-/// `RDPPreflightReport.stage`.
+/// `RDPConnectionReport.stage`.
 enum RDPConnectionStage: String {
     case negotiation = "x224-rdp-negotiation"
     case tlsHandshake = "tls-handshake"

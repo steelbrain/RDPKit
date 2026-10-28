@@ -117,7 +117,7 @@ private struct ProcessSample {
 }
 
 private struct LiveCapture {
-    var report: RDPPreflightReport
+    var report: RDPConnectionReport
     var frames: [RDPGraphicsFrameSnapshot]
     var wireByteCount: Int
     var measurement: MeasurementDelta
@@ -323,7 +323,7 @@ private enum RDPFrameBenchmark {
         )
         let displayResize = args.displayResize
         let start = processSample()
-        let report = RDPPreflightClient().run(
+        let report = RDPClient().run(
             configuration: configuration,
             onGraphicsFrame: { frame in
                 if accumulator.appendFrame(frame) {

@@ -73,7 +73,7 @@ let configuration = RDPConnectionConfiguration(
     audioPlaybackEnabled: true
 )
 
-let client = RDPPreflightClient()
+let client = RDPClient()
 let metricsStore = RDPRenderMetricsStore()
 
 let report = client.run(
@@ -100,7 +100,7 @@ let report = client.run(
 print(report.status)
 ```
 
-`RDPPreflightClient` exposes callbacks for graphics frames, remote pointer
+`RDPClient` exposes callbacks for graphics frames, remote pointer
 updates, input readiness, display control, clipboard messages, audio
 samples, TLS certificate inspection, wire bandwidth samples, and cancellation.
 It also accepts an `RDPWireTranscript` for recording the connection flow. The

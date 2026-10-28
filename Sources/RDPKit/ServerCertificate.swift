@@ -7,12 +7,12 @@ import Security
 public struct RDPServerCertificateInfo: Encodable, Equatable, Sendable {
     public var trusted: Bool
     public var sha256: String?
-    public var warnings: [RDPProbeWarning]
+    public var warnings: [RDPConnectionWarning]
     /// The host the certificate was checked against: after a server
     /// redirection, the redirection target rather than the configured host.
     public var host: String
 
-    public init(trusted: Bool, sha256: String?, warnings: [RDPProbeWarning], host: String = "") {
+    public init(trusted: Bool, sha256: String?, warnings: [RDPConnectionWarning], host: String = "") {
         self.trusted = trusted
         self.sha256 = sha256
         self.warnings = warnings
@@ -38,13 +38,13 @@ func inspectPeerCertificates(
     callbacks: RDPSessionCallbacks
 ) throws -> RDPServerCertificateInfo {
     guard let leaf = certificates.first else {
-        throw RDPPreflightError.tls("server did not provide a TLS certificate")
+        throw RDPConnectionError.tls("server did not provide a TLS certificate")
     }
 
     let secCertificates = try certificates.map { certificate -> SecCertificate in
         let der = try Data(certificate.toDERBytes())
         guard let secCertificate = SecCertificateCreateWithData(nil, der as CFData) else {
-            throw RDPPreflightError.tls("failed to parse server certificate")
+            throw RDPConnectionError.tls("failed to parse server certificate")
         }
         return secCertificate
     }
@@ -53,7 +53,7 @@ func inspectPeerCertificates(
     var trust: SecTrust?
     let status = SecTrustCreateWithCertificates(secCertificates as CFArray, policy, &trust)
     guard status == errSecSuccess, let trust else {
-        throw RDPPreflightError.tls("failed to create server certificate trust")
+        throw RDPConnectionError.tls("failed to create server certificate trust")
     }
 
     let evaluation = try evaluate(trust, timeoutSeconds: timeoutSeconds, callbacks: callbacks)
@@ -65,7 +65,7 @@ func inspectPeerCertificates(
     let message = evaluation.detail.map { "Server certificate is not trusted by this system: \($0)" }
         ?? "Server certificate is not trusted by this system."
     let warnings = hideCertificateWarnings ? [] : [
-        RDPProbeWarning(code: "unrecognized-certificate", message: message),
+        RDPConnectionWarning(code: "unrecognized-certificate", message: message),
     ]
     return RDPServerCertificateInfo(trusted: false, sha256: sha256, warnings: warnings, host: host)
 }

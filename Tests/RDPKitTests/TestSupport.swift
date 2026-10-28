@@ -267,12 +267,12 @@ func loadTranscriptFixture(_ name: String) throws -> [RDPWireEvent] {
 }
 
 /// Replays a captured transcript to the client until its first graphics frame.
-func replayTranscriptFixture(_ name: String) throws -> (report: RDPPreflightReport, clientPackets: [Data]) {
+func replayTranscriptFixture(_ name: String) throws -> (report: RDPConnectionReport, clientPackets: [Data]) {
     let credentials = RDPCredentials(username: "rdp-user", password: "rdp-user")
     let server = try RDPTranscriptReplayServer.start(transcript: loadTranscriptFixture(name), credentials: credentials)
     defer { server.stop() }
 
-    let report = RDPPreflightClient().run(configuration: RDPConnectionConfiguration(
+    let report = RDPClient().run(configuration: RDPConnectionConfiguration(
         host: "127.0.0.1",
         port: server.port,
         credentials: credentials,

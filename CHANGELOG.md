@@ -4,7 +4,12 @@
 
 ### Breaking changes
 
-- `RDPPreflightReport`: remove `tlsCipherSuite`, the always-nil
+- Rename the types named after the old preflight probe: `RDPPreflightClient`
+  is now `RDPClient`, `RDPPreflightReport` is `RDPConnectionReport`,
+  `RDPPreflightError` is `RDPConnectionError` and `RDPProbeWarning` is
+  `RDPConnectionWarning`. `RDPLatestFrameDecodeQueue`, which decodes every
+  frame in order, is now `RDPFrameDecodeQueue`.
+- `RDPConnectionReport`: remove `tlsCipherSuite`, the always-nil
   `rdpClipboardMessageHexes`, `rdpClipboardSentMessageHexes` and
   `rdpAudioMessageHexes`, and the clipboard and input probe fields, which moved
   into the `RDPPreflight` tool. `stage` uses one stage list: `tls-upgrade` is
@@ -20,7 +25,7 @@
   `RDPVideoToolboxFrameDecoder` and `RDPVideoDecodeError`. Remove
   `RDPH264NALUnit`, `RDPHEVCNALUnit` and `nalUnits(from:)`;
   `nalUnitTypes(from:)` and `sample(from:)` remain.
-- `RDPLatestFrameDecodeQueue` decodes in arrival order through `submitAndWait`:
+- `RDPFrameDecodeQueue` decodes in arrival order through `submitAndWait`:
   remove `submit`, `submitReportingCompletion`, the queue-depth initializer
   parameters, `onSkippedFrames`, `RDPFrameDecodeCompletion.dropped` and
   `RDPFrameDecodeQueueError.frameDropped`.
@@ -34,7 +39,7 @@
   `clipDataID` parameter, which needs clipboard locking RDPKit does not
   negotiate, and `RDPClipboardFileDescriptorW` drops the creation and
   last-access times, which MS-RDPECLIP reserves.
-- `RDPPreflightError.graphicsFrameHandler` is new: a throwing `onGraphicsFrame`
+- `RDPConnectionError.graphicsFrameHandler` is new: a throwing `onGraphicsFrame`
   ends the session with its own error. Remove `RDPDecodeError` and
   `RDPBitmapFrameDecodeError` cases that were never thrown.
 - Move `RDPFramePacingState`, `RDPFramePresentationBuffer` and
@@ -82,7 +87,7 @@
 - Fix NTLM deviations from MS-NLMP, and report a CredSSP error the server sends
   in answer to the credentials instead of timing out.
 - Report a connection lost mid-session as a failure, DNS failures as
-  `RDPPreflightError.addressResolution`, and connect and send errors with a
+  `RDPConnectionError.addressResolution`, and connect and send errors with a
   readable reason.
 - Cancelling from `onCertificate` rejects the server before any credential is
   sent. `shouldCancel` is polled while connecting, during the TLS handshake,

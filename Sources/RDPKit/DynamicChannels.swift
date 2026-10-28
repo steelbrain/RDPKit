@@ -57,7 +57,7 @@ extension RDPClientConnection {
     @discardableResult
     func sendDynamicChannelControl(_ payload: Data) throws -> Data {
         guard let channelID = drdynvcChannelID else {
-            throw RDPPreflightError.protocolViolation("drdynvc channel is not joined")
+            throw RDPConnectionError.protocolViolation("drdynvc channel is not joined")
         }
         return try sendStaticChannelPayload(payload, channelID: channelID)
     }

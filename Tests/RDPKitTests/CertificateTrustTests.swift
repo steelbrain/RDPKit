@@ -69,7 +69,7 @@ import Testing
     let cancellation = RDPConnectionCancellation()
     cancellation.cancel()
 
-    #expect(throws: RDPPreflightError.self) {
+    #expect(throws: RDPConnectionError.self) {
         try inspectPeerCertificates(
             certificates,
             host: "127.0.0.1",

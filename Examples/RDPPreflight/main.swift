@@ -236,7 +236,7 @@ struct PreflightProbeResults: Encodable {
 
 /// Encodes the report and the probe results as one flat JSON object.
 private struct PreflightOutput: Encodable {
-    var report: RDPPreflightReport
+    var report: RDPConnectionReport
     var probes: PreflightProbeResults
 
     func encode(to encoder: Encoder) throws {
@@ -310,7 +310,7 @@ func printUsage() {
     """)
 }
 
-func printReport(_ report: RDPPreflightReport, probes: PreflightProbeResults = PreflightProbeResults(), json: Bool) throws {
+func printReport(_ report: RDPConnectionReport, probes: PreflightProbeResults = PreflightProbeResults(), json: Bool) throws {
     if json {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -723,7 +723,7 @@ func graphicsFrameSummary(_ frame: RDPGraphicsFrameSnapshot) -> String {
     return parts.joined(separator: ":")
 }
 
-func failureReport(args: Arguments?, error: Error) -> RDPPreflightReport {
+func failureReport(args: Arguments?, error: Error) -> RDPConnectionReport {
     let connection = args?.connection ?? RDPCommandLineConnectionOptions()
     let configuration = RDPConnectionConfiguration(
         host: connection.host ?? "unconfigured",
@@ -733,7 +733,7 @@ func failureReport(args: Arguments?, error: Error) -> RDPPreflightReport {
         desktopHeight: connection.desktopHeight,
         graphicsCapabilityProfile: connection.graphicsCapabilityProfile
     )
-    var report = RDPPreflightClient().dryRun(configuration: configuration)
+    var report = RDPClient().dryRun(configuration: configuration)
     report.status = "failure"
     report.stage = "x224-rdp-negotiation"
     report.passwordConfigured = connection.passwordEnv
@@ -761,7 +761,7 @@ do {
     let pointerProbeLocation = args.probeInputPointer
         ? RDPRemotePoint(x: configuration.desktopWidth / 2, y: configuration.desktopHeight / 2)
         : nil
-    let client = RDPPreflightClient()
+    let client = RDPClient()
     let probeRecorder = PreflightProbeRecorder(windowsClipboardProbeText: args.probeWindowsClipboardText)
     let report = args.dryRun
         ? client.dryRun(configuration: configuration)

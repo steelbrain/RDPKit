@@ -29,7 +29,7 @@ private enum FirstFrameCapture {
             let imageContext = CIContext()
             let recorder = LatestDecodedFrameRecorder<DecodedFrameSelection>()
             let cancellation = RDPConnectionCancellation()
-            let decodeQueue = RDPLatestFrameDecodeQueue(
+            let decodeQueue = RDPFrameDecodeQueue(
                 shouldCancel: { cancellation.isCancelled },
                 onDecoded: { presentation, _, _, _ in
                     let image = CIImage(cvImageBuffer: presentation.imageBuffer)
@@ -46,7 +46,7 @@ private enum FirstFrameCapture {
             )
             let wireTranscript = options.transcriptPath.map { _ in RDPWireTranscript() }
             scheduleCancellation(cancellation, after: options.settleSeconds)
-            let report = RDPPreflightClient().run(
+            let report = RDPClient().run(
                 configuration: configuration,
                 onGraphicsFrame: { frame in
                     // Freeze the transcript the moment video frames start flowing:
@@ -81,7 +81,7 @@ private enum FirstFrameCapture {
             nal types: \(frame.videoNalUnitTypes.map(String.init).joined(separator: "/"))
             """)
             guard report.status == "success" || cancellation.isCancelled else {
-                throw FirstFrameCaptureError.connectionFailed(report.error ?? "RDP preflight failed at \(report.stage)")
+                throw FirstFrameCaptureError.connectionFailed(report.error ?? "RDP connection failed at \(report.stage)")
             }
         } catch {
             fputs("\(String(describing: error))\n", stderr)
@@ -103,9 +103,9 @@ private enum FirstFrameCapture {
         }
     }
 
-    private static func missingDecodedFrameError(report: RDPPreflightReport, lastDecodeFailure: String?) -> Error {
+    private static func missingDecodedFrameError(report: RDPConnectionReport, lastDecodeFailure: String?) -> Error {
         guard report.status == "success" else {
-            return FirstFrameCaptureError.connectionFailed(report.error ?? "RDP preflight failed at \(report.stage)")
+            return FirstFrameCaptureError.connectionFailed(report.error ?? "RDP connection failed at \(report.stage)")
         }
         if report.nextStage == "rdp-session-ended" {
             let missing = report.rdpGraphicsChannelName == nil
@@ -121,7 +121,7 @@ private enum FirstFrameCapture {
         return FirstFrameCaptureError.missingFrames
     }
 
-    private static func remoteTerminationSuffix(_ report: RDPPreflightReport) -> String {
+    private static func remoteTerminationSuffix(_ report: RDPConnectionReport) -> String {
         if let errorInfoName = report.rdpRemoteTerminationErrorInfoName {
             return " (\(errorInfoName))"
         }

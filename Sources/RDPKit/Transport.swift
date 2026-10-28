@@ -35,18 +35,18 @@ enum RDPTransportPacketFraming {
                 return nil
             }
             guard byteAt(1) == 0 else {
-                throw RDPPreflightError.receive("received invalid TPKT reserved byte \(byteAt(1))")
+                throw RDPConnectionError.receive("received invalid TPKT reserved byte \(byteAt(1))")
             }
             let length = Int(byteAt(2)) << 8 | Int(byteAt(3))
             guard length >= 4 else {
-                throw RDPPreflightError.receive("received invalid TPKT length \(length)")
+                throw RDPConnectionError.receive("received invalid TPKT length \(length)")
             }
             return length
         }
 
         // fpOutputHeader action MUST be FASTPATH_OUTPUT_ACTION_FASTPATH (0).
         guard byteAt(0) & 0x03 == 0 else {
-            throw RDPPreflightError.receive("received invalid Fast-Path action \(byteAt(0) & 0x03)")
+            throw RDPConnectionError.receive("received invalid Fast-Path action \(byteAt(0) & 0x03)")
         }
         let firstLengthByte = byteAt(1)
         let length: Int
@@ -59,7 +59,7 @@ enum RDPTransportPacketFraming {
             length = Int(firstLengthByte & 0x7F) << 8 | Int(byteAt(2))
         }
         guard length >= 3 else {
-            throw RDPPreflightError.receive("received invalid Fast-Path length \(length)")
+            throw RDPConnectionError.receive("received invalid Fast-Path length \(length)")
         }
         return length
     }
@@ -72,7 +72,7 @@ enum RDPTransportPacketFraming {
             return nil
         }
         guard byteAt(0) == 0x30 else {
-            throw RDPPreflightError.receive("received invalid CredSSP ASN.1 tag 0x\(String(format: "%02x", byteAt(0)))")
+            throw RDPConnectionError.receive("received invalid CredSSP ASN.1 tag 0x\(String(format: "%02x", byteAt(0)))")
         }
         let firstLengthByte = byteAt(1)
         if firstLengthByte & 0x80 == 0 {
@@ -80,7 +80,7 @@ enum RDPTransportPacketFraming {
         }
         let lengthByteCount = Int(firstLengthByte & 0x7F)
         guard (1 ... 2).contains(lengthByteCount) else {
-            throw RDPPreflightError.receive("received invalid CredSSP ASN.1 length")
+            throw RDPConnectionError.receive("received invalid CredSSP ASN.1 length")
         }
         guard readableByteCount >= 2 + lengthByteCount else {
             return nil
@@ -289,7 +289,7 @@ final class RDPTransportReader: ChannelDuplexHandler, RemovableChannelHandler {
     private func failWithCredSSPResult(_ message: Data) {
         let errorCode = (try? RDPCredSSPTSRequest.parse(message))?.errorCode
         fail(errorCode.map { RDPCredSSPError.serverError($0) }
-            ?? RDPPreflightError.protocolViolation("server answered the CredSSP credentials with a TSRequest"))
+            ?? RDPConnectionError.protocolViolation("server answered the CredSSP credentials with a TSRequest"))
         context?.close(promise: nil)
     }
 
@@ -377,7 +377,7 @@ final class RDPTransport {
         let result = eventLoop.makePromise(of: Channel.self)
         connected.cascade(to: result)
         let cancel: @Sendable () -> Void = {
-            result.fail(RDPPreflightError.cancelled)
+            result.fail(RDPConnectionError.cancelled)
             connected.whenSuccess { $0.close(promise: nil) }
         }
         let registration = callbacks.cancellation?.register(cancel)
@@ -386,18 +386,18 @@ final class RDPTransport {
         let channel: Channel
         do {
             channel = try wait(for: result.futureResult, callbacks: callbacks, onCancel: cancel)
-        } catch let error as RDPPreflightError {
+        } catch let error as RDPConnectionError {
             throw error
         } catch ChannelError.connectTimeout {
-            throw RDPPreflightError.connect("timed out after \(timeoutSeconds) seconds")
+            throw RDPConnectionError.connect("timed out after \(timeoutSeconds) seconds")
         } catch let error as NIOConnectionError {
             if error.connectionErrors.isEmpty, let dnsError = error.dnsAError ?? error.dnsAAAAError {
-                throw RDPPreflightError.addressResolution(connectionErrorDescription(dnsError))
+                throw RDPConnectionError.addressResolution(connectionErrorDescription(dnsError))
             }
-            throw RDPPreflightError.connect(error.connectionErrors.last.map { connectionErrorDescription($0.error) }
+            throw RDPConnectionError.connect(error.connectionErrors.last.map { connectionErrorDescription($0.error) }
                 ?? String(describing: error))
         } catch {
-            throw RDPPreflightError.connect(connectionErrorDescription(error))
+            throw RDPConnectionError.connect(connectionErrorDescription(error))
         }
         let reader = try eventLoop.submit {
             try NIOLoopBound(channel.pipeline.syncOperations.handler(type: RDPTransportReader.self), eventLoop: eventLoop)
@@ -425,7 +425,7 @@ final class RDPTransport {
             while completed.wait(timeout: .now() + 1) == .timedOut {
                 if callbacks.isCancelled {
                     onCancel()
-                    throw RDPPreflightError.cancelled
+                    throw RDPConnectionError.cancelled
                 }
             }
         }
@@ -447,11 +447,11 @@ final class RDPTransport {
         buffer.writeBytes(packet)
         do {
             try Self.wait(for: channel.writeAndFlush(buffer), callbacks: callbacks, onCancel: close)
-        } catch let error as RDPPreflightError {
+        } catch let error as RDPConnectionError {
             throw error
         } catch {
             try callbacks.throwIfCancelled()
-            throw RDPPreflightError.send(connectionErrorDescription(error))
+            throw RDPConnectionError.send(connectionErrorDescription(error))
         }
     }
 
@@ -489,7 +489,7 @@ final class RDPTransport {
             } catch RDPTransportError.timedOut where slice != deadline {
                 if callbacks.isCancelled {
                     close()
-                    throw RDPPreflightError.cancelled
+                    throw RDPConnectionError.cancelled
                 }
                 if let deadline, deadline <= .now() {
                     throw RDPTransportError.timedOut
@@ -546,7 +546,7 @@ final class RDPTransport {
             reader.value.awaitHandshake(handshake)
         }.wait()
         let timeout = channel.eventLoop.scheduleTask(in: .seconds(Int64(timeoutSeconds))) {
-            handshake.fail(RDPPreflightError.tls("TLS handshake timed out after \(timeoutSeconds) seconds"))
+            handshake.fail(RDPConnectionError.tls("TLS handshake timed out after \(timeoutSeconds) seconds"))
             channel.close(promise: nil)
         }
         handshake.futureResult.whenComplete { _ in
@@ -554,14 +554,14 @@ final class RDPTransport {
         }
         do {
             try Self.wait(for: handshake.futureResult, callbacks: callbacks, onCancel: close)
-        } catch let error as RDPPreflightError {
+        } catch let error as RDPConnectionError {
             throw error
         } catch RDPTransportError.closed {
             try callbacks.throwIfCancelled()
-            throw RDPPreflightError.tls("connection closed before the TLS handshake completed")
+            throw RDPConnectionError.tls("connection closed before the TLS handshake completed")
         } catch {
             try callbacks.throwIfCancelled()
-            throw RDPPreflightError.tls(String(describing: error))
+            throw RDPConnectionError.tls(String(describing: error))
         }
 
         return try channel.eventLoop.submit {

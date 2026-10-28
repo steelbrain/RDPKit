@@ -21,7 +21,7 @@ struct RDPSessionEndReason: Equatable {
         message: "Connection cancelled by user."
     )
 
-    init(report: RDPPreflightReport) {
+    init(report: RDPConnectionReport) {
         if report.status == "failure" || report.error != nil {
             kind = .failed
             message = report.error ?? "Connection failed at \(report.stage)."
@@ -37,7 +37,7 @@ struct RDPSessionEndReason: Equatable {
         }
     }
 
-    private static func terminationSuffix(_ report: RDPPreflightReport) -> String {
+    private static func terminationSuffix(_ report: RDPConnectionReport) -> String {
         if let errorInfoName = report.rdpRemoteTerminationErrorInfoName {
             return " (\(errorInfoName))"
         }

@@ -1,6 +1,6 @@
 import Foundation
 
-public struct RDPProbeWarning: Encodable, Equatable, Sendable {
+public struct RDPConnectionWarning: Encodable, Equatable, Sendable {
     public var code: String
     public var message: String
 
@@ -10,7 +10,7 @@ public struct RDPProbeWarning: Encodable, Equatable, Sendable {
     }
 }
 
-public struct RDPPreflightReport: Encodable, Equatable, Sendable {
+public struct RDPConnectionReport: Encodable, Equatable, Sendable {
     public var status: String
     public var stage: String
     public var target: String
@@ -103,7 +103,7 @@ public struct RDPPreflightReport: Encodable, Equatable, Sendable {
     public var rdpClipboardSentMessages: [RDPClipboardMessageSummary]?
     public var rdpAudioChannelID: UInt16?
     public var rdpAudioMessages: [RDPAudioMessageSummary]?
-    public var warnings: [RDPProbeWarning]
+    public var warnings: [RDPConnectionWarning]
     public var nextStage: String?
     public var error: String?
 
@@ -200,7 +200,7 @@ public struct RDPPreflightReport: Encodable, Equatable, Sendable {
         rdpClipboardSentMessages: [RDPClipboardMessageSummary]? = nil,
         rdpAudioChannelID: UInt16? = nil,
         rdpAudioMessages: [RDPAudioMessageSummary]? = nil,
-        warnings: [RDPProbeWarning],
+        warnings: [RDPConnectionWarning],
         nextStage: String? = nil,
         error: String? = nil
     ) {
@@ -302,7 +302,7 @@ public struct RDPPreflightReport: Encodable, Equatable, Sendable {
     }
 }
 
-public enum RDPPreflightError: Error, CustomStringConvertible {
+public enum RDPConnectionError: Error, CustomStringConvertible {
     case addressResolution(String)
     case connect(String)
     case send(String)

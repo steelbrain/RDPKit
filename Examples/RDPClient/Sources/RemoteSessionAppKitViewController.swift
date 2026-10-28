@@ -40,7 +40,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
     private var audioPlaybackEnabled = false
     private var audioMessage: String?
     private var remoteAudioPlayer = RDPAudioPlayer()
-    private var report: RDPPreflightReport?
+    private var report: RDPConnectionReport?
     private var serverCertificateInfo: RDPServerCertificateInfo?
     private var previewFrame: RDPFrameMetadata?
     private var previewFrameCount = 0
@@ -142,7 +142,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         render()
         if shouldAutoConnect {
             shouldAutoConnect = false
-            startPreflight()
+            beginConnection()
         }
     }
 
@@ -160,7 +160,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
 
     func startSession() {
         syncStateFromFields()
-        startPreflight()
+        beginConnection()
     }
 
     /// Publishes the Session menu state while this session's window is key.
@@ -547,7 +547,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         diagnosticsModel.updateSnapshot(nextSnapshot)
     }
 
-    private func startPreflight() {
+    private func beginConnection() {
         activeCancellation?.cancel()
         cancelPendingDisplayResize(resetLastRequestedSize: true)
         activeConnectionID = nil
@@ -645,10 +645,10 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         let sink = RDPRemoteSessionMainActorSink(controller: self, connectionID: connectionID)
         let credentialStore = credentialStore
         let clientLicenseStore = clientLicenseStore
-        // RDPPreflightClient.run blocks for the whole session, so it gets its own thread
+        // RDPClient.run blocks for the whole session, so it gets its own thread
         // rather than holding a Swift concurrency worker.
         let sessionThread = Thread {
-            let decodeQueue = RDPLatestFrameDecodeQueue(
+            let decodeQueue = RDPFrameDecodeQueue(
                 shouldCancel: {
                     cancellation.isCancelled
                 },
@@ -702,7 +702,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                 wireReceiveCoalescer.cancel()
                 decodeQueue.cancel()
             }
-            let nextReport = RDPPreflightClient().run(
+            let nextReport = RDPClient().run(
                 configuration: configuration,
                 onGraphicsFrame: { frame in
                     try decodeQueue.submitAndWait(

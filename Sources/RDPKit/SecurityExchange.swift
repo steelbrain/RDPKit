@@ -6,7 +6,7 @@ extension RDPClientConnection {
     /// Authorization Result when the server selected them ([MS-RDPBCGR] 5.4.5).
     func establishSecurity() throws {
         guard let transport else {
-            throw RDPPreflightError.tls("not connected")
+            throw RDPConnectionError.tls("not connected")
         }
         stage = .tlsHandshake
         try transport.setRecordedLayer(nil)
@@ -46,7 +46,7 @@ extension RDPClientConnection {
             report.earlyUserAuthorizationResult = result.rawValue
             try transport.setFraming(.rdp)
             if result.result == .accessDenied {
-                throw RDPPreflightError.protocolViolation("early user authorization denied access")
+                throw RDPConnectionError.protocolViolation("early user authorization denied access")
             }
         }
         try transport.setRecordedLayer(.application)
@@ -60,7 +60,7 @@ extension RDPClientConnection {
         then nextFraming: RDPTransportFraming
     ) throws {
         guard let transport else {
-            throw RDPPreflightError.tls("not connected")
+            throw RDPConnectionError.tls("not connected")
         }
         let subjectPublicKey = try RDPCredSSPCertificate.subjectPublicKey(fromCertificateDER: certificateDER)
         let ntlm = try RDPCredSSPNTLMContext(

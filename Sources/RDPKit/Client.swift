@@ -11,12 +11,12 @@ import Foundation
 /// `onCertificate` runs after the TLS handshake and before any credential is
 /// sent: cancelling `cancellation` (or returning true from `shouldCancel`)
 /// from it rejects the server.
-public struct RDPPreflightClient: Sendable {
+public struct RDPClient: Sendable {
     public init() {}
 
-    public func dryRun(configuration: RDPConnectionConfiguration) -> RDPPreflightReport {
+    public func dryRun(configuration: RDPConnectionConfiguration) -> RDPConnectionReport {
         let request = configuration.connectionRequest
-        return RDPPreflightReport(
+        return RDPConnectionReport(
             status: "dry-run",
             stage: "x224-rdp-negotiation-request",
             target: configuration.target,
@@ -48,7 +48,7 @@ public struct RDPPreflightClient: Sendable {
         wireTranscript: RDPWireTranscript? = nil,
         cancellation: RDPConnectionCancellation? = nil,
         shouldCancel: RDPCancellationHandler? = nil
-    ) -> RDPPreflightReport {
+    ) -> RDPConnectionReport {
         let callbacks = RDPSessionCallbacks(
             onGraphicsFrame: onGraphicsFrame,
             onRemotePointer: onRemotePointer,
@@ -91,7 +91,7 @@ public struct RDPPreflightClient: Sendable {
         wireTranscript: RDPWireTranscript? = nil,
         cancellation: RDPConnectionCancellation? = nil,
         shouldCancel: RDPCancellationHandler? = nil
-    ) throws -> RDPPreflightReport {
+    ) throws -> RDPConnectionReport {
         let callbacks = RDPSessionCallbacks(
             onGraphicsFrame: onGraphicsFrame,
             onRemotePointer: onRemotePointer,
@@ -117,8 +117,8 @@ public struct RDPPreflightClient: Sendable {
     private func session(
         configuration: RDPConnectionConfiguration,
         callbacks: RDPSessionCallbacks,
-        onConnectionError: (RDPClientConnection, Error) throws -> RDPPreflightReport
-    ) rethrows -> RDPPreflightReport {
+        onConnectionError: (RDPClientConnection, Error) throws -> RDPConnectionReport
+    ) rethrows -> RDPConnectionReport {
         var configuration = configuration
         while true {
             let connection = RDPClientConnection(configuration: configuration, callbacks: callbacks)

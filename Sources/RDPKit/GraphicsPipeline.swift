@@ -78,7 +78,7 @@ extension RDPClientConnection {
         report.rdpGraphicsSelectedCapabilityFlags = confirm.capabilitySet.flags
         let advertised = configuration.graphicsCapabilityProfile.capabilitySets.map(\.version)
         guard advertised.contains(confirm.capabilitySet.version) else {
-            throw RDPPreflightError.protocolViolation(
+            throw RDPConnectionError.protocolViolation(
                 "server confirmed an RDPGFX capability version that the client did not advertise"
             )
         }
@@ -140,7 +140,7 @@ extension RDPClientConnection {
 
     private func checkPendingVideoRoom(for count: Int) throws {
         guard pendingGraphicsFrames.count + pendingVideoCopies.count + count <= Self.maximumPendingVideoFrameCount else {
-            throw RDPPreflightError.protocolViolation(
+            throw RDPConnectionError.protocolViolation(
                 "server sent more than \(Self.maximumPendingVideoFrameCount) video updates without ending the frame"
             )
         }
@@ -223,7 +223,7 @@ extension RDPClientConnection {
             do {
                 try callbacks.onGraphicsFrame?(frame)
             } catch {
-                throw RDPPreflightError.graphicsFrameHandler(error)
+                throw RDPConnectionError.graphicsFrameHandler(error)
             }
         }
     }

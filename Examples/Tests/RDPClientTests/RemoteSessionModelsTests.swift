@@ -4,7 +4,7 @@ import RDPKit
 import Testing
 
 @Test func successfulRemoteSessionEndUsesCleanDisconnectMessage() {
-    let report = RDPPreflightReport(
+    let report = RDPConnectionReport(
         status: "success",
         stage: "rdp-graphics-dynamic-channel",
         target: "127.0.0.1:3389",
@@ -22,7 +22,7 @@ import Testing
 }
 
 @Test func remoteSessionEndBeforeGraphicsChannelDescribesMissingRDPGFX() {
-    let report = RDPPreflightReport(
+    let report = RDPConnectionReport(
         status: "success",
         stage: "rdp-graphics-dynamic-channel",
         target: "127.0.0.1:3389",
@@ -40,7 +40,7 @@ import Testing
 }
 
 @Test func remoteSessionEndBeforeGraphicsChannelIncludesTerminationReason() {
-    let report = RDPPreflightReport(
+    let report = RDPConnectionReport(
         status: "success",
         stage: "rdp-graphics-dynamic-channel",
         target: "127.0.0.1:3389",
@@ -60,7 +60,7 @@ import Testing
 }
 
 @Test func remoteSessionEndBeforeFrameDescribesMissingGraphicsFrame() {
-    let report = RDPPreflightReport(
+    let report = RDPConnectionReport(
         status: "success",
         stage: "rdp-graphics-dynamic-channel",
         target: "127.0.0.1:3389",
@@ -80,7 +80,7 @@ import Testing
 }
 
 @Test func remoteSessionEndBeforeFrameIncludesTerminationReason() {
-    let report = RDPPreflightReport(
+    let report = RDPConnectionReport(
         status: "success",
         stage: "rdp-graphics-dynamic-channel",
         target: "127.0.0.1:3389",

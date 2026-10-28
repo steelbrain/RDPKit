@@ -406,7 +406,7 @@ import Testing
 }
 
 @Test func latestFrameDecodeQueueReportsSuccessfulSynchronousProcessing() throws {
-    let queue = RDPLatestFrameDecodeQueue(
+    let queue = RDPFrameDecodeQueue(
         shouldCancel: { false },
         onDecoded: { _, _, _, _ in },
         onDecodeFailed: { _, _ in }
@@ -424,7 +424,7 @@ import Testing
 }
 
 @Test func latestFrameDecodeQueueReportsDecodeFailure() {
-    let queue = RDPLatestFrameDecodeQueue(
+    let queue = RDPFrameDecodeQueue(
         shouldCancel: { false },
         onDecoded: { _, _, _, _ in },
         onDecodeFailed: { _, _ in }
@@ -454,7 +454,7 @@ import Testing
 }
 
 @Test func latestFrameDecodeQueueReportsCancellation() {
-    let queue = RDPLatestFrameDecodeQueue(
+    let queue = RDPFrameDecodeQueue(
         shouldCancel: { true },
         onDecoded: { _, _, _, _ in },
         onDecodeFailed: { _, _ in }
@@ -473,7 +473,7 @@ import Testing
 }
 
 @Test func latestFrameDecodeQueueReportsFramesSubmittedAfterCancelAsCancelled() {
-    let queue = RDPLatestFrameDecodeQueue(
+    let queue = RDPFrameDecodeQueue(
         shouldCancel: { false },
         onDecoded: { _, _, _, _ in },
         onDecodeFailed: { _, _ in }

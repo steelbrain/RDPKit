@@ -1,7 +1,7 @@
 import Foundation
 
 public enum RDPGraphicsPathDescription {
-    public static func describe(report: RDPPreflightReport?) -> String {
+    public static func describe(report: RDPConnectionReport?) -> String {
         guard let report else {
             return "not negotiated"
         }

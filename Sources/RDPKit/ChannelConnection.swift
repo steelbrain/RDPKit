@@ -34,10 +34,10 @@ extension RDPClientConnection {
         report.mcsMessageChannelID = connectResponse.messageChannelID
         report.mcsStaticChannels = connectResponse.staticChannelAssignments
         guard connectResponse.result == 0 else {
-            throw RDPPreflightError.protocolViolation("MCS Connect Response result: \(connectResponse.resultName)")
+            throw RDPConnectionError.protocolViolation("MCS Connect Response result: \(connectResponse.resultName)")
         }
         guard let ioChannelID = connectResponse.ioChannelID else {
-            throw RDPPreflightError.protocolViolation("MCS Connect Response did not include an I/O channel")
+            throw RDPConnectionError.protocolViolation("MCS Connect Response did not include an I/O channel")
         }
         self.ioChannelID = ioChannelID
         messageChannelID = connectResponse.messageChannelID.flatMap { $0 == 0 ? nil : $0 }
@@ -54,10 +54,10 @@ extension RDPClientConnection {
         let attachUserConfirm = try MCSAttachUserConfirm.parse(fromTPKT: attachUserConfirmData)
         report.mcsAttachUserResult = attachUserConfirm.resultName
         guard attachUserConfirm.result == 0 else {
-            throw RDPPreflightError.protocolViolation("MCS Attach User Confirm result: \(attachUserConfirm.resultName)")
+            throw RDPConnectionError.protocolViolation("MCS Attach User Confirm result: \(attachUserConfirm.resultName)")
         }
         guard let userChannelID = attachUserConfirm.userChannelID else {
-            throw RDPPreflightError.protocolViolation("MCS Attach User Confirm did not include a user channel ID")
+            throw RDPConnectionError.protocolViolation("MCS Attach User Confirm did not include a user channel ID")
         }
         self.userChannelID = userChannelID
         report.mcsUserChannelID = userChannelID
@@ -85,7 +85,7 @@ extension RDPClientConnection {
                 result: result
             ))
             guard joined else {
-                throw RDPPreflightError.protocolViolation("MCS Channel Join Confirm result for \(name): \(result)")
+                throw RDPConnectionError.protocolViolation("MCS Channel Join Confirm result for \(name): \(result)")
             }
         }
         for assignment in connectResponse.staticChannelAssignments {

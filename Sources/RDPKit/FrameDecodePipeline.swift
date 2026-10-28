@@ -872,7 +872,7 @@ private func copy(
 /// Decodes and composes graphics frames in arrival order on a background queue.
 /// `submitAndWait` returns once the frame has been presented, so callers can acknowledge
 /// frames (MS-RDPEGFX RDPGFX_FRAME_ACKNOWLEDGE_PDU) only after they were decoded.
-public final class RDPLatestFrameDecodeQueue: @unchecked Sendable {
+public final class RDPFrameDecodeQueue: @unchecked Sendable {
     private let queue = DispatchQueue(label: "RDPKit.FrameDecode", qos: .userInitiated)
     // The decoder and compositor are only used on `queue`.
     private let decoder = RDPVideoToolboxFrameDecoder()

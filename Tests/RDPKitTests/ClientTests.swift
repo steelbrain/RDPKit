@@ -12,7 +12,7 @@ import Testing
         hideCertificateWarnings: true
     )
 
-    let report = RDPPreflightClient().dryRun(configuration: configuration)
+    let report = RDPClient().dryRun(configuration: configuration)
 
     #expect(report.status == "dry-run")
     #expect(report.stage == "x224-rdp-negotiation-request")
@@ -27,7 +27,7 @@ import Testing
 }
 
 @Test func dryRunCanRequestEarlyUserAuthorization() {
-    let report = RDPPreflightClient().dryRun(configuration: RDPConnectionConfiguration(
+    let report = RDPClient().dryRun(configuration: RDPConnectionConfiguration(
         host: "192.0.2.10",
         earlyUserAuthorizationEnabled: true
     ))
@@ -156,11 +156,11 @@ import Testing
     #expect(sample.megabits == 1)
 }
 
-@Test func preflightHonorsPreCancelledConnectionCancellation() {
+@Test func clientHonorsPreCancelledConnectionCancellation() {
     let cancellation = RDPConnectionCancellation()
     cancellation.cancel()
 
-    let report = RDPPreflightClient().run(
+    let report = RDPClient().run(
         configuration: RDPConnectionConfiguration(host: "example.test"),
         cancellation: cancellation
     )
@@ -170,7 +170,7 @@ import Testing
     #expect(report.error == "cancelled")
 }
 
-@Test func preflightReportDerivesFirstFrameFromFrameList() {
+@Test func connectionReportDerivesFirstFrameFromFrameList() {
     let frame = RDPGraphicsFrameSnapshot(
         frameID: 7,
         surfaceID: 1,
@@ -182,7 +182,7 @@ import Testing
         encodedVideoData: Data([0x00, 0x00, 0x01, 0x65])
     )
 
-    let report = RDPPreflightReport(
+    let report = RDPConnectionReport(
         status: "success",
         stage: "rdp-graphics-dynamic-channel",
         target: "example.test:3389",
@@ -210,7 +210,7 @@ import Testing
     #expect(frame.videoNalUnitTypes == [5])
 }
 
-@Test func preflightReportCarriesIssuedClientLicenseForPersistence() throws {
+@Test func connectionReportCarriesIssuedClientLicenseForPersistence() throws {
     let license = RDPStoredClientLicense(
         version: 0x0006_0001,
         scope: "localhost",
@@ -218,7 +218,7 @@ import Testing
         productID: "A02",
         licenseInfo: Data([0x30, 0x82, 0x01, 0x02])
     )
-    let report = RDPPreflightReport(
+    let report = RDPConnectionReport(
         status: "success",
         stage: "rdp-server-activation",
         target: "example.test:3389",

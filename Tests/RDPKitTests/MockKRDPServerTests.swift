@@ -9,7 +9,7 @@ import Testing
 struct MockKRDPServerTests {
     // MARK: Security negotiation
 
-    @Test func preflightReportsNegotiationFailureAsFailure() throws {
+    @Test func clientReportsNegotiationFailureAsFailure() throws {
         let report = try runMock(.init(securityProtocol: .failure(code: 0x0000_0002))).report
 
         #expect(report.status == "failure")
@@ -19,7 +19,7 @@ struct MockKRDPServerTests {
         #expect(report.error == "RDP negotiation failed with code 0x00000002")
     }
 
-    @Test func preflightReportsStandardSecurityAsUnsupported() throws {
+    @Test func clientReportsStandardSecurityAsUnsupported() throws {
         let report = try runMock(.init(securityProtocol: .standard)).report
 
         #expect(report.status == "failure")
@@ -29,7 +29,7 @@ struct MockKRDPServerTests {
         #expect(report.error == "standard RDP security is not supported")
     }
 
-    @Test func preflightRejectsUnrequestedSecurityProtocolSelection() throws {
+    @Test func clientRejectsUnrequestedSecurityProtocolSelection() throws {
         let report = try runMock(.init(securityProtocol: .rdSTLS)).report
 
         #expect(report.status == "failure")
@@ -40,10 +40,10 @@ struct MockKRDPServerTests {
         #expect(report.error == "server selected an unrequested security protocol")
     }
 
-    @Test func preflightCallsCertificateHandlerAfterTLSHandshake() throws {
+    @Test func clientCallsCertificateHandlerAfterTLSHandshake() throws {
         let certificate = Locked<RDPServerCertificateInfo?>(nil)
         let report = try runMock(.init(), { $0.hideCertificateWarnings = false }, client: {
-            RDPPreflightClient().run(configuration: $0, onCertificate: { info in
+            RDPClient().run(configuration: $0, onCertificate: { info in
                 certificate.withLock { $0 = info }
             })
         }).report
@@ -60,10 +60,10 @@ struct MockKRDPServerTests {
 
     /// Cancelling from onCertificate rejects the server before any credential is
     /// sent (decision: the security gate runs right after the certificate callback).
-    @Test func preflightCancelledFromCertificateCallbackSendsNoCredentials() throws {
+    @Test func clientCancelledFromCertificateCallbackSendsNoCredentials() throws {
         let cancellation = RDPConnectionCancellation()
         let run = try runMock(.init(securityProtocol: .credSSP(credentials: mockCredentials)), client: {
-            RDPPreflightClient().run(
+            RDPClient().run(
                 configuration: $0,
                 onCertificate: { _ in cancellation.cancel() },
                 cancellation: cancellation
@@ -77,7 +77,7 @@ struct MockKRDPServerTests {
         #expect(run.transcript.credSSPMessages.isEmpty)
     }
 
-    @Test func preflightVerifiesCredSSPAuthenticationWithMockServer() throws {
+    @Test func clientVerifiesCredSSPAuthenticationWithMockServer() throws {
         let run = try runMock(.init(securityProtocol: .credSSP(credentials: mockCredentials)))
 
         #expect(run.report.status == "success")
@@ -96,7 +96,7 @@ struct MockKRDPServerTests {
         #expect(run.report.error == nil)
     }
 
-    @Test func preflightConsumesSuccessfulEarlyUserAuthorizationResult() throws {
+    @Test func clientConsumesSuccessfulEarlyUserAuthorizationResult() throws {
         let report = try runMock(.init(securityProtocol: .credSSPWithEarlyUserAuth(
             credentials: mockCredentials,
             authorizationResult: .success
@@ -109,7 +109,7 @@ struct MockKRDPServerTests {
         #expect(report.error == nil)
     }
 
-    @Test func preflightFailsWhenEarlyUserAuthorizationDeniesAccess() throws {
+    @Test func clientFailsWhenEarlyUserAuthorizationDeniesAccess() throws {
         let report = try runMock(.init(securityProtocol: .credSSPWithEarlyUserAuth(
             credentials: mockCredentials,
             authorizationResult: .accessDenied
@@ -126,10 +126,10 @@ struct MockKRDPServerTests {
 
     /// The plain KRdp-style flow, from MCS to the first AVC420 frame. The mock
     /// insists on a bitmap-codecs capability set in the Confirm Active.
-    @Test func preflightCapturesGraphicsFrameFromMockKRDPServer() throws {
+    @Test func clientCapturesGraphicsFrameFromMockKRDPServer() throws {
         let observed = Locked(Observed())
         let report = try runMock(.init(requireBitmapCodecsCapability: true), client: {
-            RDPPreflightClient().run(
+            RDPClient().run(
                 configuration: $0,
                 onGraphicsFrame: { frame in observed.withLock { $0.frames.append(frame) } },
                 onWireReceive: { sample in observed.withLock { $0.wireBytes += sample.byteCount } }
@@ -169,7 +169,7 @@ struct MockKRDPServerTests {
         #expect(report.error == nil)
     }
 
-    @Test func preflightExplicitlyJoinsEveryMCSChannel() throws {
+    @Test func clientExplicitlyJoinsEveryMCSChannel() throws {
         let report = try runMock().report
 
         let joinedChannels = try #require(report.mcsJoinedChannels)
@@ -180,7 +180,7 @@ struct MockKRDPServerTests {
         #expect(joinedChannels.allSatisfy { $0.confirmHex.isEmpty == false })
     }
 
-    @Test func preflightConnectInitialCarriesKRDPCompatibleClientCoreData() throws {
+    @Test func clientConnectInitialCarriesKRDPCompatibleClientCoreData() throws {
         let report = try runMock().report
 
         #expect(report.status == "success")
@@ -205,7 +205,7 @@ struct MockKRDPServerTests {
     /// the length of the client's, which carry credentials.
     @Test func wireTranscriptRedactsClientApplicationPayloadsButKeepsByteCounts() throws {
         let transcript = RDPWireTranscript()
-        let report = try runMock(client: { RDPPreflightClient().run(configuration: $0, wireTranscript: transcript) }).report
+        let report = try runMock(client: { RDPClient().run(configuration: $0, wireTranscript: transcript) }).report
         let application = transcript.events.filter { $0.layer == .application }
         let client = application.filter { $0.direction == .clientToServer }
         let server = application.filter { $0.direction == .serverToClient }
@@ -217,7 +217,7 @@ struct MockKRDPServerTests {
         #expect(server.allSatisfy { $0.bytes?.count == $0.byteCount })
     }
 
-    @Test func preflightFollowsServerRedirectionAndReconnects() throws {
+    @Test func clientFollowsServerRedirectionAndReconnects() throws {
         let run = try runMock(.init(redirectionBehavior: .redirectFirstConnection))
 
         // The first connection is redirected mid graphics handshake; the client must
@@ -228,7 +228,7 @@ struct MockKRDPServerTests {
         #expect(run.report.error == nil)
     }
 
-    @Test func preflightFollowsRedirectionSentInsteadOfDemandActive() throws {
+    @Test func clientFollowsRedirectionSentInsteadOfDemandActive() throws {
         let run = try runMock(.init(redirectionBehavior: .redirectInsteadOfDemandActive))
 
         #expect(run.connectionCount == 2)
@@ -239,7 +239,7 @@ struct MockKRDPServerTests {
 
     /// A connect-time auto-detect run made only of requests without a response
     /// must not fail the connection (C R0).
-    @Test func preflightContinuesAfterAutoDetectRequestsWithoutResponses() throws {
+    @Test func clientContinuesAfterAutoDetectRequestsWithoutResponses() throws {
         let report = try runMock(.init(autoDetectBehavior: .noReplyRequestOnly)).report
 
         #expect(report.status == "success")
@@ -248,10 +248,10 @@ struct MockKRDPServerTests {
         #expect(report.rdpGraphicsFirstFrame?.codecName == "avc420")
     }
 
-    @Test func preflightHandlesMultiStepBandwidthAutoDetectBeforeActivation() throws {
+    @Test func clientHandlesMultiStepBandwidthAutoDetectBeforeActivation() throws {
         let observed = Locked(Observed())
         let report = try runMock(.init(autoDetectBehavior: .bandwidthMeasure), client: {
-            RDPPreflightClient().run(configuration: $0, onGraphicsFrame: { frame in
+            RDPClient().run(configuration: $0, onGraphicsFrame: { frame in
                 observed.withLock { $0.frames.append(frame) }
             })
         }).report
@@ -268,7 +268,7 @@ struct MockKRDPServerTests {
 
     // MARK: Licensing
 
-    @Test func preflightActivatesWhenDemandActiveArrivesWithoutLicensingPDU() throws {
+    @Test func clientActivatesWhenDemandActiveArrivesWithoutLicensingPDU() throws {
         let report = try runMock(.init(licensingBehavior: .demandActiveOnly)).report
 
         #expect(report.status == "success")
@@ -282,7 +282,7 @@ struct MockKRDPServerTests {
         #expect(report.error == nil)
     }
 
-    @Test func preflightRespondsToServerLicenseRequest() throws {
+    @Test func clientRespondsToServerLicenseRequest() throws {
         let report = try runMock(.init(licensingBehavior: .serverLicenseRequest)).report
 
         #expect(report.status == "success")
@@ -292,7 +292,7 @@ struct MockKRDPServerTests {
         #expect(report.error == nil)
     }
 
-    @Test func preflightRespondsToX509ServerLicenseRequest() throws {
+    @Test func clientRespondsToX509ServerLicenseRequest() throws {
         let report = try runMock(.init(licensingBehavior: .serverLicenseRequestX509)).report
 
         #expect(report.status == "success")
@@ -302,7 +302,7 @@ struct MockKRDPServerTests {
         #expect(report.error == nil)
     }
 
-    @Test func preflightSendsClientLicenseInformationForMatchingStoredLicense() throws {
+    @Test func clientSendsClientLicenseInformationForMatchingStoredLicense() throws {
         let report = try runMock(.init(licensingBehavior: .serverLicenseRequestWithStoredClientLicense)) {
             $0.storedClientLicense = RDPStoredClientLicense(
                 version: 0x0006_0001,
@@ -320,7 +320,7 @@ struct MockKRDPServerTests {
         #expect(report.error == nil)
     }
 
-    @Test func preflightReportsLicensingFailureWithTheServerErrorCode() throws {
+    @Test func clientReportsLicensingFailureWithTheServerErrorCode() throws {
         let report = try runMock(.init(licensingBehavior: .noLicenseServerError)).report
 
         #expect(report.status == "failure")
@@ -330,7 +330,7 @@ struct MockKRDPServerTests {
         #expect(report.error == "server licensing failed: ERR_NO_LICENSE_SERVER (0x00000006), ST_TOTAL_ABORT")
     }
 
-    @Test func preflightReportsDisconnectAfterClientInfo() throws {
+    @Test func clientReportsDisconnectAfterClientInfo() throws {
         let report = try runMock(.init(licensingBehavior: .disconnectInsteadOfLicensing)).report
 
         #expect(report.status == "failure")
@@ -341,7 +341,7 @@ struct MockKRDPServerTests {
 
     // MARK: Connection finalization
 
-    @Test func preflightSendsFontListBeforeWaitingForControlGranted() throws {
+    @Test func clientSendsFontListBeforeWaitingForControlGranted() throws {
         let report = try runMock(.init(finalizationBehavior: .waitForFontListBeforeGrant)).report
 
         #expect(report.status == "success")
@@ -351,7 +351,7 @@ struct MockKRDPServerTests {
         #expect(report.error == nil)
     }
 
-    @Test func preflightContinuesWhenShareDataArrivesBeforeServerSynchronize() throws {
+    @Test func clientContinuesWhenShareDataArrivesBeforeServerSynchronize() throws {
         let report = try runMock(.init(finalizationBehavior: .saveSessionInfoBeforeSynchronize)).report
 
         #expect(report.status == "success")
@@ -361,7 +361,7 @@ struct MockKRDPServerTests {
         #expect(report.error == nil)
     }
 
-    @Test func preflightCompletesWhenServerWaitsForClientSynchronizeBeforeServerSynchronize() throws {
+    @Test func clientCompletesWhenServerWaitsForClientSynchronizeBeforeServerSynchronize() throws {
         let report = try runMock(.init(finalizationBehavior: .waitForClientSynchronizeBeforeServerSynchronize)).report
 
         #expect(report.status == "success")
@@ -372,7 +372,7 @@ struct MockKRDPServerTests {
         #expect(report.error == nil)
     }
 
-    @Test func preflightCompletesWhenServerControlCooperateArrivesBeforeSynchronize() throws {
+    @Test func clientCompletesWhenServerControlCooperateArrivesBeforeSynchronize() throws {
         let report = try runMock(.init(finalizationBehavior: .controlCooperateBeforeSynchronize)).report
 
         #expect(report.status == "success")
@@ -382,7 +382,7 @@ struct MockKRDPServerTests {
         #expect(report.error == nil)
     }
 
-    @Test func preflightContinuesWhenMonitorLayoutArrivesBeforeServerSynchronize() throws {
+    @Test func clientContinuesWhenMonitorLayoutArrivesBeforeServerSynchronize() throws {
         let report = try runMock(.init(licensingBehavior: .validClientThenDemandActiveWithMonitorLayout)).report
 
         #expect(report.status == "success")
@@ -394,7 +394,7 @@ struct MockKRDPServerTests {
     }
 
     /// The mock never sends Font Map; the client gives up at its receive timeout.
-    @Test func preflightRequiresFontMapBeforeGraphicsHandshake() throws {
+    @Test func clientRequiresFontMapBeforeGraphicsHandshake() throws {
         let report = try runMock(.init(finalizationBehavior: .grantControlWithoutFontMap)) {
             $0.timeoutSeconds = 1
         }.report
@@ -407,10 +407,10 @@ struct MockKRDPServerTests {
         #expect(report.error == "server did not send Font Map during connection finalization")
     }
 
-    @Test func preflightReactivatesAfterDeactivateAllAndDemandActive() throws {
+    @Test func clientReactivatesAfterDeactivateAllAndDemandActive() throws {
         let inputSessions = Locked(0)
         let report = try runMock(.init(finalizationBehavior: .deactivateThenReactivateAfterFontMap), client: {
-            RDPPreflightClient().run(configuration: $0, onInputReady: { _ in inputSessions.withLock { $0 += 1 } })
+            RDPClient().run(configuration: $0, onInputReady: { _ in inputSessions.withLock { $0 += 1 } })
         }).report
 
         #expect(report.status == "success")
@@ -424,7 +424,7 @@ struct MockKRDPServerTests {
 
     /// A Deactivate All that no Demand Active follows; the client gives up at
     /// its receive timeout.
-    @Test func preflightReportsServerDeactivateBeforeGraphicsAsDisconnect() throws {
+    @Test func clientReportsServerDeactivateBeforeGraphicsAsDisconnect() throws {
         let report = try runMock(.init(finalizationBehavior: .deactivateAfterFontMap)) {
             $0.timeoutSeconds = 1
         }.report
@@ -436,7 +436,7 @@ struct MockKRDPServerTests {
         #expect(report.error == "server deactivated the session before opening RDPGFX dynamic channel")
     }
 
-    @Test func preflightRejectsSetErrorInfoLogoffBeforeGraphics() throws {
+    @Test func clientRejectsSetErrorInfoLogoffBeforeGraphics() throws {
         let report = try runMock(.init(finalizationBehavior: .setErrorInfoLogoffThenDeactivateAfterFontMap)).report
 
         #expect(report.status == "failure")
@@ -453,7 +453,7 @@ struct MockKRDPServerTests {
 
     /// Set Error Info and Deactivate All, then silence: the client waits its
     /// one-second termination grace period for the disconnect.
-    @Test func preflightRejectsNonCleanSetErrorInfoBeforeGraphics() throws {
+    @Test func clientRejectsNonCleanSetErrorInfoBeforeGraphics() throws {
         let report = try runMock(.init(finalizationBehavior: .setErrorInfoDeniedThenDeactivateAfterFontMap)).report
 
         #expect(report.status == "failure")
@@ -463,7 +463,7 @@ struct MockKRDPServerTests {
         #expect(report.error == "server ended the session with ERRINFO_0x00000007 before opening RDPGFX dynamic channel")
     }
 
-    @Test func preflightRejectsDeactivateThenUserRequestedDisconnectBeforeGraphics() throws {
+    @Test func clientRejectsDeactivateThenUserRequestedDisconnectBeforeGraphics() throws {
         let report = try runMock(.init(finalizationBehavior: .deactivateThenUserRequestedDisconnectAfterFontMap)).report
 
         #expect(report.status == "failure")
@@ -478,7 +478,7 @@ struct MockKRDPServerTests {
         #expect(report.error == "server ended the session with rn-user-requested before opening RDPGFX dynamic channel")
     }
 
-    @Test func preflightRejectsUserRequestedDisconnectBeforeGraphics() throws {
+    @Test func clientRejectsUserRequestedDisconnectBeforeGraphics() throws {
         let report = try runMock(.init(finalizationBehavior: .userRequestedDisconnectAfterFontMap)).report
 
         #expect(report.status == "failure")
@@ -493,7 +493,7 @@ struct MockKRDPServerTests {
 
     // MARK: Dynamic channels
 
-    @Test func preflightRejectsUnsupportedDynamicChannelsBeforeGraphics() throws {
+    @Test func clientRejectsUnsupportedDynamicChannelsBeforeGraphics() throws {
         let run = try runMock(.init(auxiliaryDynamicChannelBehavior: .unsupportedChannels))
 
         let dynamicRequestTypes = run.report.rdpDynamicChannelRequestTypes ?? []
@@ -510,7 +510,7 @@ struct MockKRDPServerTests {
         #expect(run.report.error == nil)
     }
 
-    @Test func preflightCapsDynamicVirtualChannelResponseAtWindowsVersionThree() throws {
+    @Test func clientCapsDynamicVirtualChannelResponseAtWindowsVersionThree() throws {
         let report = try runMock(.init(dynamicChannelVersion: 3)).report
 
         #expect(report.status == "success")
@@ -520,7 +520,7 @@ struct MockKRDPServerTests {
         #expect(report.error == nil)
     }
 
-    @Test func preflightAcceptsFragmentedStaticDynamicChannelCreateRequest() throws {
+    @Test func clientAcceptsFragmentedStaticDynamicChannelCreateRequest() throws {
         let report = try runMock(.init(auxiliaryDynamicChannelBehavior: .fragmentedGraphicsCreate)).report
 
         #expect(report.status == "success")
@@ -529,7 +529,7 @@ struct MockKRDPServerTests {
         #expect(report.error == nil)
     }
 
-    @Test func preflightDecodesCompressedDynamicVirtualChannelGraphicsData() throws {
+    @Test func clientDecodesCompressedDynamicVirtualChannelGraphicsData() throws {
         let report = try runMock(.init(
             graphicsBehavior: .sendCompressedCAVideoRemoteFXFrame,
             dynamicChannelVersion: 3
@@ -542,7 +542,7 @@ struct MockKRDPServerTests {
         #expect(report.error == nil)
     }
 
-    @Test func preflightRejectsUnsupportedCompressedDynamicVirtualChannelData() throws {
+    @Test func clientRejectsUnsupportedCompressedDynamicVirtualChannelData() throws {
         let report = try runMock(.init(
             graphicsBehavior: .sendUnsupportedCompressedDynamicData,
             dynamicChannelVersion: 3
@@ -556,7 +556,7 @@ struct MockKRDPServerTests {
     /// Decompressed DVC data can exceed one 1,600-byte PDU; it once went through
     /// an encoding initializer that trapped. Here it reaches the graphics decoder,
     /// which rejects the 0x41 bytes as RDPGFX data.
-    @Test func preflightHandlesCompressedDynamicDataLargerThanOnePDU() throws {
+    @Test func clientHandlesCompressedDynamicDataLargerThanOnePDU() throws {
         let report = try runMock(.init(
             graphicsBehavior: .sendCompressedDataLargerThanOnePDU,
             dynamicChannelVersion: 3
@@ -567,7 +567,7 @@ struct MockKRDPServerTests {
         #expect(report.error == "invalid RDP Graphics Pipeline PDU")
     }
 
-    @Test func preflightIgnoresDynamicVirtualChannelSoftSyncRequest() throws {
+    @Test func clientIgnoresDynamicVirtualChannelSoftSyncRequest() throws {
         let report = try runMock(.init(graphicsBehavior: .sendSoftSyncBeforeFrame)).report
 
         #expect(report.status == "success")
@@ -577,7 +577,7 @@ struct MockKRDPServerTests {
         #expect(report.error == nil)
     }
 
-    @Test func preflightIgnoresUnknownDynamicVirtualChannelClose() throws {
+    @Test func clientIgnoresUnknownDynamicVirtualChannelClose() throws {
         let report = try runMock(.init(graphicsBehavior: .sendUnknownCloseBeforeFrame)).report
 
         #expect(report.status == "success")
@@ -589,7 +589,7 @@ struct MockKRDPServerTests {
 
     // MARK: RDPGFX capabilities
 
-    @Test func preflightAdvertisesGraphicsProfilesToMockServer() throws {
+    @Test func clientAdvertisesGraphicsProfilesToMockServer() throws {
         let cases: [(profile: RDPGraphicsCapabilityProfile, selectedVersion: UInt32, selectedFlags: UInt32)] = [
             (.automatic, RDPGFXCapabilityVersion.version107, RDPGFXCapabilityFlags.defaultVersion107),
             (.avcThinClient, RDPGFXCapabilityVersion.version107, RDPGFXCapabilityFlags.defaultVersion107),
@@ -615,7 +615,7 @@ struct MockKRDPServerTests {
         }
     }
 
-    @Test func preflightAcceptsAdvertisedIntermediateGraphicsCapabilityConfirm() throws {
+    @Test func clientAcceptsAdvertisedIntermediateGraphicsCapabilityConfirm() throws {
         let report = try runMock(.init(graphicsCapabilitySelection: .version10)).report
 
         #expect(report.status == "success")
@@ -625,7 +625,7 @@ struct MockKRDPServerTests {
         #expect(report.error == nil)
     }
 
-    @Test func preflightAcceptsGraphicsCapabilityConfirmWithDifferentValidFlags() throws {
+    @Test func clientAcceptsGraphicsCapabilityConfirmWithDifferentValidFlags() throws {
         let report = try runMock(.init(graphicsCapabilitySelection: .firstAdvertisedDifferentFlags)).report
 
         #expect(report.status == "success")
@@ -635,7 +635,7 @@ struct MockKRDPServerTests {
         #expect(report.error == nil)
     }
 
-    @Test func preflightRejectsKnownUnadvertisedGraphicsCapabilityConfirm() throws {
+    @Test func clientRejectsKnownUnadvertisedGraphicsCapabilityConfirm() throws {
         let report = try runMock(.init(graphicsCapabilitySelection: .version10)) {
             $0.graphicsCapabilityProfile = .legacy
         }.report
@@ -647,7 +647,7 @@ struct MockKRDPServerTests {
         #expect(report.error == "server confirmed an RDPGFX capability version that the client did not advertise")
     }
 
-    @Test func preflightAcceptsCompressedDataFirstGraphicsCapsConfirm() throws {
+    @Test func clientAcceptsCompressedDataFirstGraphicsCapsConfirm() throws {
         let report = try runMock(.init(
             graphicsBehavior: .sendCompressedCapsConfirmFirstFrame,
             dynamicChannelVersion: 3
@@ -661,7 +661,7 @@ struct MockKRDPServerTests {
         #expect(report.error == nil)
     }
 
-    @Test func preflightRejectsCompressedGraphicsCapsConfirmWithoutVersion3() throws {
+    @Test func clientRejectsCompressedGraphicsCapsConfirmWithoutVersion3() throws {
         let report = try runMock(.init(
             graphicsBehavior: .sendCompressedCapsConfirmFirstFrame,
             dynamicChannelVersion: 2
@@ -675,7 +675,7 @@ struct MockKRDPServerTests {
         #expect(report.error == "invalid RDP Dynamic Virtual Channel PDU")
     }
 
-    @Test func preflightAcceptsFragmentedMixedCompressedGraphicsCapsConfirm() throws {
+    @Test func clientAcceptsFragmentedMixedCompressedGraphicsCapsConfirm() throws {
         let report = try runMock(.init(
             graphicsBehavior: .sendFragmentedCompressedCapsConfirmFirstFrame,
             dynamicChannelVersion: 3
@@ -691,7 +691,7 @@ struct MockKRDPServerTests {
 
     /// The mock sends the first fragment and stops; the client gives up at its
     /// receive timeout.
-    @Test func preflightReportsIncompleteFragmentedGraphicsCapsConfirm() throws {
+    @Test func clientReportsIncompleteFragmentedGraphicsCapsConfirm() throws {
         let report = try runMock(.init(
             graphicsBehavior: .stallAfterFragmentedCapsConfirm,
             dynamicChannelVersion: 3
@@ -706,10 +706,10 @@ struct MockKRDPServerTests {
 
     // MARK: Graphics updates
 
-    @Test func preflightResolvesPointerCacheUpdatesFromMockKRDPServer() throws {
+    @Test func clientResolvesPointerCacheUpdatesFromMockKRDPServer() throws {
         let pointerUpdates = Locked<[RDPRemotePointerUpdate]>([])
         let report = try runMock(.init(graphicsBehavior: .sendPointerUpdatesBeforeFirstFrame), client: {
-            RDPPreflightClient().run(configuration: $0, onRemotePointer: { update in
+            RDPClient().run(configuration: $0, onRemotePointer: { update in
                 pointerUpdates.withLock { $0.append(update) }
             })
         }).report
@@ -728,7 +728,7 @@ struct MockKRDPServerTests {
         #expect(report.error == nil)
     }
 
-    @Test func preflightReportsFailingGraphicsUpdateFromMockServer() throws {
+    @Test func clientReportsFailingGraphicsUpdateFromMockServer() throws {
         let report = try runMock(.init(graphicsBehavior: .sendInvalidGraphicsPDU)).report
 
         #expect(report.status == "failure")
@@ -740,7 +740,7 @@ struct MockKRDPServerTests {
         #expect(report.error == "invalid RDP Graphics Pipeline PDU")
     }
 
-    @Test func preflightRejectsMalformedAVCFrameFromMockServer() throws {
+    @Test func clientRejectsMalformedAVCFrameFromMockServer() throws {
         let report = try runMock(.init(graphicsBehavior: .sendMalformedAVCFrame)).report
 
         #expect(report.status == "failure")
@@ -755,10 +755,10 @@ struct MockKRDPServerTests {
         #expect(report.error == "truncated input: needed 4 bytes, had 1")
     }
 
-    @Test func preflightVerifiesFragmentedBitmapGraphicsWithMockServer() throws {
+    @Test func clientVerifiesFragmentedBitmapGraphicsWithMockServer() throws {
         let observed = Locked(Observed())
         let report = try runMock(.init(graphicsBehavior: .sendFragmentedBitmapCompositionFrame), client: {
-            RDPPreflightClient().run(configuration: $0, onGraphicsFrame: { frame in
+            RDPClient().run(configuration: $0, onGraphicsFrame: { frame in
                 observed.withLock { $0.frames.append(frame) }
             })
         }).report
@@ -792,10 +792,10 @@ struct MockKRDPServerTests {
         #expect(report.error == nil)
     }
 
-    @Test func preflightDecodesClearCodecBandsFrameFromMockServer() throws {
+    @Test func clientDecodesClearCodecBandsFrameFromMockServer() throws {
         let observed = Locked(Observed())
         let report = try runMock(.init(graphicsBehavior: .sendClearCodecBandsFrame), client: {
-            RDPPreflightClient().run(configuration: $0, onGraphicsFrame: { frame in
+            RDPClient().run(configuration: $0, onGraphicsFrame: { frame in
                 observed.withLock { $0.frames.append(frame) }
             })
         }).report
@@ -829,7 +829,7 @@ struct MockKRDPServerTests {
         #expect(report.error == nil)
     }
 
-    @Test func preflightDecodesCAVideoRemoteFXProfilesFromMockServer() throws {
+    @Test func clientDecodesCAVideoRemoteFXProfilesFromMockServer() throws {
         let cases: [(profile: RDPGraphicsCapabilityProfile, selectedVersion: UInt32, selectedFlags: UInt32)] = [
             (.avc420, RDPGFXCapabilityVersion.version81, RDPGFXCapabilityFlags.defaultVersion81),
             (.legacy, RDPGFXCapabilityVersion.version8, RDPGFXCapabilityFlags.defaultVersion8),
@@ -841,7 +841,7 @@ struct MockKRDPServerTests {
                 .init(graphicsBehavior: .sendCAVideoRemoteFXFrame, graphicsCapabilitySelection: .firstAdvertised),
                 { $0.graphicsCapabilityProfile = testCase.profile },
                 client: {
-                    RDPPreflightClient().run(configuration: $0, onGraphicsFrame: { frame in
+                    RDPClient().run(configuration: $0, onGraphicsFrame: { frame in
                         observed.withLock { $0.frames.append(frame) }
                     })
                 }
@@ -874,12 +874,12 @@ struct MockKRDPServerTests {
         }
     }
 
-    @Test func preflightDecodesCAProgressiveFrameFromMockServer() throws {
+    @Test func clientDecodesCAProgressiveFrameFromMockServer() throws {
         let observed = Locked(Observed())
         let report = try runMock(
             .init(graphicsBehavior: .sendCAProgressiveFrame, graphicsCapabilitySelection: .firstAdvertised),
             client: {
-                RDPPreflightClient().run(configuration: $0, onGraphicsFrame: { frame in
+                RDPClient().run(configuration: $0, onGraphicsFrame: { frame in
                     observed.withLock { $0.frames.append(frame) }
                 })
             }
@@ -924,10 +924,10 @@ struct MockKRDPServerTests {
         #expect(observed.value.frames == report.rdpGraphicsFrames)
     }
 
-    @Test func preflightDoesNotReplaceAVCFrameWithIncompleteSurfaceFrame() throws {
+    @Test func clientDoesNotReplaceAVCFrameWithIncompleteSurfaceFrame() throws {
         let observed = Locked(Observed())
         let report = try runMock(.init(graphicsBehavior: .sendVideoBeforeBitmapCompositionFrame), client: {
-            RDPPreflightClient().run(configuration: $0, onGraphicsFrame: { frame in
+            RDPClient().run(configuration: $0, onGraphicsFrame: { frame in
                 observed.withLock { $0.frames.append(frame) }
             })
         }).report
@@ -940,10 +940,10 @@ struct MockKRDPServerTests {
         #expect(report.error == nil)
     }
 
-    @Test func preflightEmitsEveryVideoUpdateWithinOneRDPGFXFrame() throws {
+    @Test func clientEmitsEveryVideoUpdateWithinOneRDPGFXFrame() throws {
         let observed = Locked(Observed())
         let report = try runMock(.init(graphicsBehavior: .sendMultipleVideoUpdatesInFrame), client: {
-            RDPPreflightClient().run(configuration: $0, onGraphicsFrame: { frame in
+            RDPClient().run(configuration: $0, onGraphicsFrame: { frame in
                 observed.withLock { $0.frames.append(frame) }
             })
         }).report
@@ -958,10 +958,10 @@ struct MockKRDPServerTests {
 
     /// Two complete frames in one DVC message are each delivered and acknowledged
     /// ([MS-RDPEGFX] 3.2.5.12).
-    @Test func preflightDeliversAndAcknowledgesTwoFramesFromOnePayload() throws {
+    @Test func clientDeliversAndAcknowledgesTwoFramesFromOnePayload() throws {
         let observed = Locked(Observed())
         let report = try runMock(.init(graphicsBehavior: .sendTwoFramesInOnePayload), { $0.graphicsFrameCaptureLimit = 2 }, client: {
-            RDPPreflightClient().run(configuration: $0, onGraphicsFrame: { frame in
+            RDPClient().run(configuration: $0, onGraphicsFrame: { frame in
                 observed.withLock { $0.frames.append(frame) }
             })
         }).report
@@ -976,10 +976,10 @@ struct MockKRDPServerTests {
         #expect(acknowledgedFrameIDs == [1, 2])
     }
 
-    @Test func preflightEmitsEveryDirtyBitmapSurfaceWithinOneRDPGFXFrame() throws {
+    @Test func clientEmitsEveryDirtyBitmapSurfaceWithinOneRDPGFXFrame() throws {
         let observed = Locked(Observed())
         let report = try runMock(.init(graphicsBehavior: .sendMultipleBitmapSurfacesInFrame), client: {
-            RDPPreflightClient().run(configuration: $0, onGraphicsFrame: { frame in
+            RDPClient().run(configuration: $0, onGraphicsFrame: { frame in
                 observed.withLock { $0.frames.append(frame) }
             })
         }).report
@@ -996,7 +996,7 @@ struct MockKRDPServerTests {
 
     /// An empty frame is acknowledged but delivers no image; with no frame to
     /// show, the live session gives up at its receive timeout.
-    @Test func livePreflightTimesOutWhenAcknowledgedGraphicsFrameHasNoImageData() throws {
+    @Test func liveSessionTimesOutWhenAcknowledgedGraphicsFrameHasNoImageData() throws {
         let report = try runMock(.init(graphicsBehavior: .sendEmptyFrameThenStall)) {
             $0.timeoutSeconds = 1
             $0.graphicsFrameCaptureLimit = nil
@@ -1016,9 +1016,9 @@ struct MockKRDPServerTests {
         #expect(report.error == "receive failed: RDP Graphics Update timed out after 1 seconds")
     }
 
-    @Test func preflightDoesNotAcknowledgeFrameWhenGraphicsHandlerFails() throws {
+    @Test func clientDoesNotAcknowledgeFrameWhenGraphicsHandlerFails() throws {
         let report = try runMock(.init(graphicsBehavior: .closeAfterFirstFrame), client: {
-            RDPPreflightClient().run(configuration: $0, onGraphicsFrame: { _ in
+            RDPClient().run(configuration: $0, onGraphicsFrame: { _ in
                 throw MockGraphicsFrameHandlerError.failed
             })
         }).report
@@ -1030,7 +1030,7 @@ struct MockKRDPServerTests {
         #expect(report.error?.contains("mock graphics frame handler failed") == true)
     }
 
-    @Test func livePreflightTreatsRemoteCloseAfterFrameAsCleanDisconnect() throws {
+    @Test func liveSessionTreatsRemoteCloseAfterFrameAsCleanDisconnect() throws {
         let report = try runMock(.init(graphicsBehavior: .closeAfterFirstFrame)) {
             $0.graphicsFrameCaptureLimit = nil
         }.report
@@ -1044,7 +1044,7 @@ struct MockKRDPServerTests {
 
     /// A close after a non-clean Set Error Info is the server ending the session
     /// with that error, not a clean disconnect ([MS-RDPBCGR] 2.2.5.1.1).
-    @Test func livePreflightReportsNonCleanSetErrorInfoBeforeCloseAsFailure() throws {
+    @Test func liveSessionReportsNonCleanSetErrorInfoBeforeCloseAsFailure() throws {
         let report = try runMock(.init(graphicsBehavior: .setErrorInfoThenCloseAfterFirstFrame)) {
             $0.graphicsFrameCaptureLimit = nil
         }.report
@@ -1057,7 +1057,7 @@ struct MockKRDPServerTests {
 
     /// Logoff is a clean end of the session, live or while capturing frames.
     @Test(arguments: [1, nil] as [Int?])
-    func preflightTreatsSetErrorInfoLogoffBeforeFrameAsCleanDisconnect(captureLimit: Int?) throws {
+    func clientTreatsSetErrorInfoLogoffBeforeFrameAsCleanDisconnect(captureLimit: Int?) throws {
         let report = try runMock(.init(graphicsBehavior: .setErrorInfoLogoffBeforeFrame)) {
             $0.graphicsFrameCaptureLimit = captureLimit
         }.report
@@ -1073,14 +1073,14 @@ struct MockKRDPServerTests {
 
     // MARK: Clipboard, input, display control, device redirection and audio
 
-    @Test func preflightTransfersRemoteClipboardFileFromMockKRDPServer() throws {
+    @Test func clientTransfersRemoteClipboardFileFromMockKRDPServer() throws {
         let remoteFile = RDPClipboardLocalFile(
             fileName: "notes.txt",
             contents: Data("hello from remote".utf8)
         )
         let observed = Locked(Observed())
         let report = try runMock(.init(clipboardFiles: [remoteFile]), { $0.clipboardEnabled = true }, client: {
-            RDPPreflightClient().run(
+            RDPClient().run(
                 configuration: $0,
                 onGraphicsFrame: { frame in observed.withLock { $0.frames.append(frame) } },
                 onClipboardReady: { session in observed.withLock { $0.clipboardSession = session } },
@@ -1146,7 +1146,7 @@ struct MockKRDPServerTests {
 
     /// After Monitor Ready the client MUST send a Format List ([MS-RDPECLIP]
     /// 3.2.5.1.2), with or without an onClipboardReady handler.
-    @Test func preflightAnswersClipboardMonitorReadyWithoutHandlers() throws {
+    @Test func clientAnswersClipboardMonitorReadyWithoutHandlers() throws {
         let run = try runMock(.init(remoteClipboardText: "remote")) { $0.clipboardEnabled = true }
 
         #expect(run.report.status == "success")
@@ -1162,7 +1162,7 @@ struct MockKRDPServerTests {
     /// The traffic a Windows server sees once a session is up: input, clipboard
     /// both ways, display control, device redirection and audio. The mock
     /// sends the first frame only after all of it arrived.
-    @Test func preflightVerifiesWindowsCompatibilityBehaviorsWithMockServer() throws {
+    @Test func clientVerifiesWindowsCompatibilityBehaviorsWithMockServer() throws {
         let localClipboardText = "mock_local_clip"
         // About 4 KB of UTF-16: the Format Data Response arrives as FIRST, middle and LAST chunks.
         let remoteClipboardText = String(repeating: "mock_remote_clip ", count: 120)
@@ -1175,7 +1175,7 @@ struct MockKRDPServerTests {
                 $0.audioPlaybackEnabled = true
             },
             client: {
-                RDPPreflightClient().run(
+                RDPClient().run(
                     configuration: $0,
                     onInputReady: { session in
                         var events: [RDPSlowPathInputEvent] = [.pointerMove(x: 640, y: 360)]
@@ -1312,7 +1312,7 @@ struct MockKRDPServerTests {
 private let mockCredentials = RDPCredentials(username: "rdp-user", password: "secret")
 
 private struct MockRun {
-    var report: RDPPreflightReport
+    var report: RDPConnectionReport
     var transcript: MockKRDPServerTranscript
     var connectionCount: Int
 }
@@ -1323,7 +1323,7 @@ private struct MockRun {
 private func runMock(
     _ options: MockKRDPServer.Options = .init(),
     _ configure: (inout RDPConnectionConfiguration) -> Void = { _ in },
-    client: (RDPConnectionConfiguration) -> RDPPreflightReport = { RDPPreflightClient().run(configuration: $0) }
+    client: (RDPConnectionConfiguration) -> RDPConnectionReport = { RDPClient().run(configuration: $0) }
 ) throws -> MockRun {
     let server = try MockKRDPServer.start(options)
     defer { server.stop() }

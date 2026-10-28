@@ -3,14 +3,14 @@ import NIOCore
 
 /// One connection to one server, from TCP connect to the end of the session
 /// ([MS-RDPBCGR] 1.3.1.1). It runs on the thread that called
-/// `RDPPreflightClient.run`/`connect` and keeps everything it learns in
+/// `RDPClient.run`/`connect` and keeps everything it learns in
 /// `report`.
 final class RDPClientConnection {
     let configuration: RDPConnectionConfiguration
     let callbacks: RDPSessionCallbacks
     /// Frames to capture before the session ends; nil runs until the server ends it.
     let targetFrameCount: Int?
-    var report: RDPPreflightReport
+    var report: RDPConnectionReport
     var stage = RDPConnectionStage.negotiation
     var transport: RDPTransport?
     /// A Server Redirection PDU that ended this connection ([MS-RDPBCGR] 3.1.5.2).
@@ -86,7 +86,7 @@ final class RDPClientConnection {
         desktopWidth = configuration.desktopWidth
         desktopHeight = configuration.desktopHeight
         let request = configuration.connectionRequest
-        report = RDPPreflightReport(
+        report = RDPConnectionReport(
             status: "failure",
             stage: RDPConnectionStage.negotiation.rawValue,
             target: configuration.target,
@@ -163,7 +163,7 @@ final class RDPClientConnection {
     }
 
     /// Runs everything after the negotiation and returns the final report.
-    func runSession() -> RDPPreflightReport {
+    func runSession() -> RDPConnectionReport {
         do {
             try establishSecurity()
             try connectChannels()
@@ -179,7 +179,7 @@ final class RDPClientConnection {
 
     /// Ends the attempt with `error` as the reason, for `run` after a thrown
     /// negotiation error.
-    func failedReport(_ error: Error) -> RDPPreflightReport {
+    func failedReport(_ error: Error) -> RDPConnectionReport {
         fail(error)
         return finishReport()
     }
@@ -194,10 +194,10 @@ final class RDPClientConnection {
         guard report.error == nil else {
             return
         }
-        report.error = callbacks.isCancelled ? RDPPreflightError.cancelled.description : String(describing: error)
+        report.error = callbacks.isCancelled ? RDPConnectionError.cancelled.description : String(describing: error)
     }
 
-    func finishReport() -> RDPPreflightReport {
+    func finishReport() -> RDPConnectionReport {
         transport?.close()
         report.stage = stage.rawValue
         if clipboard != nil {
@@ -235,7 +235,7 @@ final class RDPClientConnection {
 
     func send(_ packet: Data) throws {
         guard let transport else {
-            throw RDPPreflightError.send("not connected")
+            throw RDPConnectionError.send("not connected")
         }
         try transport.send(packet)
     }
@@ -252,15 +252,15 @@ final class RDPClientConnection {
     /// connection sequence.
     func receive(_ description: String) throws -> Data {
         guard let transport else {
-            throw RDPPreflightError.receive("not connected")
+            throw RDPConnectionError.receive("not connected")
         }
         do {
             return try transport.receive(timeout: .seconds(Int64(configuration.timeoutSeconds)))
         } catch RDPTransportError.timedOut {
-            throw RDPPreflightError.receive(
+            throw RDPConnectionError.receive(
                 "\(description) timed out after \(configuration.timeoutSeconds) seconds"
             )
-        } catch let error as RDPPreflightError {
+        } catch let error as RDPConnectionError {
             throw error
         } catch let error as RDPCredSSPError {
             // The server rejected the CredSSP credentials.
@@ -268,16 +268,16 @@ final class RDPClientConnection {
         } catch {
             try callbacks.throwIfCancelled()
             guard isConnectionClose(error) else {
-                throw RDPPreflightError.receive(
+                throw RDPConnectionError.receive(
                     "connection lost before receiving \(description): \(connectionErrorDescription(error))"
                 )
             }
-            throw RDPPreflightError.receive("connection closed before receiving \(description)")
+            throw RDPConnectionError.receive("connection closed before receiving \(description)")
         }
     }
 
     func appendWarning(code: String, message: String) {
-        report.warnings.appendCapped(RDPProbeWarning(code: code, message: message), limit: RDPRecordLimit.warnings)
+        report.warnings.appendCapped(RDPConnectionWarning(code: code, message: message), limit: RDPRecordLimit.warnings)
     }
 }
 

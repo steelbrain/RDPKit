@@ -7,7 +7,7 @@ import NIOCore
 extension RDPClientConnection {
     func receiveAndDispatch() throws {
         guard let transport else {
-            throw RDPPreflightError.receive("not connected")
+            throw RDPConnectionError.receive("not connected")
         }
         var timeout = receiveTimeout
         if let phaseDeadline {
@@ -24,7 +24,7 @@ extension RDPClientConnection {
         } catch RDPTransportError.timedOut {
             try handleReceiveTimeout()
             return
-        } catch let error as RDPPreflightError {
+        } catch let error as RDPConnectionError {
             throw error
         } catch {
             try handleConnectionEnd(error)
@@ -135,7 +135,7 @@ extension RDPClientConnection {
                 return
             }
             self.redirection = redirection
-            throw RDPPreflightError.protocolViolation(redirection.targetHost.map {
+            throw RDPConnectionError.protocolViolation(redirection.targetHost.map {
                 "server requested RDP redirection to \($0)"
             } ?? "server requested RDP redirection")
         default:
@@ -193,7 +193,7 @@ extension RDPClientConnection {
         switch license.message {
         case let .errorAlert(alert):
             guard alert.isValidClient else {
-                throw RDPPreflightError.protocolViolation("server licensing failed: \(alert.description)")
+                throw RDPConnectionError.protocolViolation("server licensing failed: \(alert.description)")
             }
             licensingComplete = true
             startPhase()
@@ -224,7 +224,7 @@ extension RDPClientConnection {
     /// otherwise asks for a new one.
     private func answerLicenseRequest(_ request: RDPServerLicenseRequest) throws {
         guard let serverPublicKey = request.serverCertificatePublicKey ?? serverCertificatePublicKey else {
-            throw RDPPreflightError.protocolViolation("server did not provide a usable licensing public key")
+            throw RDPConnectionError.protocolViolation("server did not provide a usable licensing public key")
         }
         let packet: Data
         let clientRandom: Data
@@ -396,9 +396,9 @@ extension RDPClientConnection {
             return
         }
         if stage == .graphics, !graphicsOpened {
-            throw RDPPreflightError.protocolViolation("\(termination.description) before opening RDPGFX dynamic channel")
+            throw RDPConnectionError.protocolViolation("\(termination.description) before opening RDPGFX dynamic channel")
         }
-        throw RDPPreflightError.protocolViolation(termination.description)
+        throw RDPConnectionError.protocolViolation(termination.description)
     }
 
     /// A close after the server announced the end is that end; otherwise only
@@ -410,16 +410,16 @@ extension RDPClientConnection {
             return
         }
         guard isConnectionClose(error) else {
-            throw RDPPreflightError.receive("connection lost: \(connectionErrorDescription(error))")
+            throw RDPConnectionError.receive("connection lost: \(connectionErrorDescription(error))")
         }
         if isDeactivated {
-            throw RDPPreflightError.protocolViolation(deactivatedMessage)
+            throw RDPConnectionError.protocolViolation(deactivatedMessage)
         }
         if stage == .graphics, report.rdpGraphicsFirstFrame != nil, !hasPartialGraphicsData {
             sessionEnded = true
             return
         }
-        throw RDPPreflightError.receive("connection closed before receiving \(awaitedMessage)")
+        throw RDPConnectionError.receive("connection closed before receiving \(awaitedMessage)")
     }
 
     private func handleReceiveTimeout() throws {
@@ -428,11 +428,11 @@ extension RDPClientConnection {
             return
         }
         if isDeactivated {
-            throw RDPPreflightError.protocolViolation(deactivatedMessage)
+            throw RDPConnectionError.protocolViolation(deactivatedMessage)
         }
         switch stage {
         case .confirmActive, .finalization:
-            throw RDPPreflightError.protocolViolation(share?.finalization.receivedControlGranted == true
+            throw RDPConnectionError.protocolViolation(share?.finalization.receivedControlGranted == true
                 ? "server did not send Font Map during connection finalization"
                 : "server did not grant control during connection finalization")
         case .graphics:
@@ -441,14 +441,14 @@ extension RDPClientConnection {
                 return
             }
             if graphicsChannelID != nil, graphicsCompositor == nil {
-                throw RDPPreflightError.protocolViolation(graphicsChannelID.flatMap { dynamicChannelFragments[$0] } != nil
+                throw RDPConnectionError.protocolViolation(graphicsChannelID.flatMap { dynamicChannelFragments[$0] } != nil
                     ? "server did not complete fragmented RDPGFX capabilities data"
                     : "server did not confirm RDPGFX capabilities")
             }
         default:
             break
         }
-        throw RDPPreflightError.receive("\(awaitedMessage) timed out after \(configuration.timeoutSeconds) seconds")
+        throw RDPConnectionError.receive("\(awaitedMessage) timed out after \(configuration.timeoutSeconds) seconds")
     }
 
     /// Graphics flow: RDPGFX capabilities are confirmed, or a frame arrived without RDPGFX.

@@ -165,7 +165,7 @@ private struct PerformanceMetricsView: View {
 
 struct RemoteSessionDiagnosticsSnapshot: Equatable {
     var title = "Remote Desktop"
-    var report: RDPPreflightReport?
+    var report: RDPConnectionReport?
     var previewFrame: RDPFrameMetadata?
     var previewFrameCount = 0
     var previewDecodeError: String?
@@ -490,7 +490,7 @@ struct RemoteSessionDiagnosticsWindowContent: View {
         return trusted ? "trusted" : "unrecognized"
     }
 
-    private func graphicsCapability(_ report: RDPPreflightReport?) -> String {
+    private func graphicsCapability(_ report: RDPConnectionReport?) -> String {
         guard let version = report?.rdpGraphicsSelectedCapabilityVersion else {
             return "none"
         }
@@ -532,7 +532,7 @@ struct RemoteSessionDiagnosticsWindowContent: View {
             .joined(separator: ", ")
     }
 
-    private func clientInfoState(_ report: RDPPreflightReport?) -> String {
+    private func clientInfoState(_ report: RDPConnectionReport?) -> String {
         guard let sent = report?.rdpClientInfoSent else {
             return "not attempted"
         }
@@ -597,7 +597,7 @@ struct RemoteSessionDiagnosticsWindowContent: View {
         return types.joined(separator: ", ")
     }
 
-    private func displayControlCapability(_ report: RDPPreflightReport?) -> String {
+    private func displayControlCapability(_ report: RDPConnectionReport?) -> String {
         guard let caps = report?.rdpDisplayControlCaps else {
             return "none"
         }
@@ -674,7 +674,7 @@ struct RemoteSessionDiagnosticsWindowContent: View {
             .joined(separator: ", ")
     }
 
-    private func graphicsFailureSummary(_ report: RDPPreflightReport?) -> String {
+    private func graphicsFailureSummary(_ report: RDPConnectionReport?) -> String {
         guard let report,
               report.rdpGraphicsFailureUpdatePayloadHex != nil
                 || report.rdpGraphicsFailureUpdateResponseHex != nil

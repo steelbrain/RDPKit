@@ -14,7 +14,7 @@ import Testing
     do {
         _ = try RDPTransportPacketFraming.packetLength(from: Data([0x03, 0x01, 0x00, 0x07]))
         #expect(Bool(false), "Expected invalid TPKT reserved byte to throw")
-    } catch let error as RDPPreflightError {
+    } catch let error as RDPConnectionError {
         #expect(error.description == "receive failed: received invalid TPKT reserved byte 1")
     }
 }
@@ -23,7 +23,7 @@ import Testing
     do {
         _ = try RDPTransportPacketFraming.packetLength(from: Data([0x03, 0x00, 0x00, 0x03]))
         #expect(Bool(false), "Expected invalid TPKT length to throw")
-    } catch let error as RDPPreflightError {
+    } catch let error as RDPConnectionError {
         #expect(error.description == "receive failed: received invalid TPKT length 3")
     }
 }
@@ -50,13 +50,13 @@ import Testing
     do {
         _ = try RDPTransportPacketFraming.packetLength(from: Data([0x00, 0x02]))
         #expect(Bool(false), "Expected invalid Fast-Path length to throw")
-    } catch let error as RDPPreflightError {
+    } catch let error as RDPConnectionError {
         #expect(error.description == "receive failed: received invalid Fast-Path length 2")
     }
 }
 
 @Test func rejectsFastPathOutputHeaderWithNonFastPathAction() throws {
-    #expect(throws: RDPPreflightError.self) {
+    #expect(throws: RDPConnectionError.self) {
         try RDPTransportPacketFraming.packetLength(from: Data([0x01, 0x05]))
     }
 }
@@ -69,8 +69,8 @@ import Testing
     #expect(try length([0x30, 0x03]) == 5)
     #expect(try length([0x30, 0x82, 0x01]) == nil)
     #expect(try length([0x30, 0x82, 0x01, 0x00]) == 260)
-    #expect(throws: RDPPreflightError.self) { try length([0x31, 0x03]) }
-    #expect(throws: RDPPreflightError.self) { try length([0x30, 0x83, 0x01, 0x00, 0x00]) }
+    #expect(throws: RDPConnectionError.self) { try length([0x31, 0x03]) }
+    #expect(throws: RDPConnectionError.self) { try length([0x30, 0x83, 0x01, 0x00, 0x00]) }
 }
 
 // MARK: Transport reader

@@ -1,9 +1,9 @@
 import Foundation
 
-// Threading: see `RDPPreflightClient`.
+// Threading: see `RDPClient`.
 
 /// Receives each decoded graphics frame. Throwing ends the session with
-/// `RDPPreflightError.graphicsFrameHandler`; the frame is not acknowledged.
+/// `RDPConnectionError.graphicsFrameHandler`; the frame is not acknowledged.
 public typealias RDPGraphicsFrameHandler = (RDPGraphicsFrameSnapshot) throws -> Void
 public typealias RDPRemotePointerHandler = @Sendable (RDPRemotePointerUpdate) -> Void
 /// Called after connection finalization, and again with a new session after a
@@ -55,7 +55,7 @@ struct RDPSessionCallbacks {
 
     func throwIfCancelled() throws {
         if isCancelled {
-            throw RDPPreflightError.cancelled
+            throw RDPConnectionError.cancelled
         }
     }
 }
