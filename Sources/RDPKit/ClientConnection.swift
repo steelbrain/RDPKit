@@ -65,7 +65,9 @@ final class RDPClientConnection {
     var graphicsCompositor: RDPGFXSurfaceCompositor?
     let clearCodec = RDPClearCodecDecoder()
     var graphicsFrameTracker = RDPGFXLogicalFrameTracker()
+    /// The current RDPGFX frame's video, and copies of it made by SurfaceToSurface.
     var pendingGraphicsFrames: [RDPGraphicsFrameSnapshot] = []
+    var pendingVideoCopies: [RDPGraphicsFrameSnapshot] = []
     var graphicsFramesDecoded: UInt32 = 0
     /// Created on first use at the current desktop size, again after a resize.
     private var primarySurfaceStorage: RDPPrimarySurfaceCompositor?

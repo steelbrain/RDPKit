@@ -7,12 +7,19 @@ import Foundation
 /// A PDU that fails to decode ends a capture run; a live session records it,
 /// skips it and still acknowledges the frame so the server keeps sending.
 extension RDPClientConnection {
+    /// Video updates one frame may hold before its EndFrame; past this the
+    /// server is not ending its frames.
+    static let maximumPendingVideoFrameCount = 64
+
     func openGraphicsPipeline(channelID: UInt32) throws {
         graphicsChannelID = channelID
         graphicsDecoder = RDPGFXServerTransportDecoder()
         graphicsCompositor = nil
         graphicsFrameTracker = RDPGFXLogicalFrameTracker()
         pendingGraphicsFrames = []
+        pendingVideoCopies = []
+        // totalFramesDecoded counts from the channel's creation ([MS-RDPEGFX] 2.2.2.13).
+        graphicsFramesDecoded = 0
         let advertise = RDPGFXCapsAdvertisePDU(capabilitySets: configuration.graphicsCapabilityProfile.capabilitySets)
         report.rdpGraphicsCapsAdvertiseHex = try sendDynamicChannelData(advertise.encoded(), channelID: channelID)
             .rdpHexString
@@ -95,17 +102,18 @@ extension RDPClientConnection {
         switch message.commandID {
         case RDPGFXCommandID.wireToSurface1:
             if let frame = try videoFrame(RDPGFXWireToSurface1PDU.parse(from: message), compositor: compositor) {
+                try checkPendingVideoRoom(for: 1)
                 pendingGraphicsFrames.append(frame)
             }
         case RDPGFXCommandID.surfaceToSurface:
-            pendingGraphicsFrames += try copiedVideoFrames(
-                pendingGraphicsFrames,
-                using: RDPGFXSurfaceToSurfacePDU.parse(from: message)
-            )
+            // Copies are made of decoded video only, never of other copies.
+            let copies = try copiedVideoFrames(pendingGraphicsFrames, using: RDPGFXSurfaceToSurfacePDU.parse(from: message))
+            try checkPendingVideoRoom(for: copies.count)
+            pendingVideoCopies += copies
         case RDPGFXCommandID.endFrame:
             let endFrame = try RDPGFXEndFramePDU.parse(from: message)
             // Video for a surface deleted within the frame has nowhere to go.
-            let videoFrames = pendingGraphicsFrames.compactMap { frame -> RDPGraphicsFrameSnapshot? in
+            let videoFrames = (pendingGraphicsFrames + pendingVideoCopies).compactMap { frame -> RDPGraphicsFrameSnapshot? in
                 guard frame.contentKind == .video,
                       let surfaceRect = compositor.surfaceRect(surfaceID: frame.surfaceID)
                 else {
@@ -126,6 +134,14 @@ extension RDPClientConnection {
             break
         }
         return nil
+    }
+
+    private func checkPendingVideoRoom(for count: Int) throws {
+        guard pendingGraphicsFrames.count + pendingVideoCopies.count + count <= Self.maximumPendingVideoFrameCount else {
+            throw RDPPreflightError.protocolViolation(
+                "server sent more than \(Self.maximumPendingVideoFrameCount) video updates without ending the frame"
+            )
+        }
     }
 
     private func videoFrame(
@@ -174,6 +190,7 @@ extension RDPClientConnection {
     private func finishGraphicsFrame(_ frameID: UInt32) throws {
         let frames = pendingGraphicsFrames
         pendingGraphicsFrames = []
+        pendingVideoCopies = []
         try deliver(frames)
         guard let graphicsChannelID else {
             return
@@ -213,13 +230,14 @@ extension RDPClientConnection {
         report.rdpGraphicsUpdateResponseHexes.appendIfRoom(packet.rdpHexString, limit: RDPRecordLimit.packets)
     }
 
-    /// Keeps the first failing update, for diagnosing the server's bytes.
+    /// Keeps the start of the first failing update, for diagnosing the server's bytes.
     private func recordGraphicsFailure(packet: Data, payload: Data, messages: [RDPGFXHeader], index: Int?) {
         guard report.rdpGraphicsFailureUpdatePayloadHex == nil else {
             return
         }
         report.rdpGraphicsFailureUpdateResponseHex = packet.rdpHexString
-        report.rdpGraphicsFailureUpdatePayloadHex = payload.rdpHexString
+        // A reassembled message can be megabytes, kept for the rest of a live session.
+        report.rdpGraphicsFailureUpdatePayloadHex = payload.prefix(RDPRecordLimit.failurePayloadByteCount).rdpHexString
         report.rdpGraphicsFailureUpdateMessages = messages.map { message in
             (try? RDPGFXMessageSummary.summarize(message, includeVideoDetails: false))
                 ?? RDPGFXMessageSummary(typeName: message.typeName)
@@ -317,7 +335,9 @@ extension RDPClientConnection {
 /// Copies of this frame's video for a SurfaceToSurface out of its surface.
 /// gnome-remote-desktop encodes AVC420 into an unmapped staging surface and
 /// copies it to the mapped one every frame (gnome fixture, sequence 143-144).
-/// A same-surface copy, such as a scroll, would decode the access unit twice.
+/// A same-surface copy, such as a scroll, would decode the access unit twice,
+/// and so would a second destination point: each frame is copied to the
+/// first point that fits.
 func copiedVideoFrames(
     _ frames: [RDPGraphicsFrameSnapshot],
     using copy: RDPGFXSurfaceToSurfacePDU
@@ -328,15 +348,15 @@ func copiedVideoFrames(
     let sourceRect = RDPFrameRect(copy.sourceRect)
     return frames.filter {
         $0.contentKind == .video && $0.surfaceID == copy.sourceSurfaceID
-    }.flatMap { frame -> [RDPGraphicsFrameSnapshot] in
+    }.compactMap { frame -> RDPGraphicsFrameSnapshot? in
         guard sourceRect.left <= frame.destinationRect.left,
               sourceRect.top <= frame.destinationRect.top,
               sourceRect.right >= frame.destinationRect.right,
               sourceRect.bottom >= frame.destinationRect.bottom
         else {
-            return []
+            return nil
         }
-        return copy.destinationPoints.compactMap { point in
+        return copy.destinationPoints.lazy.compactMap { point -> RDPGraphicsFrameSnapshot? in
             let xOffset = Int(point.x) - Int(sourceRect.left)
             let yOffset = Int(point.y) - Int(sourceRect.top)
             guard let left = UInt16(exactly: Int(frame.destinationRect.left) + xOffset),
@@ -352,6 +372,6 @@ func copiedVideoFrames(
             copied.mappedOutputRect = nil
             copied.destinationRect = RDPFrameRect(left: left, top: top, right: right, bottom: bottom)
             return copied
-        }
+        }.first
     }
 }

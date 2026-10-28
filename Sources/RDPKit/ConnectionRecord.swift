@@ -76,6 +76,7 @@ enum RDPRecordLimit {
     static let packets = 8
     static let messages = 64
     static let warnings = 32
+    static let failurePayloadByteCount = 64 * 1024
 }
 
 extension Array {

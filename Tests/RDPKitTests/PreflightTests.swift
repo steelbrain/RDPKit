@@ -395,3 +395,31 @@ import Testing
 
     #expect(copiedVideoFrames([frame], using: copy).isEmpty)
 }
+
+/// A second destination point on the surface would hand the same access
+/// unit to its decoder again, so each frame is copied once.
+@Test func copiedVideoFramesCopiesEachFrameToTheFirstFittingPoint() {
+    let frame = RDPGraphicsFrameSnapshot(
+        frameID: 9,
+        surfaceID: 1,
+        codecID: RDPGFXCodecID.avc420,
+        codecName: "avc420",
+        pixelFormat: RDPGFXPixelFormat.xrgb8888,
+        destinationRect: RDPFrameRect(left: 0, top: 0, right: 64, bottom: 32),
+        regionRects: [RDPFrameRect(left: 0, top: 0, right: 64, bottom: 32)],
+        encodedVideoData: Data([0x00, 0x00, 0x01, 0x65])
+    )
+    let copy = RDPGFXSurfaceToSurfacePDU(
+        sourceSurfaceID: 1,
+        destinationSurfaceID: 0,
+        sourceRect: RDPGFXRect16(left: 0, top: 0, right: 64, bottom: 32),
+        destinationPoints: [
+            RDPGFXPoint16(x: -1, y: 0),
+            RDPGFXPoint16(x: 0, y: 32),
+            RDPGFXPoint16(x: 64, y: 0),
+        ]
+    )
+
+    let copies = copiedVideoFrames([frame, frame], using: copy)
+    #expect(copies.map(\.destinationRect) == Array(repeating: RDPFrameRect(left: 0, top: 32, right: 64, bottom: 64), count: 2))
+}

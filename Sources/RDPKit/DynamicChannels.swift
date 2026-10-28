@@ -86,6 +86,11 @@ extension RDPClientConnection {
         guard let kind else {
             return
         }
+        // A second graphics channel replaces the first, whose data would feed the new decoder.
+        if kind == .graphics, let previous = graphicsChannelID, previous != request.channelID {
+            dynamicChannels[previous] = nil
+            discardDynamicChannelState(previous)
+        }
         discardDynamicChannelState(request.channelID)
         dynamicChannels[request.channelID] = kind
         switch kind {

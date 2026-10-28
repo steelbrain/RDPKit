@@ -102,6 +102,49 @@ import Testing
     ])
 }
 
+/// Video updates are held until the frame ends, so a server that never ends
+/// its frame must not grow them without bound.
+@Test func frameThatNeverEndsIsBounded() throws {
+    let updates = (0 ... RDPClientConnection.maximumPendingVideoFrameCount).map { _ in
+        KRdpCapture.graphicsPacket(KRdpCapture.avc420Update())
+    }
+    let run = try KRdpCapture.run(
+        appending: [KRdpCapture.graphicsPacket(KRdpCapture.startFrame(id: 1))] + updates,
+        frameCaptureLimit: 2,
+        timeoutSeconds: 3
+    )
+
+    #expect(run.report.error == "server sent more than 64 video updates without ending the frame")
+}
+
+/// A second RDPGFX channel replaces the first: data still arriving on the
+/// old channel ID must not reach the new channel's decoder.
+@Test func recreatedGraphicsChannelForgetsTheOldChannelID() throws {
+    let events = try KRdpCapture.events()
+    // KRdp's CapsConfirm (event 35), after its DVC and segment headers.
+    let capsConfirm = try #require(events[35].bytes).dropFirst(27)
+    let create = Data([0x10, 0x02]) + Data("Microsoft::Windows::RDS::Graphics".utf8) + Data([0])
+    let run = try KRdpCapture.run(
+        appending: [
+            KRdpCapture.packet(
+                channelID: KRdpCapture.drdynvcChannelID,
+                userData: RDPStaticVirtualChannelPDU(payload: create).encodedUserData()
+            ),
+            KRdpCapture.graphicsPacket(Data(capsConfirm), channelID: 2),
+            KRdpCapture.graphicsPacket(Data([0x12, 0x00, 0x00]), channelID: 1),
+            KRdpCapture.graphicsPacket(KRdpCapture.startFrame(id: 1) + KRdpCapture.endFrame(id: 1), channelID: 2),
+            KRdpCapture.graphicsPacket(KRdpCapture.startFrame(id: 2) + KRdpCapture.endFrame(id: 2), channelID: 2),
+        ],
+        frameCaptureLimit: 2
+    )
+
+    #expect(run.report.error == nil)
+    #expect(run.report.rdpGraphicsChannelID == 2)
+    // totalFramesDecoded restarts with the channel, so both frames are captured on it.
+    let acknowledgesOnChannel2 = run.clientPackets.filter { $0.range(of: Data([0x30, 0x02, 0x0D, 0x00])) != nil }
+    #expect(acknowledgesOnChannel2.count == 2)
+}
+
 // MARK: - KRdp capture harness
 
 /// The KRdp capture's channels: I/O 1003, drdynvc 1004, message 1005, and
@@ -151,7 +194,13 @@ enum KRdpCapture {
             ))
         }
         let credentials = RDPCredentials(username: "rdp-user", password: "rdp-user")
-        let server = try RDPTranscriptReplayServer.start(transcript: events, credentials: credentials, onSegmentEnd: onEnd)
+        let serverClosed = DispatchSemaphore(value: 0)
+        let server = try RDPTranscriptReplayServer.start(transcript: events, credentials: credentials) { channel in
+            channel.closeFuture.whenComplete { _ in
+                serverClosed.signal()
+            }
+            onEnd?(channel)
+        }
         defer { server.stop() }
 
         let cancellation = RDPConnectionCancellation()
@@ -174,6 +223,8 @@ enum KRdpCapture {
             cancellation: cancellation
         )
         cancellation.cancel()
+        // The server reads the client's last packets before it sees the close.
+        _ = serverClosed.wait(timeout: .now() + 5)
         return Run(report: report, clientPackets: server.clientPackets.value)
     }
 
@@ -271,6 +322,23 @@ enum KRdpCapture {
         var body = Data()
         body.appendLittleEndianUInt32(id)
         return graphicsPDU(RDPGFXCommandID.endFrame, body)
+    }
+
+    /// A WireToSurface1 AVC420 update for the capture's surface 1 ([MS-RDPEGFX] 2.2.2.1, 2.2.4.4).
+    static func avc420Update() -> Data {
+        var stream = Data()
+        stream.appendLittleEndianUInt32(1)
+        stream.append(contentsOf: [0, 0, 0, 0, 16, 0, 16, 0])
+        stream.append(contentsOf: [22, 100])
+        stream.append(contentsOf: [0x00, 0x00, 0x00, 0x01, 0x65, 0x88])
+        var body = Data()
+        body.appendLittleEndianUInt16(1)
+        body.appendLittleEndianUInt16(RDPGFXCodecID.avc420)
+        body.appendUInt8(0x20)
+        body.append(contentsOf: [0, 0, 0, 0, 16, 0, 16, 0])
+        body.appendLittleEndianUInt32(UInt32(stream.count))
+        body.append(stream)
+        return graphicsPDU(RDPGFXCommandID.wireToSurface1, body)
     }
 
     static func emptyGraphicsFrame(id: UInt32) -> Data {
