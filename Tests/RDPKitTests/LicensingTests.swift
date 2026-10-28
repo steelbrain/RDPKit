@@ -590,6 +590,25 @@ import Testing
     #expect(license.typeName == "license-error-0x00000006")
     #expect(license.errorCode == 0x0000_0006)
     #expect(license.stateTransition == 0x0000_0001)
+    let alert = try #require(license.errorAlert)
+    #expect(license.message == .errorAlert(alert))
+    #expect(alert.isValidClient == false)
+    #expect(alert.description == "ERR_NO_LICENSE_SERVER (0x00000006), ST_TOTAL_ABORT")
+}
+
+@Test func licenseKeysOpenVerifiedRejectsTamperedData() throws {
+    let keys = try RDPLicenseKeys.derive(
+        clientRandom: Data(repeating: 0x11, count: 32),
+        serverRandom: Data(repeating: 0x22, count: 32),
+        premasterSecret: Data(repeating: 0x33, count: 48)
+    )
+    let plaintext = Data("license-info".utf8)
+    let encrypted = keys.encrypt(plaintext)
+
+    #expect(try keys.openVerified(encrypted, mac: keys.mac(plaintext)) == plaintext)
+    #expect(throws: RDPDecodeError.invalidLicensePDU) {
+        try keys.openVerified(encrypted, mac: keys.mac(Data("other".utf8)))
+    }
 }
 
 @Test func parsesOpaqueServerPlatformChallengeAndLicenseMessages() throws {
