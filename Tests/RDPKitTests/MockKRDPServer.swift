@@ -144,6 +144,7 @@ enum MockKRDPGraphicsBehavior: Equatable {
     case sendSoftSyncBeforeFrame
     case sendUnknownCloseBeforeFrame
     case sendEmptyFrameThenStall
+    case sendFastPathEmptyFramesBeforeFirstFrame
     case closeAfterFirstFrame
     case setErrorInfoThenCloseAfterFirstFrame
     case setErrorInfoLogoffBeforeFrame
@@ -289,6 +290,7 @@ struct MockKRDPServerTranscript: Equatable, Sendable {
     var credSSPMessages: [String] = []
     var credSSPGates: [String] = []
     var disconnectUltimatumReasons: [UInt8] = []
+    var frameAcknowledgeIDs: [UInt32] = []
 }
 
 private enum MockKRDPConstants {
@@ -1100,13 +1102,20 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
     private func handleChannelTraffic(_ request: MockMCSSendDataRequest, context: ChannelHandlerContext) throws -> Bool {
         switch request.channelID {
         case MockKRDPConstants.ioChannelID:
-            guard let shareData = try MockKRDPFixtures.clientShareDataPDU(from: request.userData),
-                  shareData.pduType2 == 0x1C
-            else {
+            guard let shareData = try MockKRDPFixtures.clientShareDataPDU(from: request.userData) else {
                 return false
             }
-            let events = try MockKRDPFixtures.inputEvents(from: shareData.payload)
-            transcript.withLock { $0.inputEvents += events }
+            switch shareData.pduType2 {
+            case 0x1C:
+                let events = try MockKRDPFixtures.inputEvents(from: shareData.payload)
+                transcript.withLock { $0.inputEvents += events }
+            case 0x38:
+                var cursor = ByteCursor(shareData.payload)
+                let frameID = try cursor.readLittleEndianUInt32()
+                transcript.withLock { $0.frameAcknowledgeIDs.append(frameID) }
+            default:
+                return false
+            }
         case MockKRDPConstants.clipboardChannelID where clipboardEnabled:
             try handleClipboard(completeStaticChannelPDU(request), context: context)
             return true
@@ -1669,11 +1678,15 @@ private enum MockKRDPFixtures {
     static func demandActive() -> Data {
         let sourceDescriptor = Data("RDPKitMock".utf8)
         var capabilities = Data()
-        capabilities.appendLittleEndianUInt16(2)
+        capabilities.appendLittleEndianUInt16(3)
         capabilities.appendLittleEndianUInt16(0)
         capabilities.appendLittleEndianUInt16(0x0001)
         capabilities.appendLittleEndianUInt16(4)
         capabilities.append(inputCapabilitySet())
+        // Frame Acknowledge, so the client acknowledges surface frame markers.
+        capabilities.appendLittleEndianUInt16(0x001E)
+        capabilities.appendLittleEndianUInt16(8)
+        capabilities.appendLittleEndianUInt32(2)
 
         var data = Data()
         data.appendLittleEndianUInt16(UInt16(18 + sourceDescriptor.count + capabilities.count))
@@ -1755,6 +1768,25 @@ private enum MockKRDPFixtures {
         var payload = Data()
         payload.appendLittleEndianUInt32(errorInfo)
         return shareDataPacket(pduType2: 0x2F, payload: payload, pduSource: 0)
+    }
+
+    /// One fast-path Surface Commands update ([MS-RDPBCGR] 2.2.9.1.2.1.10) holding a Begin
+    /// and End frame marker for each ID, with no surface bits between them.
+    static func fastPathFrameMarkers(frameIDs: [UInt32]) -> Data {
+        var commands = Data()
+        for frameID in frameIDs {
+            for frameAction: UInt16 in [0, 1] {
+                commands.appendLittleEndianUInt16(0x0004)
+                commands.appendLittleEndianUInt16(frameAction)
+                commands.appendLittleEndianUInt32(frameID)
+            }
+        }
+        var update = Data([0x04])
+        update.appendLittleEndianUInt16(UInt16(commands.count))
+        update.append(commands)
+        // FASTPATH_OUTPUT_ACTION_FASTPATH, then the two-byte length form.
+        let length = 3 + update.count
+        return Data([0x00, 0x80 | UInt8(length >> 8), UInt8(length & 0xFF)]) + update
     }
 
     static func pointerColorUpdate() -> Data {
@@ -2090,6 +2122,8 @@ private enum MockKRDPFixtures {
             ]
         case .sendEmptyFrameThenStall:
             [graphicsEmptyFrameUpdate()]
+        case .sendFastPathEmptyFramesBeforeFirstFrame:
+            [fastPathFrameMarkers(frameIDs: [5, 6]), graphicsDynamicPacket(segmentedGraphicsData(avc420FrameMessages()))]
         case .stallAfterFragmentedCapsConfirm:
             []
         }

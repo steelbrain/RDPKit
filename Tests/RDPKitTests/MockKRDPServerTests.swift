@@ -1018,6 +1018,16 @@ struct MockKRDPServerTests {
         #expect(report.error == "receive failed: RDP Graphics Update timed out after 1 seconds")
     }
 
+    /// A fast-path frame marker End needs its acknowledgement even when the frame changed
+    /// no pixels, or the server stalls at its unacknowledged-frame limit ([MS-RDPRFX] 2.2.3.3).
+    @Test func clientAcknowledgesFastPathFramesThatChangedNoPixels() throws {
+        let run = try runMock(.init(graphicsBehavior: .sendFastPathEmptyFramesBeforeFirstFrame))
+
+        #expect(run.report.status == "success")
+        #expect(run.transcript.frameAcknowledgeIDs == [5, 6])
+        #expect(run.report.error == nil)
+    }
+
     /// A deleted surface's queued video is dropped, and the next snapshot names the
     /// surface so decoders do not carry its state into the one recreated with its ID.
     @Test func deletedSurfacesAreNamedOnTheNextSnapshot() throws {
