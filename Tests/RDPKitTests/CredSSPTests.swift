@@ -119,8 +119,7 @@ import Testing
     #expect(securityBuffer(token, at: 28) == utf16LittleEndian("Domain"))
     #expect(securityBuffer(token, at: 36) == utf16LittleEndian("User"))
     #expect(securityBuffer(token, at: 44) == utf16LittleEndian("KRDPSWIFT"))
-    #expect(securityBuffer(token, at: 12).count == 24)
-    #expect(securityBuffer(token, at: 12) != Data(repeating: 0, count: 24))
+    #expect(securityBuffer(token, at: 12) == Data(count: 24))
     #expect(securityBuffer(token, at: 20).count > 48)
     #expect(securityBuffer(token, at: 52).count == 16)
 }
@@ -141,7 +140,7 @@ import Testing
     #expect(Data(token[64 ..< 72]) == Data([0x06, 0x01, 0xB1, 0x1D, 0x00, 0x00, 0x00, 0x0F]))
 }
 
-@Test func ntlmContextSendsLMv2ResponseWhenChallengeIncludesTimestamp() throws {
+@Test func ntlmContextSendsZeroLMResponseWhenChallengeIncludesTimestamp() throws {
     var randomCalls = 0
     let context = RDPCredSSPNTLMContext(
         credentials: RDPCredentials(username: "User", domain: "Domain", password: "Password"),
@@ -158,11 +157,8 @@ import Testing
 
     let step = try context.initialize(inputToken: localChallengeMessage())
     let token = try #require(step.outputToken)
-    let lmResponse = securityBuffer(token, at: 12)
 
-    #expect(lmResponse.count == 24)
-    #expect(lmResponse != Data(repeating: 0, count: 24))
-    #expect(lmResponse.suffix(8) == Data([0x20, 0xC0, 0x2B, 0x3D, 0xC0, 0x61, 0xA7, 0x73]))
+    #expect(securityBuffer(token, at: 12) == Data(count: 24))
 }
 
 @Test func ntlmContextSendsLMv2ResponseWhenChallengeOmitsTimestamp() throws {
@@ -280,10 +276,12 @@ import Testing
     #expect(targetInfo.suffix(4) == Data(repeating: 0, count: 4))
 }
 
-@Test func ntlmContextPreservesServerSuppliedChannelBindingsAVPair() throws {
+@Test func ntlmContextReplacesServerSuppliedChannelBindingsAVPair() throws {
     var randomCalls = 0
+    let channelBindingsHash = Data(0x30 ..< 0x40)
     let context = RDPCredSSPNTLMContext(
         credentials: RDPCredentials(username: "User", domain: "Domain", password: "Password"),
+        channelBindingsHash: channelBindingsHash,
         randomBytes: { count in
             randomCalls += 1
             if randomCalls == 1 {
@@ -300,7 +298,7 @@ import Testing
     let token = try #require(step.outputToken)
     let targetInfo = ntlmV2TargetInfo(fromAuthenticateToken: token)
 
-    #expect(msvAvChannelBindingsValues(in: targetInfo) == [bindings])
+    #expect(msvAvChannelBindingsValues(in: targetInfo) == [channelBindingsHash])
 }
 
 @Test func ntlmContextAuthenticateFlagsFollowServerNegotiation() throws {
@@ -387,6 +385,74 @@ import Testing
         for: challenge,
         containing: "server did not negotiate NTLM Unicode encoding"
     )
+}
+
+@Test func ntlmContextRejectsChallengeWithoutExtendedSessionSecurityOrSealing() throws {
+    for removedFlag in [UInt32(0x0008_0000), UInt32(0x0000_0020)] {
+        var challenge = localChallengeMessage()
+        replaceLittleEndianUInt32(
+            in: &challenge,
+            at: 20,
+            with: littleEndianUInt32(challenge, at: 20) & ~removedFlag
+        )
+
+        try expectNTLMFailure(
+            for: challenge,
+            containing: "server did not negotiate NTLM extended session security and sealing"
+        )
+    }
+}
+
+@Test func ntlmContextRejectsTargetInfoThatOverflowsAuthenticateField() throws {
+    // 65,524 bytes of server target info grow past UInt16.max once the client adds its AV pairs.
+    var targetInfo = Data([0x03, 0x00, 0xB0, 0xFF]) + Data(repeating: 0x41, count: 0xFFB0)
+    targetInfo += securityBuffer(localChallengeMessage(), at: 40)
+
+    try expectNTLMFailure(
+        for: challengeMessage(replacingTargetInfo: targetInfo),
+        containing: "NTLM authenticate message field is too long"
+    )
+}
+
+@Test func ntlmContextUnwrapRejectsTamperedSignature() throws {
+    let context = RDPCredSSPNTLMContext(
+        credentials: RDPCredentials(username: "User", domain: "Domain", password: "Password"),
+        randomBytes: { count in Data(repeating: 0x55, count: count) },
+        currentFileTime: { 0 }
+    )
+    _ = try context.initialize(inputToken: nil)
+    _ = try context.initialize(inputToken: localChallengeMessage())
+
+    #expect(throws: RDPCredSSPError.self) {
+        try context.unwrap(Data(repeating: 0x01, count: 48))
+    }
+}
+
+@Test func ntlmMD4MatchesRFC1320TestSuite() {
+    let vectors = [
+        ("", "31d6cfe0d16ae931b73c59d7e0c089c0"),
+        ("a", "bde52cb31de33e46245e05fbdbd6fb24"),
+        ("abc", "a448017aaf21d8525fc10ae87aa6729d"),
+        ("message digest", "d9130a8164549fe818874806e1c7014b"),
+        (String(repeating: "1234567890", count: 8), "e33b4ddc9c38f2199c3e7b164fcc0536"),
+    ]
+    for (input, digest) in vectors {
+        #expect(RDPCredSSPNTLMContext.md4(Data(input.utf8)) == Data(rdpHexString: digest))
+    }
+}
+
+@Test func ntlmNTOWFv2MatchesNLMPExampleAndKeepsSharpS() throws {
+    // MS-NLMP 4.2.4.1.1
+    #expect(RDPCredSSPNTLMContext.ntowfV2(password: "Password", username: "User", domain: "Domain")
+        == Data(rdpHexString: "0c868a403bfd7a93a3001ef22ef02e3f"))
+
+    // Windows upper-cases code point by code point, so "ß" is not expanded to "SS".
+    let ntHash = RDPCredSSPNTLMContext.md4(utf16LittleEndian("Password"))
+    let expected = Data(HMAC<Insecure.MD5>.authenticationCode(
+        for: utf16LittleEndian("STRAßEDomain"),
+        using: SymmetricKey(data: ntHash)
+    ))
+    #expect(RDPCredSSPNTLMContext.ntowfV2(password: "Password", username: "straße", domain: "Domain") == expected)
 }
 
 @Test func credSSPTSRequestParsesAuthInfoPubKeyAndNonce() throws {
@@ -537,6 +603,43 @@ import Testing
     #expect(throws: RDPDecodeError.invalidBERLength) {
         try RDPCredSSPTSRequest.parse(leadingZeroLongLength)
     }
+}
+
+// MS-NLMP 4.2.4: NTLMv2 example with User/Domain/Password, ServerChallenge
+// 0123456789abcdef, client challenge aa*8, Time 0 and RandomSessionKey 55*16.
+@Test func ntlmContextMatchesNLMPv2KnownAnswers() throws {
+    let context = RDPCredSSPNTLMContext(
+        credentials: RDPCredentials(username: "User", domain: "Domain", password: "Password"),
+        randomBytes: { count in Data(repeating: count == 8 ? 0xAA : 0x55, count: count) },
+        currentFileTime: { 0 }
+    )
+    _ = try context.initialize(inputToken: nil)
+    let step = try context.initialize(inputToken: nlmpV2ChallengeMessage())
+    let token = try #require(step.outputToken)
+
+    // 4.2.4.2.1 LMv2 Response
+    #expect(securityBuffer(token, at: 12) == Data([
+        0x86, 0xC3, 0x50, 0x97, 0xAC, 0x9C, 0xEC, 0x10,
+        0x25, 0x54, 0x76, 0x4A, 0x57, 0xCC, 0xCC, 0x19,
+        0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA,
+    ]))
+    // 4.2.4.4 GSS_WrapEx: Signature followed by the sealed "Plaintext"
+    #expect(try context.wrap(utf16LittleEndian("Plaintext")) == Data([
+        0x01, 0x00, 0x00, 0x00, 0x7F, 0xB3, 0x8E, 0xC5,
+        0xC5, 0x5D, 0x49, 0x76, 0x00, 0x00, 0x00, 0x00,
+        0x54, 0xE5, 0x01, 0x65, 0xBF, 0x19, 0x36, 0xDC, 0x99,
+        0x60, 0x20, 0xC1, 0x81, 0x1B, 0x0F, 0x06, 0xFB, 0x5F,
+    ]))
+}
+
+private func nlmpV2ChallengeMessage() -> Data {
+    var targetInfo = Data([0x02, 0x00, 0x0C, 0x00]) + utf16LittleEndian("Domain")
+    targetInfo += Data([0x01, 0x00, 0x0C, 0x00]) + utf16LittleEndian("Server")
+    targetInfo += Data(repeating: 0, count: 4)
+    var message = challengeMessage(replacingTargetInfo: targetInfo)
+    replaceLittleEndianUInt32(in: &message, at: 20, with: 0xE28A_8233)
+    message.replaceSubrange(24 ..< 32, with: [0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF])
+    return message
 }
 
 private func sspiRSNegotiateToken() -> Data {
