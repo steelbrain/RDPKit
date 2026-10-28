@@ -1,6 +1,7 @@
 import Foundation
 import NIOCore
 import NIOEmbedded
+import NIOPosix
 @testable import RDPKit
 import Testing
 
@@ -155,6 +156,47 @@ private let tpkt = Data([0x03, 0x00, 0x00, 0x07, 0x02, 0xF0, 0x80])
     try accepted.writeInbound(buffer(tpkt + tpkt))
     #expect(try nextMessage(acceptedReader, accepted) == tpkt)
     #expect(try nextMessage(acceptedReader, accepted) == tpkt)
+}
+
+/// A server that rejects the credentials and closes while the client is sending
+/// the next layer fails that write; the client reports the rejection, not the write.
+@Test func sendAfterACredSSPRejectionReportsTheRejection() throws {
+    let server = try ServerBootstrap(group: MultiThreadedEventLoopGroup.singleton)
+        .childChannelInitializer { channel in
+            channel.eventLoop.makeCompletedFuture {
+                try channel.pipeline.syncOperations.addHandler(CredSSPRejectingHandler())
+            }
+        }
+        .bind(host: "127.0.0.1", port: 0)
+        .wait()
+    defer { server.close(promise: nil) }
+    let transport = try RDPTransport.connect(
+        host: "127.0.0.1",
+        port: UInt16(try #require(server.localAddress?.port)),
+        timeoutSeconds: 10,
+        callbacks: RDPSessionCallbacks()
+    )
+    defer { transport.close() }
+
+    try transport.setFraming(.credSSPResult(then: .rdp))
+    try transport.send(Data([0x30, 0x00]))
+    try transport.channel.closeFuture.wait()
+
+    let error = #expect(throws: RDPCredSSPError.self) {
+        try transport.send(tpkt)
+    }
+    #expect(error.map(String.init(describing:)) == "CredSSP server returned STATUS_LOGON_FAILURE (0xc000006d)")
+}
+
+/// Answers the client's first bytes with a CredSSP errorCode, then closes.
+private final class CredSSPRejectingHandler: ChannelInboundHandler {
+    typealias InboundIn = ByteBuffer
+
+    func channelRead(context: ChannelHandlerContext, data _: NIOAny) {
+        let rejection = RDPCredSSPTSRequest(errorCode: 0xC000_006D).encoded()
+        context.writeAndFlush(NIOAny(context.channel.allocator.buffer(bytes: rejection)), promise: nil)
+        context.close(promise: nil)
+    }
 }
 
 /// Counts the socket reads the transport reader lets through.

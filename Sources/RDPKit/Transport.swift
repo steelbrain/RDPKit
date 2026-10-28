@@ -143,7 +143,7 @@ final class RDPTransportReader: ChannelDuplexHandler, RemovableChannelHandler {
     private var messages = CircularBuffer<Data>()
     private var waiter: EventLoopPromise<Data>?
     private var handshake: EventLoopPromise<Void>?
-    private var failure: Error?
+    private(set) var failure: Error?
     private var readPending = false
     /// The certificate chain the server presented in the TLS handshake, leaf first.
     var presentedCertificates: [NIOSSLCertificate] = []
@@ -481,8 +481,20 @@ final class RDPTransport {
             throw error
         } catch {
             try callbacks.throwIfCancelled()
+            if let rejection = serverRejection() {
+                throw rejection
+            }
             throw RDPConnectionError.send(connectionErrorDescription(error))
         }
+    }
+
+    /// Why the server ended the connection, when it said so before closing: a
+    /// CredSSP server can reject the credentials and close while the client is
+    /// already sending the next layer, so that write fails for this reason.
+    private func serverRejection() -> Error? {
+        let reader = reader
+        let failure = (try? channel.eventLoop.submit { reader.value.failure }.wait()) ?? nil
+        return failure is RDPCredSSPError || failure is RDPConnectionError ? failure : nil
     }
 
     /// Switches how inbound bytes are split; bytes already buffered are

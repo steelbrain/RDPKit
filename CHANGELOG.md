@@ -93,8 +93,9 @@
   uncompressed bitmaps with `NO_BITMAP_COMPRESSION_HDR`, KRdp 32-bpp pointers
   without an AND mask, and pointer hotspots outside the image.
 - Fix NTLM deviations from MS-NLMP, and report a CredSSP error the server sends
-  in answer to the credentials instead of timing out, naming logon failures
-  such as `STATUS_LOGON_FAILURE` and `STATUS_ACCOUNT_LOCKED_OUT`.
+  in answer to the credentials instead of timing out or failing the next write,
+  naming logon failures such as `STATUS_LOGON_FAILURE` and
+  `STATUS_ACCOUNT_LOCKED_OUT`.
 - Report a connection lost mid-session as a failure, DNS failures as
   `RDPConnectionError.addressResolution`, and connect and send errors with a
   readable reason.
