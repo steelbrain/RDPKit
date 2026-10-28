@@ -125,7 +125,6 @@ import Testing
         ])
     )))
 
-    #expect(try RDPServerPointerUpdate.parseIfPresent(from: shareData) == .position(RDPPoint16(x: 1, y: 2)))
     #expect(shareData.pointerUpdate == .position(RDPPoint16(x: 1, y: 2)))
 }
 
@@ -133,7 +132,7 @@ import Testing
     let state = RDPRemotePointerState()
     let image = RDPColorPointerAttribute(
         cacheIndex: 2,
-        hotSpot: RDPPoint16(x: 1, y: 3),
+        hotSpot: RDPPoint16(x: 1, y: 0),
         width: 2,
         height: 1,
         xorMaskData: Data([0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff]),
@@ -141,7 +140,7 @@ import Testing
     )
     let expected = RDPRemotePointerImage(
         cacheIndex: 2,
-        hotSpot: RDPRemotePoint(x: 1, y: 3),
+        hotSpot: RDPRemotePoint(x: 1, y: 0),
         width: 2,
         height: 1,
         xorBitsPerPixel: 24,
@@ -181,6 +180,21 @@ import Testing
     #expect(replacementImage.xorBitsPerPixel == 16)
     #expect(replacementImage.xorMaskData == Data([0x22, 0x22]))
     #expect(try state.apply(.cached(cacheIndex: 3)) == .cachedImage(replacementImage))
+}
+
+@Test func pointerStateClampsHotSpotOntoPointerImage() throws {
+    let state = RDPRemotePointerState()
+    var attribute = pointerAttribute(cacheIndex: 1, marker: 0x11)
+    attribute.hotSpot = RDPPoint16(x: 5, y: 9)
+
+    guard case let .image(image) = try state.apply(.pointer(RDPNewPointerAttribute(
+        xorBitsPerPixel: 16,
+        colorPointer: attribute
+    ))) else {
+        Issue.record("Expected a resolved pointer image")
+        return
+    }
+    #expect(image.hotSpot == RDPRemotePoint(x: 0, y: 0))
 }
 
 @Test func pointerStateHandlesCacheReferencesAndRejectsOutOfRangeIndices() throws {

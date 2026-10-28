@@ -145,7 +145,7 @@ struct MockKRDPServerTests {
 
     let image = RDPRemotePointerImage(
         cacheIndex: 2,
-        hotSpot: RDPRemotePoint(x: 1, y: 3),
+        hotSpot: RDPRemotePoint(x: 0, y: 0),
         width: 1,
         height: 1,
         xorBitsPerPixel: 24,
