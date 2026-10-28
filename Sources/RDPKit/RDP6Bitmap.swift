@@ -85,8 +85,10 @@ enum RDP6BitmapDecoder {
                         var red = clamp(y + (co >> 1) - (cg >> 1))
                         let green = clamp(y + (cg >> 1))
                         var blue = clamp(y - (co >> 1) - (cg >> 1))
-                        // MS-RDPEGDI 3.1.9.1.2: Windows servers convert 24 bpp (no-alpha) bitmaps
-                        // with color loss incorrectly, so decoders MUST swap red and blue.
+                        // MS-RDPEGDI 3.1.9.1.2: Windows servers convert 24 bpp bitmaps with color
+                        // loss incorrectly, so decoders MUST swap red and blue. 24 bpp is read here as
+                        // "no alpha plane"; FreeRDP also swaps when an alpha plane is present, and no
+                        // capture shows which Windows needs.
                         if !hasAlpha {
                             swap(&red, &blue)
                         }
