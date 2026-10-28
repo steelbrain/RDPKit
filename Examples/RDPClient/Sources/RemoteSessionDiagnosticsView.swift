@@ -1,7 +1,7 @@
 import RDPKit
 import SwiftUI
 
-func metricMilliseconds(_ value: Double?) -> String {
+private func metricMilliseconds(_ value: Double?) -> String {
     guard let value else {
         return "none"
     }
@@ -42,14 +42,14 @@ private func metricPixelFormat(_ value: UInt32?) -> String {
     return "\(fourCC) (\(hex))"
 }
 
-func metricFramesPerSecond(_ value: Double?) -> String {
+private func metricFramesPerSecond(_ value: Double?) -> String {
     guard let value else {
         return "none"
     }
     return String(format: "%.1f fps", value)
 }
 
-func metricHertz(_ value: Double?) -> String {
+private func metricHertz(_ value: Double?) -> String {
     guard let value else {
         return "none"
     }
@@ -59,7 +59,7 @@ func metricHertz(_ value: Double?) -> String {
     return String(format: "%.1f Hz", value)
 }
 
-func metricMegabitsPerSecond(_ value: Double?) -> String {
+private func metricMegabitsPerSecond(_ value: Double?) -> String {
     guard let value else {
         return "none"
     }
