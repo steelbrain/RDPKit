@@ -64,6 +64,10 @@ import Testing
     #expect(windowsKey.isHeld(leftWindows) == false)
 }
 
+@Test func keypadClearDoesNotSendNumLock() {
+    #expect(MacRDPKeyboardMapping.scancode(forKeyCode: UInt16(kVK_ANSI_KeypadClear)) == nil)
+}
+
 @Test func rightSideAndCommandModifiersUseExtendedScancodes() throws {
     let expected: [Int: RDPKeyboardScancode] = [
         kVK_RightControl: RDPKeyboardScancode(code: 0x1D, isExtended: true),

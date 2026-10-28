@@ -530,7 +530,8 @@ enum MacRDPKeyboardMapping {
         kVK_F15: RDPKeyboardScancode(code: 0x66), kVK_F16: RDPKeyboardScancode(code: 0x67),
         kVK_F17: RDPKeyboardScancode(code: 0x68), kVK_F18: RDPKeyboardScancode(code: 0x69),
         kVK_F19: RDPKeyboardScancode(code: 0x6A), kVK_F20: RDPKeyboardScancode(code: 0x6B),
-        kVK_ANSI_KeypadClear: RDPKeyboardScancode(code: 0x45),
+        // kVK_ANSI_KeypadClear stays unmapped: it sits where PC keypads have Num Lock (0x45), which
+        // would turn off the Num Lock state that focus synchronization keeps on.
         kVK_ANSI_KeypadEquals: RDPKeyboardScancode(code: 0x0D),
         kVK_ANSI_KeypadDivide: RDPKeyboardScancode(code: 0x35, isExtended: true),
         kVK_ANSI_KeypadMultiply: RDPKeyboardScancode(code: 0x37),
