@@ -564,8 +564,12 @@ import Testing
 }
 
 @Test func caprogressiveSaturatesDifferenceCoefficients() throws {
+    // With every quantization factor at 15 the coefficient of magnitude 1
+    // dequantizes to 1 << 14, so adding it twice leaves the Int16 range.
+    let quantData = Data(repeating: 0xFF, count: 5)
     let decoder = RDPRemoteFXDecoder()
     let original = caprogressiveRemoteFXGrayTilesStream(
+        quantData: quantData,
         tiles: [CAPROGRESSIVERemoteFXGrayTile(
             xIndex: 0,
             yIndex: 0,
@@ -574,6 +578,7 @@ import Testing
     )
     let difference = caprogressiveRemoteFXGrayTilesStream(
         frameIndex: 2,
+        quantData: quantData,
         tiles: [CAPROGRESSIVERemoteFXGrayTile(
             xIndex: 0,
             yIndex: 0,
@@ -583,10 +588,7 @@ import Testing
     )
 
     _ = try decoder.decodeProgressive(original)
-    var prior = try #require(decoder.decodeProgressive(difference).tiles.first)
-    for _ in 0 ..< 253 {
-        prior = try #require(decoder.decodeProgressive(difference).tiles.first)
-    }
+    let prior = try #require(decoder.decodeProgressive(difference).tiles.first)
     let saturated = try #require(decoder.decodeProgressive(difference).tiles.first)
 
     #expect(saturated.bgraData == prior.bgraData)
