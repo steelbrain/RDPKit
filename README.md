@@ -107,10 +107,12 @@ It also accepts an `RDPWireTranscript` for recording the connection flow. The
 macOS example app builds a full viewer on top of these APIs.
 
 `run` and `connect` block the calling thread until the session ends, so call
-them from a dedicated thread. Handlers run on that thread, except
-`onWireReceive`, which runs on the SwiftNIO event loop and must not block.
-Cancelling from `onCertificate` rejects the server before any credential is
-sent.
+them from a dedicated thread, never from a SwiftNIO event loop or a Swift
+concurrency executor. Handlers run on that thread, except `onWireReceive`,
+which runs on the SwiftNIO event loop and must not block. Cancelling from
+`onCertificate` rejects the server before any credential is sent. A wire
+transcript keeps server PDUs in full, so store it as you would the session
+itself.
 
 ## Features
 
@@ -120,16 +122,17 @@ sent.
   through 10.7, with automatic, AVC thin-client, AVC420, and legacy profiles
 - Persistent mapped and scaled surface composition, including partial updates,
   multiple surfaces, caches, solid fills, alpha bitmaps, and graphics resets
-- AVC420/H.264 rendering through per-surface VideoToolbox decoders
+- AVC420/H.264 rendering through per-surface VideoToolbox decoders, presented
+  as full-range BT.709 as MS-RDPEGFX specifies
 - AVC444/H.264 and AVC444v2 layout parsing, persistent luma/chroma subframes,
   reverse filtering, and CPU or Metal chroma reconstruction
 - RemoteFX Progressive and classic RemoteFX decoding
 - ClearCodec, NSCodec, RDP 6.0 bitmap compression, and Interleaved RLE decoding
 - Zero-copy CoreVideo presentation for directly presentable decoded video frames
-- HEVC/H.265 Annex B sample preparation and VideoToolbox decode helpers
-- H.264/H.265 NAL unit metadata extraction
-- VideoToolbox decode helpers with hardware-acceleration reporting
-- Bounded decode queues with per-surface resynchronization when decode falls behind
+- H.264 and HEVC/H.265 Annex B sample preparation and NAL unit metadata
+- A shared VideoToolbox decoder with hardware-acceleration reporting
+- In-order background decode that lets a client acknowledge each frame only
+  after it is presented
 - Frame metadata, frame acknowledgements, render metrics, and wire bandwidth
   samples
 
@@ -137,13 +140,18 @@ sent.
 
 - TPKT and X.224 connection negotiation
 - TLS upgrade through SwiftNIO SSL
-- CredSSP with NTLM Network Level Authentication
+- CredSSP with NTLM Network Level Authentication and Early User Authorization
 - MCS connect, channel join, static virtual channels, and dynamic virtual
   channels
-- Server redirection and reconnect using routing tokens
+- Connect-time and continuous bandwidth auto-detection, and reactivation after
+  Deactivate All
+- Server redirection to a routing token or target host
 - New, upgraded, and stored RDP client license handling
-- Certificate SHA-256 reporting, early TLS certificate callbacks, and
-  configurable certificate warning visibility
+- System trust evaluation of the server's certificate chain, certificate
+  SHA-256 reporting, early TLS certificate callbacks, and configurable
+  certificate warning visibility
+- A connection timeout for every milestone before the first frame, TCP
+  keepalive during live sessions, and cancellation from any thread
 
 ### Input And Display
 
@@ -162,7 +170,8 @@ sent.
 
 ### Audio
 
-- RDPSND static channel support
+- RDPSND over the `rdpsnd` static channel and the `AUDIO_PLAYBACK_DVC` dynamic
+  channel
 - PCM format negotiation
 - Wave info, wave data, Wave2, training, quality mode, and wave confirm PDUs
 - Optional audio playback support in the macOS example
@@ -183,8 +192,9 @@ sent.
 ### Compatibility
 
 Live compatibility is validated against Microsoft Windows RDP and KDE KRdp.
-Mock-server tests cover Windows and KRdp compatibility, while captured KRdp
-transcript tests replay connection and graphics flows without a live host.
+Mock-server tests cover Windows and KRdp compatibility, while captured KRdp and
+GNOME Remote Desktop transcripts replay connection and graphics flows without
+a live host.
 
 ## Run The Example App
 
@@ -241,6 +251,7 @@ Examples/RDPClient/                   Native macOS viewer shell
 Examples/RDPPreflight/                Connection and protocol inspection tool
 Examples/RDPFirstFrameCapture/        Live graphics capture and decode tool
 Examples/RDPFrameBenchmark/           Live capture and decode benchmark tool
+Examples/RDPCommandLineSupport/       Argument parsing shared by the tools
 ```
 
 Keep reusable behavior in `Sources/RDPKit`. Keep AppKit, SwiftUI, Keychain,

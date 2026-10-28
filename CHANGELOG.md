@@ -2,29 +2,116 @@
 
 ## Unreleased
 
+### Breaking changes
+
+- `RDPPreflightReport`: remove `tlsCipherSuite`, the always-nil
+  `rdpClipboardMessageHexes`, `rdpClipboardSentMessageHexes` and
+  `rdpAudioMessageHexes`, and the clipboard and input probe fields, which moved
+  into the `RDPPreflight` tool. `stage` uses one stage list: `tls-upgrade` is
+  split into `tls-handshake`, `credssp` and `early-user-authorization`.
+- `RDPGraphicsFrameSnapshot`: remove the `h264AnnexBData`, `h264ByteCount` and
+  `h264NalUnitTypes` aliases; use `encodedVideoData`, `videoByteCount` and
+  `videoNalUnitTypes`.
+- `RDPGFXMessageSummary`: remove the per-command detail fields nothing read,
+  such as the cache, fill, surface-to-surface, monitor and ClearCodec subcodec
+  fields.
+- Replace `RDPH264FirstFrameDecoder`, `RDPH264FrameSequenceDecoder`,
+  `RDPHEVCFrameSequenceDecoder` and their error types with the shared
+  `RDPVideoToolboxFrameDecoder` and `RDPVideoDecodeError`. Remove
+  `RDPH264NALUnit`, `RDPHEVCNALUnit` and `nalUnits(from:)`;
+  `nalUnitTypes(from:)` and `sample(from:)` remain.
+- `RDPLatestFrameDecodeQueue` decodes in arrival order through `submitAndWait`:
+  remove `submit`, `submitReportingCompletion`, the queue-depth initializer
+  parameters, `onSkippedFrames`, `RDPFrameDecodeCompletion.dropped` and
+  `RDPFrameDecodeQueueError.frameDropped`.
+- `RDPRenderMetrics`: remove the crop timings, the `max*Milliseconds` timings,
+  `skippedDecodeFrameCount` and `recordSkippedDecodeFrames`.
+  `RDPFrameDecodeTiming.cropMilliseconds` is gone too.
+- `RDPInputStateTracker`: `keyboard(scancode:isReleased:isRepeat:)` drops
+  `trackRelease`, and `releasePressedScancodes()` and
+  `releasePressedPointerButtons()` are gone; use `releasePressedInputs()`.
+- Clipboard: `requestRemoteFileSize` and `requestRemoteFileRange` drop the
+  `clipDataID` parameter, which needs clipboard locking RDPKit does not
+  negotiate, and `RDPClipboardFileDescriptorW` drops the creation and
+  last-access times, which MS-RDPECLIP reserves.
+- `RDPPreflightError.graphicsFrameHandler` is new: a throwing `onGraphicsFrame`
+  ends the session with its own error. Remove `RDPDecodeError` and
+  `RDPBitmapFrameDecodeError` cases that were never thrown.
+- Use `RDPKit`/`RDPKIT` as the default client, workstation and source names.
+
+### Protocol and compatibility
+
 - Rebuild the connection engine around one connection object and one receive
   path that routes every server message by MCS channel. The whole connection,
   including X.224, now runs on SwiftNIO with a connect timeout and TCP
-  keepalive.
+  keepalive, and every milestone before the first frame is bounded by the
+  configured timeout however much other traffic arrives.
 - Answer mid-session auto-detect requests, including continuous bandwidth
-  measurement, and reactivate after Deactivate All followed by Demand Active.
-- Follow redirections that name only a target host, and send the redirection
-  password cookie in the Client Info PDU instead of using it for NLA.
+  measurement, and stop answering requests that need no response. An unknown
+  or malformed request no longer ends the session.
+- Reactivate after Deactivate All followed by Demand Active, at the desktop
+  size the server's Demand Active sets.
+- Server redirection: follow redirections that name only a target host, send
+  the password cookie opaquely in the Client Info PDU instead of using it for
+  NLA, accept the spec's PDU form as well as gnome-remote-desktop's, and treat
+  `LB_NOREDIRECT` as informational.
+- Reassemble virtual channel chunks sent without `CHANNEL_FLAG_SHOW_PROTOCOL`,
+  which the specification allows, and answer newer DVC capability versions.
 - Reject dynamic channels the client does not implement with E_NOTIMPL,
   instead of accepting the Windows input, mouse-cursor and microphone channels.
-- Report licensing failures with the server's error code, and keep reading
-  licensing PDUs only until licensing completes.
-- Cancelling from `onCertificate` now rejects the server before any credential
-  is sent. A throwing `onGraphicsFrame` ends the session with its own error.
-- `RDPPreflightReport.stage` uses one stage list: `tls-upgrade` is split into
-  `tls-handshake`, `credssp` and `early-user-authorization`.
-- Bound every report list that grows during a live session, and stop keeping
-  raw clipboard and audio bytes in the report.
-- Remove `RDPPreflightReport.tlsCipherSuite` and the `h264AnnexBData`,
-  `h264ByteCount` and `h264NalUnitTypes` aliases on graphics frames (use
-  `encodedVideoData`, `videoByteCount` and `videoNalUnitTypes`). The clipboard
-  and input probe fields moved from the report into the `RDPPreflight` tool.
-- Use `RDPKit`/`RDPKIT` as the default client, workstation and source names.
+- Follow the cliprdr and rdpdr initialization sequences, accept any rdpdr minor
+  version, and fix clipboard chunking and remote file names.
+- Send one Confirm Active capability list to every server, including the
+  mandatory Sound capability set KRdp checks for.
+- Report licensing failures with the server's error code, keep reading
+  licensing PDUs only until licensing completes, and send non-ASCII license
+  user and machine names as UTF-8.
+- Present RDPGFX H.264 as full-range BT.709, as MS-RDPEGFX specifies.
+- Fix AVC444 reverse filtering, subframe scaling, chroma-only updates and
+  inverted chroma regions, and recreate VideoToolbox sessions after
+  invalidation.
+- Acknowledge every RDPGFX EndFrame and every surface frame marker, including
+  after an update that fails to decode, and ignore cosmetic RDPGFX and DVC
+  fields instead of ending the session.
+- Fix ClearCodec glyphs, NSCodec planes, padded slow-path bitmaps,
+  uncompressed bitmaps with `NO_BITMAP_COMPRESSION_HDR`, KRdp 32-bpp pointers
+  without an AND mask, and pointer hotspots outside the image.
+- Fix NTLM deviations from MS-NLMP, and report a CredSSP error the server sends
+  in answer to the credentials instead of timing out.
+- Report a connection lost mid-session as a failure, DNS failures as
+  `RDPPreflightError.addressResolution`, and connect and send errors with a
+  readable reason.
+- Cancelling from `onCertificate` rejects the server before any credential is
+  sent. `shouldCancel` is polled while connecting, during the TLS handshake,
+  certificate evaluation and sends, and cancelling during a redirection returns
+  the report of the session that ran.
+- Negotiate only PCM rates `AVAudioEngine` can play.
+
+### Security and robustness
+
+- Evaluate the server's full certificate chain, bounded by the timeout.
+  `RDPServerCertificateInfo.host` names the host the certificate was checked
+  against, the redirection target after a redirection.
+- Zero the server redirection password and the auto-reconnect cookie in
+  `RDPWireTranscript` events and report hex. `RDPWireTranscript` takes an
+  optional `maximumPayloadByteCount`, and credential descriptions redact the
+  password.
+- Bound what a server can make the client allocate or keep: RDPGFX surfaces,
+  progressive tile state, ZGFX output, pending video updates, static channel
+  messages, raw RSA work and every report list that grows during a live
+  session. Server-sized data now throws where it used to trap.
+- Keep sanitized remote clipboard file names valid and unique.
+
+### Performance and examples
+
+- Mutate RDPGFX surfaces and reassemble channel messages in place, speed up
+  ZGFX, NSCodec, CAPROGRESSIVE and hex formatting, and build diagnostic report
+  entries only while the report keeps them.
+- `RDPScrollWheelAccumulator` turns scroll deltas into wheel events.
+- The RDPClient example runs sessions on a dedicated thread, fixes modifier,
+  focus-loss, toggle-key, Windows-key and keypad input, and pins a redirected
+  server's certificate under its own host. The command-line tools share
+  argument parsing through `RDPCommandLineSupport`.
 
 ## 0.3.1
 
