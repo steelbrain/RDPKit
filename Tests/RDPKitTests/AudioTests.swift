@@ -154,6 +154,28 @@ import Testing
     #expect(RDPAudioFormatsPDU.compatibleClientFormats(from: [pcmWithExtraData, pcmMono]) == [pcmMono])
 }
 
+@Test func audioClientFormatsSkipPCMFormatsAudioEngineCannotPlay() throws {
+    func pcm(channelCount: UInt16, samplesPerSecond: UInt32) throws -> RDPAudioFormat {
+        try RDPAudioFormat(
+            formatTag: RDPAudioFormatTag.pcm,
+            channelCount: channelCount,
+            samplesPerSecond: samplesPerSecond,
+            averageBytesPerSecond: samplesPerSecond * UInt32(channelCount) * 2,
+            blockAlign: channelCount * 2,
+            bitsPerSample: 16
+        )
+    }
+    let unplayable = [
+        try pcm(channelCount: 2, samplesPerSecond: 10_000_000),
+        try pcm(channelCount: 2, samplesPerSecond: 1),
+        try pcm(channelCount: 6, samplesPerSecond: 48000),
+    ]
+    let mono8k = try pcm(channelCount: 1, samplesPerSecond: 8000)
+
+    #expect(RDPAudioFormatsPDU.compatibleClientFormats(from: unplayable) == [])
+    #expect(RDPAudioFormatsPDU.compatibleClientFormats(from: unplayable + [mono8k]) == [mono8k])
+}
+
 @Test func audioClientFormatsDoNotInventPCMWhenServerDoesNotOfferIt() throws {
     let compressedFormat = try RDPAudioFormat(
         formatTag: 0xA106,
@@ -465,6 +487,29 @@ import Testing
         timestamp: 0,
         blockNo: 0,
         data: Data([0x00, 0x00]),
+        receivedAt: Date()
+    )
+
+    #expect(throws: RDPAudioPlayerError.unsupportedFormat) {
+        try player.enqueue(sample)
+    }
+}
+
+@MainActor
+@Test func audioPlayerRejectsAbsurdSampleRateBeforeConfiguringEngine() throws {
+    let player = RDPAudioPlayer()
+    let sample = RDPAudioSample(
+        format: try RDPAudioFormat(
+            formatTag: RDPAudioFormatTag.pcm,
+            channelCount: 2,
+            samplesPerSecond: 10_000_000,
+            averageBytesPerSecond: 40_000_000,
+            blockAlign: 4,
+            bitsPerSample: 16
+        ),
+        timestamp: 0,
+        blockNo: 0,
+        data: Data(count: 4),
         receivedAt: Date()
     )
 

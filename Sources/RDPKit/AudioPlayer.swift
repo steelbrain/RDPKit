@@ -38,7 +38,7 @@ public final class RDPAudioPlayer {
 
     @discardableResult
     public func enqueue(_ sample: RDPAudioSample) throws -> Bool {
-        guard sample.format.isPCM16Bit else {
+        guard sample.format.isPlayablePCM16Bit else {
             throw RDPAudioPlayerError.unsupportedFormat
         }
 

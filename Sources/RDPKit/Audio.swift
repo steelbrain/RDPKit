@@ -270,6 +270,12 @@ public struct RDPAudioFormat: Encodable, Equatable, Sendable {
             && Int(blockAlign) == Int(channelCount) * 2
     }
 
+    /// 16-bit PCM that `RDPAudioPlayer` can play: mono or stereo at 8-384 kHz. AVAudioEngine
+    /// raises an Objective-C exception, which aborts the process, for absurd sample rates.
+    var isPlayablePCM16Bit: Bool {
+        isPCM16Bit && channelCount <= 2 && (8000 ... 384_000).contains(samplesPerSecond)
+    }
+
     static func parse(from cursor: inout ByteCursor) throws -> RDPAudioFormat {
         guard cursor.remaining >= 18 else {
             throw RDPDecodeError.invalidAudioPDU
@@ -456,7 +462,7 @@ struct RDPAudioFormatsPDU: Equatable, Sendable {
     /// Picks one server format the client can play, preferring 48 kHz stereo. PCM needs no extra
     /// format data, so formats carrying some are skipped; that keeps the reply within one channel chunk.
     static func compatibleClientFormats(from serverFormats: [RDPAudioFormat]) -> [RDPAudioFormat] {
-        let playable = serverFormats.filter { $0.isPCM16Bit && $0.extraData.isEmpty }
+        let playable = serverFormats.filter { $0.isPlayablePCM16Bit && $0.extraData.isEmpty }
         let preferred = playable.first { format in
             format.channelCount == RDPAudioFormat.pcmStereo48k16Bit.channelCount
                 && format.samplesPerSecond == RDPAudioFormat.pcmStereo48k16Bit.samplesPerSecond
