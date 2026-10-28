@@ -343,7 +343,7 @@ func validateRDPServerCertificate(_ data: Data) throws {
     _ = try rdpServerCertificatePublicKey(data)
 }
 
-func rdpServerCertificatePublicKey(_ data: Data) throws -> RDPRSAPublicKey? {
+func rdpServerCertificatePublicKey(_ data: Data) throws -> RDPRSAPublicKey {
     var cursor = ByteCursor(data)
     let version = try cursor.readLittleEndianUInt32()
     switch version & 0x7FFF_FFFF {
@@ -447,27 +447,8 @@ private func parseX509CertificateRSAPublicKey(_ certificateDER: Data) throws -> 
         throw RDPDecodeError.invalidMCSConnectResponseHeader
     }
 
-    return try parseDERRSAPublicKey(externalRepresentation as Data)
-}
-
-private func parseDERRSAPublicKey(_ der: Data) throws -> RDPRSAPublicKey {
-    do {
-        return try parseDERPKCS1RSAPublicKey(der)
-    } catch {
-        return try parseDERSubjectPublicKeyInfoRSAPublicKey(der)
-    }
-}
-
-private func parseDERSubjectPublicKeyInfoRSAPublicKey(_ der: Data) throws -> RDPRSAPublicKey {
-    var cursor = DERCursor(der)
-    var sequence = try DERCursor(cursor.readValue(tag: 0x30))
-    _ = try sequence.readValue(tag: 0x30)
-    let bitString = try sequence.readValue(tag: 0x03)
-    guard sequence.isAtEnd,
-          bitString.first == 0 else {
-        throw RDPDecodeError.invalidMCSConnectResponseHeader
-    }
-    return try parseDERPKCS1RSAPublicKey(Data(bitString.dropFirst()))
+    // SecKeyCopyExternalRepresentation returns PKCS #1 RSAPublicKey for RSA keys.
+    return try parseDERPKCS1RSAPublicKey(externalRepresentation as Data)
 }
 
 private func parseDERPKCS1RSAPublicKey(_ der: Data) throws -> RDPRSAPublicKey {
@@ -510,137 +491,144 @@ private func derUInt32(_ bytes: Data) throws -> UInt32 {
     return value
 }
 
+/// Raw RSA (`base^exponent mod modulus`) on little-endian integers. Raw RSA
+/// requires `base < modulus`; the size cap bounds the work a server-supplied
+/// key can cause.
 private func modPowLittleEndian(base: Data, exponent: UInt32, modulus: Data) throws -> Data {
-    guard exponent > 0, !modulus.isEmpty, compareLittleEndian(modulus, Data([1])) > 0 else {
+    let modulus = littleEndianLimbs(modulus)
+    let base = littleEndianLimbs(base)
+    guard exponent > 0,
+          (1 ... 512).contains(modulus.count),
+          modulus[0] & 1 == 1,
+          modulus != [1],
+          base.count < modulus.count
+          || base.count == modulus.count && isLess(base, modulus)
+    else {
         throw RDPDecodeError.invalidMCSConnectResponseHeader
     }
 
-    var result = Data([1])
-    var factor = remainderLittleEndian(trimLittleEndian(base), modulus)
-    var remainingExponent = exponent
-    while remainingExponent > 0 {
-        if remainingExponent & 1 == 1 {
-            result = multiplyModLittleEndian(result, factor, modulus)
+    let result = MontgomeryModulus(modulus).power(base, exponent)
+    var bytes = Data(capacity: result.count * 4)
+    for limb in result {
+        bytes.appendLittleEndianUInt32(limb)
+    }
+    while bytes.last == 0 {
+        bytes.removeLast()
+    }
+    return bytes
+}
+
+private func littleEndianLimbs(_ bytes: Data) -> [UInt32] {
+    var limbs = [UInt32](repeating: 0, count: (bytes.count + 3) / 4)
+    for (offset, byte) in bytes.enumerated() {
+        limbs[offset / 4] |= UInt32(byte) << (8 * (offset % 4))
+    }
+    while limbs.last == 0 {
+        limbs.removeLast()
+    }
+    return limbs
+}
+
+/// Compares equal-length little-endian limb arrays.
+private func isLess(_ lhs: [UInt32], _ rhs: [UInt32]) -> Bool {
+    for index in lhs.indices.reversed() where lhs[index] != rhs[index] {
+        return lhs[index] < rhs[index]
+    }
+    return false
+}
+
+/// Montgomery arithmetic modulo an odd modulus of 32-bit little-endian limbs.
+private struct MontgomeryModulus {
+    let limbs: [UInt32]
+    /// `-limbs[0]^-1 mod 2^32`.
+    private let negativeInverse: UInt32
+
+    init(_ limbs: [UInt32]) {
+        self.limbs = limbs
+        var inverse: UInt32 = 1
+        for _ in 0 ..< 5 {
+            inverse = inverse &* (2 &- limbs[0] &* inverse)
         }
-        remainingExponent >>= 1
-        if remainingExponent > 0 {
-            factor = multiplyModLittleEndian(factor, factor, modulus)
+        negativeInverse = 0 &- inverse
+    }
+
+    func power(_ base: [UInt32], _ exponent: UInt32) -> [UInt32] {
+        let montgomeryBase = toMontgomery(base)
+        var result = toMontgomery([1])
+        for bit in (0 ..< UInt32.bitWidth - exponent.leadingZeroBitCount).reversed() {
+            result = multiply(result, result)
+            if (exponent >> bit) & 1 == 1 {
+                result = multiply(result, montgomeryBase)
+            }
+        }
+        return multiply(result, padded([1]))
+    }
+
+    private func padded(_ value: [UInt32]) -> [UInt32] {
+        value + [UInt32](repeating: 0, count: limbs.count - value.count)
+    }
+
+    /// `value * 2^(32 * limbs.count) mod n` by modular doubling; `value < n`.
+    private func toMontgomery(_ value: [UInt32]) -> [UInt32] {
+        var result = padded(value)
+        for _ in 0 ..< UInt32.bitWidth * limbs.count {
+            var carry: UInt32 = 0
+            for index in result.indices {
+                let limb = result[index]
+                result[index] = limb << 1 | carry
+                carry = limb >> 31
+            }
+            if carry != 0 || !isLess(result, limbs) {
+                subtractModulus(from: &result)
+            }
+        }
+        return result
+    }
+
+    /// `lhs * rhs * 2^-(32 * limbs.count) mod n` (CIOS).
+    private func multiply(_ lhs: [UInt32], _ rhs: [UInt32]) -> [UInt32] {
+        let count = limbs.count
+        var accumulator = [UInt32](repeating: 0, count: count + 2)
+        for outer in 0 ..< count {
+            var carry: UInt64 = 0
+            for inner in 0 ..< count {
+                let sum = UInt64(accumulator[inner]) + UInt64(lhs[inner]) * UInt64(rhs[outer]) + carry
+                accumulator[inner] = UInt32(truncatingIfNeeded: sum)
+                carry = sum >> 32
+            }
+            var sum = UInt64(accumulator[count]) + carry
+            accumulator[count] = UInt32(truncatingIfNeeded: sum)
+            accumulator[count + 1] = UInt32(sum >> 32)
+
+            let factor = accumulator[0] &* negativeInverse
+            sum = UInt64(accumulator[0]) + UInt64(factor) * UInt64(limbs[0])
+            carry = sum >> 32
+            for inner in 1 ..< count {
+                sum = UInt64(accumulator[inner]) + UInt64(factor) * UInt64(limbs[inner]) + carry
+                accumulator[inner - 1] = UInt32(truncatingIfNeeded: sum)
+                carry = sum >> 32
+            }
+            sum = UInt64(accumulator[count]) + carry
+            accumulator[count - 1] = UInt32(truncatingIfNeeded: sum)
+            accumulator[count] = accumulator[count + 1] + UInt32(sum >> 32)
+        }
+
+        var result = Array(accumulator[0 ..< count])
+        if accumulator[count] != 0 || !isLess(result, limbs) {
+            subtractModulus(from: &result)
+        }
+        return result
+    }
+
+    private func subtractModulus(from value: inout [UInt32]) {
+        var borrow = false
+        for index in value.indices {
+            let (partial, firstBorrow) = value[index].subtractingReportingOverflow(limbs[index])
+            let (difference, secondBorrow) = partial.subtractingReportingOverflow(borrow ? 1 : 0)
+            value[index] = difference
+            borrow = firstBorrow || secondBorrow
         }
     }
-    return trimLittleEndian(result)
-}
-
-private func multiplyModLittleEndian(_ lhs: Data, _ rhs: Data, _ modulus: Data) -> Data {
-    var result = Data()
-    var addend = remainderLittleEndian(lhs, modulus)
-    var multiplier = trimLittleEndian(rhs)
-
-    while !multiplier.isEmpty {
-        if multiplier[multiplier.startIndex] & 1 == 1 {
-            result = addModLittleEndian(result, addend, modulus)
-        }
-        addend = addModLittleEndian(addend, addend, modulus)
-        shiftRightOneBitLittleEndian(&multiplier)
-    }
-    return result
-}
-
-private func addModLittleEndian(_ lhs: Data, _ rhs: Data, _ modulus: Data) -> Data {
-    var sum = addLittleEndian(lhs, rhs)
-    if compareLittleEndian(sum, modulus) >= 0 {
-        sum = subtractLittleEndian(sum, modulus)
-    }
-    return sum
-}
-
-private func remainderLittleEndian(_ value: Data, _ modulus: Data) -> Data {
-    var result = trimLittleEndian(value)
-    while compareLittleEndian(result, modulus) >= 0 {
-        result = subtractLittleEndian(result, modulus)
-    }
-    return result
-}
-
-private func addLittleEndian(_ lhs: Data, _ rhs: Data) -> Data {
-    let count = max(lhs.count, rhs.count)
-    var result = Data()
-    result.reserveCapacity(count + 1)
-    var carry: UInt16 = 0
-
-    for offset in 0 ..< count {
-        let lhsByte = offset < lhs.count ? UInt16(lhs[lhs.index(lhs.startIndex, offsetBy: offset)]) : 0
-        let rhsByte = offset < rhs.count ? UInt16(rhs[rhs.index(rhs.startIndex, offsetBy: offset)]) : 0
-        let value = lhsByte + rhsByte + carry
-        result.append(UInt8(value & 0xFF))
-        carry = value >> 8
-    }
-    if carry > 0 {
-        result.append(UInt8(carry))
-    }
-    return trimLittleEndian(result)
-}
-
-private func subtractLittleEndian(_ lhs: Data, _ rhs: Data) -> Data {
-    var result = Data()
-    result.reserveCapacity(lhs.count)
-    var borrow = 0
-
-    for offset in 0 ..< lhs.count {
-        let lhsByte = Int(lhs[lhs.index(lhs.startIndex, offsetBy: offset)])
-        let rhsByte = offset < rhs.count ? Int(rhs[rhs.index(rhs.startIndex, offsetBy: offset)]) : 0
-        var value = lhsByte - rhsByte - borrow
-        if value < 0 {
-            value += 256
-            borrow = 1
-        } else {
-            borrow = 0
-        }
-        result.append(UInt8(value))
-    }
-    return trimLittleEndian(result)
-}
-
-private func compareLittleEndian(_ lhs: Data, _ rhs: Data) -> Int {
-    let lhs = trimLittleEndian(lhs)
-    let rhs = trimLittleEndian(rhs)
-    if lhs.count != rhs.count {
-        return lhs.count < rhs.count ? -1 : 1
-    }
-    guard !lhs.isEmpty else {
-        return 0
-    }
-
-    for offset in stride(from: lhs.count - 1, through: 0, by: -1) {
-        let lhsByte = lhs[lhs.index(lhs.startIndex, offsetBy: offset)]
-        let rhsByte = rhs[rhs.index(rhs.startIndex, offsetBy: offset)]
-        if lhsByte != rhsByte {
-            return lhsByte < rhsByte ? -1 : 1
-        }
-    }
-    return 0
-}
-
-private func shiftRightOneBitLittleEndian(_ value: inout Data) {
-    var carry: UInt8 = 0
-    for offset in stride(from: value.count - 1, through: 0, by: -1) {
-        let index = value.index(value.startIndex, offsetBy: offset)
-        let byte = value[index]
-        value[index] = byte >> 1 | carry
-        carry = byte & 1 == 1 ? 0x80 : 0
-    }
-    value = trimLittleEndian(value)
-}
-
-private func trimLittleEndian(_ data: Data) -> Data {
-    var end = data.endIndex
-    while end > data.startIndex {
-        let previous = data.index(before: end)
-        guard data[previous] == 0 else {
-            break
-        }
-        end = previous
-    }
-    return Data(data[data.startIndex ..< end])
 }
 
 private struct DERCursor {
