@@ -16,12 +16,6 @@ enum RDPTransportFraming: Equatable, Sendable {
 }
 
 enum RDPTransportPacketFraming {
-    static func packetLength(from data: Data) throws -> Int? {
-        try packetLength(readableByteCount: data.count) { index in
-            data[data.index(data.startIndex, offsetBy: index)]
-        }
-    }
-
     /// The length of the TPKT or fast-path PDU at the start of the stream, or
     /// nil until enough of its header has arrived.
     static func packetLength(
@@ -127,13 +121,13 @@ func connectionErrorDescription(_ error: Error) -> String {
 /// The one inbound handler of a connection. It splits the stream according to
 /// the current framing, queues complete messages for the connection thread, and
 /// stops reading from the socket while that queue is full.
-private final class RDPTransportReader: ChannelDuplexHandler, RemovableChannelHandler {
+final class RDPTransportReader: ChannelDuplexHandler, RemovableChannelHandler {
     typealias InboundIn = ByteBuffer
     typealias OutboundIn = ByteBuffer
     typealias OutboundOut = ByteBuffer
 
-    private static let pauseReadingMessageCount = 64
-    private static let resumeReadingMessageCount = 16
+    static let pauseReadingMessageCount = 64
+    static let resumeReadingMessageCount = 16
 
     var framing = RDPTransportFraming.rdp
     /// The transcript layer server messages are recorded under; nil records nothing.
