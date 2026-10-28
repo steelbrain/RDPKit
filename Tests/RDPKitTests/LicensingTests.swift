@@ -628,17 +628,6 @@ import Testing
     ])) == nil)
 }
 
-private func mcsSendDataIndication(channelID: UInt16, userData: Data) -> Data {
-    var data = Data()
-    data.appendUInt8(0x68)
-    data.appendBigEndianUInt16(1006 - 1001)
-    data.appendBigEndianUInt16(channelID)
-    data.appendUInt8(0x70)
-    data.appendPERLength(userData.count)
-    data.append(userData)
-    return X224DataTPDU.wrap(data)
-}
-
 private func parseServerLicense(_ packet: Data) throws -> RDPServerLicensePDU? {
     try RDPServerLicensePDU.parseIfPresent(from: MCSSendDataIndicationPDU.parse(fromTPKT: packet))
 }
@@ -788,36 +777,4 @@ private func readLicenseBlob(_ cursor: inout ByteCursor) throws -> (type: UInt16
     let type = try cursor.readLittleEndianUInt16()
     let length = try Int(cursor.readLittleEndianUInt16())
     return (type, try cursor.readData(count: length))
-}
-
-private func proprietaryServerCertificate() -> Data {
-    var publicKey = Data()
-    publicKey.appendLittleEndianUInt32(0x3141_5352)
-    publicKey.appendLittleEndianUInt32(72)
-    publicKey.appendLittleEndianUInt32(512)
-    publicKey.appendLittleEndianUInt32(63)
-    publicKey.appendLittleEndianUInt32(0x0001_0001)
-    publicKey.append(Data(repeating: 0xA5, count: 64))
-    publicKey.append(Data(repeating: 0, count: 8))
-
-    var certificate = Data()
-    certificate.appendLittleEndianUInt32(1)
-    certificate.appendLittleEndianUInt32(1)
-    certificate.appendLittleEndianUInt32(1)
-    certificate.appendLittleEndianUInt16(0x0006)
-    certificate.appendLittleEndianUInt16(UInt16(publicKey.count))
-    certificate.append(publicKey)
-    certificate.appendLittleEndianUInt16(0x0008)
-    certificate.appendLittleEndianUInt16(72)
-    certificate.append(Data(repeating: 0x5A, count: 72))
-    return certificate
-}
-
-private func utf16LENullTerminated(_ value: String) -> Data {
-    var data = Data()
-    for codeUnit in value.utf16 {
-        data.appendLittleEndianUInt16(codeUnit)
-    }
-    data.appendLittleEndianUInt16(0)
-    return data
 }

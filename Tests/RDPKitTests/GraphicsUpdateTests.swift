@@ -732,14 +732,6 @@ private func bitmapUpdatePayload(flags: UInt16 = 0, bitmapStream: Data) -> Data 
     return payload
 }
 
-private func surfaceFrameMarker(action: UInt16, frameID: UInt32) -> Data {
-    var data = Data()
-    data.appendLittleEndianUInt16(0x0004)
-    data.appendLittleEndianUInt16(action)
-    data.appendLittleEndianUInt32(frameID)
-    return data
-}
-
 private func surfaceBitsCommand(
     type: UInt16,
     destinationLeft: UInt16 = 0,
@@ -766,58 +758,5 @@ private func surfaceBitsCommand(
     data.appendLittleEndianUInt16(bitmapHeight)
     data.appendLittleEndianUInt32(UInt32(bitmapData.count))
     data.append(bitmapData)
-    return data
-}
-
-private func shareDataPacket(type: UInt8, pduSource: UInt16 = 1005, payload: Data) -> Data {
-    var userData = Data()
-    userData.appendLittleEndianUInt16(UInt16(18 + payload.count))
-    userData.appendLittleEndianUInt16(0x0017)
-    userData.appendLittleEndianUInt16(pduSource)
-    userData.appendLittleEndianUInt32(0x0001_0000)
-    userData.appendUInt8(0)
-    userData.appendUInt8(1)
-    userData.appendLittleEndianUInt16(UInt16(payload.count + 4))
-    userData.appendUInt8(type)
-    userData.appendUInt8(0)
-    userData.appendLittleEndianUInt16(0)
-    userData.append(payload)
-    return mcsSendDataIndication(channelID: 1003, userData: userData)
-}
-
-private func mcsSendDataIndication(channelID: UInt16, userData: Data) -> Data {
-    var data = Data()
-    data.appendUInt8(0x68)
-    data.appendBigEndianUInt16(1005 - 1001)
-    data.appendBigEndianUInt16(channelID)
-    data.appendUInt8(0x70)
-    data.appendPERLength(userData.count)
-    data.append(userData)
-    return X224DataTPDU.wrap(data)
-}
-
-private func fastPathPacket(_ updates: [Data]) -> Data {
-    fastPathPacket(updates.reduce(into: Data()) { $0.append($1) })
-}
-
-private func fastPathPacket(_ updates: Data) -> Data {
-    let length = 1 + (updates.count + 2 < 0x80 ? 1 : 2) + updates.count
-    var data = Data()
-    data.appendUInt8(0x00)
-    if length < 0x80 {
-        data.appendUInt8(UInt8(length))
-    } else {
-        data.appendUInt8(0x80 | UInt8((length >> 8) & 0x7F))
-        data.appendUInt8(UInt8(length & 0xFF))
-    }
-    data.append(updates)
-    return data
-}
-
-private func fastPathUpdate(code: UInt8, payload: Data) -> Data {
-    var data = Data()
-    data.appendUInt8(code)
-    data.appendLittleEndianUInt16(UInt16(payload.count))
-    data.append(payload)
     return data
 }

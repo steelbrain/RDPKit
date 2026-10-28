@@ -136,18 +136,3 @@ import Testing
         try MCSSendDataIndicationPDU.parse(fromTPKT: packet)
     }
 }
-
-private func mcsSendDataIndication(
-    channelID: UInt16,
-    flags: UInt8 = 0x70,
-    userData: Data
-) -> Data {
-    var payload = Data()
-    payload.appendUInt8(0x68)
-    payload.appendBigEndianUInt16(6)
-    payload.appendBigEndianUInt16(channelID)
-    payload.appendUInt8(flags)
-    payload.appendPERLength(userData.count)
-    payload.append(userData)
-    return X224DataTPDU.wrap(payload)
-}

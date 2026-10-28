@@ -249,7 +249,7 @@ import Testing
         dynamicChannelID: nil
     )
     #expect(packets.count == 1)
-    let request = try clientSendDataRequest(from: packets[0])
+    let request = try mcsSendDataRequest(fromTPKT: packets[0])
     let pdu = try RDPStaticVirtualChannelPDU.parse(fromUserData: request.userData, maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumPayloadByteCount)
 
     #expect(request.channelID == 1004)
@@ -266,7 +266,7 @@ import Testing
         dynamicChannelID: 0x1122_3344
     )
     #expect(packets.count == 1)
-    let request = try clientSendDataRequest(from: packets[0])
+    let request = try mcsSendDataRequest(fromTPKT: packets[0])
     let pdu = try RDPStaticVirtualChannelPDU.parse(fromUserData: request.userData, maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumPayloadByteCount)
     let dynamicPDU = try #require(try RDPDynamicVirtualChannelDataPDU.parseIfPresent(from: pdu.payload))
 
@@ -284,8 +284,8 @@ import Testing
         staticChannelID: 1004,
         dynamicChannelID: 7
     )
-    let firstRequest = try clientSendDataRequest(from: packets[0])
-    let secondRequest = try clientSendDataRequest(from: packets[1])
+    let firstRequest = try mcsSendDataRequest(fromTPKT: packets[0])
+    let secondRequest = try mcsSendDataRequest(fromTPKT: packets[1])
     let firstStaticPDU = try RDPStaticVirtualChannelPDU.parse(fromUserData: firstRequest.userData, maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumPayloadByteCount)
     let secondStaticPDU = try RDPStaticVirtualChannelPDU.parse(fromUserData: secondRequest.userData, maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumPayloadByteCount)
     let firstDynamicPDU = try #require(try RDPDynamicVirtualChannelDataFirstPDU.parseIfPresent(
@@ -531,18 +531,4 @@ import Testing
 
     #expect(try player.enqueue(sample) == false)
     #expect(player.statusMessage == "Ready.")
-}
-
-private func clientSendDataRequest(from packet: Data) throws -> (channelID: UInt16, userData: Data) {
-    var cursor = try ByteCursor(X224DataTPDU.unwrap(packet))
-    let header = try cursor.readUInt8()
-    _ = try cursor.readBigEndianUInt16()
-    let channelID = try cursor.readBigEndianUInt16()
-    let priority = try cursor.readUInt8()
-    let length = try cursor.readPERLength()
-    let userData = try cursor.readData(count: length)
-    guard header == 0x64, priority == 0x70, cursor.remaining == 0 else {
-        throw RDPDecodeError.invalidMCSSendDataIndication
-    }
-    return (channelID: channelID, userData: userData)
 }

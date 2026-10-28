@@ -1523,15 +1523,6 @@ private func cavideoBitmapStream() -> Data {
     return stream
 }
 
-private func graphicsMessage(commandID: UInt16, payload: Data) -> Data {
-    var data = Data()
-    data.appendLittleEndianUInt16(commandID)
-    data.appendLittleEndianUInt16(0)
-    data.appendLittleEndianUInt32(UInt32(8 + payload.count))
-    data.append(payload)
-    return data
-}
-
 private func littleEndianUInt16Data(_ value: UInt16) -> Data {
     var data = Data()
     data.appendLittleEndianUInt16(value)

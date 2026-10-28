@@ -593,40 +593,6 @@ import Testing
     }
 }
 
-private func mcsSendDataIndication(channelID: UInt16, userData: Data) -> Data {
-    var data = Data()
-    data.appendUInt8(0x68)
-    data.appendBigEndianUInt16(1005 - 1001)
-    data.appendBigEndianUInt16(channelID)
-    data.appendUInt8(0x70)
-    data.appendPERLength(userData.count)
-    data.append(userData)
-    return X224DataTPDU.wrap(data)
-}
-
-private func shareDataPacket(
-    type: UInt8,
-    pduSource: UInt16 = 1005,
-    streamID: UInt8 = 1,
-    compressedType: UInt8 = 0,
-    compressedLength: UInt16 = 0,
-    payload: Data
-) -> Data {
-    var userData = Data()
-    userData.appendLittleEndianUInt16(UInt16(18 + payload.count))
-    userData.appendLittleEndianUInt16(0x0017)
-    userData.appendLittleEndianUInt16(pduSource)
-    userData.appendLittleEndianUInt32(0x0001_0000)
-    userData.appendUInt8(0)
-    userData.appendUInt8(streamID)
-    userData.appendLittleEndianUInt16(UInt16(payload.count + 4))
-    userData.appendUInt8(type)
-    userData.appendUInt8(compressedType)
-    userData.appendLittleEndianUInt16(compressedLength)
-    userData.append(payload)
-    return mcsSendDataIndication(channelID: 1003, userData: userData)
-}
-
 private func controlPayload(action: UInt16, grantID: UInt16, controlID: UInt32) -> Data {
     var payload = Data()
     payload.appendLittleEndianUInt16(action)
@@ -641,8 +607,8 @@ private func saveSessionInfoLogonVersion1Payload(
     includeDomainTerminator: Bool = true,
     includeUserNameTerminator: Bool = true
 ) -> Data {
-    let domainBytes = utf16LE(domain, nullTerminated: includeDomainTerminator)
-    let userNameBytes = utf16LE(userName, nullTerminated: includeUserNameTerminator)
+    let domainBytes = utf16LittleEndian(domain, nullTerminated: includeDomainTerminator)
+    let userNameBytes = utf16LittleEndian(userName, nullTerminated: includeUserNameTerminator)
     var payload = Data()
     payload.appendLittleEndianUInt32(0x0000_0000)
     payload.appendLittleEndianUInt32(UInt32(domainBytes.count))
@@ -659,8 +625,8 @@ private func saveSessionInfoLogonVersion2Payload(
     includeDomainTerminator: Bool = true,
     includeUserNameTerminator: Bool = true
 ) -> Data {
-    let domainBytes = utf16LE(domain, nullTerminated: includeDomainTerminator)
-    let userNameBytes = utf16LE(userName, nullTerminated: includeUserNameTerminator)
+    let domainBytes = utf16LittleEndian(domain, nullTerminated: includeDomainTerminator)
+    let userNameBytes = utf16LittleEndian(userName, nullTerminated: includeUserNameTerminator)
     var payload = Data()
     payload.appendLittleEndianUInt32(0x0000_0001)
     payload.appendLittleEndianUInt16(1)
@@ -678,17 +644,6 @@ private func padded(_ data: Data, to byteCount: Int) -> Data {
     var paddedData = data
     paddedData.append(Data(repeating: 0, count: byteCount - data.count))
     return paddedData
-}
-
-private func utf16LE(_ value: String, nullTerminated: Bool) -> Data {
-    var data = Data()
-    for codeUnit in value.utf16 {
-        data.appendLittleEndianUInt16(codeUnit)
-    }
-    if nullTerminated {
-        data.appendLittleEndianUInt16(0)
-    }
-    return data
 }
 
 // TPKT entry points for tests. The client routes by MCS channel first and

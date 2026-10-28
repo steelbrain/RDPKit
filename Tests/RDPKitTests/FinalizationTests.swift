@@ -137,8 +137,3 @@ private func serverShareData(pduType2: UInt8, payload: Data) throws -> RDPShareD
 private func controlPayload(action: UInt16) -> Data {
     RDPClientControlPDU(shareID: 0, action: action).encodedPDUData(userChannelID: 0).suffix(8)
 }
-
-private func hexData(_ value: String) -> Data {
-    let bytes = value.split(whereSeparator: { $0.isWhitespace }).compactMap { UInt8($0, radix: 16) }
-    return Data(bytes)
-}

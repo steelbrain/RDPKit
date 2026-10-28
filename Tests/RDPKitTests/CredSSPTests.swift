@@ -111,7 +111,7 @@ import Testing
         0x4E, 0x54, 0x4C, 0x4D, 0x53, 0x53, 0x50, 0x00,
         0x03, 0x00, 0x00, 0x00,
     ]))
-    #expect(littleEndianUInt32(token, at: 60) == 0xE288_9235)
+    #expect(token.littleEndianUInt32(at: 60) == 0xE288_9235)
     #expect(securityBuffer(token, at: 28) == utf16LittleEndian("Domain"))
     #expect(securityBuffer(token, at: 36) == utf16LittleEndian("User"))
     #expect(securityBuffer(token, at: 44) == utf16LittleEndian("RDPKIT"))
@@ -327,13 +327,13 @@ import Testing
     let step = try context.initialize(inputToken: challenge)
     let token = try #require(step.outputToken)
 
-    #expect(littleEndianUInt32(token, at: 60) == serverFlags | 0x0000_1000)
+    #expect(token.littleEndianUInt32(at: 60) == serverFlags | 0x0000_1000)
     #expect(Data(token[64 ..< 72]) == Data(repeating: 0, count: 8))
     #expect(securityBuffer(token, at: 44).isEmpty)
 }
 
 @Test func ntlmContextSealingKeyFollowsNegotiatedKeyStrength() throws {
-    let challengeFlags = littleEndianUInt32(localChallengeMessage(), at: 20)
+    let challengeFlags = localChallengeMessage().littleEndianUInt32(at: 20)
 
     let sealed128 = try sealedNTLMMessage(challengeFlags: challengeFlags)
     let sealed56 = try sealedNTLMMessage(challengeFlags: challengeFlags & ~UInt32(0x2000_0000))
@@ -374,7 +374,7 @@ import Testing
     replaceLittleEndianUInt32(
         in: &challenge,
         at: 20,
-        with: littleEndianUInt32(challenge, at: 20) & ~UInt32(0x0000_0001)
+        with: challenge.littleEndianUInt32(at: 20) & ~UInt32(0x0000_0001)
     )
 
     try expectNTLMFailure(
@@ -389,7 +389,7 @@ import Testing
         replaceLittleEndianUInt32(
             in: &challenge,
             at: 20,
-            with: littleEndianUInt32(challenge, at: 20) & ~removedFlag
+            with: challenge.littleEndianUInt32(at: 20) & ~removedFlag
         )
 
         try expectNTLMFailure(
@@ -729,8 +729,8 @@ private func securityBuffer(_ data: Data, at offset: Int) -> Data {
         Issue.record("truncated security buffer header")
         return Data()
     }
-    let length = Int(littleEndianUInt16(data, at: offset))
-    let bufferOffset = Int(littleEndianUInt32(data, at: offset + 4))
+    let length = Int(data.littleEndianUInt16(at: offset))
+    let bufferOffset = Int(data.littleEndianUInt32(at: offset + 4))
     guard bufferOffset <= data.count, length <= data.count - bufferOffset else {
         Issue.record("invalid security buffer range")
         return Data()
@@ -752,14 +752,14 @@ private func msvAvFlagsValues(in targetInfo: Data) -> [UInt32] {
     var values: [UInt32] = []
     var offset = 0
     while offset + 4 <= targetInfo.count {
-        let avID = littleEndianUInt16(targetInfo, at: offset)
-        let length = Int(littleEndianUInt16(targetInfo, at: offset + 2))
+        let avID = targetInfo.littleEndianUInt16(at: offset)
+        let length = Int(targetInfo.littleEndianUInt16(at: offset + 2))
         offset += 4
         if avID == 0 {
             break
         }
         if avID == 6, length == 4 {
-            values.append(littleEndianUInt32(targetInfo, at: offset))
+            values.append(targetInfo.littleEndianUInt32(at: offset))
         }
         offset += length
     }
@@ -773,8 +773,8 @@ private func msvAvChannelBindingsValues(in targetInfo: Data) -> [Data] {
 private func terminatingMsvAvEOLOffset(in targetInfo: Data) -> Int? {
     var offset = 0
     while offset + 4 <= targetInfo.count {
-        let avID = littleEndianUInt16(targetInfo, at: offset)
-        let length = Int(littleEndianUInt16(targetInfo, at: offset + 2))
+        let avID = targetInfo.littleEndianUInt16(at: offset)
+        let length = Int(targetInfo.littleEndianUInt16(at: offset + 2))
         offset += 4
         if avID == 0 {
             return length == 0 ? offset : nil
@@ -792,8 +792,8 @@ private func avPairValues(avID expectedAVID: UInt16, in targetInfo: Data) -> [Da
     var values: [Data] = []
     var offset = 0
     while offset + 4 <= targetInfo.count {
-        let avID = littleEndianUInt16(targetInfo, at: offset)
-        let length = Int(littleEndianUInt16(targetInfo, at: offset + 2))
+        let avID = targetInfo.littleEndianUInt16(at: offset)
+        let length = Int(targetInfo.littleEndianUInt16(at: offset + 2))
         offset += 4
         if avID == 0 {
             break
@@ -813,7 +813,7 @@ private func avPairValues(avID expectedAVID: UInt16, in targetInfo: Data) -> [Da
 
 private func challengeMessage(replacingTargetInfo targetInfo: Data) -> Data {
     var message = localChallengeMessage()
-    let targetInfoOffset = Int(littleEndianUInt32(message, at: 44))
+    let targetInfoOffset = Int(message.littleEndianUInt32(at: 44))
     replaceLittleEndianUInt16(in: &message, at: 40, with: UInt16(targetInfo.count))
     replaceLittleEndianUInt16(in: &message, at: 42, with: UInt16(targetInfo.count))
     message.replaceSubrange(message.index(message.startIndex, offsetBy: targetInfoOffset) ..< message.endIndex, with: targetInfo)
@@ -849,26 +849,6 @@ private func sealedNTLMMessage(challengeFlags: UInt32) throws -> Data {
     replaceLittleEndianUInt32(in: &challenge, at: 20, with: challengeFlags)
     _ = try context.initialize(inputToken: challenge)
     return try context.wrap(Data([0x01, 0x02, 0x03, 0x04]))
-}
-
-private func littleEndianUInt16(_ data: Data, at offset: Int) -> UInt16 {
-    UInt16(data[data.index(data.startIndex, offsetBy: offset)])
-        | UInt16(data[data.index(data.startIndex, offsetBy: offset + 1)]) << 8
-}
-
-private func littleEndianUInt32(_ data: Data, at offset: Int) -> UInt32 {
-    UInt32(data[data.index(data.startIndex, offsetBy: offset)])
-        | UInt32(data[data.index(data.startIndex, offsetBy: offset + 1)]) << 8
-        | UInt32(data[data.index(data.startIndex, offsetBy: offset + 2)]) << 16
-        | UInt32(data[data.index(data.startIndex, offsetBy: offset + 3)]) << 24
-}
-
-private func utf16LittleEndian(_ value: String) -> Data {
-    var data = Data()
-    for codeUnit in value.utf16 {
-        data.appendLittleEndianUInt16(codeUnit)
-    }
-    return data
 }
 
 private func replaceLittleEndianUInt16(in data: inout Data, at offset: Int, with value: UInt16) {

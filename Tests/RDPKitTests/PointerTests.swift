@@ -340,22 +340,6 @@ import Testing
     #expect(malformed?.pointerDecodeError == .invalidPointerPDU)
 }
 
-private func shareDataPacket(type: UInt8, payload: Data) -> Data {
-    var userData = Data()
-    userData.appendLittleEndianUInt16(UInt16(18 + payload.count))
-    userData.appendLittleEndianUInt16(0x0017)
-    userData.appendLittleEndianUInt16(1005)
-    userData.appendLittleEndianUInt32(0x0001_0000)
-    userData.appendUInt8(0)
-    userData.appendUInt8(1)
-    userData.appendLittleEndianUInt16(UInt16(payload.count + 4))
-    userData.appendUInt8(type)
-    userData.appendUInt8(0)
-    userData.appendLittleEndianUInt16(0)
-    userData.append(payload)
-    return mcsSendDataIndication(channelID: 1003, userData: userData)
-}
-
 private func pointerAttribute(cacheIndex: UInt16, marker: UInt8) -> RDPColorPointerAttribute {
     RDPColorPointerAttribute(
         cacheIndex: cacheIndex,
@@ -365,15 +349,4 @@ private func pointerAttribute(cacheIndex: UInt16, marker: UInt8) -> RDPColorPoin
         xorMaskData: Data([marker, marker]),
         andMaskData: Data([0xff, 0x00])
     )
-}
-
-private func mcsSendDataIndication(channelID: UInt16, userData: Data) -> Data {
-    var data = Data()
-    data.appendUInt8(0x68)
-    data.appendBigEndianUInt16(1005 - 1001)
-    data.appendBigEndianUInt16(channelID)
-    data.appendUInt8(0x70)
-    data.appendPERLength(userData.count)
-    data.append(userData)
-    return X224DataTPDU.wrap(data)
 }

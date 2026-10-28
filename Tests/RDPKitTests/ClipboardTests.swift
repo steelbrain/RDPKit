@@ -823,7 +823,7 @@ import Testing
     let message = RDPClipboardFormatDataResponsePDU.unicodeText(String(repeating: "x", count: 3_000)).encoded()
 
     let packets = RDPClipboardSession.encodedPackets(message, userChannelID: 1006, staticChannelID: 1007)
-    let chunks = try packets.map { try RDPStaticVirtualChannelPDU.parse(fromUserData: sendDataRequestUserData(from: $0), maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumPayloadByteCount) }
+    let chunks = try packets.map { try RDPStaticVirtualChannelPDU.parse(fromUserData: mcsSendDataRequest(fromTPKT: $0).userData, maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumPayloadByteCount) }
     var reassembler = RDPStaticVirtualChannelReassembler()
     var reassembled: [Data] = []
     for chunk in chunks {
@@ -862,22 +862,13 @@ private final class ClipboardSentMessages: @unchecked Sendable {
     }
 }
 
-private func sendDataRequestUserData(from packet: Data) throws -> Data {
-    var cursor = try ByteCursor(X224DataTPDU.unwrap(packet))
-    _ = try cursor.readUInt8()
-    _ = try cursor.readBigEndianUInt16()
-    _ = try cursor.readBigEndianUInt16()
-    _ = try cursor.readUInt8()
-    return try cursor.readData(count: cursor.readPERLength())
-}
-
 private func clipboardPayload(fromPackets data: Data) throws -> Data {
     var reassembler = RDPStaticVirtualChannelReassembler()
     var offset = data.startIndex
     while offset < data.endIndex {
         let length = Int(data[offset + 2]) << 8 | Int(data[offset + 3])
         let chunk = try RDPStaticVirtualChannelPDU.parse(
-            fromUserData: sendDataRequestUserData(from: data.subdata(in: offset ..< offset + length)),
+            fromUserData: mcsSendDataRequest(fromTPKT: data.subdata(in: offset ..< offset + length)).userData,
             maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumPayloadByteCount
         )
         if let pdu = try reassembler.append(chunk, maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumPayloadByteCount) {
@@ -886,11 +877,6 @@ private func clipboardPayload(fromPackets data: Data) throws -> Data {
         offset += length
     }
     throw RDPDecodeError.invalidStaticVirtualChannelPDU
-}
-
-private func hexData(_ value: String) -> Data {
-    let bytes = value.split(whereSeparator: { $0.isWhitespace }).compactMap { UInt8($0, radix: 16) }
-    return Data(bytes)
 }
 
 private func clipboardGeneralCapabilityPayload(

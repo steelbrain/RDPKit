@@ -340,24 +340,6 @@ import Testing
     #expect(pdu.summaries[0].pointerTypeName == nil)
 }
 
-private func fastPathPacket(_ updates: [Data]) -> Data {
-    fastPathPacket(updates.reduce(into: Data()) { $0.append($1) })
-}
-
-private func fastPathPacket(_ updates: Data) -> Data {
-    let length = 1 + (updates.count + 2 < 0x80 ? 1 : 2) + updates.count
-    var data = Data()
-    data.appendUInt8(0x00)
-    if length < 0x80 {
-        data.appendUInt8(UInt8(length))
-    } else {
-        data.appendUInt8(0x80 | UInt8((length >> 8) & 0x7F))
-        data.appendUInt8(UInt8(length & 0xFF))
-    }
-    data.append(updates)
-    return data
-}
-
 private func encryptedFastPathPacket(signature: Data, payload: Data) -> Data {
     var data = Data()
     data.appendUInt8(0x80)
@@ -394,33 +376,5 @@ private func largePointerPayload() -> Data {
     data.appendLittleEndianUInt32(388)
     data.append(Data(repeating: 0xaa, count: 388))
     data.append(Data(repeating: 0x55, count: 14))
-    return data
-}
-
-private func surfaceFrameMarker(action: UInt16, frameID: UInt32) -> Data {
-    var data = Data()
-    data.appendLittleEndianUInt16(0x0004)
-    data.appendLittleEndianUInt16(action)
-    data.appendLittleEndianUInt32(frameID)
-    return data
-}
-
-private func fastPathUpdate(
-    code: UInt8,
-    fragmentation: UInt8 = 0,
-    compressionFlags: UInt8? = nil,
-    payload: Data
-) -> Data {
-    var data = Data()
-    var header = code | (fragmentation << 4)
-    if compressionFlags != nil {
-        header |= 0x80
-    }
-    data.appendUInt8(header)
-    if let compressionFlags {
-        data.appendUInt8(compressionFlags)
-    }
-    data.appendLittleEndianUInt16(UInt16(payload.count))
-    data.append(payload)
     return data
 }

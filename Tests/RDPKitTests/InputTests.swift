@@ -432,8 +432,3 @@ import Testing
 
     #expect(buffer.readInteger(as: UInt8.self) == 0x03)
 }
-
-private func hexData(_ value: String) -> Data {
-    let bytes = value.split(whereSeparator: { $0.isWhitespace }).compactMap { UInt8($0, radix: 16) }
-    return Data(bytes)
-}

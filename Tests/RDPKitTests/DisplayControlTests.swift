@@ -311,22 +311,3 @@ import Testing
     #expect(dynamicPDU.channelID == 9)
     #expect(try RDPDisplayControlMonitorLayoutPDU.parseIfPresent(from: dynamicPDU.payload) != nil)
 }
-
-private func mcsSendDataRequest(fromTPKT packet: Data) throws -> (initiator: UInt16, channelID: UInt16, userData: Data) {
-    var cursor = try ByteCursor(X224DataTPDU.unwrap(packet))
-    let header = try cursor.readUInt8()
-    let initiator = try UInt16(1001 + cursor.readBigEndianUInt16())
-    let channelID = try cursor.readBigEndianUInt16()
-    _ = try cursor.readUInt8()
-    let length = try cursor.readPERLength()
-    let userData = try cursor.readData(count: length)
-    guard header == 0x64, cursor.remaining == 0 else {
-        throw RDPDecodeError.invalidMCSSendDataIndication
-    }
-    return (initiator, channelID, userData)
-}
-
-private func hexData(_ value: String) -> Data {
-    let bytes = value.split(whereSeparator: { $0.isWhitespace }).compactMap { UInt8($0, radix: 16) }
-    return Data(bytes)
-}

@@ -4,8 +4,8 @@ import Testing
 
 @Test func parsesServerRedirectionWithLoadBalanceCookie() throws {
     let cookie = Data("Cookie: mststs=1183689379\r\n".utf8)
-    let username = utf16LE("rdp-user")
-    let netbios = utf16LE("ANEES-MSI-LAPTOP")
+    let username = utf16LENullTerminated("rdp-user")
+    let netbios = utf16LENullTerminated("ANEES-MSI-LAPTOP")
     var userData = Data()
     let redirectionLength = UInt16(12 + 4 + cookie.count + 4 + username.count + 4 + netbios.count)
     let totalLength = UInt16(8 + Int(redirectionLength))
@@ -43,11 +43,11 @@ import Testing
 }
 
 @Test func parsesServerRedirectionTargetAndCredentialFields() throws {
-    let netAddress = utf16LE("192.0.2.10")
-    let username = utf16LE("rdp-user")
-    let domain = utf16LE("WORKGROUP")
-    let password = utf16LE("hunter2")
-    let fqdn = utf16LE("desktop.example.test")
+    let netAddress = utf16LENullTerminated("192.0.2.10")
+    let username = utf16LENullTerminated("rdp-user")
+    let domain = utf16LENullTerminated("WORKGROUP")
+    let password = utf16LENullTerminated("hunter2")
+    let fqdn = utf16LENullTerminated("desktop.example.test")
 
     var fields = Data()
     fields.append(lengthPrefixed(netAddress))
@@ -76,7 +76,7 @@ import Testing
 
 @Test func doesNotUseLoadBalanceInfoAsRoutingTokenWhenTargetAddressIsPresent() throws {
     let cookie = Data("Cookie: mststs=load-balanced\r\n".utf8)
-    let netAddress = utf16LE("192.0.2.10")
+    let netAddress = utf16LENullTerminated("192.0.2.10")
     var fields = Data()
     fields.append(lengthPrefixed(netAddress))
     fields.append(lengthPrefixed(cookie))
@@ -93,14 +93,14 @@ import Testing
 }
 
 @Test func parsesServerRedirectionTargetNetAddresses() throws {
-    let netAddress = utf16LE("2001:db8::1")
-    let netbios = utf16LE("RDSHOST")
+    let netAddress = utf16LENullTerminated("2001:db8::1")
+    let netbios = utf16LENullTerminated("RDSHOST")
     var fields = Data()
     fields.append(lengthPrefixed(netAddress))
     fields.append(lengthPrefixed(netbios))
     fields.append(lengthPrefixed(targetNetAddresses([
-        utf16LE("2001:db8::1"),
-        utf16LE("192.0.2.10"),
+        utf16LENullTerminated("2001:db8::1"),
+        utf16LENullTerminated("192.0.2.10"),
     ])))
 
     let pdu = try #require(try RDPServerRedirectionPDU.parseIfPresent(fromTPKT: redirectionIndication(
@@ -117,7 +117,7 @@ import Testing
 }
 
 @Test func parsesServerRedirectionTargetNetAddressesAfterRDSTLSFields() throws {
-    let tsvURL = utf16LE("tsv://collection")
+    let tsvURL = utf16LENullTerminated("tsv://collection")
     let guid = Data("UkRQS2l0LXJlZGlyZWN0LWd1aWQ=".utf8)
     let certificate = Data("UkRQS2l0LWNlcnQ=".utf8)
     var fields = Data()
@@ -125,8 +125,8 @@ import Testing
     fields.append(lengthPrefixed(guid))
     fields.append(lengthPrefixed(certificate))
     fields.append(lengthPrefixed(targetNetAddresses([
-        utf16LE("2001:db8::1"),
-        utf16LE("192.0.2.10"),
+        utf16LENullTerminated("2001:db8::1"),
+        utf16LENullTerminated("192.0.2.10"),
     ])))
 
     let pdu = try #require(try RDPServerRedirectionPDU.parseIfPresent(fromTPKT: redirectionIndication(
@@ -148,7 +148,7 @@ import Testing
     let pdu = try #require(try RDPServerRedirectionPDU.parseIfPresent(fromTPKT: redirectionIndication(
         sessionID: 0x1234_5678,
         flags: RDPServerRedirectionPDU.Flags.targetFQDN.rawValue,
-        fields: lengthPrefixed(utf16LE("desktop.example.test"))
+        fields: lengthPrefixed(utf16LENullTerminated("desktop.example.test"))
     )))
 
     #expect(pdu.sessionID == 0x1234_5678)
@@ -193,10 +193,10 @@ import Testing
     // then the optional pad1Octet counted only in the Share Control length.
     let cookie = Data([0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08])
     var fields = lengthPrefixed(Data("Cookie: msts=3640205228.15629.0000\r\n".utf8))
-    fields.append(lengthPrefixed(utf16LE("AdminUser\u{0}")))
-    fields.append(lengthPrefixed(utf16LE("NTDEV\u{0}")))
+    fields.append(lengthPrefixed(utf16LENullTerminated("AdminUser\u{0}")))
+    fields.append(lengthPrefixed(utf16LENullTerminated("NTDEV\u{0}")))
     fields.append(lengthPrefixed(cookie))
-    fields.append(lengthPrefixed(utf16LE("server2.example.test\u{0}")))
+    fields.append(lengthPrefixed(utf16LENullTerminated("server2.example.test\u{0}")))
     let flags: RDPServerRedirectionPDU.Flags = [.loadBalanceInfo, .username, .domain, .password, .targetFQDN]
     var packet = redirectionUserData(sessionID: 2, flags: flags.rawValue, fields: fields)
     packet.append(0)
@@ -330,7 +330,7 @@ import Testing
     // bits (0x4000/0x8000/0x10000); a wrong bit assignment makes them read as
     // unknown flags, dropping the routing token so the redirect is not followed.
     let cookie = Data("Cookie: msts=lb\r\n".utf8)
-    let username = utf16LE("rdp-user")
+    let username = utf16LENullTerminated("rdp-user")
     let encryptedPassword = Data([0x30, 0x82, 0x01, 0x0A, 0x00, 0xFF])
     let guid = Data((0 ..< 16).map { UInt8($0) })
     let certificate = Data([0x01, 0x02, 0x03, 0x04])
@@ -379,7 +379,7 @@ import Testing
 }
 
 @Test func rejectsTargetNetAddressesWithTrailingBytes() {
-    var addresses = targetNetAddresses([utf16LE("192.0.2.10")])
+    var addresses = targetNetAddresses([utf16LENullTerminated("192.0.2.10")])
     addresses.append(0xFF)
 
     #expect(throws: RDPDecodeError.invalidShareControlHeader) {
@@ -393,7 +393,7 @@ import Testing
 @Test func rejectsTargetNetAddressesWhenCountExceedsEntries() {
     var addresses = Data()
     addresses.appendLittleEndianUInt32(2)
-    addresses.append(lengthPrefixed(utf16LE("192.0.2.10")))
+    addresses.append(lengthPrefixed(utf16LENullTerminated("192.0.2.10")))
 
     #expect(throws: RDPDecodeError.truncated(needed: 4, remaining: 0)) {
         try RDPServerRedirectionPDU.parseIfPresent(fromTPKT: redirectionIndication(
@@ -479,24 +479,4 @@ private func targetNetAddresses(_ addresses: [Data]) -> Data {
         out.append(lengthPrefixed(address))
     }
     return out
-}
-
-private func mcsSendDataIndication(channelID: UInt16, userData: Data) -> Data {
-    var data = Data()
-    data.appendUInt8(0x68)
-    data.appendBigEndianUInt16(1007 - 1001)
-    data.appendBigEndianUInt16(channelID)
-    data.appendUInt8(0x70)
-    data.appendPERLength(userData.count)
-    data.append(userData)
-    return X224DataTPDU.wrap(data)
-}
-
-private func utf16LE(_ string: String) -> Data {
-    var data = Data()
-    for codeUnit in string.utf16 {
-        data.appendLittleEndianUInt16(codeUnit)
-    }
-    data.appendLittleEndianUInt16(0)
-    return data
 }

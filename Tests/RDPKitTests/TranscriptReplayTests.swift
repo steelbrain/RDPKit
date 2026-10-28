@@ -155,13 +155,3 @@ private func autoDetectResponse(
         #expect(classified == expected, "\(name)")
     }
 }
-
-private func loadTranscriptFixture(_ name: String) throws -> [RDPWireEvent] {
-    let url = try #require(Bundle.module.url(
-        forResource: name,
-        withExtension: "json",
-        subdirectory: "Fixtures"
-    ))
-    let data = try Data(contentsOf: url)
-    return try JSONDecoder().decode([RDPWireEvent].self, from: data)
-}

@@ -267,7 +267,7 @@ import Testing
     payload.appendLittleEndianUInt32(1)
     payload.appendUInt8(0x00)
     let message = try RDPGFXHeader.parse(
-        from: preflightGraphicsMessage(commandID: RDPGFXCommandID.wireToSurface2, payload: payload)
+        from: graphicsMessage(commandID: RDPGFXCommandID.wireToSurface2, payload: payload)
     )
     let summary = try RDPGFXMessageSummary.summarize(message)
 
@@ -394,13 +394,4 @@ import Testing
     )
 
     #expect(copiedVideoFrames([frame], using: copy).isEmpty)
-}
-
-private func preflightGraphicsMessage(commandID: UInt16, payload: Data) -> Data {
-    var bytes = Data()
-    bytes.appendLittleEndianUInt16(commandID)
-    bytes.appendLittleEndianUInt16(0)
-    bytes.appendLittleEndianUInt32(UInt32(8 + payload.count))
-    bytes.append(payload)
-    return bytes
 }

@@ -296,29 +296,7 @@ private func h264FormatDescription(sequenceParameterSet: Data) throws -> CMVideo
 }
 
 private func firstTranscriptFrame(_ fixture: String) throws -> RDPGraphicsFrameSnapshot {
-    let url = try #require(Bundle.module.url(forResource: fixture, withExtension: "json", subdirectory: "Fixtures"))
-    let events = try JSONDecoder().decode([RDPWireEvent].self, from: Data(contentsOf: url))
-    let credentials = RDPCredentials(username: "rdp-user", password: "rdp-user")
-    let server = try RDPTranscriptReplayServer.start(transcript: events, credentials: credentials)
-    defer { server.stop() }
-    let report = RDPPreflightClient().run(
-        configuration: RDPConnectionConfiguration(
-            host: "127.0.0.1",
-            port: server.port,
-            credentials: credentials,
-            timeoutSeconds: 10,
-            hideCertificateWarnings: true,
-            desktopWidth: 1280,
-            desktopHeight: 720,
-            clipboardEnabled: false,
-            graphicsCapabilityProfile: .avcThinClient
-        )
-    )
-    return try #require(report.rdpGraphicsFirstFrame)
-}
-
-private func hexData(_ value: String) -> Data {
-    Data(value.split(separator: " ").compactMap { UInt8($0, radix: 16) })
+    try #require(replayTranscriptFixture(fixture).report.rdpGraphicsFirstFrame)
 }
 
 private enum PixelReadError: Error {

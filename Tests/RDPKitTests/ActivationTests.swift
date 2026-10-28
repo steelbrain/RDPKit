@@ -305,11 +305,6 @@ import Testing
     #expect(shareData.typeName == "server-synchronize")
 }
 
-private func hexData(_ value: String) -> Data {
-    let bytes = value.split(whereSeparator: { $0.isWhitespace }).compactMap { UInt8($0, radix: 16) }
-    return Data(bytes)
-}
-
 private func demandActivePacket(
     capabilitySets: [Data],
     declaredCapabilityCount: UInt16? = nil,
@@ -363,23 +358,6 @@ private func inputCapabilityBody(inputFlags: UInt16) -> Data {
     data.appendLittleEndianUInt16(inputFlags)
     data.append(Data(repeating: 0, count: 82))
     return data
-}
-
-private extension Data {
-    func containsSubsequence(_ needle: Data) -> Bool {
-        range(of: needle) != nil
-    }
-
-    func littleEndianUInt32(at offset: Int) -> UInt32 {
-        UInt32(self[offset])
-            | UInt32(self[offset + 1]) << 8
-            | UInt32(self[offset + 2]) << 16
-            | UInt32(self[offset + 3]) << 24
-    }
-
-    func littleEndianUInt16(at offset: Int) -> UInt16 {
-        UInt16(self[offset]) | UInt16(self[offset + 1]) << 8
-    }
 }
 
 private extension RDPClientConfirmActivePDU {

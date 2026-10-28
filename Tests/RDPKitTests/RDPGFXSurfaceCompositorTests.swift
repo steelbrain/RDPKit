@@ -1958,36 +1958,7 @@ private func resetGraphicsMessage(width: UInt32, height: UInt32) throws -> RDPGF
 }
 
 private func makeGraphicsMessage(commandID: UInt16, payload: Data) throws -> RDPGFXHeader {
-    var data = Data()
-    data.appendLittleEndianUInt16(commandID)
-    data.appendLittleEndianUInt16(0)
-    data.appendLittleEndianUInt32(UInt32(8 + payload.count))
-    data.append(payload)
-    return try RDPGFXHeader.parse(from: data)
-}
-
-private func rectangleData(_ rect: RDPGFXRect16) -> Data {
-    var data = Data()
-    data.appendLittleEndianUInt16(rect.left)
-    data.appendLittleEndianUInt16(rect.top)
-    data.appendLittleEndianUInt16(rect.right)
-    data.appendLittleEndianUInt16(rect.bottom)
-    return data
-}
-
-private func clearCodecRawRegionStream(width: UInt16, height: UInt16, pixels: [UInt8]) -> Data {
-    var stream = Data([0x00, 0x00])
-    stream.appendLittleEndianUInt32(0)
-    stream.appendLittleEndianUInt32(0)
-    stream.appendLittleEndianUInt32(UInt32(13 + pixels.count))
-    stream.appendLittleEndianUInt16(0)
-    stream.appendLittleEndianUInt16(0)
-    stream.appendLittleEndianUInt16(width)
-    stream.appendLittleEndianUInt16(height)
-    stream.appendLittleEndianUInt32(UInt32(pixels.count))
-    stream.appendUInt8(0)
-    stream.append(contentsOf: pixels)
-    return stream
+    try RDPGFXHeader.parse(from: graphicsMessage(commandID: commandID, payload: payload))
 }
 
 private func alphaBitmapStream(compressed: UInt16, payload: Data) -> Data {
@@ -1996,9 +1967,4 @@ private func alphaBitmapStream(compressed: UInt16, payload: Data) -> Data {
     data.appendLittleEndianUInt16(compressed)
     data.append(payload)
     return data
-}
-
-private func pixel(atX x: Int, y: Int, data: Data, bytesPerRow: Int) -> [UInt8] {
-    let offset = y * bytesPerRow + x * 4
-    return Array(data[offset ..< offset + 4])
 }

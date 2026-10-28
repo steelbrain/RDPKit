@@ -451,34 +451,6 @@ import Testing
     #expect(decoded.usesHardwareAcceleration == nil)
 }
 
-private func clearCodecBandsStream(seqNumber: UInt8, bandsData: Data) -> Data {
-    var stream = Data([0x00, seqNumber])
-    stream.appendLittleEndianUInt32(0)
-    stream.appendLittleEndianUInt32(UInt32(bandsData.count))
-    stream.appendLittleEndianUInt32(0)
-    stream.append(bandsData)
-    return stream
-}
-
-private func clearCodecTwoColumnBandsData() -> Data {
-    var bandsData = Data()
-    bandsData.appendLittleEndianUInt16(0)
-    bandsData.appendLittleEndianUInt16(1)
-    bandsData.appendLittleEndianUInt16(0)
-    bandsData.appendLittleEndianUInt16(2)
-    bandsData.append(contentsOf: [0x00, 0x00, 0x00])
-    bandsData.appendLittleEndianUInt16(0x0301)
-    bandsData.append(contentsOf: [
-        0x10, 0x20, 0x30,
-        0x40, 0x50, 0x60,
-    ])
-    bandsData.appendLittleEndianUInt16(0x0100)
-    bandsData.append(contentsOf: [
-        0x70, 0x80, 0x90,
-    ])
-    return bandsData
-}
-
 private func nsCodecFrame(
     yPlane: [UInt8],
     coPlane: [UInt8],
