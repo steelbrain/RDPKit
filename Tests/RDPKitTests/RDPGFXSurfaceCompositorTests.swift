@@ -1018,27 +1018,43 @@ import Testing
     #expect(pixel(atX: 95, y: 95, data: bitmapData, bytesPerRow: 384) == [0x80, 0x80, 0x80, 0xFF])
 }
 
-@Test func compositorIgnoresCAPROGRESSIVETilesOutsideSurfaceBounds() throws {
+@Test func compositorRejectsSurfacesBeyondTheAllocationBudget() throws {
+    let compositor = RDPGFXSurfaceCompositor()
+    let clearCodec = RDPClearCodecDecoder()
+
+    #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
+        try compositor.process(
+            try createSurfaceMessage(surfaceID: 1, width: 65_535, height: 65_535),
+            clearCodec: clearCodec
+        )
+    }
+    try compositor.process(try createSurfaceMessage(surfaceID: 1, width: 1_920, height: 1_080), clearCodec: clearCodec)
+}
+
+// Like FreeRDP, a progressive tile outside the surface's tile grid rejects the PDU, so a
+// server cannot grow per-tile state for positions the surface does not have.
+@Test func compositorRejectsCAPROGRESSIVETilesOutsideSurfaceBounds() throws {
     let compositor = RDPGFXSurfaceCompositor()
     let clearCodec = RDPClearCodecDecoder()
 
     try compositor.process(try createSurfaceMessage(surfaceID: 32, width: 64, height: 64), clearCodec: clearCodec)
-    try compositor.process(
-        try wireToSurface2Message(
-            surfaceID: 32,
-            codecID: RDPGFXCodecID.caProgressive,
-            codecContextID: 0,
-            pixelFormat: 0x20,
-            bitmapData: caprogressiveRemoteFXGrayTileStream(
-                regionX: 64,
-                regionY: 0,
-                tileXIndex: 1,
-                tileYIndex: 0
-            )
-        ),
-        clearCodec: clearCodec
-    )
-
+    #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
+        try compositor.process(
+            try wireToSurface2Message(
+                surfaceID: 32,
+                codecID: RDPGFXCodecID.caProgressive,
+                codecContextID: 0,
+                pixelFormat: 0x20,
+                bitmapData: caprogressiveRemoteFXGrayTileStream(
+                    regionX: 64,
+                    regionY: 0,
+                    tileXIndex: 1,
+                    tileYIndex: 0
+                )
+            ),
+            clearCodec: clearCodec
+        )
+    }
     #expect(compositor.makeFrame(frameID: 18) == nil)
 }
 

@@ -195,6 +195,7 @@ final class RDPGFXSurfaceCompositor {
     private var cachedByteCount = 0
     private var graphicsOutputRect: RDPFrameRect?
     private let maximumCacheByteCount: Int
+    private static let maximumSurfaceByteCount = 1 << 30
     private let maximumCacheSlot: UInt16
     private let remoteFX = RDPRemoteFXDecoder()
 
@@ -380,7 +381,12 @@ final class RDPGFXSurfaceCompositor {
     }
 
     private func createSurface(_ pdu: RDPGFXCreateSurfacePDU) throws {
-        guard surfaces[pdu.surfaceID] == nil else {
+        let byteCount = Int(pdu.width) * Int(pdu.height) * 4
+        let allocatedByteCount = surfaces.values.reduce(0) { $0 + $1.data.count }
+        // Surface sizes come from the server; bound the memory a server can make us allocate.
+        guard surfaces[pdu.surfaceID] == nil,
+              allocatedByteCount + byteCount <= Self.maximumSurfaceByteCount
+        else {
             throw RDPDecodeError.invalidRDPGFXPDU
         }
         surfaces[pdu.surfaceID] = Surface(
@@ -388,7 +394,7 @@ final class RDPGFXSurfaceCompositor {
             width: Int(pdu.width),
             height: Int(pdu.height),
             pixelFormat: pdu.pixelFormat,
-            data: Data(count: Int(pdu.width) * Int(pdu.height) * 4)
+            data: Data(count: byteCount)
         )
     }
 
@@ -544,19 +550,33 @@ final class RDPGFXSurfaceCompositor {
             pdu.bitmapData,
             surfaceID: pdu.surfaceID,
             codecContextID: pdu.codecContextID,
-            permitsUpgrade: codecContexts.contains(contextKey)
+            permitsUpgrade: codecContexts.contains(contextKey),
+            surfaceSize: surfaces[pdu.surfaceID].map { (width: $0.width, height: $0.height) }
         )
         codecContexts.insert(contextKey)
         try modifySurface(pdu.surfaceID) { surface in
-            for tile in frame.tiles where tile.x < surface.width && tile.y < surface.height {
-                try surface.write(
-                    tile.bgraData,
-                    bytesPerRow: tile.bytesPerRow,
-                    width: min(64, surface.width - tile.x),
-                    height: min(64, surface.height - tile.y),
-                    x: tile.x,
-                    y: tile.y
-                )
+            // Tiles may carry pixels outside the region; only the region rects are updated
+            // (MS-RDPEGFX 2.2.4.2.1.5). Progressive tiles are in surface coordinates.
+            for tile in frame.tiles {
+                for region in frame.regionRects {
+                    let left = max(tile.x, Int(region.left))
+                    let top = max(tile.y, Int(region.top))
+                    let right = min(tile.x + 64, Int(region.right), surface.width)
+                    let bottom = min(tile.y + 64, Int(region.bottom), surface.height)
+                    guard right > left, bottom > top else {
+                        continue
+                    }
+                    try surface.write(
+                        tile.bgraData,
+                        bytesPerRow: tile.bytesPerRow,
+                        sourceX: left - tile.x,
+                        sourceY: top - tile.y,
+                        width: right - left,
+                        height: bottom - top,
+                        x: left,
+                        y: top
+                    )
+                }
             }
             for region in frame.regionRects {
                 surface.markDirty(RDPGFXRect16(
