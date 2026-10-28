@@ -100,15 +100,9 @@ public struct RDPPreflightReport: Encodable, Equatable, Sendable {
     public var rdpDisplayControlCaps: RDPDisplayControlCapabilities?
     public var rdpClipboardChannelID: UInt16?
     public var rdpClipboardMessages: [RDPClipboardMessageSummary]?
-    /// Always nil: raw clipboard and audio bytes are not retained.
-    public var rdpClipboardMessageHexes: [String]?
     public var rdpClipboardSentMessages: [RDPClipboardMessageSummary]?
-    /// Always nil: raw clipboard and audio bytes are not retained.
-    public var rdpClipboardSentMessageHexes: [String]?
     public var rdpAudioChannelID: UInt16?
     public var rdpAudioMessages: [RDPAudioMessageSummary]?
-    /// Always nil: raw clipboard and audio bytes are not retained.
-    public var rdpAudioMessageHexes: [String]?
     public var warnings: [RDPProbeWarning]
     public var nextStage: String?
     public var error: String?
@@ -203,12 +197,9 @@ public struct RDPPreflightReport: Encodable, Equatable, Sendable {
         rdpDisplayControlCaps: RDPDisplayControlCapabilities? = nil,
         rdpClipboardChannelID: UInt16? = nil,
         rdpClipboardMessages: [RDPClipboardMessageSummary]? = nil,
-        rdpClipboardMessageHexes: [String]? = nil,
         rdpClipboardSentMessages: [RDPClipboardMessageSummary]? = nil,
-        rdpClipboardSentMessageHexes: [String]? = nil,
         rdpAudioChannelID: UInt16? = nil,
         rdpAudioMessages: [RDPAudioMessageSummary]? = nil,
-        rdpAudioMessageHexes: [String]? = nil,
         warnings: [RDPProbeWarning],
         nextStage: String? = nil,
         error: String? = nil
@@ -302,12 +293,9 @@ public struct RDPPreflightReport: Encodable, Equatable, Sendable {
         self.rdpDisplayControlCaps = rdpDisplayControlCaps
         self.rdpClipboardChannelID = rdpClipboardChannelID
         self.rdpClipboardMessages = rdpClipboardMessages
-        self.rdpClipboardMessageHexes = rdpClipboardMessageHexes
         self.rdpClipboardSentMessages = rdpClipboardSentMessages
-        self.rdpClipboardSentMessageHexes = rdpClipboardSentMessageHexes
         self.rdpAudioChannelID = rdpAudioChannelID
         self.rdpAudioMessages = rdpAudioMessages
-        self.rdpAudioMessageHexes = rdpAudioMessageHexes
         self.warnings = warnings
         self.nextStage = nextStage
         self.error = error
