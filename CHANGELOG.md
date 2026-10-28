@@ -5,7 +5,7 @@
 ### Breaking changes
 
 - Rename the types named after the old preflight probe: `RDPPreflightClient`
-  is now `RDPClient`, `RDPPreflightReport` is `RDPConnectionReport`,
+  is now `RDPSessionClient`, `RDPPreflightReport` is `RDPConnectionReport`,
   `RDPPreflightError` is `RDPConnectionError` and `RDPProbeWarning` is
   `RDPConnectionWarning`. `RDPLatestFrameDecodeQueue`, which decodes every
   frame in order, is now `RDPFrameDecodeQueue`.

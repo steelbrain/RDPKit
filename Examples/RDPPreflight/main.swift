@@ -733,7 +733,7 @@ func failureReport(args: Arguments?, error: Error) -> RDPConnectionReport {
         desktopHeight: connection.desktopHeight,
         graphicsCapabilityProfile: connection.graphicsCapabilityProfile
     )
-    var report = RDPClient().dryRun(configuration: configuration)
+    var report = RDPSessionClient().dryRun(configuration: configuration)
     report.status = "failure"
     report.stage = "x224-rdp-negotiation"
     report.passwordConfigured = connection.passwordEnv
@@ -761,7 +761,7 @@ do {
     let pointerProbeLocation = args.probeInputPointer
         ? RDPRemotePoint(x: configuration.desktopWidth / 2, y: configuration.desktopHeight / 2)
         : nil
-    let client = RDPClient()
+    let client = RDPSessionClient()
     let probeRecorder = PreflightProbeRecorder(windowsClipboardProbeText: args.probeWindowsClipboardText)
     let report = args.dryRun
         ? client.dryRun(configuration: configuration)

@@ -272,7 +272,7 @@ func replayTranscriptFixture(_ name: String) throws -> (report: RDPConnectionRep
     let server = try RDPTranscriptReplayServer.start(transcript: loadTranscriptFixture(name), credentials: credentials)
     defer { server.stop() }
 
-    let report = RDPClient().run(configuration: RDPConnectionConfiguration(
+    let report = RDPSessionClient().run(configuration: RDPConnectionConfiguration(
         host: "127.0.0.1",
         port: server.port,
         credentials: credentials,

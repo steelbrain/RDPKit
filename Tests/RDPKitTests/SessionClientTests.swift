@@ -12,7 +12,7 @@ import Testing
         hideCertificateWarnings: true
     )
 
-    let report = RDPClient().dryRun(configuration: configuration)
+    let report = RDPSessionClient().dryRun(configuration: configuration)
 
     #expect(report.status == "dry-run")
     #expect(report.stage == "x224-rdp-negotiation-request")
@@ -27,7 +27,7 @@ import Testing
 }
 
 @Test func dryRunCanRequestEarlyUserAuthorization() {
-    let report = RDPClient().dryRun(configuration: RDPConnectionConfiguration(
+    let report = RDPSessionClient().dryRun(configuration: RDPConnectionConfiguration(
         host: "192.0.2.10",
         earlyUserAuthorizationEnabled: true
     ))
@@ -160,7 +160,7 @@ import Testing
     let cancellation = RDPConnectionCancellation()
     cancellation.cancel()
 
-    let report = RDPClient().run(
+    let report = RDPSessionClient().run(
         configuration: RDPConnectionConfiguration(host: "example.test"),
         cancellation: cancellation
     )

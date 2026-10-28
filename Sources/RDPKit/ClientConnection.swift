@@ -3,7 +3,7 @@ import NIOCore
 
 /// One connection to one server, from TCP connect to the end of the session
 /// ([MS-RDPBCGR] 1.3.1.1). It runs on the thread that called
-/// `RDPClient.run`/`connect` and keeps everything it learns in
+/// `RDPSessionClient.run`/`connect` and keeps everything it learns in
 /// `report`.
 final class RDPClientConnection {
     let configuration: RDPConnectionConfiguration

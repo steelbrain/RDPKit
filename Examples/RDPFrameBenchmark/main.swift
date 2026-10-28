@@ -323,7 +323,7 @@ private enum RDPFrameBenchmark {
         )
         let displayResize = args.displayResize
         let start = processSample()
-        let report = RDPClient().run(
+        let report = RDPSessionClient().run(
             configuration: configuration,
             onGraphicsFrame: { frame in
                 if accumulator.appendFrame(frame) {

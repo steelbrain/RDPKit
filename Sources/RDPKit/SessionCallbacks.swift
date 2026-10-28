@@ -1,6 +1,6 @@
 import Foundation
 
-// Threading: see `RDPClient`.
+// Threading: see `RDPSessionClient`.
 
 /// Receives each decoded graphics frame. Throwing ends the session with
 /// `RDPConnectionError.graphicsFrameHandler`; the frame is not acknowledged.

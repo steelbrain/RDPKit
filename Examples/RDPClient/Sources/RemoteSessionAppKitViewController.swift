@@ -645,7 +645,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         let sink = RDPRemoteSessionMainActorSink(controller: self, connectionID: connectionID)
         let credentialStore = credentialStore
         let clientLicenseStore = clientLicenseStore
-        // RDPClient.run blocks for the whole session, so it gets its own thread
+        // RDPSessionClient.run blocks for the whole session, so it gets its own thread
         // rather than holding a Swift concurrency worker.
         let sessionThread = Thread {
             let decodeQueue = RDPFrameDecodeQueue(
@@ -702,7 +702,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                 wireReceiveCoalescer.cancel()
                 decodeQueue.cancel()
             }
-            let nextReport = RDPClient().run(
+            let nextReport = RDPSessionClient().run(
                 configuration: configuration,
                 onGraphicsFrame: { frame in
                     try decodeQueue.submitAndWait(

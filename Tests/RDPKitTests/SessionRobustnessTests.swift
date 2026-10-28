@@ -214,7 +214,7 @@ func liveSessionReportsALostConnectionAsAFailure(end: KRdpCapture.ConnectionEnd,
     try #require(bound)
 
     let error = #expect(throws: RDPConnectionError.self) {
-        try RDPClient().connect(configuration: RDPConnectionConfiguration(
+        try RDPSessionClient().connect(configuration: RDPConnectionConfiguration(
             host: "127.0.0.1",
             port: UInt16(bigEndian: address.sin_port)
         ))
@@ -237,7 +237,7 @@ func liveSessionReportsALostConnectionAsAFailure(end: KRdpCapture.ConnectionEnd,
     defer { server.close(promise: nil) }
 
     let started = Date()
-    let report = RDPClient().run(
+    let report = RDPSessionClient().run(
         configuration: RDPConnectionConfiguration(
             host: "127.0.0.1",
             port: UInt16(try #require(server.localAddress?.port)),
@@ -327,7 +327,7 @@ enum KRdpCapture {
         DispatchQueue(label: "KRdpCapture.guard").asyncAfter(deadline: .now() + guardSeconds) {
             cancellation.cancel()
         }
-        let report = RDPClient().run(
+        let report = RDPSessionClient().run(
             configuration: RDPConnectionConfiguration(
                 host: "127.0.0.1",
                 port: server.port,

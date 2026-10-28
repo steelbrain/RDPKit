@@ -11,7 +11,7 @@ import Foundation
 /// `onCertificate` runs after the TLS handshake and before any credential is
 /// sent: cancelling `cancellation` (or returning true from `shouldCancel`)
 /// from it rejects the server.
-public struct RDPClient: Sendable {
+public struct RDPSessionClient: Sendable {
     public init() {}
 
     public func dryRun(configuration: RDPConnectionConfiguration) -> RDPConnectionReport {

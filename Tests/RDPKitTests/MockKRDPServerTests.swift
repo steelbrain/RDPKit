@@ -43,7 +43,7 @@ struct MockKRDPServerTests {
     @Test func clientCallsCertificateHandlerAfterTLSHandshake() throws {
         let certificate = Locked<RDPServerCertificateInfo?>(nil)
         let report = try runMock(.init(), { $0.hideCertificateWarnings = false }, client: {
-            RDPClient().run(configuration: $0, onCertificate: { info in
+            RDPSessionClient().run(configuration: $0, onCertificate: { info in
                 certificate.withLock { $0 = info }
             })
         }).report
@@ -63,7 +63,7 @@ struct MockKRDPServerTests {
     @Test func clientCancelledFromCertificateCallbackSendsNoCredentials() throws {
         let cancellation = RDPConnectionCancellation()
         let run = try runMock(.init(securityProtocol: .credSSP(credentials: mockCredentials)), client: {
-            RDPClient().run(
+            RDPSessionClient().run(
                 configuration: $0,
                 onCertificate: { _ in cancellation.cancel() },
                 cancellation: cancellation
@@ -130,7 +130,7 @@ struct MockKRDPServerTests {
     @Test func clientCapturesGraphicsFrameFromMockKRDPServer() throws {
         let observed = Locked(Observed())
         let report = try runMock(.init(requireBitmapCodecsCapability: true), client: {
-            RDPClient().run(
+            RDPSessionClient().run(
                 configuration: $0,
                 onGraphicsFrame: { frame in observed.withLock { $0.frames.append(frame) } },
                 onWireReceive: { sample in observed.withLock { $0.wireBytes += sample.byteCount } }
@@ -206,7 +206,7 @@ struct MockKRDPServerTests {
     /// the length of the client's, which carry credentials.
     @Test func wireTranscriptRedactsClientApplicationPayloadsButKeepsByteCounts() throws {
         let transcript = RDPWireTranscript()
-        let report = try runMock(client: { RDPClient().run(configuration: $0, wireTranscript: transcript) }).report
+        let report = try runMock(client: { RDPSessionClient().run(configuration: $0, wireTranscript: transcript) }).report
         let application = transcript.events.filter { $0.layer == .application }
         let client = application.filter { $0.direction == .clientToServer }
         let server = application.filter { $0.direction == .serverToClient }
@@ -252,7 +252,7 @@ struct MockKRDPServerTests {
     @Test func clientHandlesMultiStepBandwidthAutoDetectBeforeActivation() throws {
         let observed = Locked(Observed())
         let report = try runMock(.init(autoDetectBehavior: .bandwidthMeasure), client: {
-            RDPClient().run(configuration: $0, onGraphicsFrame: { frame in
+            RDPSessionClient().run(configuration: $0, onGraphicsFrame: { frame in
                 observed.withLock { $0.frames.append(frame) }
             })
         }).report
@@ -411,7 +411,7 @@ struct MockKRDPServerTests {
     @Test func clientReactivatesAfterDeactivateAllAndDemandActive() throws {
         let inputSessions = Locked(0)
         let report = try runMock(.init(finalizationBehavior: .deactivateThenReactivateAfterFontMap), client: {
-            RDPClient().run(configuration: $0, onInputReady: { _ in inputSessions.withLock { $0 += 1 } })
+            RDPSessionClient().run(configuration: $0, onInputReady: { _ in inputSessions.withLock { $0 += 1 } })
         }).report
 
         #expect(report.status == "success")
@@ -710,7 +710,7 @@ struct MockKRDPServerTests {
     @Test func clientResolvesPointerCacheUpdatesFromMockKRDPServer() throws {
         let pointerUpdates = Locked<[RDPRemotePointerUpdate]>([])
         let report = try runMock(.init(graphicsBehavior: .sendPointerUpdatesBeforeFirstFrame), client: {
-            RDPClient().run(configuration: $0, onRemotePointer: { update in
+            RDPSessionClient().run(configuration: $0, onRemotePointer: { update in
                 pointerUpdates.withLock { $0.append(update) }
             })
         }).report
@@ -759,7 +759,7 @@ struct MockKRDPServerTests {
     @Test func clientVerifiesFragmentedBitmapGraphicsWithMockServer() throws {
         let observed = Locked(Observed())
         let report = try runMock(.init(graphicsBehavior: .sendFragmentedBitmapCompositionFrame), client: {
-            RDPClient().run(configuration: $0, onGraphicsFrame: { frame in
+            RDPSessionClient().run(configuration: $0, onGraphicsFrame: { frame in
                 observed.withLock { $0.frames.append(frame) }
             })
         }).report
@@ -796,7 +796,7 @@ struct MockKRDPServerTests {
     @Test func clientDecodesClearCodecBandsFrameFromMockServer() throws {
         let observed = Locked(Observed())
         let report = try runMock(.init(graphicsBehavior: .sendClearCodecBandsFrame), client: {
-            RDPClient().run(configuration: $0, onGraphicsFrame: { frame in
+            RDPSessionClient().run(configuration: $0, onGraphicsFrame: { frame in
                 observed.withLock { $0.frames.append(frame) }
             })
         }).report
@@ -842,7 +842,7 @@ struct MockKRDPServerTests {
                 .init(graphicsBehavior: .sendCAVideoRemoteFXFrame, graphicsCapabilitySelection: .firstAdvertised),
                 { $0.graphicsCapabilityProfile = testCase.profile },
                 client: {
-                    RDPClient().run(configuration: $0, onGraphicsFrame: { frame in
+                    RDPSessionClient().run(configuration: $0, onGraphicsFrame: { frame in
                         observed.withLock { $0.frames.append(frame) }
                     })
                 }
@@ -880,7 +880,7 @@ struct MockKRDPServerTests {
         let report = try runMock(
             .init(graphicsBehavior: .sendCAProgressiveFrame, graphicsCapabilitySelection: .firstAdvertised),
             client: {
-                RDPClient().run(configuration: $0, onGraphicsFrame: { frame in
+                RDPSessionClient().run(configuration: $0, onGraphicsFrame: { frame in
                     observed.withLock { $0.frames.append(frame) }
                 })
             }
@@ -928,7 +928,7 @@ struct MockKRDPServerTests {
     @Test func clientDoesNotReplaceAVCFrameWithIncompleteSurfaceFrame() throws {
         let observed = Locked(Observed())
         let report = try runMock(.init(graphicsBehavior: .sendVideoBeforeBitmapCompositionFrame), client: {
-            RDPClient().run(configuration: $0, onGraphicsFrame: { frame in
+            RDPSessionClient().run(configuration: $0, onGraphicsFrame: { frame in
                 observed.withLock { $0.frames.append(frame) }
             })
         }).report
@@ -944,7 +944,7 @@ struct MockKRDPServerTests {
     @Test func clientEmitsEveryVideoUpdateWithinOneRDPGFXFrame() throws {
         let observed = Locked(Observed())
         let report = try runMock(.init(graphicsBehavior: .sendMultipleVideoUpdatesInFrame), client: {
-            RDPClient().run(configuration: $0, onGraphicsFrame: { frame in
+            RDPSessionClient().run(configuration: $0, onGraphicsFrame: { frame in
                 observed.withLock { $0.frames.append(frame) }
             })
         }).report
@@ -962,7 +962,7 @@ struct MockKRDPServerTests {
     @Test func clientDeliversAndAcknowledgesTwoFramesFromOnePayload() throws {
         let observed = Locked(Observed())
         let report = try runMock(.init(graphicsBehavior: .sendTwoFramesInOnePayload), { $0.graphicsFrameCaptureLimit = 2 }, client: {
-            RDPClient().run(configuration: $0, onGraphicsFrame: { frame in
+            RDPSessionClient().run(configuration: $0, onGraphicsFrame: { frame in
                 observed.withLock { $0.frames.append(frame) }
             })
         }).report
@@ -980,7 +980,7 @@ struct MockKRDPServerTests {
     @Test func clientEmitsEveryDirtyBitmapSurfaceWithinOneRDPGFXFrame() throws {
         let observed = Locked(Observed())
         let report = try runMock(.init(graphicsBehavior: .sendMultipleBitmapSurfacesInFrame), client: {
-            RDPClient().run(configuration: $0, onGraphicsFrame: { frame in
+            RDPSessionClient().run(configuration: $0, onGraphicsFrame: { frame in
                 observed.withLock { $0.frames.append(frame) }
             })
         }).report
@@ -1019,7 +1019,7 @@ struct MockKRDPServerTests {
 
     @Test func clientDoesNotAcknowledgeFrameWhenGraphicsHandlerFails() throws {
         let report = try runMock(.init(graphicsBehavior: .closeAfterFirstFrame), client: {
-            RDPClient().run(configuration: $0, onGraphicsFrame: { _ in
+            RDPSessionClient().run(configuration: $0, onGraphicsFrame: { _ in
                 throw MockGraphicsFrameHandlerError.failed
             })
         }).report
@@ -1055,7 +1055,11 @@ struct MockKRDPServerTests {
 
         let cancellation = RDPConnectionCancellation()
         let cancelled = try runMock(.init(), { $0.graphicsFrameCaptureLimit = nil }, client: {
-            RDPClient().run(configuration: $0, onGraphicsFrame: { _ in cancellation.cancel() }, cancellation: cancellation)
+            RDPSessionClient().run(
+                configuration: $0,
+                onGraphicsFrame: { _ in cancellation.cancel() },
+                cancellation: cancellation
+            )
         })
         #expect(cancelled.report.error == "cancelled")
         #expect(cancelled.transcript.disconnectUltimatumReasons == [3])
@@ -1099,7 +1103,7 @@ struct MockKRDPServerTests {
         )
         let observed = Locked(Observed())
         let report = try runMock(.init(clipboardFiles: [remoteFile]), { $0.clipboardEnabled = true }, client: {
-            RDPClient().run(
+            RDPSessionClient().run(
                 configuration: $0,
                 onGraphicsFrame: { frame in observed.withLock { $0.frames.append(frame) } },
                 onClipboardReady: { session in observed.withLock { $0.clipboardSession = session } },
@@ -1194,7 +1198,7 @@ struct MockKRDPServerTests {
                 $0.audioPlaybackEnabled = true
             },
             client: {
-                RDPClient().run(
+                RDPSessionClient().run(
                     configuration: $0,
                     onGraphicsFrame: { frame in observed.withLock { $0.frames.append(frame) } },
                     onInputReady: { session in
@@ -1346,7 +1350,7 @@ private struct MockRun {
 private func runMock(
     _ options: MockKRDPServer.Options = .init(),
     _ configure: (inout RDPConnectionConfiguration) -> Void = { _ in },
-    client: (RDPConnectionConfiguration) -> RDPConnectionReport = { RDPClient().run(configuration: $0) }
+    client: (RDPConnectionConfiguration) -> RDPConnectionReport = { RDPSessionClient().run(configuration: $0) }
 ) throws -> MockRun {
     let server = try MockKRDPServer.start(options)
     defer { server.stop() }

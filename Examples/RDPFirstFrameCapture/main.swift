@@ -46,7 +46,7 @@ private enum FirstFrameCapture {
             )
             let wireTranscript = options.transcriptPath.map { _ in RDPWireTranscript() }
             scheduleCancellation(cancellation, after: options.settleSeconds)
-            let report = RDPClient().run(
+            let report = RDPSessionClient().run(
                 configuration: configuration,
                 onGraphicsFrame: { frame in
                     // Freeze the transcript the moment video frames start flowing:

@@ -60,7 +60,7 @@ public struct RDPWireEvent: Codable, Equatable, Sendable {
 /// Collects the ordered wire exchange of an RDP connection so it can be dumped
 /// and replayed as a deterministic regression fixture.
 ///
-/// Pass an instance to `RDPClient.run(...)` / `connect(...)` via the
+/// Pass an instance to `RDPSessionClient.run(...)` / `connect(...)` via the
 /// `wireTranscript:` parameter, then read ``events`` once the call returns. Call
 /// ``stop()`` to freeze recording at a boundary — e.g. when the first video
 /// frame arrives — so the transcript captures everything up to, but not beyond,
