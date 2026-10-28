@@ -91,7 +91,7 @@ import Testing
     #expect(request.requestType == 0x1014)
     #expect(request.requestTypeName == "connect-time-bandwidth-measure-start")
     #expect(request.payloadByteCount == 0)
-    #expect(request.response() == nil)
+    #expect(meterResponse(to: request) == nil)
 }
 
 @Test func gnomeRemoteDesktopCAPROGRESSIVETileSimpleSummarizesAndDecodes() throws {

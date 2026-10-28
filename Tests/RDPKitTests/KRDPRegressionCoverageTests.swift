@@ -176,16 +176,16 @@ struct KRDPRegressionCoverageTests {
 @Test func regression21ConnectTimeRTTEmitsShortRTTResponse() {
     let request = RDPServerAutoDetectRequest(channelID: 1006, sequenceNumber: 0x23, requestType: 0x1001, payloadByteCount: 0)
 
-    #expect(request.response()?.responseType == RDPClientAutoDetectResponsePDU.ResponseType.rtt)
+    #expect(meterResponse(to: request)?.responseType == RDPClientAutoDetectResponsePDU.ResponseType.rtt)
 }
 
 @Test func regression22ConnectTimeRTTResponsePacketLengthMatchesKRDPFixture() {
-    let response = RDPServerAutoDetectRequest(
+    let response = meterResponse(to: RDPServerAutoDetectRequest(
         channelID: 1006,
         sequenceNumber: 0x23,
         requestType: 0x1001,
         payloadByteCount: 0
-    ).response()?.encodedTPKT(userChannelID: 1007, messageChannelID: 1006)
+    ))?.encodedTPKT(userChannelID: 1007, messageChannelID: 1006)
 
     #expect(response?.count == 24)
 }
@@ -193,19 +193,19 @@ struct KRDPRegressionCoverageTests {
 @Test func regression23ConnectTimeBandwidthStartHasNoResponse() {
     let request = RDPServerAutoDetectRequest(channelID: 1006, sequenceNumber: 0x23, requestType: 0x1014, payloadByteCount: 0)
 
-    #expect(request.response() == nil)
+    #expect(meterResponse(to: request) == nil)
 }
 
 @Test func regression24PostConnectRTTStillEmitsRTTResponse() {
     let request = RDPServerAutoDetectRequest(channelID: 1006, sequenceNumber: 0x23, requestType: 0x0001, payloadByteCount: 0)
 
-    #expect(request.response()?.responseType == RDPClientAutoDetectResponsePDU.ResponseType.rtt)
+    #expect(meterResponse(to: request)?.responseType == RDPClientAutoDetectResponsePDU.ResponseType.rtt)
 }
 
 @Test func regression25NetworkCharacteristicsResultHasNoResponse() {
     let request = RDPServerAutoDetectRequest(channelID: 1006, sequenceNumber: 0x23, requestType: 0x08C0, payloadByteCount: 0)
 
-    #expect(request.response() == nil)
+    #expect(meterResponse(to: request) == nil)
 }
 
 @Test func regression26KRDPFixtureAutoDetectReachesDemandActiveAfterShortResponse() throws {

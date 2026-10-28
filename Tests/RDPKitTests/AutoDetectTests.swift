@@ -21,7 +21,7 @@ import Testing
     #expect(request.sequenceNumber == 0x0023)
     #expect(request.requestType == 0x1001)
     #expect(request.requestTypeName == "connect-time-rtt-measure-request")
-    #expect(request.response()?.responseType == RDPClientAutoDetectResponsePDU.ResponseType.rtt)
+    #expect(meterResponse(to: request)?.responseType == RDPClientAutoDetectResponsePDU.ResponseType.rtt)
 }
 
 @Test func postConnectRTTMeasureRequestBuildsRTTResponse() throws {
@@ -41,7 +41,7 @@ import Testing
     let request = try #require(try RDPServerAutoDetectRequest.parseIfPresent(fromTPKT: X224DataTPDU.wrap(pdu)))
 
     #expect(request.requestTypeName == "rtt-measure-request")
-    #expect(request.response()?.responseType == RDPClientAutoDetectResponsePDU.ResponseType.rtt)
+    #expect(meterResponse(to: request)?.responseType == RDPClientAutoDetectResponsePDU.ResponseType.rtt)
 }
 
 @Test func parsesBandwidthMeasureStopRequestWithPayload() throws {
@@ -129,7 +129,7 @@ import Testing
     #expect(request.requestTypeName == "bandwidth-measure-payload")
     #expect(request.payloadByteCount == 1)
     #expect(request.measuredByteCountContribution == 9)
-    #expect(request.response() == nil)
+    #expect(meterResponse(to: request) == nil)
 }
 
 @Test func parsesConnectTimeBandwidthMeasureStartWithoutResponse() throws {
@@ -149,7 +149,7 @@ import Testing
     let request = try #require(try RDPServerAutoDetectRequest.parseIfPresent(fromTPKT: X224DataTPDU.wrap(pdu)))
 
     #expect(request.requestTypeName == "connect-time-bandwidth-measure-start")
-    #expect(request.response() == nil)
+    #expect(meterResponse(to: request) == nil)
     #expect(request.resetsMeasuredByteCount)
 }
 
@@ -193,7 +193,7 @@ import Testing
     let request = try #require(try RDPServerAutoDetectRequest.parseIfPresent(fromTPKT: X224DataTPDU.wrap(pdu)))
 
     #expect(request.requestTypeName == "network-characteristics-bandwidth")
-    #expect(request.response() == nil)
+    #expect(meterResponse(to: request) == nil)
 }
 
 @Test func parsesNetworkCharacteristicsRTTBandwidthResultWithoutResponse() throws {
@@ -216,7 +216,7 @@ import Testing
     let request = try #require(try RDPServerAutoDetectRequest.parseIfPresent(fromTPKT: X224DataTPDU.wrap(pdu)))
 
     #expect(request.requestTypeName == "network-characteristics-rtt-bandwidth")
-    #expect(request.response() == nil)
+    #expect(meterResponse(to: request) == nil)
 }
 
 @Test func bandwidthMeasureStopRequestBuildsResultResponseFromPayloadLength() throws {
@@ -227,7 +227,7 @@ import Testing
         payloadByteCount: 4
     )
 
-    #expect(request.response()?.encodedPDUData() == Data([
+    #expect(meterResponse(to: request)?.encodedPDUData() == Data([
         0x00, 0x20, 0x00, 0x00,
         0x0E, 0x01, 0x23, 0x00, 0x03, 0x00,
         0x01, 0x00, 0x00, 0x00,
@@ -291,4 +291,33 @@ import Testing
     let unstarted = meter.response(to: request(0x002B, payload: 4), receivedAt: start + .seconds(5))
     #expect(unstarted?.payload == .bandwidth(byteCount: 12, milliseconds: 1))
     #expect(meter.response(to: request(0x1001), receivedAt: start)?.payload == .rtt)
+}
+
+/// Continuous detection measures the session's own traffic between Start and
+/// Stop ([MS-RDPBCGR] 1.3.9, 2.2.14.2.2). KRdp sends 0x0014 then 0x0429
+/// mid-session (krdp fixture events 38 and 44).
+@Test func bandwidthMeterReportsSessionBytesForContinuousMeasurement() {
+    func request(_ type: UInt16) -> RDPServerAutoDetectRequest {
+        RDPServerAutoDetectRequest(channelID: 1005, sequenceNumber: 9, requestType: type, payloadByteCount: 0)
+    }
+    let start = ContinuousClock.now
+    var meter = RDPAutoDetectBandwidthMeter()
+
+    meter.countReceivedBytes(5000)
+    #expect(meter.response(to: request(0x0014), receivedAt: start) == nil)
+    meter.countReceivedBytes(1000)
+    meter.countReceivedBytes(234)
+    let results = meter.response(to: request(0x0429), receivedAt: start + .milliseconds(120))
+
+    #expect(results?.responseType == RDPClientAutoDetectResponsePDU.ResponseType.continuousBandwidthMeasureResults)
+    #expect(results?.payload == .bandwidth(byteCount: 1234, milliseconds: 120))
+    meter.countReceivedBytes(77)
+    let unstarted = meter.response(to: request(0x0429), receivedAt: start + .seconds(1))
+    #expect(unstarted?.payload == .bandwidth(byteCount: 0, milliseconds: 1))
+}
+
+/// Answers `request` as the client does, with a meter that has seen nothing else.
+func meterResponse(to request: RDPServerAutoDetectRequest) -> RDPClientAutoDetectResponsePDU? {
+    var meter = RDPAutoDetectBandwidthMeter()
+    return meter.response(to: request)
 }
