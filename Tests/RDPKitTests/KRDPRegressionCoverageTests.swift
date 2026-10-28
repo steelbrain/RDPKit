@@ -380,7 +380,7 @@ struct KRDPRegressionCoverageTests {
         includeActivationControlShareCapabilities: !demandActive.requestsMinimalBitmapCodecs
     )
     #expect(demandActive.requestsMinimalBitmapCodecs)
-    #expect(confirm.capabilitySets.count == 14)
+    #expect(confirm.capabilitySets.count == 15)
     let userData = confirm.encodedPDUData(userChannelID: 1006)
     #expect(Int(le16(userData, 0)) == userData.count)
 }

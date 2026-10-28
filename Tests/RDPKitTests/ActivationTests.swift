@@ -31,6 +31,18 @@ import Testing
     }
 }
 
+@Test func rejectsDemandActiveWhoseTotalLengthIsTheFlowMarker() {
+    // 0x8000 marks a Flow PDU (2.2.8.1.1.1.1), never a Demand Active length.
+    #expect(throws: RDPDecodeError.invalidDemandActivePDU) {
+        try RDPDemandActivePDU.parseIfPresent(fromTPKT: hexData("""
+        03 00 00 3d 02 f0 80 68 00 05 03 eb 70 2f
+        00 80 11 00 ee 03 ee 03 01 00 04 00 19 00 52 44 50 00
+        03 00 00 00 01 00 04 00 1c 00 0c 00 52 00 00 00 00 00 00 00 1d 00 05 00 00
+        00 00 00 00
+        """))
+    }
+}
+
 @Test func parsesDemandActiveServerVirtualChannelChunkSize() throws {
     let demandActive = try #require(try RDPDemandActivePDU.parseIfPresent(
         fromTPKT: demandActivePacket(capabilitySets: [
@@ -263,7 +275,7 @@ import Testing
     )
 
     #expect(full.multifragmentUpdateMaxRequestSize == 0x0080_0000)
-    #expect(compact.multifragmentUpdateMaxRequestSize == 0x0001_0000)
+    #expect(compact.multifragmentUpdateMaxRequestSize == 0x0080_0000)
     #expect(try #require(full.capabilityBodies(userChannelID: 1006)[0x001A]).littleEndianUInt32(at: 0)
         == UInt32(full.multifragmentUpdateMaxRequestSize))
     #expect(try #require(compact.capabilityBodies(userChannelID: 1006)[0x001A]).littleEndianUInt32(at: 0)
@@ -276,8 +288,8 @@ import Testing
         includeActivationControlShareCapabilities: false
     )
 
-    // Compact Confirm Active retains every mandatory capability set while
-    // omitting optional sets that are not needed by minimal Demand Active servers.
+    // Compact Confirm Active retains every mandatory capability set (including
+    // Sound, MS-RDPBCGR 2.2.7.1.11) while omitting optional sets.
     #expect(confirmActive.capabilitySets.map(\.name) == [
         "general",
         "bitmap",
@@ -290,6 +302,7 @@ import Testing
         "glyph-cache",
         "offscreen-cache",
         "virtual-channel",
+        "sound",
         "multifragment-update",
         "large-pointer",
         "surface-commands",
@@ -305,6 +318,21 @@ import Testing
     let virtualChannel = try #require(capabilities[0x0014])
     // MS-RDPBCGR 2.2.7.1.10: VCChunkSize MUST be in 1,600...16,256.
     #expect(virtualChannel.littleEndianUInt32(at: 4) == UInt32(RDPStaticVirtualChannelPDU.maximumPayloadByteCount))
+}
+
+@Test func compactConfirmActiveSharesTheFullCapabilityBodies() throws {
+    let full = try RDPClientConfirmActivePDU(shareID: 0x0001_03EE).capabilityBodies(userChannelID: 1006)
+    let compact = try RDPClientConfirmActivePDU(
+        shareID: 0x0001_03EE,
+        includeActivationControlShareCapabilities: false
+    ).capabilityBodies(userChannelID: 1006)
+
+    #expect(Set(compact.keys).isSubset(of: Set(full.keys)))
+    for (type, body) in compact {
+        #expect(full[type] == body)
+    }
+    let input = try #require(compact[0x000D])
+    #expect(input.littleEndianUInt16(at: 0) == 0x0135)
 }
 
 @Test func confirmActiveTotalLengthMatchesEncodedUserDataForFullAndCompactPaths() {

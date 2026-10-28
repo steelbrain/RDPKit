@@ -45,7 +45,7 @@ struct RDPDemandActivePDU: Equatable, Sendable {
         guard pduType & 0x000F == 0x0001, pduType >> 4 == 0x0001 else {
             return nil
         }
-        guard totalLength == 0x8000 || Int(totalLength) == indication.userData.count else {
+        guard Int(totalLength) == indication.userData.count else {
             throw RDPDecodeError.invalidDemandActivePDU
         }
 
@@ -131,7 +131,7 @@ struct RDPDemandActivePDU: Equatable, Sendable {
         capabilityType: UInt16,
         capabilityData: Data
     ) throws -> Int? {
-        guard capabilityType == 0x0014 else {
+        guard capabilityType == RDPCapabilitySetType.virtualChannel else {
             return nil
         }
         guard capabilityData.count == 4 || capabilityData.count == 8 else {
@@ -145,8 +145,7 @@ struct RDPDemandActivePDU: Equatable, Sendable {
         _ = try cursor.readLittleEndianUInt32()
         let chunkSize = try Int(cursor.readLittleEndianUInt32())
         guard chunkSize >= RDPStaticVirtualChannelPDU.defaultChunkByteCount,
-              chunkSize <= RDPStaticVirtualChannelPDU.maximumNegotiatedChunkByteCount,
-              chunkSize <= MCSSendDataRequestPDU.maximumUserDataByteCount - RDPStaticVirtualChannelPDU.headerByteCount
+              chunkSize <= RDPStaticVirtualChannelPDU.maximumNegotiatedChunkByteCount
         else {
             throw RDPDecodeError.invalidDemandActivePDU
         }
@@ -188,10 +187,10 @@ struct RDPClientConfirmActivePDU: Equatable, Sendable {
         encodedCapabilitySets().map { RDPCapabilitySetSummary(type: $0.type, length: UInt16($0.data.count)) }
     }
 
+    /// Fast-path reassembly limit this client advertises in its Multifragment
+    /// Update capability set ([MS-RDPBCGR] 2.2.7.2.6).
     var multifragmentUpdateMaxRequestSize: Int {
-        includeActivationControlShareCapabilities
-            ? RDPMultifragmentUpdateCapability.maxRequestSize
-            : RDPMultifragmentUpdateCapability.compactMaxRequestSize
+        RDPMultifragmentUpdateCapability.maxRequestSize
     }
 
     func encodedPDUData(userChannelID: UInt16) -> Data {
@@ -200,11 +199,8 @@ struct RDPClientConfirmActivePDU: Equatable, Sendable {
             result.append(capability.data)
         }
         let combinedCapabilitiesLength = 4 + capabilityBytes.count
-        // MS-RDPBCGR 2.2.8.1.1.1.1: totalLength is the full packet size in bytes
-        // including the Share Control Header. 2.2.1.13.2.1 Confirm Active layout:
-        // header(6) + shareId(4) + originatorID(2) + lengthSourceDescriptor(2)
-        // + lengthCombinedCapabilities(2) + sourceDescriptor + combinedCapabilities.
-        // originatorID MUST be the server channel ID 0x03EA (section 2.2.1.13.2.1).
+        // [MS-RDPBCGR] 2.2.1.13.2.1: Share Control Header, shareID, originatorID,
+        // lengthSourceDescriptor, lengthCombinedCapabilities, then the variable parts.
         let totalLength = 6 + 4 + 2 + 2 + 2 + sourceDescriptor.count + combinedCapabilitiesLength
 
         precondition(totalLength <= Int(UInt16.max))
@@ -235,35 +231,15 @@ struct RDPClientConfirmActivePDU: Equatable, Sendable {
     }
 
     private func encodedCapabilitySets() -> [(type: UInt16, data: Data)] {
-        // Compact capability list for servers that request minimal bitmap-codecs.
-        // Keep every mandatory CAPSET from MS-RDPBCGR 2.2.7.1, using disabled
-        // bodies where the corresponding legacy drawing/cache feature is not
-        // supported. Optional CAPSETs that upset this server family stay omitted.
-        if !includeActivationControlShareCapabilities {
-            return [
-                capabilitySet(type: RDPCapabilitySetType.general, body: generalCapabilitySetBody()),
-                capabilitySet(type: RDPCapabilitySetType.bitmap, body: bitmapCapabilitySetBody()),
-                capabilitySet(type: RDPCapabilitySetType.order, body: orderCapabilitySetBody()),
-                capabilitySet(type: RDPCapabilitySetType.bitmapCache, body: bitmapCacheCapabilitySetBody()),
-                capabilitySet(type: RDPCapabilitySetType.pointer, body: pointerCapabilitySetBody()),
-                capabilitySet(type: RDPCapabilitySetType.input, body: krdpCompatibleInputCapabilitySetBody()),
-                capabilitySet(type: RDPCapabilitySetType.font, body: fontCapabilitySetBody()),
-                capabilitySet(type: RDPCapabilitySetType.brush, body: brushCapabilitySetBody()),
-                capabilitySet(type: RDPCapabilitySetType.glyphCache, body: glyphCacheCapabilitySetBody()),
-                capabilitySet(type: RDPCapabilitySetType.offscreenCache, body: offscreenBitmapCacheCapabilitySetBody()),
-                capabilitySet(type: RDPCapabilitySetType.virtualChannel, body: krdpCompatibleVirtualChannelCapabilitySetBody()),
-                capabilitySet(type: RDPCapabilitySetType.multifragmentUpdate, body: krdpCompatibleMultifragmentUpdateCapabilitySetBody()),
-                capabilitySet(type: RDPCapabilitySetType.largePointer, body: krdpCompatibleLargePointerCapabilitySetBody()),
-                capabilitySet(type: RDPCapabilitySetType.surfaceCommands, body: surfaceCommandsCapabilitySetBody()),
-            ]
-        }
-
-        var capabilities = [
+        let capabilities = [
             capabilitySet(type: RDPCapabilitySetType.general, body: generalCapabilitySetBody()),
             capabilitySet(type: RDPCapabilitySetType.bitmap, body: bitmapCapabilitySetBody()),
             capabilitySet(type: RDPCapabilitySetType.order, body: orderCapabilitySetBody()),
             capabilitySet(type: RDPCapabilitySetType.bitmapCache, body: bitmapCacheCapabilitySetBody()),
+            capabilitySet(type: RDPCapabilitySetType.activation, body: activationCapabilitySetBody()),
+            capabilitySet(type: RDPCapabilitySetType.control, body: controlCapabilitySetBody()),
             capabilitySet(type: RDPCapabilitySetType.pointer, body: pointerCapabilitySetBody()),
+            capabilitySet(type: RDPCapabilitySetType.share, body: shareCapabilitySetBody()),
             capabilitySet(type: RDPCapabilitySetType.input, body: inputCapabilitySetBody()),
             capabilitySet(type: RDPCapabilitySetType.font, body: fontCapabilitySetBody()),
             capabilitySet(type: RDPCapabilitySetType.brush, body: brushCapabilitySetBody()),
@@ -277,19 +253,13 @@ struct RDPClientConfirmActivePDU: Equatable, Sendable {
             capabilitySet(type: RDPCapabilitySetType.bitmapCodecs, body: bitmapCodecsCapabilitySetBody()),
             capabilitySet(type: RDPCapabilitySetType.frameAcknowledge, body: frameAcknowledgeCapabilitySetBody()),
         ]
-        capabilities.insert(capabilitySet(
-            type: RDPCapabilitySetType.activation,
-            body: activationCapabilitySetBody()
-        ), at: 4)
-        capabilities.insert(capabilitySet(
-            type: RDPCapabilitySetType.control,
-            body: controlCapabilitySetBody()
-        ), at: 5)
-        capabilities.insert(capabilitySet(
-            type: RDPCapabilitySetType.share,
-            body: shareCapabilitySetBody()
-        ), at: 7)
-        return capabilities
+        guard !includeActivationControlShareCapabilities else {
+            return capabilities
+        }
+        // Compact list for servers whose Demand Active advertises no bitmap
+        // codecs (KRdp): every mandatory set from [MS-RDPBCGR] 2.2.7.1, without
+        // the optional sets the original KRdp-only client never sent.
+        return capabilities.filter { !RDPCapabilitySetType.omittedFromCompactList.contains($0.type) }
     }
 
     private func capabilitySet(type: UInt16, body: Data) -> (type: UInt16, data: Data) {
@@ -387,40 +357,6 @@ struct RDPClientConfirmActivePDU: Equatable, Sendable {
         var data = Data()
         data.appendLittleEndianUInt16(0)
         data.appendLittleEndianUInt16(0)
-        return data
-    }
-
-    private func krdpCompatibleInputCapabilitySetBody() -> Data {
-        var data = Data()
-        data.appendLittleEndianUInt16(0x0131)
-        data.appendLittleEndianUInt16(0)
-        data.appendLittleEndianUInt32(0x0000_0409)
-        data.appendLittleEndianUInt32(4)
-        data.appendLittleEndianUInt32(0)
-        data.appendLittleEndianUInt32(12)
-        data.append(Data(repeating: 0, count: 64))
-        return data
-    }
-
-    private func krdpCompatibleVirtualChannelCapabilitySetBody() -> Data {
-        var data = Data()
-        data.appendLittleEndianUInt32(0)
-        // MS-RDPBCGR 2.2.7.1.10 constrains VCChunkSize to 1,600...16,256.
-        // Advertise the same chunk size this client actually uses on the full
-        // capability path instead of the legacy out-of-range 0xFFFF value.
-        data.appendLittleEndianUInt32(UInt32(RDPStaticVirtualChannelPDU.maximumPayloadByteCount))
-        return data
-    }
-
-    private func krdpCompatibleMultifragmentUpdateCapabilitySetBody() -> Data {
-        var data = Data()
-        data.appendLittleEndianUInt32(UInt32(RDPMultifragmentUpdateCapability.compactMaxRequestSize))
-        return data
-    }
-
-    private func krdpCompatibleLargePointerCapabilitySetBody() -> Data {
-        var data = Data()
-        data.appendLittleEndianUInt16(1)
         return data
     }
 
@@ -598,6 +534,8 @@ private enum RDPCapabilitySetType {
     static let surfaceCommands: UInt16 = 0x001C
     static let bitmapCodecs: UInt16 = 0x001D
     static let frameAcknowledge: UInt16 = 0x001E
+
+    static let omittedFromCompactList: Set<UInt16> = [activation, control, share, bitmapCodecs, frameAcknowledge]
 }
 
 private enum RDPGeneralCapability {
@@ -634,7 +572,6 @@ private enum RDPInputCapability {
 }
 
 enum RDPMultifragmentUpdateCapability {
-    static let compactMaxRequestSize = 0x0001_0000
     static let maxRequestSize = 0x0080_0000
 }
 
