@@ -5,19 +5,6 @@ enum RDPSlowPathUpdateType: UInt16, Sendable {
     case bitmap = 0x0001
     case palette = 0x0002
     case synchronize = 0x0003
-
-    var typeName: String {
-        switch self {
-        case .orders:
-            "update-orders"
-        case .bitmap:
-            "update-bitmap"
-        case .palette:
-            "update-palette"
-        case .synchronize:
-            "update-synchronize"
-        }
-    }
 }
 
 struct RDPBitmapUpdateRectangle: Equatable, Sendable {
@@ -49,17 +36,6 @@ enum RDPSurfaceCommandType: UInt16, Sendable {
     case setSurfaceBits = 0x0001
     case frameMarker = 0x0004
     case streamSurfaceBits = 0x0006
-
-    var typeName: String {
-        switch self {
-        case .setSurfaceBits:
-            "surface-set-bits"
-        case .frameMarker:
-            "surface-frame-marker"
-        case .streamSurfaceBits:
-            "surface-stream-bits"
-        }
-    }
 }
 
 struct RDPExtendedBitmapData: Equatable, Sendable {
@@ -223,19 +199,6 @@ enum RDPSlowPathGraphicsUpdate: Equatable, Sendable {
     case palette(RDPPaletteUpdate)
     case synchronize
 
-    var typeName: String {
-        switch self {
-        case .orders:
-            "update-orders"
-        case .bitmap:
-            "update-bitmap"
-        case .palette:
-            "update-palette"
-        case .synchronize:
-            "update-synchronize"
-        }
-    }
-
     static func parsePayload(_ payload: Data) throws -> RDPSlowPathGraphicsUpdate {
         var cursor = ByteCursor(payload)
         let rawUpdateType = try cursor.readLittleEndianUInt16()
@@ -259,22 +222,19 @@ enum RDPSlowPathGraphicsUpdate: Equatable, Sendable {
         }
     }
 
+    // Fast-path bitmap and palette updates carry the same TS_UPDATE_*_DATA, including updateType (2.2.9.1.2.1.2-3).
     static func parseBitmapPayload(_ payload: Data) throws -> RDPBitmapUpdate {
-        var cursor = ByteCursor(payload)
-        let rawUpdateType = try cursor.readLittleEndianUInt16()
-        guard rawUpdateType == RDPSlowPathUpdateType.bitmap.rawValue else {
+        guard case let .bitmap(update) = try parsePayload(payload) else {
             throw RDPDecodeError.invalidGraphicsUpdatePDU
         }
-        return try parseBitmap(from: &cursor)
+        return update
     }
 
     static func parsePalettePayload(_ payload: Data) throws -> RDPPaletteUpdate {
-        var cursor = ByteCursor(payload)
-        let rawUpdateType = try cursor.readLittleEndianUInt16()
-        guard rawUpdateType == RDPSlowPathUpdateType.palette.rawValue else {
+        guard case let .palette(update) = try parsePayload(payload) else {
             throw RDPDecodeError.invalidGraphicsUpdatePDU
         }
-        return try parsePalette(from: &cursor)
+        return update
     }
 
     private static func parsePalette(from cursor: inout ByteCursor) throws -> RDPPaletteUpdate {
@@ -317,12 +277,13 @@ enum RDPSlowPathGraphicsUpdate: Equatable, Sendable {
               width > 0,
               height > 0,
               flags & ~RDPBitmapUpdateFlags.validMask == 0,
-              flags & RDPBitmapUpdateFlags.noCompressionHeader == 0 || flags & RDPBitmapUpdateFlags.compression != 0,
               bitmapLength <= cursor.remaining
         else {
             throw RDPDecodeError.invalidGraphicsUpdatePDU
         }
 
+        // TS_BITMAP_DATA (2.2.9.1.1.3.1.2.2): bitmapComprHdr is present only for BITMAP_COMPRESSION without
+        // NO_BITMAP_COMPRESSION_HDR, so the latter is meaningless (not invalid) on uncompressed data.
         let hasCompressionHeader = flags & RDPBitmapUpdateFlags.compression != 0
             && flags & RDPBitmapUpdateFlags.noCompressionHeader == 0
         let compressedHeader: Data?

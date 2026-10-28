@@ -97,16 +97,22 @@ import Testing
     }
 }
 
-@Test func rejectsSlowPathBitmapNoCompressionHeaderWithoutCompression() throws {
-    #expect(throws: RDPDecodeError.invalidShareDataHeader) {
-        try RDPShareDataPDU.parseIfPresent(fromTPKT: shareDataPacket(
-            type: 0x02,
-            payload: bitmapUpdatePayload(
-                flags: 0x0400,
-                bitmapStream: Data([0x11, 0x22, 0x33, 0x44])
-            )
-        ))
+@Test func acceptsSlowPathUncompressedBitmapWithNoCompressionHeaderFlag() throws {
+    let pdu = try #require(try RDPShareDataPDU.parseIfPresent(fromTPKT: shareDataPacket(
+        type: 0x02,
+        payload: bitmapUpdatePayload(
+            flags: 0x0400,
+            bitmapStream: Data([0x11, 0x22, 0x33, 0x44])
+        )
+    )))
+
+    guard case let .bitmap(update) = try #require(pdu.graphicsUpdate) else {
+        Issue.record("Expected a bitmap update")
+        return
     }
+    #expect(update.rectangles.first?.isCompressed == false)
+    #expect(update.rectangles.first?.compressedHeader == nil)
+    #expect(update.rectangles.first?.bitmapDataStream == Data([0x11, 0x22, 0x33, 0x44]))
 }
 
 @Test func parsesSlowPathCompressedBitmapWithoutCompressionHeader() throws {
