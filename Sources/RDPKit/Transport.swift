@@ -374,21 +374,28 @@ final class RDPTransport {
 
         let result = eventLoop.makePromise(of: Channel.self)
         connected.cascade(to: result)
-        let registration = callbacks.cancellation?.register {
+        let cancel: @Sendable () -> Void = {
             result.fail(RDPPreflightError.cancelled)
             connected.whenSuccess { $0.close(promise: nil) }
         }
+        let registration = callbacks.cancellation?.register(cancel)
         defer { registration?.cancel() }
 
         let channel: Channel
         do {
-            channel = try result.futureResult.wait()
+            channel = try wait(for: result.futureResult, callbacks: callbacks, onCancel: cancel)
         } catch let error as RDPPreflightError {
             throw error
         } catch ChannelError.connectTimeout {
             throw RDPPreflightError.connect("timed out after \(timeoutSeconds) seconds")
+        } catch let error as NIOConnectionError {
+            if error.connectionErrors.isEmpty, let dnsError = error.dnsAError ?? error.dnsAAAAError {
+                throw RDPPreflightError.addressResolution(connectionErrorDescription(dnsError))
+            }
+            throw RDPPreflightError.connect(error.connectionErrors.last.map { connectionErrorDescription($0.error) }
+                ?? String(describing: error))
         } catch {
-            throw RDPPreflightError.connect(String(describing: error))
+            throw RDPPreflightError.connect(connectionErrorDescription(error))
         }
         let reader = try eventLoop.submit {
             try NIOLoopBound(channel.pipeline.syncOperations.handler(type: RDPTransportReader.self), eventLoop: eventLoop)
@@ -398,6 +405,29 @@ final class RDPTransport {
 
     func close() {
         channel.close(promise: nil)
+    }
+
+    /// Waits for `future`, polling `shouldCancel` about once a second. An
+    /// `RDPConnectionCancellation` needs no polling: it closes the channel,
+    /// which fails the future at once.
+    private static func wait<Value: Sendable>(
+        for future: EventLoopFuture<Value>,
+        callbacks: RDPSessionCallbacks,
+        onCancel: () -> Void
+    ) throws -> Value {
+        if callbacks.shouldCancel != nil {
+            let completed = DispatchSemaphore(value: 0)
+            future.whenComplete { _ in
+                completed.signal()
+            }
+            while completed.wait(timeout: .now() + 1) == .timedOut {
+                if callbacks.isCancelled {
+                    onCancel()
+                    throw RDPPreflightError.cancelled
+                }
+            }
+        }
+        return try future.wait()
     }
 
     /// Sends one message. Application messages are recorded length-only:
@@ -414,10 +444,12 @@ final class RDPTransport {
         var buffer = channel.allocator.buffer(capacity: packet.count)
         buffer.writeBytes(packet)
         do {
-            try channel.writeAndFlush(buffer).wait()
+            try Self.wait(for: channel.writeAndFlush(buffer), callbacks: callbacks, onCancel: close)
+        } catch let error as RDPPreflightError {
+            throw error
         } catch {
             try callbacks.throwIfCancelled()
-            throw RDPPreflightError.send(String(describing: error))
+            throw RDPPreflightError.send(connectionErrorDescription(error))
         }
     }
 
@@ -513,7 +545,7 @@ final class RDPTransport {
             timeout.cancel()
         }
         do {
-            try handshake.futureResult.wait()
+            try Self.wait(for: handshake.futureResult, callbacks: callbacks, onCancel: close)
         } catch let error as RDPPreflightError {
             throw error
         } catch RDPTransportError.closed {

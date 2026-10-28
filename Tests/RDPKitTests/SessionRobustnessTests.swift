@@ -194,6 +194,82 @@ func liveSessionReportsALostConnectionAsAFailure(end: KRdpCapture.ConnectionEnd,
     }
 }
 
+// MARK: - Transport waits
+
+@Test func refusedConnectionSaysWhy() throws {
+    // A port the system just handed out and nothing holds refuses connections.
+    let socketFD = socket(AF_INET, SOCK_STREAM, 0)
+    try #require(socketFD >= 0)
+    var address = sockaddr_in()
+    address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+    address.sin_family = sa_family_t(AF_INET)
+    address.sin_addr.s_addr = inet_addr("127.0.0.1")
+    var length = socklen_t(MemoryLayout<sockaddr_in>.size)
+    let bound = withUnsafeMutablePointer(to: &address) { pointer in
+        pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+            bind(socketFD, $0, length) == 0 && getsockname(socketFD, $0, &length) == 0
+        }
+    }
+    close(socketFD)
+    try #require(bound)
+
+    let error = #expect(throws: RDPPreflightError.self) {
+        try RDPPreflightClient().connect(configuration: RDPConnectionConfiguration(
+            host: "127.0.0.1",
+            port: UInt16(bigEndian: address.sin_port)
+        ))
+    }
+    #expect(error.map(String.init(describing:)) == "connect failed: Connection refused")
+}
+
+/// `shouldCancel` is polled while the transport waits on something other than
+/// a receive; here a TLS handshake the server never answers.
+@Test func shouldCancelStopsAStalledTLSHandshake() throws {
+    let server = try ServerBootstrap(group: MultiThreadedEventLoopGroup.singleton)
+        .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
+        .childChannelInitializer { channel in
+            channel.eventLoop.makeCompletedFuture {
+                try channel.pipeline.syncOperations.addHandler(SelectTLSThenStall())
+            }
+        }
+        .bind(host: "127.0.0.1", port: 0)
+        .wait()
+    defer { server.close(promise: nil) }
+
+    let started = Date()
+    let report = RDPPreflightClient().run(
+        configuration: RDPConnectionConfiguration(
+            host: "127.0.0.1",
+            port: UInt16(try #require(server.localAddress?.port)),
+            timeoutSeconds: 60
+        ),
+        shouldCancel: { Date().timeIntervalSince(started) > 0.5 }
+    )
+
+    #expect(report.error == "cancelled")
+    #expect(Date().timeIntervalSince(started) < 10)
+}
+
+/// Answers the X.224 Connection Request by selecting TLS, then never speaks again.
+private final class SelectTLSThenStall: ChannelInboundHandler, Sendable {
+    typealias InboundIn = ByteBuffer
+    typealias OutboundOut = ByteBuffer
+
+    // TPKT, X.224 Connection Confirm, RDP_NEG_RSP selecting PROTOCOL_SSL ([MS-RDPBCGR] 2.2.1.2).
+    private static let connectionConfirm: [UInt8] = [
+        0x03, 0x00, 0x00, 0x13, 0x0E, 0xD0, 0x00, 0x00, 0x12, 0x34, 0x00,
+        0x02, 0x00, 0x08, 0x00, 0x01, 0x00, 0x00, 0x00,
+    ]
+
+    func channelRead(context: ChannelHandlerContext, data: NIOAny) {
+        let request = unwrapInboundIn(data)
+        guard request.getInteger(at: request.readerIndex + 5, as: UInt8.self) == 0xE0 else {
+            return
+        }
+        context.writeAndFlush(wrapOutboundOut(ByteBuffer(bytes: Self.connectionConfirm)), promise: nil)
+    }
+}
+
 // MARK: - KRdp capture harness
 
 /// The KRdp capture's channels: I/O 1003, drdynvc 1004, message 1005, and
