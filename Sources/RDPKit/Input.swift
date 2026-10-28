@@ -301,17 +301,16 @@ public struct RDPInputStateTracker: Sendable {
         return .pointerButton(button: button, isDown: isDown, x: point.x, y: point.y)
     }
 
-    public mutating func keyboard(
-        scancode: RDPKeyboardScancode,
-        isReleased: Bool,
-        isRepeat: Bool = false
-    ) -> RDPSlowPathInputEvent {
+    /// A press of a key already down is a repeat, flagged KBDFLAGS_DOWN (MS-RDPBCGR 2.2.8.1.1.3.1.1.1).
+    /// Every press marks the key down, so its release is sent even when the first press the server
+    /// sees is an auto-repeat, for example one that arrives after focus returned mid-hold.
+    public mutating func keyboard(scancode: RDPKeyboardScancode, isReleased: Bool) -> RDPSlowPathInputEvent {
         if isReleased {
             pressedScancodes.remove(scancode)
-        } else if isRepeat == false {
-            pressedScancodes.insert(scancode)
+            return .keyboard(scancode: scancode, isReleased: true)
         }
-        return .keyboard(scancode: scancode, isReleased: isReleased, wasDown: isRepeat && isReleased == false)
+        let wasDown = pressedScancodes.insert(scancode).inserted == false
+        return .keyboard(scancode: scancode, isReleased: false, wasDown: wasDown)
     }
 
     /// Releases every tracked key and button, for example when the viewer loses focus.

@@ -140,7 +140,7 @@ final class RemoteInputCaptureNSView: NSView {
         if let scancode = MacRDPKeyboardMapping.scancode(forKeyCode: event.keyCode),
            MacRDPKeyboardMapping.shouldSendScancode(forKeyCode: event.keyCode, modifierFlags: event.modifierFlags)
         {
-            sendKeyboardScancode(scancode, isReleased: false, isRepeat: event.isARepeat)
+            sendKeyboardScancode(scancode, isReleased: false)
             return
         }
         guard event.modifierFlags.isDisjoint(with: [.command, .control]) else {
@@ -282,11 +282,9 @@ final class RemoteInputCaptureNSView: NSView {
         }
     }
 
-    private func sendKeyboardScancode(_ scancode: RDPKeyboardScancode, isReleased: Bool, isRepeat: Bool = false) {
+    private func sendKeyboardScancode(_ scancode: RDPKeyboardScancode, isReleased: Bool) {
         let windowsKeyEvents = isReleased ? [] : deferredWindowsKey.flush(&inputState)
-        inputSession?.send(
-            windowsKeyEvents + [inputState.keyboard(scancode: scancode, isReleased: isReleased, isRepeat: isRepeat)]
-        )
+        inputSession?.send(windowsKeyEvents + [inputState.keyboard(scancode: scancode, isReleased: isReleased)])
     }
 
     /// A Windows key still deferred never reached the server, so nothing is sent for it.

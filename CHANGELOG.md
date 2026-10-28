@@ -32,8 +32,10 @@
 - `RDPRenderMetrics`: remove the crop timings, the `max*Milliseconds` timings,
   `skippedDecodeFrameCount` and `recordSkippedDecodeFrames`.
   `RDPFrameDecodeTiming.cropMilliseconds` is gone too.
-- `RDPInputStateTracker`: `keyboard(scancode:isReleased:isRepeat:)` drops
-  `trackRelease`, and `releasePressedScancodes()` and
+- `RDPInputStateTracker`: `keyboard(scancode:isReleased:)` drops `isRepeat`
+  and `trackRelease`. A press of a key already down is sent as a repeat, and
+  every press is tracked, so a key whose first press the server saw was an
+  auto-repeat is no longer left down there. `releasePressedScancodes()` and
   `releasePressedPointerButtons()` are gone; use `releasePressedInputs()`.
 - Clipboard: `requestRemoteFileSize` and `requestRemoteFileRange` drop the
   `clipDataID` parameter, which needs clipboard locking RDPKit does not

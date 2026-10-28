@@ -315,7 +315,7 @@ import Testing
     var tracker = RDPInputStateTracker()
     let scancode = RDPKeyboardScancode(code: 0x001E)
     _ = tracker.keyboard(scancode: scancode, isReleased: false)
-    let repeatEvent = tracker.keyboard(scancode: scancode, isReleased: false, isRepeat: true)
+    let repeatEvent = tracker.keyboard(scancode: scancode, isReleased: false)
 
     let data = RDPClientInputPDU(
         shareID: 0x0001_03EE,
@@ -370,18 +370,21 @@ import Testing
     #expect(tracker.releasePressedInputs().isEmpty)
 }
 
-@Test func inputStateTrackerDoesNotTreatKeyboardRepeatsAsNewPresses() {
+@Test func inputStateTrackerFlagsRepeatsAndReleasesTheKeyOnce() {
     var tracker = RDPInputStateTracker()
     let scancode = RDPKeyboardScancode(code: 0x001E)
 
-    _ = tracker.keyboard(scancode: scancode, isReleased: false)
-    _ = tracker.keyboard(scancode: scancode, isReleased: false, isRepeat: true)
-
+    // The first press the server sees may be an auto-repeat, for example after focus returned
+    // mid-hold; it is a plain press, and the key is tracked so its release is sent.
+    #expect(tracker.keyboard(scancode: scancode, isReleased: false) == .keyboard(scancode: scancode, isReleased: false))
+    #expect(
+        tracker.keyboard(scancode: scancode, isReleased: false)
+            == .keyboard(scancode: scancode, isReleased: false, wasDown: true)
+    )
     #expect(tracker.isScancodePressed(scancode))
-    #expect(tracker.releasePressedInputs() == [
-        .keyboard(scancode: scancode, isReleased: true),
-    ])
+    #expect(tracker.keyboard(scancode: scancode, isReleased: true) == .keyboard(scancode: scancode, isReleased: true))
     #expect(tracker.isScancodePressed(scancode) == false)
+    #expect(tracker.releasePressedInputs().isEmpty)
 }
 
 @Test func inputStateTrackerBuildsSynchronizationSequenceForPressedInputs() {
