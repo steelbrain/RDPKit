@@ -136,6 +136,18 @@ private final class RDPTranscriptReplayHandler: ChannelInboundHandler {
     private var credSSPServer: MockCredSSPServer?
     /// Cursor into the active segment's application events.
     private var appIndex = 0
+    /// Connect-time Bandwidth Measure Start and Network Characteristics Result
+    /// requests have no client response (MS-RDPBCGR 2.2.14.1.2, 2.2.14.1.5), but
+    /// the client build that captured the GNOME transcript answered them, so the
+    /// next recorded client event after each one is not a barrier.
+    private var unansweredAutoDetectRequests = 0
+
+    private static func isUnansweredConnectTimeAutoDetectRequest(_ bytes: Data) -> Bool {
+        guard let request = try? RDPServerAutoDetectRequest.parseIfPresent(fromTPKT: bytes) else {
+            return false
+        }
+        return [0x1014, 0x0840, 0x0880, 0x08C0].contains(request.requestType)
+    }
 
     init(
         tlsContext: NIOSSLContext,
@@ -238,9 +250,17 @@ private final class RDPTranscriptReplayHandler: ChannelInboundHandler {
         guard let segment else { return }
         while appIndex < segment.appEvents.count {
             let event = segment.appEvents[appIndex]
-            guard event.direction == .serverToClient else { break }
+            if event.direction == .clientToServer {
+                guard unansweredAutoDetectRequests > 0 else { break }
+                unansweredAutoDetectRequests -= 1
+                appIndex += 1
+                continue
+            }
             if let bytes = event.bytes {
                 writeRaw(bytes, context: context)
+                if Self.isUnansweredConnectTimeAutoDetectRequest(bytes) {
+                    unansweredAutoDetectRequests += 1
+                }
             }
             appIndex += 1
         }

@@ -81,7 +81,7 @@ import Testing
 @Test func realGnomeBandwidthMeasureStartParses() throws {
     // The exact auto-detect request GRD sends first, on the message channel
     // (1006), immediately after Client Info. The client must parse it as a
-    // bandwidth-measure-start so it can short-circuit with network characteristics sync.
+    // bandwidth-measure-start, which has no response (MS-RDPBCGR 2.2.14.1.2).
     let request = try #require(try RDPServerAutoDetectRequest.parseIfPresent(
         fromTPKT: gnomeHex("03 00 00 19 02 f0 80 68 00 06 03 ee 70 80 0a 00 10 00 00 06 00 00 00 14 10")
     ))
@@ -91,7 +91,7 @@ import Testing
     #expect(request.requestType == 0x1014)
     #expect(request.requestTypeName == "connect-time-bandwidth-measure-start")
     #expect(request.payloadByteCount == 0)
-    #expect(request.response()?.responseType == RDPClientAutoDetectResponsePDU.ResponseType.networkCharacteristicsSync)
+    #expect(request.response() == nil)
 }
 
 @Test func gnomeRemoteDesktopCAPROGRESSIVETileSimpleSummarizesAndDecodes() throws {

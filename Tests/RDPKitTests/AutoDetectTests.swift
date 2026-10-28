@@ -6,7 +6,6 @@ import Testing
     #expect(RDPClientAutoDetectResponsePDU.ResponseType.rtt == 0x0000)
     #expect(RDPClientAutoDetectResponsePDU.ResponseType.bandwidthMeasureResults == 0x0003)
     #expect(RDPClientAutoDetectResponsePDU.ResponseType.continuousBandwidthMeasureResults == 0x000B)
-    #expect(RDPClientAutoDetectResponsePDU.ResponseType.networkCharacteristicsSync == 0x0018)
 }
 
 @Test func parsesConnectTimeRTTMeasureRequest() throws {
@@ -133,7 +132,7 @@ import Testing
     #expect(request.response() == nil)
 }
 
-@Test func parsesConnectTimeBandwidthMeasureStartWithNetworkCharacteristicsSyncResponse() throws {
+@Test func parsesConnectTimeBandwidthMeasureStartWithoutResponse() throws {
     var pdu = Data()
     pdu.appendUInt8(0x68)
     pdu.appendBigEndianUInt16(5)
@@ -150,7 +149,7 @@ import Testing
     let request = try #require(try RDPServerAutoDetectRequest.parseIfPresent(fromTPKT: X224DataTPDU.wrap(pdu)))
 
     #expect(request.requestTypeName == "connect-time-bandwidth-measure-start")
-    #expect(request.response()?.responseType == RDPClientAutoDetectResponsePDU.ResponseType.networkCharacteristicsSync)
+    #expect(request.response() == nil)
     #expect(request.resetsMeasuredByteCount)
 }
 
@@ -175,7 +174,7 @@ import Testing
     ).resetsMeasuredByteCount)
 }
 
-@Test func parsesNetworkCharacteristicsBandwidthResultWithCompatibilityResponse() throws {
+@Test func parsesNetworkCharacteristicsBandwidthResultWithoutResponse() throws {
     var pdu = Data()
     pdu.appendUInt8(0x68)
     pdu.appendBigEndianUInt16(5)
@@ -194,10 +193,10 @@ import Testing
     let request = try #require(try RDPServerAutoDetectRequest.parseIfPresent(fromTPKT: X224DataTPDU.wrap(pdu)))
 
     #expect(request.requestTypeName == "network-characteristics-bandwidth")
-    #expect(request.response()?.responseType == RDPClientAutoDetectResponsePDU.ResponseType.rtt)
+    #expect(request.response() == nil)
 }
 
-@Test func parsesNetworkCharacteristicsRTTBandwidthResultWithCompatibilityResponse() throws {
+@Test func parsesNetworkCharacteristicsRTTBandwidthResultWithoutResponse() throws {
     var pdu = Data()
     pdu.appendUInt8(0x68)
     pdu.appendBigEndianUInt16(5)
@@ -217,7 +216,7 @@ import Testing
     let request = try #require(try RDPServerAutoDetectRequest.parseIfPresent(fromTPKT: X224DataTPDU.wrap(pdu)))
 
     #expect(request.requestTypeName == "network-characteristics-rtt-bandwidth")
-    #expect(request.response()?.responseType == RDPClientAutoDetectResponsePDU.ResponseType.rtt)
+    #expect(request.response() == nil)
 }
 
 @Test func bandwidthMeasureStopRequestBuildsResultResponseFromPayloadLength() throws {
@@ -274,16 +273,5 @@ import Testing
         0x0E, 0x01, 0x23, 0x00, 0x03, 0x00,
         0x07, 0x00, 0x00, 0x00,
         0x04, 0x00, 0x00, 0x00,
-    ]))
-}
-
-@Test func autoDetectNetworkCharacteristicsSyncResponseMatchesExpectedBytes() {
-    let response = RDPClientAutoDetectResponsePDU.networkCharacteristicsSync(sequenceNumber: 0x0023)
-
-    #expect(response.encodedPDUData() == Data([
-        0x00, 0x20, 0x00, 0x00,
-        0x0E, 0x01, 0x23, 0x00, 0x18, 0x00,
-        0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00,
     ]))
 }

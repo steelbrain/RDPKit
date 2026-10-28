@@ -216,10 +216,10 @@ struct KRDPRegressionCoverageTests {
     #expect(response?.count == 24)
 }
 
-@Test func regression23ConnectTimeBandwidthStillEmitsNetworkCharacteristicsSync() {
+@Test func regression23ConnectTimeBandwidthStartHasNoResponse() {
     let request = RDPServerAutoDetectRequest(channelID: 1006, sequenceNumber: 0x23, requestType: 0x1014, payloadByteCount: 0)
 
-    #expect(request.response()?.responseType == RDPClientAutoDetectResponsePDU.ResponseType.networkCharacteristicsSync)
+    #expect(request.response() == nil)
 }
 
 @Test func regression24PostConnectRTTStillEmitsRTTResponse() {
@@ -228,10 +228,10 @@ struct KRDPRegressionCoverageTests {
     #expect(request.response()?.responseType == RDPClientAutoDetectResponsePDU.ResponseType.rtt)
 }
 
-@Test func regression25NetworkCharacteristicsResultGetsCompatibilityRTTBarrier() {
+@Test func regression25NetworkCharacteristicsResultHasNoResponse() {
     let request = RDPServerAutoDetectRequest(channelID: 1006, sequenceNumber: 0x23, requestType: 0x08C0, payloadByteCount: 0)
 
-    #expect(request.response()?.responseType == RDPClientAutoDetectResponsePDU.ResponseType.rtt)
+    #expect(request.response() == nil)
 }
 
 @Test func regression26KRDPFixtureAutoDetectReachesDemandActiveAfterShortResponse() throws {
