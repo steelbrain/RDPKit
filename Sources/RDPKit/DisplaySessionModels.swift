@@ -10,13 +10,12 @@ public struct RDPDisplayScaleFactors: Equatable, Sendable {
         self.deviceScaleFactor = deviceScaleFactor
     }
 
+    // MS-RDPEDISP 2.2.2.2.1: DesktopScaleFactor 100-500, DeviceScaleFactor 100, 140 or 180.
     public init(backingScaleFactor: CGFloat) {
         let finiteScale = backingScaleFactor.isFinite && backingScaleFactor > 0
             ? backingScaleFactor
             : 1
-        let desktopScaleFactor = UInt32(
-            min(500, max(100, Int((finiteScale * 100).rounded())))
-        )
+        let desktopScaleFactor = UInt32(min(500, max(100, (finiteScale * 100).rounded())))
         self.desktopScaleFactor = desktopScaleFactor
         deviceScaleFactor = Self.nearestDeviceScaleFactor(for: desktopScaleFactor)
     }
@@ -57,8 +56,8 @@ public struct RDPDisplayRequest: Equatable, Sendable {
             ? backingScaleFactor
             : 1
         self.init(
-            width: Self.clampedWidth(Self.scaledDimension(pointSize.width, backingScaleFactor: scale)),
-            height: Self.clampedHeight(Self.scaledDimension(pointSize.height, backingScaleFactor: scale)),
+            width: Self.pixelDimension(pointSize.width * scale, minimum: 640),
+            height: Self.pixelDimension(pointSize.height * scale, minimum: 480),
             scaleFactors: RDPDisplayScaleFactors(backingScaleFactor: scale)
         )
     }
@@ -76,22 +75,12 @@ public struct RDPDisplayRequest: Equatable, Sendable {
         "\(width)x\(height), RDP scale \(scaleFactors.desktopScaleFactor)%/\(scaleFactors.deviceScaleFactor)%"
     }
 
-    private static func scaledDimension(_ pointDimension: CGFloat, backingScaleFactor: CGFloat) -> CGFloat {
-        guard pointDimension.isFinite, pointDimension > 0 else {
-            return 0
+    // Viewer-driven sizes stay at least 640x480; init(width:height:scaleFactors:) makes the width even.
+    private static func pixelDimension(_ value: CGFloat, minimum: CGFloat) -> UInt32 {
+        guard !value.isNaN else {
+            return UInt32(minimum)
         }
-        let scaledDimension = pointDimension * backingScaleFactor
-        return scaledDimension.isFinite ? scaledDimension : CGFloat(UInt32.max)
-    }
-
-    private static func clampedWidth(_ value: CGFloat) -> UInt32 {
-        let rounded = Int(value.rounded())
-        let clamped = min(8192, max(640, rounded))
-        return UInt32(clamped.isMultiple(of: 2) ? clamped : clamped - 1)
-    }
-
-    private static func clampedHeight(_ value: CGFloat) -> UInt32 {
-        UInt32(min(8192, max(480, Int(value.rounded()))))
+        return UInt32(min(8192, max(minimum, value.rounded())))
     }
 }
 

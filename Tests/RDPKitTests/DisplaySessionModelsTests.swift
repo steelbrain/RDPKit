@@ -56,6 +56,18 @@ import Testing
     #expect(maximumRequest.height == 8192)
 }
 
+@Test func displayRequestClampsHugeViewportValuesWithoutTrapping() {
+    let request = RDPDisplayRequest(
+        pointSize: CGSize(width: 1e300, height: CGFloat.nan),
+        backingScaleFactor: 1e300
+    )
+
+    #expect(request.width == 8192)
+    #expect(request.height == 480)
+    #expect(request.scaleFactors.desktopScaleFactor == 500)
+    #expect(request.scaleFactors.deviceScaleFactor == 180)
+}
+
 @Test func displayRequestDefaultsInvalidViewportScaleToOne() {
     let request = RDPDisplayRequest(
         pointSize: CGSize(width: 800, height: 600),
