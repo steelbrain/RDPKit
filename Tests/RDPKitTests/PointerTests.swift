@@ -257,7 +257,7 @@ import Testing
     }
 }
 
-@Test func rejectsInvalidPointerUpdates() {
+@Test func rejectsInvalidPointerUpdates() throws {
     #expect(throws: RDPDecodeError.invalidPointerPDU) {
         try RDPServerPointerUpdate.parsePayload(Data([0x02, 0x00, 0x00, 0x00]))
     }
@@ -332,12 +332,12 @@ import Testing
         oversizedNewPointer.append(Data(repeating: 0, count: 582))
         _ = try RDPServerPointerUpdate.parsePayload(oversizedNewPointer)
     }
-    #expect(throws: RDPDecodeError.invalidPointerPDU) {
-        try RDPShareDataPDU.parseIfPresent(fromTPKT: shareDataPacket(
-            type: 0x1B,
-            payload: Data([0x02, 0x00, 0x00, 0x00])
-        ))
-    }
+    let malformed = try RDPShareDataPDU.parseIfPresent(fromTPKT: shareDataPacket(
+        type: 0x1B,
+        payload: Data([0x02, 0x00, 0x00, 0x00])
+    ))
+    #expect(malformed?.pointerUpdate == nil)
+    #expect(malformed?.pointerDecodeError == .invalidPointerPDU)
 }
 
 private func shareDataPacket(type: UInt8, payload: Data) -> Data {

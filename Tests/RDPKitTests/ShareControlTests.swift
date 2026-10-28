@@ -180,26 +180,40 @@ import Testing
     )) == nil)
 }
 
-@Test func shareDataRejectsInvalidStreamIDs() throws {
-    #expect(throws: RDPDecodeError.invalidShareDataHeader) {
-        try RDPShareDataPDU.parseIfPresent(fromTPKT: shareDataPacket(
-            type: 0x28,
-            streamID: 0x00,
-            payload: Data(repeating: 0, count: 8)
-        ))
-    }
-    #expect(throws: RDPDecodeError.invalidShareDataHeader) {
-        try RDPShareDataPDU.parseIfPresent(fromTPKT: shareDataPacket(
-            type: 0x1F,
-            streamID: 0x03,
-            payload: Data([0x01, 0x00, 0xEA, 0x03])
-        ))
-    }
+@Test func shareDataIgnoresStreamIDAndPDUSource() throws {
+    // Cosmetic header fields: a mislabelled stream or source must not end the session.
+    #expect(try RDPShareDataPDU.parseIfPresent(fromTPKT: shareDataPacket(
+        type: 0x28,
+        streamID: 0x00,
+        payload: Data(repeating: 0, count: 8)
+    ))?.typeName == "font-map")
     #expect(try RDPShareDataPDU.parseIfPresent(fromTPKT: shareDataPacket(
         type: 0x1F,
-        streamID: 0x00,
+        streamID: 0x03,
         payload: Data([0x01, 0x00, 0xEA, 0x03])
     ))?.typeName == "server-synchronize")
+    #expect(try RDPShareDataPDU.parseIfPresent(fromTPKT: shareDataPacket(
+        type: 0x2F,
+        payload: Data([0x09, 0x00, 0x00, 0x00])
+    ))?.errorInfo == 9)
+    #expect(try RDPShareDataPDU.parseIfPresent(fromTPKT: shareDataPacket(
+        type: 0x36,
+        payload: Data([0x01, 0x04, 0x00, 0x00])
+    ))?.statusInfo == 0x0000_0401)
+}
+
+@Test func shareControlChannelFilterSkipsStaticVirtualChannelChunks() throws {
+    // A static channel chunk header: totalLength 0x000A0010 reads as a share
+    // control header of type 0x0A when parsed from the wrong channel.
+    let chunk = mcsSendDataIndication(channelID: 1004, userData: Data([
+        0x10, 0x00, 0x0A, 0x00, 0x03, 0x00, 0x00, 0x00,
+    ]))
+
+    #expect(throws: RDPDecodeError.invalidShareControlHeader) {
+        try RDPShareControlPDU.parseIfPresent(fromTPKT: chunk)
+    }
+    #expect(try RDPShareControlPDU.parseIfPresent(fromTPKT: chunk, channelID: 1003) == nil)
+    #expect(try RDPShareDataPDU.parseIfPresent(fromTPKT: chunk, channelID: 1003) == nil)
 }
 
 @Test func shareDataRejectsCompressedPayloadWithoutBulkDecompression() throws {
@@ -496,12 +510,6 @@ import Testing
     }
     #expect(throws: RDPDecodeError.invalidShareDataHeader) {
         try RDPShareDataPDU.parseIfPresent(fromTPKT: shareDataPacket(
-            type: 0x2F,
-            payload: Data([0x09, 0x00, 0x00, 0x00])
-        ))
-    }
-    #expect(throws: RDPDecodeError.invalidShareDataHeader) {
-        try RDPShareDataPDU.parseIfPresent(fromTPKT: shareDataPacket(
             type: 0x32,
             pduSource: 0,
             payload: Data([0x00, 0x00])
@@ -516,21 +524,9 @@ import Testing
     }
     #expect(throws: RDPDecodeError.invalidShareDataHeader) {
         try RDPShareDataPDU.parseIfPresent(fromTPKT: shareDataPacket(
-            type: 0x32,
-            payload: Data([0x00, 0x00, 0x00, 0x00])
-        ))
-    }
-    #expect(throws: RDPDecodeError.invalidShareDataHeader) {
-        try RDPShareDataPDU.parseIfPresent(fromTPKT: shareDataPacket(
             type: 0x36,
             pduSource: 0,
             payload: Data([0x01, 0x04])
-        ))
-    }
-    #expect(throws: RDPDecodeError.invalidShareDataHeader) {
-        try RDPShareDataPDU.parseIfPresent(fromTPKT: shareDataPacket(
-            type: 0x36,
-            payload: Data([0x01, 0x04, 0x00, 0x00])
         ))
     }
     #expect(throws: RDPDecodeError.invalidShareDataHeader) {
@@ -592,15 +588,6 @@ import Testing
         _ = try RDPShareDataPDU.parseIfPresent(fromTPKT: shareDataPacket(
             type: 0x37,
             pduSource: 0,
-            payload: payload
-        ))
-    }
-    #expect(throws: RDPDecodeError.invalidShareDataHeader) {
-        var payload = Data()
-        payload.appendLittleEndianUInt32(1)
-        payload.append(Data(repeating: 0, count: 20))
-        _ = try RDPShareDataPDU.parseIfPresent(fromTPKT: shareDataPacket(
-            type: 0x37,
             payload: payload
         ))
     }

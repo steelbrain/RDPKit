@@ -101,6 +101,8 @@ struct RDPSaveSessionInfoPDU: Equatable, Sendable {
         let domainByteCount = try cursor.readLittleEndianUInt32()
         let userNameByteCount = try cursor.readLittleEndianUInt32()
         let variableByteCount = UInt64(domainByteCount) + UInt64(userNameByteCount)
+        // [MS-RDPBCGR] 2.2.10.1.1.2 gives 576; Windows Server 2019 sends 18, the
+        // size without Pad (noted in FreeRDP's rdp_recv_logon_info_v2).
         guard version == 1,
               [18, 576].contains(size),
               domainByteCount.isMultiple(of: 2),
@@ -235,6 +237,21 @@ struct RDPShareControlPDU: Equatable, Sendable {
         guard let indication = try? MCSSendDataIndicationPDU.parse(fromTPKT: packet) else {
             return nil
         }
+        return try parseIfPresent(from: indication)
+    }
+
+    /// Parses only Send Data Indications on `channelID` (the I/O channel), so
+    /// static virtual channel chunks are never misread as Share Control PDUs.
+    static func parseIfPresent(fromTPKT packet: Data, channelID: UInt16) throws -> RDPShareControlPDU? {
+        guard let indication = try? MCSSendDataIndicationPDU.parse(fromTPKT: packet),
+              indication.channelID == channelID
+        else {
+            return nil
+        }
+        return try parseIfPresent(from: indication)
+    }
+
+    private static func parseIfPresent(from indication: MCSSendDataIndicationPDU) throws -> RDPShareControlPDU? {
         guard indication.userData.count >= 6 else {
             return nil
         }
@@ -272,6 +289,13 @@ struct RDPShareControlPDU: Equatable, Sendable {
 }
 
 struct RDPShareDataPDU: Equatable, Sendable {
+    enum Content: Equatable, Sendable {
+        case graphicsUpdate(RDPSlowPathGraphicsUpdate)
+        case pointer(RDPServerPointerUpdate)
+        case malformedPointer(RDPDecodeError)
+        case saveSessionInfo(RDPSaveSessionInfoPDU)
+    }
+
     var channelID: UInt16
     var shareID: UInt32
     var pduSource: UInt16
@@ -281,6 +305,8 @@ struct RDPShareDataPDU: Equatable, Sendable {
     var compressedType: UInt8
     var compressedLength: UInt16
     var payload: Data
+    /// Decoded Update, Pointer or Save Session Info payload.
+    private(set) var content: Content?
 
     var typeName: String {
         switch pduType2 {
@@ -327,10 +353,10 @@ struct RDPShareDataPDU: Equatable, Sendable {
     }
 
     var graphicsUpdate: RDPSlowPathGraphicsUpdate? {
-        guard pduType2 == 0x02 else {
+        guard case let .graphicsUpdate(update) = content else {
             return nil
         }
-        return try? RDPSlowPathGraphicsUpdate.parsePayload(payload)
+        return update
     }
 
     var autoReconnectStatus: UInt32? {
@@ -358,17 +384,26 @@ struct RDPShareDataPDU: Equatable, Sendable {
     }
 
     var saveSessionInfo: RDPSaveSessionInfoPDU? {
-        guard pduType2 == 0x26 else {
+        guard case let .saveSessionInfo(info) = content else {
             return nil
         }
-        return try? RDPSaveSessionInfoPDU.parsePayload(payload)
+        return info
     }
 
     var pointerUpdate: RDPServerPointerUpdate? {
-        guard pduType2 == 0x1B else {
+        guard case let .pointer(update) = content else {
             return nil
         }
-        return try? RDPServerPointerUpdate.parsePayload(payload)
+        return update
+    }
+
+    /// Why a pointer update could not be decoded. Pointer shapes are cosmetic,
+    /// so the session goes on; the caller records the error instead.
+    var pointerDecodeError: RDPDecodeError? {
+        guard case let .malformedPointer(error) = content else {
+            return nil
+        }
+        return error
     }
 
     var keyboardIndicatorUnitID: UInt16? {
@@ -407,7 +442,7 @@ struct RDPShareDataPDU: Equatable, Sendable {
         guard pduType2 == 0x14, payload.count >= 2 else {
             return nil
         }
-        return UInt16(payload[0]) | UInt16(payload[1]) << 8
+        return payload.littleEndianUInt16(at: 0)
     }
 
     var controlActionName: String? {
@@ -435,6 +470,8 @@ struct RDPShareDataPDU: Equatable, Sendable {
         return try parseIfPresent(from: indication)
     }
 
+    /// Parses only Send Data Indications on `channelID` (the I/O channel), so
+    /// static virtual channel chunks are never misread as Share Data.
     static func parseIfPresent(fromTPKT packet: Data, channelID: UInt16) throws -> RDPShareDataPDU? {
         guard let indication = try? MCSSendDataIndicationPDU.parse(fromTPKT: packet),
               indication.channelID == channelID
@@ -475,12 +512,13 @@ struct RDPShareDataPDU: Equatable, Sendable {
         let shareID = try cursor.readLittleEndianUInt32()
         _ = try cursor.readUInt8()
         let streamID = try cursor.readUInt8()
+        // Not validated: GRD and KRdp send the payload length, Windows the
+        // payload length plus the four bytes that follow this field.
         let uncompressedLength = try cursor.readLittleEndianUInt16()
         let pduType2 = try cursor.readUInt8()
         let compressedType = try cursor.readUInt8()
         let compressedLength = try cursor.readLittleEndianUInt16()
         try validateCompressionFields(compressedType: compressedType, compressedLength: compressedLength)
-        try validateStreamID(streamID, pduType2: pduType2)
         let payloadLength = Int(totalLength) - RDPShareHeaderLength.data
         guard payloadLength >= 0, payloadLength <= cursor.remaining else {
             throw RDPDecodeError.invalidShareDataHeader
@@ -488,16 +526,10 @@ struct RDPShareDataPDU: Equatable, Sendable {
         let payload = try cursor.readData(count: payloadLength)
         try validateShareDataPayloadLength(pduType2: pduType2, payloadLength: payload.count)
         try validateShareDataPayloadFields(pduType2: pduType2, payload: payload)
-        try validateGraphicsUpdatePayloadIfPresent(pduType2: pduType2, payload: payload)
-        try validateSaveSessionInfoPayloadIfPresent(pduType2: pduType2, payload: payload)
-        try validatePointerPayloadIfPresent(pduType2: pduType2, payload: payload)
         try validateAutoReconnectStatusPayloadIfPresent(pduType2: pduType2, payload: payload)
         try validateMonitorLayoutPayloadIfPresent(pduType2: pduType2, payload: payload)
-        if requiresZeroPDUSource(pduType2), pduSource != 0 {
-            throw RDPDecodeError.invalidShareDataHeader
-        }
 
-        return RDPShareDataPDU(
+        return try RDPShareDataPDU(
             channelID: indication.channelID,
             shareID: shareID,
             pduSource: pduSource,
@@ -506,8 +538,34 @@ struct RDPShareDataPDU: Equatable, Sendable {
             pduType2: pduType2,
             compressedType: compressedType,
             compressedLength: compressedLength,
-            payload: payload
+            payload: payload,
+            content: decodeContent(pduType2: pduType2, payload: payload)
         )
+    }
+
+    private static func decodeContent(pduType2: UInt8, payload: Data) throws -> Content? {
+        switch pduType2 {
+        case 0x02:
+            do {
+                return try .graphicsUpdate(RDPSlowPathGraphicsUpdate.parsePayload(payload))
+            } catch {
+                throw RDPDecodeError.invalidShareDataHeader
+            }
+        case 0x1B:
+            do {
+                return try .pointer(RDPServerPointerUpdate.parsePayload(payload))
+            } catch let error as RDPDecodeError {
+                return .malformedPointer(error)
+            }
+        case 0x26:
+            do {
+                return try .saveSessionInfo(RDPSaveSessionInfoPDU.parsePayload(payload))
+            } catch {
+                throw RDPDecodeError.invalidShareDataHeader
+            }
+        default:
+            return nil
+        }
     }
 
     private static func validateShareDataPayloadLength(pduType2: UInt8, payloadLength: Int) throws {
@@ -552,19 +610,6 @@ struct RDPShareDataPDU: Equatable, Sendable {
         }
     }
 
-    private static func validateStreamID(_ streamID: UInt8, pduType2: UInt8) throws {
-        switch streamID {
-        case 0x00:
-            guard pduType2 == 0x1F else {
-                throw RDPDecodeError.invalidShareDataHeader
-            }
-        case 0x01, 0x02, 0x04:
-            return
-        default:
-            throw RDPDecodeError.invalidShareDataHeader
-        }
-    }
-
     private static func validateShareDataPayloadFields(pduType2: UInt8, payload: Data) throws {
         switch pduType2 {
         case 0x1F:
@@ -587,35 +632,6 @@ struct RDPShareDataPDU: Equatable, Sendable {
         default:
             throw RDPDecodeError.invalidShareDataHeader
         }
-    }
-
-    private static func validateGraphicsUpdatePayloadIfPresent(pduType2: UInt8, payload: Data) throws {
-        guard pduType2 == 0x02 else {
-            return
-        }
-        do {
-            _ = try RDPSlowPathGraphicsUpdate.parsePayload(payload)
-        } catch {
-            throw RDPDecodeError.invalidShareDataHeader
-        }
-    }
-
-    private static func validateSaveSessionInfoPayloadIfPresent(pduType2: UInt8, payload: Data) throws {
-        guard pduType2 == 0x26 else {
-            return
-        }
-        do {
-            _ = try RDPSaveSessionInfoPDU.parsePayload(payload)
-        } catch {
-            throw RDPDecodeError.invalidShareDataHeader
-        }
-    }
-
-    private static func validatePointerPayloadIfPresent(pduType2: UInt8, payload: Data) throws {
-        guard pduType2 == 0x1B else {
-            return
-        }
-        _ = try RDPServerPointerUpdate.parsePayload(payload)
     }
 
     private static func validateAutoReconnectStatusPayloadIfPresent(pduType2: UInt8, payload: Data) throws {
@@ -641,27 +657,16 @@ struct RDPShareDataPDU: Equatable, Sendable {
             throw RDPDecodeError.invalidShareDataHeader
         }
     }
-
-    private static func requiresZeroPDUSource(_ pduType2: UInt8) -> Bool {
-        switch pduType2 {
-        case 0x2F, 0x32, 0x36, 0x37:
-            return true
-        default:
-            return false
-        }
-    }
 }
 
 private extension Data {
     func littleEndianUInt16(at offset: Int) -> UInt16 {
-        UInt16(self[offset])
-            | UInt16(self[offset + 1]) << 8
+        UInt16(self[startIndex + offset])
+            | UInt16(self[startIndex + offset + 1]) << 8
     }
 
     func littleEndianUInt32(at offset: Int) -> UInt32 {
-        UInt32(self[offset])
-            | UInt32(self[offset + 1]) << 8
-            | UInt32(self[offset + 2]) << 16
-            | UInt32(self[offset + 3]) << 24
+        UInt32(littleEndianUInt16(at: offset))
+            | UInt32(littleEndianUInt16(at: offset + 2)) << 16
     }
 }

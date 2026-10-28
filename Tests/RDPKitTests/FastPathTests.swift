@@ -316,12 +316,14 @@ import Testing
     }
 }
 
-@Test func rejectsFastPathPointerPositionWithBadLength() throws {
-    #expect(throws: RDPDecodeError.invalidFastPathOutputPDU) {
-        _ = try RDPFastPathOutputPDU.parse(fastPathPacket([
-            fastPathUpdate(code: 0x8, payload: Data([0x00, 0x00])),
-        ]))
-    }
+@Test func recordsFastPathPointerPositionWithBadLength() throws {
+    let pdu = try RDPFastPathOutputPDU.parse(fastPathPacket([
+        fastPathUpdate(code: 0x8, payload: Data([0x00, 0x00])),
+        fastPathUpdate(code: 0x5, payload: Data([0x00])),
+    ]))
+
+    #expect(pdu.updates.map(\.pointerUpdate) == [nil, nil])
+    #expect(pdu.updates.allSatisfy { $0.pointerDecodeError != nil })
 }
 
 @Test func leavesMalformedFastPathLargePointerShapeOpaque() throws {
@@ -334,6 +336,7 @@ import Testing
 
     #expect(pdu.updates[0].typeName == "fastpath-pointer-large")
     #expect(pdu.updates[0].pointerUpdate == nil)
+    #expect(pdu.updates[0].pointerDecodeError == .invalidPointerPDU)
     #expect(pdu.summaries[0].pointerTypeName == nil)
 }
 
