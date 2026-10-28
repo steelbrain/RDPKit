@@ -75,7 +75,8 @@
 - Report licensing failures with the server's error code, keep reading
   licensing PDUs only until licensing completes, and send non-ASCII license
   user and machine names as UTF-8.
-- Present RDPGFX H.264 as full-range BT.709, as MS-RDPEGFX specifies.
+- Present RDPGFX H.264 as full-range BT.709, as MS-RDPEGFX specifies, except
+  KRdp's x264 video, which holds limited-range BT.601 without signalling it.
 - Fix AVC444 reverse filtering, subframe scaling, chroma-only updates and
   inverted chroma regions, and recreate VideoToolbox sessions after
   invalidation.

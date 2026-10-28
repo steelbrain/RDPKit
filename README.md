@@ -123,7 +123,8 @@ itself.
 - Persistent mapped and scaled surface composition, including partial updates,
   multiple surfaces, caches, solid fills, alpha bitmaps, and graphics resets
 - AVC420/H.264 rendering through per-surface VideoToolbox decoders, presented
-  as full-range BT.709 as MS-RDPEGFX specifies
+  as full-range BT.709 as MS-RDPEGFX specifies, and KRdp's limited-range
+  x264 video corrected
 - AVC444/H.264 and AVC444v2 layout parsing, persistent luma/chroma subframes,
   reverse filtering, and CPU or Metal chroma reconstruction
 - RemoteFX Progressive and classic RemoteFX decoding

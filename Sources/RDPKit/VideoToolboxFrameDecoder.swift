@@ -12,6 +12,9 @@ public final class RDPVideoToolboxFrameDecoder {
     }
 
     private var sequenceDecoders: [SequenceKey: RDPVideoToolboxSequenceDecoder] = [:]
+    /// x264 names itself only in the first access unit it encodes, so a surface created later
+    /// in the session inherits what an earlier one learned.
+    private var sawX264 = false
     private var avc444Decoders: [UInt16: RDPAVC444FrameDecoder] = [:]
     private let bitmapDecoder = RDPBitmapFrameDecoder()
     private lazy var imageContext = CIContext()
@@ -38,7 +41,9 @@ public final class RDPVideoToolboxFrameDecoder {
         if frame.videoCodec == .h264, frame.avc444SubframeLayout != nil {
             return try avc444Decoder(for: frame.surfaceID).decodeDetailed(frame)
         }
-        return try sequenceDecoder(for: frame.surfaceID, codec: frame.videoCodec).decodeDetailed(frame.encodedVideoData)
+        let decoder = sequenceDecoder(for: frame.surfaceID, codec: frame.videoCodec)
+        defer { sawX264 = sawX264 || decoder.encodedByX264 }
+        return try decoder.decodeDetailed(frame.encodedVideoData)
     }
 
     var decoderContextCount: Int {
@@ -51,6 +56,7 @@ public final class RDPVideoToolboxFrameDecoder {
             return decoder
         }
         let decoder = RDPVideoToolboxSequenceDecoder(codec: codec)
+        decoder.encodedByX264 = sawX264
         sequenceDecoders[key] = decoder
         return decoder
     }
@@ -207,7 +213,9 @@ func rdpVideoPixelBufferAttributes(pixelFormat: OSType? = nil) -> [CFString: Any
 final class RDPVideoToolboxSequenceDecoder {
     private let codec: RDPVideoCodec
     private let preservesCodedSamples: Bool
-    private let sequenceParameterSetRewrite: (Data) -> Data?
+    private let sequenceParameterSetRewrite: (Data, Bool) -> Data?
+    /// Whether the stream named x264 as its encoder, which decides its colours.
+    var encodedByX264 = false
     /// SPS and PPS for H.264; VPS, SPS, and PPS for HEVC.
     private var parameterSets: [Data?]
     private var formatDescription: CMVideoFormatDescription?
@@ -220,7 +228,7 @@ final class RDPVideoToolboxSequenceDecoder {
     init(
         codec: RDPVideoCodec,
         preservesCodedSamples: Bool = false,
-        sequenceParameterSetRewrite: @escaping (Data) -> Data? = RDPH264SequenceParameterSet.signalingFullRangeBT709
+        sequenceParameterSetRewrite: @escaping (Data, Bool) -> Data? = RDPH264SequenceParameterSet.signalingSampleColours
     ) {
         self.codec = codec
         self.preservesCodedSamples = preservesCodedSamples
@@ -242,6 +250,10 @@ final class RDPVideoToolboxSequenceDecoder {
         }
         let parameterSetsChanged = updateParameterSets(sample.parameterSets)
         if session == nil || parameterSetsChanged {
+            // x264 writes its version SEI next to the parameter sets of its first access unit.
+            if codec == .h264, !encodedByX264 {
+                encodedByX264 = RDPAnnexB.identifiesX264(annexBData)
+            }
             try rebuildSession()
         }
 
@@ -336,17 +348,15 @@ final class RDPVideoToolboxSequenceDecoder {
         }
         invalidateSession()
         let formatDescription: CMVideoFormatDescription
-        // MS-RDPEGFX 2.2.4.4 and 3.3.8.3.1 define RDPGFX H.264 samples as full-range BT.709
-        // whatever the VUI says. GNOME Remote Desktop and KRdp encode full range but send no
-        // video signal type, which H.264 E.2.1 infers as limited range. If CoreMedia rejects
-        // the rewritten SPS, the original still decodes, only with the signalled range.
+        // The SPS states the colours the samples hold (see signalingSampleColours). If CoreMedia
+        // rejects the rewritten SPS, the original still decodes, only with the signalled range.
         if codec == .h264,
-           let sequenceParameterSet = sequenceParameterSetRewrite(parameterSets[0]),
-           let fullRangeFormatDescription = try? makeFormatDescription(
+           let sequenceParameterSet = sequenceParameterSetRewrite(parameterSets[0], encodedByX264),
+           let signalledFormatDescription = try? makeFormatDescription(
                parameterSets: [sequenceParameterSet] + parameterSets.dropFirst()
            )
         {
-            formatDescription = fullRangeFormatDescription
+            formatDescription = signalledFormatDescription
         } else {
             formatDescription = try makeFormatDescription(parameterSets: parameterSets)
         }

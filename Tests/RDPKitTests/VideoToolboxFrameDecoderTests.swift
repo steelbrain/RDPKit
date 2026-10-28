@@ -90,7 +90,7 @@ import VideoToolbox
         "67 64 08 28 ac 2b 20 0a 00 c3 7f e0 02 00 01 e2 00 00 07 d0 00 03 a9 81 08",
         "67 64 08 28 ac 2b 20 0a 00 c3 7f e0 02 00 01 ed c0 43 40 50 00 00 3e 80 00 1d 4c 08 40"
     ),
-    // KRdp: Baseline profile with timing info and bitstream restrictions.
+    // KRdp: Baseline profile with timing info and bitstream restrictions, here not from x264.
     (
         "67 42 c0 3e da 00 f0 01 2d a1 00 00 03 00 01 00 00 07 d0 8f 08 04 2a",
         "67 42 c0 3e da 00 f0 01 2d a6 e0 21 a0 28 00 00 03 00 08 00 00 3e 84 78 40 21 50"
@@ -102,32 +102,49 @@ import VideoToolbox
 ])
 func sequenceParameterSetSignalsFullRangeBT709(originalHex: String, expectedHex: String) throws {
     let original = hexData(originalHex)
-    let rewritten = try #require(RDPH264SequenceParameterSet.signalingFullRangeBT709(original))
+    let rewritten = try #require(RDPH264SequenceParameterSet.signalingSampleColours(original, encodedByX264: false))
 
     #expect(rewritten == hexData(expectedHex))
-    #expect(RDPH264SequenceParameterSet.signalingFullRangeBT709(rewritten) == rewritten)
+    #expect(RDPH264SequenceParameterSet.signalingSampleColours(rewritten, encodedByX264: false) == rewritten)
+    // x264 streams keep a range they signal.
+    #expect(RDPH264SequenceParameterSet.signalingSampleColours(rewritten, encodedByX264: true) == rewritten)
     let originalSize = CMVideoFormatDescriptionGetDimensions(try h264FormatDescription(sequenceParameterSet: original))
     let rewrittenFormat = try h264FormatDescription(sequenceParameterSet: rewritten)
     let rewrittenSize = CMVideoFormatDescriptionGetDimensions(rewrittenFormat)
     #expect(rewrittenSize.width == originalSize.width && rewrittenSize.height == originalSize.height)
-    let extensions = try #require(CMFormatDescriptionGetExtensions(rewrittenFormat) as? [CFString: Any])
-    #expect(extensions[kCMFormatDescriptionExtension_FullRangeVideo] as? Bool == true)
-    #expect(extensions[kCMFormatDescriptionExtension_YCbCrMatrix] as? String == kCMFormatDescriptionYCbCrMatrix_ITU_R_709_2 as String)
-    #expect(extensions[kCMFormatDescriptionExtension_ColorPrimaries] as? String == kCMFormatDescriptionColorPrimaries_ITU_R_709_2 as String)
-    #expect(extensions[kCMFormatDescriptionExtension_TransferFunction] as? String == kCMFormatDescriptionTransferFunction_sRGB as String)
+    try expectColours(of: rewrittenFormat, fullRange: true, matrix: kCMFormatDescriptionYCbCrMatrix_ITU_R_709_2)
+}
+
+@Test func x264SequenceParameterSetWithoutRangeSignalsLimitedRangeBT601() throws {
+    let original = hexData("67 42 c0 3e da 00 f0 01 2d a1 00 00 03 00 01 00 00 07 d0 8f 08 04 2a")
+    let rewritten = try #require(RDPH264SequenceParameterSet.signalingSampleColours(original, encodedByX264: true))
+
+    #expect(rewritten == hexData("67 42 c0 3e da 00 f0 01 2d a6 a0 21 a0 c8 00 00 03 00 08 00 00 3e 84 78 40 21 50"))
+    try expectColours(
+        of: h264FormatDescription(sequenceParameterSet: rewritten),
+        fullRange: false,
+        matrix: kCMFormatDescriptionYCbCrMatrix_ITU_R_601_4
+    )
 }
 
 @Test func sequenceParameterSetRewriteRejectsTruncatedSPS() {
-    #expect(RDPH264SequenceParameterSet.signalingFullRangeBT709(hexData("67 64 08 28 ac")) == nil)
-    #expect(RDPH264SequenceParameterSet.signalingFullRangeBT709(hexData("68 ce 38 80")) == nil)
+    #expect(RDPH264SequenceParameterSet.signalingSampleColours(hexData("67 64 08 28 ac"), encodedByX264: false) == nil)
+    #expect(RDPH264SequenceParameterSet.signalingSampleColours(hexData("68 ce 38 80"), encodedByX264: false) == nil)
 }
 
-/// GNOME Remote Desktop and KRdp encode full-range samples under an SPS without a video signal
-/// type. Presented AVC420 output must match the full-range BT.709 conversion of MS-RDPEGFX
-/// 3.3.8.3.1 that the AVC444 path applies; read as limited range it is about 10 levels off.
+@Test func x264IsIdentifiedByItsVersionSEI() throws {
+    #expect(try RDPAnnexB.identifiesX264(firstTranscriptFrame("krdp-colour-chart-transcript").encodedVideoData))
+    #expect(try !RDPAnnexB.identifiesX264(firstTranscriptFrame("gnome-negotiation-transcript").encodedVideoData))
+    // An SEI of another payload type, and one cut short.
+    #expect(!RDPAnnexB.identifiesX264(hexData("00 00 00 01 06 04 10 dc 45 e9 bd e6 d9 48 b7 96 2c d8 20 d9 23 ee ef")))
+    #expect(!RDPAnnexB.identifiesX264(hexData("00 00 00 01 06 05 10 dc 45 e9")))
+}
+
+/// gnome-remote-desktop encodes full-range samples under an SPS without a video signal type.
+/// Presented AVC420 output must match the full-range BT.709 conversion of MS-RDPEGFX 3.3.8.3.1
+/// that the AVC444 path applies; read as limited range it is about 10 levels off.
 @Test(arguments: [
     ("gnome-negotiation-transcript", 100, 100, [UInt8]([34, 130, 127])),
-    ("krdp-negotiation-transcript", 1680, 1584, [UInt8]([35, 129, 126])),
 ])
 func avc420FixtureFramesPresentAsFullRangeBT709(fixture: String, x: Int, y: Int, background: [UInt8]) throws {
     let frame = try firstTranscriptFrame(fixture)
@@ -165,9 +182,32 @@ func avc420FixtureFramesPresentAsFullRangeBT709(fixture: String, x: Int, y: Int,
     #expect(Double(difference) / Double(count) < 1.5)
 }
 
+/// KRdp 6.8 encodes through KPipeWire's libx264 path, which feeds x264 limited-range BT.601
+/// and signals no range, against MS-RDPEGFX 3.3.8.3.1. The fixture's first frame is a chart
+/// of flat patches drawn on a KRdp virtual monitor; each must present as the colour drawn.
+@Test func krdpX264FramePresentsTheColoursDrawn() throws {
+    let frame = try firstTranscriptFrame("krdp-colour-chart-transcript")
+    let imageBuffer = try RDPVideoToolboxFrameDecoder().decodeDetailed(frame).imageBuffer
+    let rendered = try coreImageBGRA(imageBuffer)
+    let width = CVPixelBufferGetWidth(imageBuffer)
+    let height = CVPixelBufferGetHeight(imageBuffer)
+    let patches: [[Int]] = [
+        [0, 0, 0], [255, 255, 255], [128, 128, 128], [64, 64, 64],
+        [192, 192, 192], [20, 22, 24], [255, 0, 0], [0, 255, 0],
+        [0, 0, 255], [16, 16, 16], [235, 235, 235], [240, 120, 30],
+    ]
+    for (index, drawn) in patches.enumerated() {
+        let x = (index % 4 * 2 + 1) * width / 8
+        let y = (index / 4 * 2 + 1) * height / 6
+        let offset = (y * width + x) * 4
+        let presented = [Int(rendered[offset + 2]), Int(rendered[offset + 1]), Int(rendered[offset])]
+        #expect(zip(presented, drawn).allSatisfy { abs($0 - $1) <= 3 }, "patch \(index): \(presented) for \(drawn)")
+    }
+}
+
 @Test func sequenceDecoderFallsBackToOriginalSPSWhenRewriteIsRejected() throws {
     let accessUnits = try encodeH264AnnexB(frames: [(luma: 60, chroma: 128)])
-    let decoder = RDPVideoToolboxSequenceDecoder(codec: .h264) { _ in hexData("67 64") }
+    let decoder = RDPVideoToolboxSequenceDecoder(codec: .h264) { _, _ in hexData("67 64") }
 
     let result = try decoder.decodeDetailed(accessUnits[0])
 
@@ -293,6 +333,14 @@ private func h264FormatDescription(sequenceParameterSet: Data) throws -> CMVideo
         throw H264TestEncodeError.encoder(status)
     }
     return formatDescription
+}
+
+private func expectColours(of format: CMVideoFormatDescription, fullRange: Bool, matrix: CFString) throws {
+    let extensions = try #require(CMFormatDescriptionGetExtensions(format) as? [CFString: Any])
+    #expect(extensions[kCMFormatDescriptionExtension_FullRangeVideo] as? Bool == fullRange)
+    #expect(extensions[kCMFormatDescriptionExtension_YCbCrMatrix] as? String == matrix as String)
+    #expect(extensions[kCMFormatDescriptionExtension_ColorPrimaries] as? String == kCMFormatDescriptionColorPrimaries_ITU_R_709_2 as String)
+    #expect(extensions[kCMFormatDescriptionExtension_TransferFunction] as? String == kCMFormatDescriptionTransferFunction_sRGB as String)
 }
 
 private func firstTranscriptFrame(_ fixture: String) throws -> RDPGraphicsFrameSnapshot {

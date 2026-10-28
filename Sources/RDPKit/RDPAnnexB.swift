@@ -54,10 +54,15 @@ public enum RDPHEVCAnnexB {
 
 /// H.264 sequence parameter set rewriting (ITU-T H.264 7.3.2.1.1 and E.1.1).
 enum RDPH264SequenceParameterSet {
-    /// Returns the SPS NAL unit with a VUI video signal type of full range, BT.709 primaries and
-    /// matrix, and sRGB transfer, or nil when the SPS cannot be parsed. Every other field is
-    /// copied bit for bit.
-    static func signalingFullRangeBT709(_ nalUnit: Data) -> Data? {
+    /// Returns the SPS NAL unit with a VUI video signal type stating the colours its samples hold,
+    /// or nil when the SPS cannot be parsed. Every other field is copied bit for bit.
+    ///
+    /// MS-RDPEGFX 2.2.4.4 and 3.3.8.3.1 define RDPGFX H.264 samples as full-range BT.709, whatever
+    /// the VUI says; gnome-remote-desktop encodes that and signals no range (gnome fixture). The
+    /// exception is an x264 stream that signals no range: x264 then holds what FFmpeg's default
+    /// RGB conversion feeds it, limited-range BT.601. KRdp 6.8 sends that (krdp-colour-chart
+    /// fixture). Primaries are BT.709 and the transfer sRGB, those of desktop content.
+    static func signalingSampleColours(_ nalUnit: Data, encodedByX264: Bool) -> Data? {
         guard let header = nalUnit.first, header & 0x1F == 7 else {
             return nil
         }
@@ -75,6 +80,7 @@ enum RDPH264SequenceParameterSet {
             let hasVUI = try reader.readBits(1) == 1
             writer.write(1, bitCount: 1)
             var videoFormat: UInt32 = 5 // Unspecified
+            var signalsRange = false
             if hasVUI {
                 let start = reader.position
                 if try reader.readBits(1) == 1, try reader.readBits(8) == 255 {
@@ -85,6 +91,7 @@ enum RDPH264SequenceParameterSet {
                 }
                 writer.copy(rbsp, bits: start ..< reader.position)
                 if try reader.readBits(1) == 1 {
+                    signalsRange = true
                     videoFormat = try reader.readBits(3)
                     try reader.skipBits(1) // video_full_range_flag
                     if try reader.readBits(1) == 1 {
@@ -94,13 +101,14 @@ enum RDPH264SequenceParameterSet {
             } else {
                 writer.write(0, bitCount: 2) // aspect_ratio_info_present_flag, overscan_info_present_flag
             }
+            let isLimitedBT601 = encodedByX264 && !signalsRange
             writer.write(1, bitCount: 1) // video_signal_type_present_flag
             writer.write(videoFormat, bitCount: 3)
-            writer.write(1, bitCount: 1) // video_full_range_flag
+            writer.write(isLimitedBT601 ? 0 : 1, bitCount: 1) // video_full_range_flag
             writer.write(1, bitCount: 1) // colour_description_present_flag
-            // BT.709 primaries and matrix with the sRGB transfer of desktop content. Tagged with the
-            // BT.709 transfer, Core Image renders lighter colours than MS-RDPEGFX 3.3.8.3.1 defines.
-            writer.write(0x01_0D_01, bitCount: 24)
+            // BT.709 primaries and the sRGB transfer, then the BT.601 or BT.709 matrix. Tagged with
+            // the BT.709 transfer, Core Image renders lighter colours than MS-RDPEGFX 3.3.8.3.1 defines.
+            writer.write(isLimitedBT601 ? 0x01_0D_06 : 0x01_0D_01, bitCount: 24)
             if hasVUI {
                 writer.copy(rbsp, bits: reader.position ..< stopBitPosition)
             } else {
@@ -329,6 +337,41 @@ enum RDPAnnexB {
                 lengthPrefixedData.append(payload)
             }
             return (lengthPrefixedData, parameterSets)
+        }
+    }
+
+    /// Whether the H.264 access unit carries x264's version SEI: a user_data_unregistered message
+    /// (H.264 D.1.7) under x264's UUID, which x264 writes into the first access unit it encodes.
+    static func identifiesX264(_ data: Data) -> Bool {
+        let x264UUID: [UInt8] = [
+            0xDC, 0x45, 0xE9, 0xBD, 0xE6, 0xD9, 0x48, 0xB7, 0x96, 0x2C, 0xD8, 0x20, 0xD9, 0x23, 0xEE, 0xEF,
+        ]
+        return data.withUnsafeBytes { rawBytes in
+            let bytes = rawBytes.bindMemory(to: UInt8.self)
+            return nalUnitPayloadRanges(in: bytes, codec: .h264).contains { range in
+                guard bytes[range.lowerBound] & 0x1F == 6 else {
+                    return false
+                }
+                // payloadType and payloadSize are runs of 0xFF closed by a smaller byte (D.1.1).
+                var index = range.lowerBound + 1
+                var payloadType = 0
+                while index < range.upperBound, bytes[index] == 0xFF {
+                    payloadType += 255
+                    index += 1
+                }
+                guard index < range.upperBound else {
+                    return false
+                }
+                payloadType += Int(bytes[index])
+                index += 1
+                while index < range.upperBound, bytes[index] == 0xFF {
+                    index += 1
+                }
+                index += 1
+                return payloadType == 5
+                    && index + x264UUID.count <= range.upperBound
+                    && bytes[index ..< index + x264UUID.count].elementsEqual(x264UUID)
+            }
         }
     }
 
