@@ -165,6 +165,34 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         clipboardPollingTask?.cancel()
         launchStore?.unregisterDiagnostics(for: sessionID)
         cancelConnection(shouldRecordCancellation: false)
+        withdrawSessionCommands()
+    }
+
+    func startSession() {
+        syncStateFromFields()
+        startPreflight()
+    }
+
+    /// Publishes the Session menu state while this session's window is key.
+    func publishSessionCommands() {
+        guard didClose == false, view.window?.isKeyWindow == true else {
+            return
+        }
+        launchStore?.sessionCommands.publish(
+            RDPSessionCommandState(
+                startTitle: connectButtonTitle,
+                canStart: canStartConnection,
+                canCancel: isConnecting,
+                controlsVisible: controlsVisible,
+                canSyncClipboard: clipboardSharingEnabled && clipboardSession != nil,
+                canStartTemporaryClipboardSharing: clipboardSession != nil
+            ),
+            from: self
+        )
+    }
+
+    func withdrawSessionCommands() {
+        launchStore?.sessionCommands.withdraw(self)
     }
 
     deinit {
@@ -214,7 +242,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         detailView.setContentHuggingPriority(.defaultLow, for: .horizontal)
         detailView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         detailView.onToggleControls = { [weak self] in self?.toggleSessionControls() }
-        detailView.onConnect = { [weak self] in self?.startPreflight() }
+        detailView.onConnect = { [weak self] in self?.startSession() }
         detailView.onCancel = { [weak self] in self?.cancelConnection() }
         detailView.onOpenDiagnostics = { [weak self] in self?.openDiagnosticsWindow() }
         detailView.onTrustCertificate = { [weak self] in self?.trustCurrentCertificate() }
@@ -359,6 +387,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         renderDetail()
         updateFrameClock()
         syncDiagnosticsSnapshot()
+        publishSessionCommands()
     }
 
     fileprivate func acceptsConnectionEvent(id: UUID) -> Bool {
@@ -505,7 +534,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         }
     }
 
-    private func openDiagnosticsWindow() {
+    func openDiagnosticsWindow() {
         syncDiagnosticsSnapshot()
         launchStore?.openDiagnostics(for: sessionID)
     }
@@ -995,7 +1024,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
 
     @discardableResult
     private func updateViewerMetricsSummary(_ metrics: RDPRenderMetrics) -> Bool {
-        let nextSummary = appKitCompactViewerMetricsSummary(metrics: metrics, framePacing: framePacing)
+        let nextSummary = compactViewerMetricsSummary(metrics: metrics, framePacing: framePacing)
         if viewerMetricsSummary != nextSummary {
             viewerMetricsSummary = nextSummary
             return true
@@ -1009,7 +1038,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         remoteDesktopRenderer.clear()
     }
 
-    private func cancelConnection(shouldRecordCancellation: Bool = true) {
+    func cancelConnection(shouldRecordCancellation: Bool = true) {
         let shouldRecordCancellation = shouldRecordCancellation && (isConnecting || activeConnectionID != nil)
         activeCancellation?.cancel()
         cancelPendingDisplayResize(resetLastRequestedSize: true)
@@ -1182,12 +1211,12 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         )
     }
 
-    private func syncClipboardNow() {
+    func syncClipboardNow() {
         publishPasteboardIfChanged(force: true)
         render()
     }
 
-    private func startTemporaryClipboardSharing() {
+    func startTemporaryClipboardSharing() {
         guard clipboardSession != nil else {
             clipboardMessage = "Not ready."
             render()
@@ -1828,7 +1857,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         return max(0, Int(ceil(remainingSeconds)))
     }
 
-    private func toggleSessionControls() {
+    func toggleSessionControls() {
         controlsVisible.toggle()
         render()
     }
@@ -1889,8 +1918,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
     }
 
     @objc private func connectPressed(_: NSButton) {
-        syncStateFromFields()
-        startPreflight()
+        startSession()
     }
 
     @objc private func cancelPressed(_: NSButton) {
@@ -2032,74 +2060,6 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         stack.addArrangedSubview(connectButton)
         stack.addArrangedSubview(cancelButton)
         return stack
-    }
-}
-
-@MainActor
-protocol RDPSessionCommandHandling: AnyObject {
-    var rdpSessionControlsVisible: Bool { get }
-    var rdpStartSessionTitle: String { get }
-    var rdpCanStartSession: Bool { get }
-    var rdpCanCancelSession: Bool { get }
-    var rdpCanSyncClipboard: Bool { get }
-    var rdpCanStartTemporaryClipboardSharing: Bool { get }
-
-    func rdpToggleSessionControls()
-    func rdpStartSession()
-    func rdpCancelSession()
-    func rdpOpenDiagnostics()
-    func rdpSyncClipboard()
-    func rdpStartTemporaryClipboardSharing()
-}
-
-extension RDPRemoteSessionViewController: RDPSessionCommandHandling {
-    var rdpSessionControlsVisible: Bool {
-        controlsVisible
-    }
-
-    var rdpStartSessionTitle: String {
-        connectButtonTitle
-    }
-
-    var rdpCanStartSession: Bool {
-        canStartConnection
-    }
-
-    var rdpCanCancelSession: Bool {
-        isConnecting
-    }
-
-    var rdpCanSyncClipboard: Bool {
-        clipboardSharingEnabled && clipboardSession != nil
-    }
-
-    var rdpCanStartTemporaryClipboardSharing: Bool {
-        clipboardSession != nil
-    }
-
-    func rdpToggleSessionControls() {
-        toggleSessionControls()
-    }
-
-    func rdpStartSession() {
-        syncStateFromFields()
-        startPreflight()
-    }
-
-    func rdpCancelSession() {
-        cancelConnection()
-    }
-
-    func rdpOpenDiagnostics() {
-        openDiagnosticsWindow()
-    }
-
-    func rdpSyncClipboard() {
-        syncClipboardNow()
-    }
-
-    func rdpStartTemporaryClipboardSharing() {
-        startTemporaryClipboardSharing()
     }
 }
 
@@ -2698,65 +2658,4 @@ private final class RDPFramePresentationClockNSView: NSView {
             self?.onTimingChange?(nextState)
         }
     }
-}
-
-private func appKitCompactViewerMetricsSummary(
-    metrics: RDPRenderMetrics,
-    framePacing: RDPFramePacingState
-) -> String? {
-    var parts: [String] = []
-    let framesPerSecond = metrics.rollingFramesPerSecond ?? metrics.averageFramesPerSecond
-    if let framesPerSecond {
-        parts.append(appKitMetricFramesPerSecond(framesPerSecond))
-    }
-    if let lastDecodeMilliseconds = metrics.lastDecodeMilliseconds {
-        parts.append("decode \(appKitMetricMilliseconds(lastDecodeMilliseconds))")
-    }
-    if let wireMegabitsPerSecond = metrics.rollingWireMegabitsPerSecond {
-        parts.append("rx \(appKitMetricMegabitsPerSecond(wireMegabitsPerSecond))")
-    }
-    if let displayLinkFramesPerSecond = framePacing.displayLinkFramesPerSecond {
-        parts.append(appKitMetricHertz(displayLinkFramesPerSecond))
-    }
-    guard parts.isEmpty == false else {
-        return nil
-    }
-    return parts.joined(separator: " - ")
-}
-
-private func appKitMetricMilliseconds(_ value: Double?) -> String {
-    guard let value else {
-        return "none"
-    }
-    if value < 1 {
-        return String(format: "%.2f ms", value)
-    }
-    return String(format: "%.1f ms", value)
-}
-
-private func appKitMetricFramesPerSecond(_ value: Double?) -> String {
-    guard let value else {
-        return "none"
-    }
-    return String(format: "%.1f fps", value)
-}
-
-private func appKitMetricHertz(_ value: Double?) -> String {
-    guard let value else {
-        return "none"
-    }
-    if value.rounded() == value {
-        return String(format: "%.0f Hz", value)
-    }
-    return String(format: "%.1f Hz", value)
-}
-
-private func appKitMetricMegabitsPerSecond(_ value: Double?) -> String {
-    guard let value else {
-        return "none"
-    }
-    if value < 1 {
-        return String(format: "%.2f Mbps", value)
-    }
-    return String(format: "%.1f Mbps", value)
 }

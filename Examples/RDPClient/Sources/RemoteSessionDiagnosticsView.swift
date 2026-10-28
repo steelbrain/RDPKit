@@ -1,7 +1,7 @@
 import RDPKit
 import SwiftUI
 
-private func metricMilliseconds(_ value: Double?) -> String {
+func metricMilliseconds(_ value: Double?) -> String {
     guard let value else {
         return "none"
     }
@@ -42,14 +42,14 @@ private func metricPixelFormat(_ value: UInt32?) -> String {
     return "\(fourCC) (\(hex))"
 }
 
-private func metricFramesPerSecond(_ value: Double?) -> String {
+func metricFramesPerSecond(_ value: Double?) -> String {
     guard let value else {
         return "none"
     }
     return String(format: "%.1f fps", value)
 }
 
-private func metricHertz(_ value: Double?) -> String {
+func metricHertz(_ value: Double?) -> String {
     guard let value else {
         return "none"
     }
@@ -59,7 +59,7 @@ private func metricHertz(_ value: Double?) -> String {
     return String(format: "%.1f Hz", value)
 }
 
-private func metricMegabitsPerSecond(_ value: Double?) -> String {
+func metricMegabitsPerSecond(_ value: Double?) -> String {
     guard let value else {
         return "none"
     }
@@ -77,7 +77,7 @@ private func metricBytes(_ value: Int) -> String {
     ByteCountFormatter.string(fromByteCount: Int64(value), countStyle: .file)
 }
 
-private func compactViewerMetricsSummary(
+func compactViewerMetricsSummary(
     metrics: RDPRenderMetrics,
     framePacing: RDPFramePacingState
 ) -> String? {
@@ -194,19 +194,6 @@ struct RemoteSessionDiagnosticsSnapshot: Equatable {
 @MainActor
 final class RemoteSessionDiagnosticsModel: ObservableObject {
     @Published private(set) var snapshot = RemoteSessionDiagnosticsSnapshot()
-    @Published private(set) var presentationCount = 0
-
-    var isPresented: Bool {
-        presentationCount > 0
-    }
-
-    func beginPresentation() {
-        presentationCount += 1
-    }
-
-    func endPresentation() {
-        presentationCount = max(0, presentationCount - 1)
-    }
 
     func updateSnapshot(_ nextSnapshot: RemoteSessionDiagnosticsSnapshot) {
         guard snapshot != nextSnapshot else {
@@ -218,7 +205,6 @@ final class RemoteSessionDiagnosticsModel: ObservableObject {
 
 struct RemoteSessionDiagnosticsWindowContent: View {
     @ObservedObject var model: RemoteSessionDiagnosticsModel
-    @State private var isPresenting = false
 
     var body: some View {
         let snapshot = model.snapshot
@@ -473,20 +459,6 @@ struct RemoteSessionDiagnosticsWindowContent: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .navigationTitle("Stats for Nerds")
-        .onAppear {
-            guard isPresenting == false else {
-                return
-            }
-            isPresenting = true
-            model.beginPresentation()
-        }
-        .onDisappear {
-            guard isPresenting else {
-                return
-            }
-            isPresenting = false
-            model.endPresentation()
-        }
     }
 
     private func statusLine(_ snapshot: RemoteSessionDiagnosticsSnapshot) -> String {

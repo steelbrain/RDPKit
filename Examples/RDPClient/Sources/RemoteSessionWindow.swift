@@ -44,9 +44,21 @@ final class RDPRemoteSessionWindowController: NSWindowController, NSWindowDelega
         window?.makeKeyAndOrderFront(sender)
     }
 
+    func windowDidBecomeKey(_: Notification) {
+        sessionController?.publishSessionCommands()
+    }
+
+    func windowDidResignKey(_: Notification) {
+        sessionController?.withdrawSessionCommands()
+    }
+
     func windowWillClose(_: Notification) {
-        (contentViewController as? RDPRemoteSessionViewController)?.closeSession()
+        sessionController?.closeSession()
         onClose?(sessionID)
+    }
+
+    private var sessionController: RDPRemoteSessionViewController? {
+        contentViewController as? RDPRemoteSessionViewController
     }
 }
 

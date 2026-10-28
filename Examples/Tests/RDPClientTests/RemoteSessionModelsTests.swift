@@ -1,3 +1,4 @@
+import Foundation
 @testable import RDPClient
 import RDPKit
 import Testing
@@ -98,4 +99,18 @@ import Testing
     #expect(reason.kind == RDPSessionEndReason.Kind.ended)
     #expect(reason.statusText == "Disconnected")
     #expect(reason.message == "Remote session ended before producing a graphics frame (ERRINFO_LOGOFF_BY_USER).")
+}
+
+@Test func legacyConnectionProfileDecodesWithDefaultOptions() throws {
+    let json = """
+    {"id":"6F9619FF-8B86-D011-B42D-00C04FC964FF","host":"server","port":3389,"username":"user",
+    "domain":"","desktopWidth":1920,"desktopHeight":1080,"hideCertificateWarnings":false,
+    "timeoutSeconds":10,"rememberPassword":true,"updatedAt":0}
+    """
+    let profile = try JSONDecoder().decode(ConnectionProfile.self, from: Data(json.utf8))
+
+    #expect(profile.graphicsCapabilityProfile == .automatic)
+    #expect(profile.clipboardSharingEnabled)
+    #expect(profile.audioPlaybackEnabled == false)
+    #expect(try JSONDecoder().decode(ConnectionProfile.self, from: JSONEncoder().encode(profile)) == profile)
 }
