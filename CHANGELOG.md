@@ -106,10 +106,13 @@
   `onRemotePointer` into premultiplied RGBA (`pixels`, `bytesPerRow`) and a
   hot spot clamped into the image, with a `cgImage` for
   `NSCursor(image:hotSpot:)` or a UIKit pointer style. It reads 1, 16
-  (RGB565), 24 and 32 bpp masks; a 32-bpp shape with alpha uses that alpha
-  alone, and pixels that would invert the screen become black with a white
-  outline. It is nil for 4 and 8 bpp, empty images and masks of the wrong
-  length.
+  (RGB565), 24 and 32 bpp masks, 1-bpp masks top-down as rdesktop and
+  FreeRDP do. A 32-bpp shape with alpha uses that alpha alone, and its
+  colors are taken as premultiplied, as Windows and gnome-remote-desktop
+  send them, unless one is above its alpha, as KRdp's are. Its pixels match
+  Windows 11's own drawing of its cursors, except that pixels that would
+  invert the screen become black with a white outline. It is nil for 4 and
+  8 bpp, empty images and masks of the wrong length.
 - `RDPRemoteDisplayViewport.remotePoint(from:contentRect:)` maps a point with
   the desktop drawn in a given rect, such as `contentRect` aligned to the
   screen's pixels.
@@ -219,10 +222,10 @@
     types. Every other input source announces its own layout. With the
     101-key keyboard, left Option and the key left of 1 (Alt-`) turn the
     remote IME on and off, and Control-` reaches Windows as VK_DBE_DBCSCHAR
-    rather than `` ` ``. On a JIS keyboard, Eisu and Kana go as that
-    layout's 英数 and ひらがな keys (0x3A and 0x70; LANG2 and LANG1 with
-    other layouts) to switch the remote IME, instead of typing a space;
-    Shift-Eisu sends nothing there, since Shift-英数 is Caps Lock on Windows.
+    rather than `` ` ``. On a JIS keyboard, Eisu and Kana go as LANG2 and
+    LANG1 (0x71 and 0x72) with every layout, which Windows' Japanese layout
+    turns into IME Off and On with either keyboard type, Shift held or not,
+    instead of typing a space.
   - Windows applies the announced layout only to a session it creates:
     reconnecting to an existing session keeps that session's layout, so keys
     sent as scancodes type its characters.
