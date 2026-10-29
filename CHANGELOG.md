@@ -267,7 +267,8 @@
     counts every acknowledgement instead of stopping at 8. The viewer's fps
     and rx overlay, and Stats for Nerds' Rolling FPS and Wire RX, fall to 0
     within 5 s of the screen going still instead of keeping the last
-    burst's rates.
+    burst's rates. The session window's footer shows the graphics path,
+    such as the RDPGFX version and codec, while the session runs.
   - Only a refused certificate offers trust; other warnings are listed in
     Stats for Nerds. "Hide certificate warnings" is renamed "Accept untrusted
     certificates" and explains its risk.
@@ -304,9 +305,12 @@
     any fields a newer build added. Saving a connection typed as `LAB\anees`
     updates the saved one for `anees` in domain LAB, which shares its saved
     password, instead of adding a second.
-- RDPPreflight prints `redirection depth: N` after `target:` when a Server
-  Redirection led to the target, as its JSON's `redirectionDepth` already
-  showed.
+- RDPPreflight:
+  - Prints `redirection depth: N` after `target:` when a Server Redirection
+    led to the target, as its JSON's `redirectionDepth` already showed.
+  - Prints `rdp graphics frame acknowledge count`, the number of frame
+    acknowledgements sent, ahead of the first few it lists in full; the JSON
+    carries it as `rdpGraphicsFrameAcknowledgeCount`.
 
 ## 0.4.0
 
