@@ -2,6 +2,7 @@ import AppKit
 import os
 import QuartzCore
 import RDPKit
+import SystemConfiguration
 
 @MainActor
 final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegate {
@@ -671,7 +672,9 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
             graphicsCapabilityProfile: graphicsCapabilityProfile,
             storedClientLicense: storedClientLicense,
             keyboardLayout: keyboardLayout,
-            legacyRSAKeyExchange: usesLegacyRSAKeyExchange
+            legacyRSAKeyExchange: usesLegacyRSAKeyExchange,
+            // The Mac's name, as servers list clients; RDPKit cuts it to 15 characters.
+            clientName: SCDynamicStoreCopyComputerName(nil, nil) as String? ?? "RDPKIT"
         )
 
         let connectionID = UUID()
