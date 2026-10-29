@@ -67,9 +67,11 @@ struct KeychainCredentialStore: Sendable {
             throw KeychainCredentialError.unexpectedStatus(updateStatus)
         }
 
+        // No kSecAttrAccessible: macOS applies it only in the data-protection keychain, and that
+        // needs an application-identifier entitlement, which a SwiftPM executable lacks. The
+        // login keychain these items go to ignores it.
         var query = baseQuery(for: key)
         query[kSecValueData as String] = passwordData
-        query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         let addStatus = SecItemAdd(query as CFDictionary, nil)
         guard addStatus == errSecSuccess else {
             throw KeychainCredentialError.unexpectedStatus(addStatus)
