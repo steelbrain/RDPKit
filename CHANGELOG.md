@@ -105,6 +105,11 @@
   as mstsc and FreeRDP do, so NTLM and the Client Info PDU carry the domain.
   A UPN stays as it is. `qualifiedUsername`, and so `credentialAccountName`,
   is unchanged; the report's `username` and `domain` show the two parts.
+- `RDPConnectionIdentity.hasSameConnectionIdentity(as:)` compares the user
+  name and domain as `qualifiedUsername` joins them, so it is true exactly
+  when the `credentialAccountName`s match: `LAB\anees` with no domain, which
+  `RDPCredentials` signs in as `anees` in LAB, is the same account as `anees`
+  in domain LAB. Without a user name, the domains still compare.
 - Clipboard: local files reach the server under paths Windows accepts.
   `publishLocalFiles` treats `\` and `/` as folder separators, so a
   directory `Folder` and a file `Folder\notes.txt` paste as a folder holding
@@ -165,7 +170,8 @@
     goes as what it types on its own, not the accented character macOS
     composes, so menu accelerators and readline's Option-U then a letter
     work, and Option-E then Return no longer types "´" first. Right Option
-    does the same once its Alt is on the server.
+    does the same once its Alt is on the server. A letter typed with Caps
+    Lock on goes as its scancode, as without it.
   - Clipboard sharing can be turned on mid-session; with it off, nothing
     crosses either way. To allow that, RDPClient always joins the clipboard
     channel, which empties a Windows server's clipboard at connect.
@@ -200,15 +206,22 @@
     Nerds' "Presented Frames" counts presented frames.
   - Saved passwords are looked up off the main thread once typing pauses, and
     ones saved before 0.4.0 are found by their old name instead of by listing
-    every Keychain item. RDPClient no longer sets a Keychain accessibility
-    that the login keychain ignores. Connecting before a lookup has answered
-    reads Keychain then, so the saved password is still filled in, or removed
-    with Remember unticked; a password typed or a Remember choice made while
-    the lookup was on its way stands. A session window connects by itself
-    only with the fields it opened with; editing a field first cancels that.
+    every Keychain item, then renamed in one step, so Delete Profile meanwhile
+    no longer brings one back. RDPClient no longer sets a Keychain
+    accessibility that the login keychain ignores. Connecting before a lookup
+    has answered waits for that answer instead of reading Keychain again, so
+    the saved password is still filled in, or removed with Remember unticked;
+    a password typed or a Remember choice made while the lookup was on its
+    way stands. A password filled in while the Password field has focus is
+    the one used, so the field's older text is no longer sent and then saved
+    over it; typing in the field still changes it. A session window connects
+    by itself only with the fields it opened with; editing a field cancels
+    that, and any connection still waiting for Keychain.
   - Each saved connection is read on its own. One it cannot read, such as one
     a newer build wrote, no longer empties the list, and saving keeps it and
-    any fields a newer build added.
+    any fields a newer build added. Saving a connection typed as `LAB\anees`
+    updates the saved one for `anees` in domain LAB, which shares its saved
+    password, instead of adding a second.
 
 ## 0.4.0
 
