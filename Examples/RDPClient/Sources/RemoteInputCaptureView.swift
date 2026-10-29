@@ -168,14 +168,7 @@ final class RemoteInputCaptureNSView: NSView {
             afterChordedDeadKey: event.characters,
             uncomposed: uncomposedOutput(event.keyCode, event.modifierFlags)
         ) : event.characters
-        // Windows' Japanese layout makes Shift-英数 Caps Lock, which would toggle the server's
-        // out of step with the Mac's, so Shift-Eisu sends nothing there.
-        if keyboard == .japanese106, Int(event.keyCode) == kVK_JIS_Eisu,
-           event.modifierFlags.contains(.shift)
-        {
-            return
-        }
-        if let scancode = MacRDPKeyboardMapping.scancode(forKeyCode: event.keyCode, keyboard: keyboard),
+        if let scancode = MacRDPKeyboardMapping.scancode(forKeyCode: event.keyCode),
            MacRDPKeyboardMapping.shouldSendScancode(
                forKeyCode: event.keyCode,
                characters: characters,
@@ -221,7 +214,7 @@ final class RemoteInputCaptureNSView: NSView {
 
     override func keyUp(with event: NSEvent) {
         releaseModifiers(missingFrom: event.modifierFlags)
-        guard let scancode = MacRDPKeyboardMapping.scancode(forKeyCode: event.keyCode, keyboard: keyboard),
+        guard let scancode = MacRDPKeyboardMapping.scancode(forKeyCode: event.keyCode),
               inputState.isScancodePressed(scancode)
         else {
             return
@@ -623,7 +616,6 @@ enum MacRDPKeyboardMapping {
     /// `isISOKeyboard` defaults to the type of the keyboard in use.
     static func scancode(
         forKeyCode keyCode: UInt16,
-        keyboard: MacRDPWindowsKeyboard = .unitedStates,
         isISOKeyboard: Bool = KBGetLayoutType(Int16(LMGetKbdType())) == kKeyboardISO
     ) -> RDPKeyboardScancode? {
         // On ISO keyboards macOS reports the key between left Shift and Z as kVK_ANSI_Grave; it
@@ -631,20 +623,8 @@ enum MacRDPKeyboardMapping {
         if isISOKeyboard, Int(keyCode) == kVK_ANSI_Grave {
             return RDPKeyboardScancode(code: 0x56)
         }
-        if keyboard == .japanese106, let scancode = japaneseInputModeKeys[Int(keyCode)] {
-            return scancode
-        }
         return scancodes[Int(keyCode)]
     }
-
-    /// Eisu and Kana with Windows' Japanese 106/109-key layout (kbd106.dll), which gives 0x71
-    /// and 0x72 no virtual key: its 英数 key, 0x3A (VK_DBE_ALPHANUMERIC; Caps Lock only with
-    /// Shift), and its ひらがな key, 0x70 (VK_DBE_HIRAGANA), switch the IME to Latin and kana
-    /// input, as Eisu and Kana do on the Mac. Captured on Windows 11, 2026-10-29.
-    private static let japaneseInputModeKeys: [Int: RDPKeyboardScancode] = [
-        kVK_JIS_Eisu: RDPKeyboardScancode(code: 0x3A),
-        kVK_JIS_Kana: RDPKeyboardScancode(code: 0x70),
-    ]
 
     /// A key the server holds keeps auto-repeating as its scancode after the modifier that sent it
     /// there is released; repeating it as text would type on top of the held key. With Option down
@@ -824,10 +804,12 @@ enum MacRDPKeyboardMapping {
         kVK_JIS_KeypadComma: RDPKeyboardScancode(code: 0x7E),
         // Apple's JIS keyboards send Eisu and Kana as HID LANG2 and LANG1, which a PC reads as
         // 0x71 and 0x72 (set 1's F1 and F2, which have no break code), and FreeRDP's SDL
-        // client sends them so. Windows' Japanese 101-key layout turns them into VK_IME_OFF
-        // and VK_IME_ON (live, 2026-10-29); with its 106/109-key one they go as its own keys
-        // instead (see japaneseInputModeKeys). The Mac layouts type a space with them, which
-        // must not reach the server as text.
+        // client sends them so. Windows' Japanese layout turns them into VK_IME_OFF and
+        // VK_IME_ON, Microsoft's keys for turning its IME off and on, as Eisu and Kana switch
+        // the Mac's to Latin and kana input: with a 101-key and a 106/109-key keyboard alike,
+        // Shift held or not (live, 2026-10-29), while the 106/109-key keyboard's own 英数 key
+        // (0x3A) is Caps Lock with Shift. The Mac layouts type a space with them, which must
+        // not reach the server as text.
         kVK_JIS_Eisu: RDPKeyboardScancode(code: 0x71),
         kVK_JIS_Kana: RDPKeyboardScancode(code: 0x72),
         kVK_ANSI_Keypad7: RDPKeyboardScancode(code: 0x47), kVK_ANSI_Keypad8: RDPKeyboardScancode(code: 0x48),

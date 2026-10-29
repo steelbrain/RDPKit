@@ -82,8 +82,8 @@ enum MacRDPKeyboardLayout {
     /// Microsoft's Japanese IME turns on and off with Alt-` on a 101-key keyboard (its
     /// documented shortcut), which kbd101 sends as VK_KANJI: from the Mac, left Option, which
     /// goes as Alt at once, and the key left of 1, which goes as 0x29 on ANSI and ISO keyboards
-    /// alike. Under kbd106, Shift-英数 is Caps Lock, so the input view sends nothing for
-    /// Shift-Eisu, which would otherwise toggle the server's Caps Lock out of step with the Mac's.
+    /// alike. A JIS keyboard's Eisu and Kana go as LANG2 and LANG1, which kbd106 and kbd101
+    /// alike turn into IME Off and On (see MacRDPKeyboardMapping.scancodes).
     static func windowsKeyboard(
         _ inputSourceLayout: RDPKeyboardLayout,
         isJapaneseInputSource: Bool,
