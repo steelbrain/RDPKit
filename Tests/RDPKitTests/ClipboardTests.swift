@@ -1207,6 +1207,70 @@ private final class ClipboardPublishRace: @unchecked Sendable {
     _ = try channel.finish()
 }
 
+@Test func clipboardLocalFileNamesReachTheServerAsNamesWindowsAccepts() throws {
+    let names = try fileNamesTheServerSees(publishing: [
+        "a:b*c?d\"e<f>g|h\\i/j.txt",
+        "tab\tline\nfeed.txt",
+        "CON", "nul.txt", "Com1.tar.gz", "LPT\u{B9}.txt", "aux .log", "CONSOLE.txt", "COM10.txt",
+        "report. . ", "...", " ",
+        "Notes.txt", "notes.txt", "NOTES.TXT", "notes.txt.",
+    ])
+
+    #expect(names == [
+        "a_b_c_d_e_f_g_h_i_j.txt",
+        "tab_line_feed.txt",
+        "_CON", "_nul.txt", "_Com1.tar.gz", "_LPT\u{B9}.txt", "_aux .log", "CONSOLE.txt", "COM10.txt",
+        "report", "file", "file-2",
+        "Notes.txt", "notes-2.txt", "NOTES-3.TXT", "notes-4.txt",
+    ])
+}
+
+/// cFileName holds 259 UTF-16 code units; a longer name is shortened before its extension.
+@Test func clipboardLongLocalFileNamesKeepTheirExtension() throws {
+    let longName = String(repeating: "a", count: 300) + ".txt"
+    let emojiName = String(repeating: "\u{1F600}", count: 200) + ".pdf"
+    let names = try fileNamesTheServerSees(publishing: [
+        longName,
+        longName,
+        emojiName,
+        String(repeating: "b", count: 258) + " " + String(repeating: "b", count: 5),
+        "CONSOLE." + String(repeating: "x", count: 255),
+    ])
+
+    #expect(names[0] == String(repeating: "a", count: 255) + ".txt")
+    #expect(names[1] == String(repeating: "a", count: 253) + "-2.txt")
+    #expect(names[2] == String(repeating: "\u{1F600}", count: 127) + ".pdf")
+    // A cut that ends in a space drops it, as Windows would.
+    #expect(names[3] == String(repeating: "b", count: 258))
+    // Cut to "CON" before its extension, the name gets a leading "_" and is cut again.
+    #expect(names[4] == "_CO." + String(repeating: "x", count: 255))
+    #expect(names.allSatisfy { $0.utf16.count <= 259 })
+}
+
+/// Publishes local files named `fileNames` and returns the names the session's
+/// FileGroupDescriptorW gives the server.
+private func fileNamesTheServerSees(publishing fileNames: [String]) throws -> [String] {
+    let channel = EmbeddedChannel()
+    try channel.connect(to: SocketAddress(ipAddress: "127.0.0.1", port: 3389)).wait()
+    let session = RDPClipboardSession(userChannelID: 1006, staticChannelID: 1007, channel: channel)
+    session.publishLocalFiles(fileNames.map { RDPClipboardLocalFile(fileName: $0, contents: Data([1])) })
+    _ = try session.receive(RDPClipboardPDU.parse(
+        from: RDPClipboardFormatDataRequestPDU(formatID: RDPClipboardLocalFormatID.fileGroupDescriptorW).encoded()
+    ))
+    channel.embeddedEventLoop.run()
+
+    // The response spans several chunks.
+    var packets = Data()
+    while var buffer = try channel.readOutbound(as: ByteBuffer.self) {
+        packets.append(contentsOf: buffer.readBytes(length: buffer.readableBytes) ?? [])
+    }
+    let response = try #require(try RDPClipboardFormatDataResponsePDU.parseIfPresent(
+        from: RDPClipboardPDU.parse(from: clipboardPayload(fromPackets: packets))
+    ))
+    _ = try channel.finish()
+    return try response.decodedFileGroupDescriptorW().descriptors.map(\.fileName)
+}
+
 private final class ClipboardSentMessages: @unchecked Sendable {
     private let lock = NSLock()
     private var sent: [(summary: RDPClipboardMessageSummary, packets: Data)] = []

@@ -602,7 +602,7 @@ public struct RDPClipboardFileGroupDescriptorW: Equatable, Sendable {
 
             files.append(RDPClipboardRemoteFileTransferFile(
                 fileIndex: fileIndex,
-                fileName: RDPClipboardRemoteFileTransferFile.uniqueFileName(
+                fileName: RDPClipboardFileNameRules.apple.uniqueFileName(
                     descriptor.fileName,
                     usedFileNames: &usedFileNames
                 ),
@@ -644,72 +644,8 @@ public struct RDPClipboardRemoteFileTransferFile: Equatable, Sendable {
 
     public init(fileIndex: Int32, fileName: String, declaredByteCount: UInt64? = nil) {
         self.fileIndex = fileIndex
-        self.fileName = Self.sanitizedFileName(fileName)
+        self.fileName = RDPClipboardFileNameRules.apple.sanitizedFileName(fileName)
         self.declaredByteCount = declaredByteCount
-    }
-
-    /// Longest file name, in UTF-8 bytes, that APFS and HFS+ accept.
-    private static let maximumFileNameByteCount = 255
-
-    fileprivate static func uniqueFileName(
-        _ fileName: String,
-        usedFileNames: inout Set<String>
-    ) -> String {
-        let sanitized = sanitizedFileName(fileName) as NSString
-        let extensionText = sanitized.pathExtension.isEmpty ? "" : ".\(sanitized.pathExtension)"
-        var candidate = sanitized as String
-        var suffix = 2
-        while usedFileNames.contains(candidate.lowercased()) {
-            // Check the name the initializer stores, which sanitizes again.
-            candidate = sanitizedFileName(
-                Self.fileName(sanitized.deletingPathExtension, suffix: "-\(suffix)\(extensionText)")
-            )
-            suffix += 1
-        }
-        usedFileNames.insert(candidate.lowercased())
-        return candidate
-    }
-
-    /// Reduces a remote, untrusted name to a single file name component that cannot be "." or "..".
-    private static func sanitizedFileName(_ fileName: String) -> String {
-        let lastPathComponent = fileName
-            .split(whereSeparator: { $0 == "/" || $0 == "\\" })
-            .last
-            .map(String.init) ?? ""
-        let invalidCharacters = CharacterSet(charactersIn: ":")
-            .union(.controlCharacters)
-            .union(.newlines)
-        var sanitizedScalars = String.UnicodeScalarView()
-        for scalar in lastPathComponent.unicodeScalars {
-            sanitizedScalars.append(invalidCharacters.contains(scalar) ? "_" : scalar)
-        }
-        var sanitized = String(sanitizedScalars).trimmingCharacters(in: .whitespacesAndNewlines)
-        if sanitized.utf8.count > maximumFileNameByteCount {
-            let name = sanitized as NSString
-            sanitized = Self.fileName(
-                name.deletingPathExtension,
-                suffix: name.pathExtension.isEmpty ? "" : ".\(name.pathExtension)"
-            ).trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-        guard sanitized.isEmpty == false, sanitized != ".", sanitized != ".." else {
-            return "remote-file"
-        }
-        return sanitized
-    }
-
-    /// Joins `baseName` and `suffix`, shortening the base name to fit the file name byte limit.
-    private static func fileName(_ baseName: String, suffix: String) -> String {
-        let baseName = utf8Prefix(baseName, maximumByteCount: max(1, maximumFileNameByteCount - suffix.utf8.count))
-        return utf8Prefix(baseName + suffix, maximumByteCount: maximumFileNameByteCount)
-    }
-
-    /// Cuts by Unicode scalar, so one oversized grapheme cluster is shortened rather than dropped.
-    private static func utf8Prefix(_ text: String, maximumByteCount: Int) -> String {
-        var byteCount = 0
-        return String(String.UnicodeScalarView(text.unicodeScalars.prefix { scalar in
-            byteCount += UTF8.width(scalar)
-            return byteCount <= maximumByteCount
-        }))
     }
 }
 
@@ -798,6 +734,19 @@ public struct RDPClipboardLocalFile: Equatable, Sendable {
     public init(descriptor: RDPClipboardFileDescriptorW, contents: Data) {
         self.descriptor = descriptor
         self.contents = contents
+    }
+
+    /// `files` under names Windows accepts and tells apart, as `publishLocalFiles` offers them.
+    static func withWindowsFileNames(_ files: [RDPClipboardLocalFile]) -> [RDPClipboardLocalFile] {
+        var usedFileNames = Set<String>()
+        return files.map { file in
+            var file = file
+            file.descriptor.fileName = RDPClipboardFileNameRules.windows.uniqueFileName(
+                file.descriptor.fileName,
+                usedFileNames: &usedFileNames
+            )
+            return file
+        }
     }
 }
 
@@ -1052,8 +1001,12 @@ public final class RDPClipboardSession: @unchecked Sendable {
         publish(content.isEmpty ? .empty : .content(content))
     }
 
+    /// Offers `files` under names Windows accepts: characters it forbids become "_", a device
+    /// name such as CON or NUL.txt gets a leading "_", trailing dots and spaces go, a name cut
+    /// to cFileName's 259 UTF-16 code units keeps its extension, and a name used before,
+    /// ignoring case, gets "-2", "-3" and so on.
     public func publishLocalFiles(_ files: [RDPClipboardLocalFile]) {
-        publish(files.isEmpty ? .empty : .files(files))
+        publish(files.isEmpty ? .empty : .files(RDPClipboardLocalFile.withWindowsFileNames(files)))
     }
 
     /// Handles one complete cliprdr PDU from the server, sends the replies the protocol
@@ -1234,10 +1187,16 @@ public final class RDPClipboardSession: @unchecked Sendable {
         sendNextFormatDataRequest()
     }
 
+    /// Asks for the size of file `fileIndex` of the server's file list. The answer comes to
+    /// `onClipboardFileContents` with the same `streamID` (MS-RDPECLIP 2.2.5.4). Nothing
+    /// times out, and a request cannot be withdrawn: to give one up, stop waiting for its
+    /// `streamID` and send the next request under a new one, so a late answer is ignored.
     public func requestRemoteFileSize(streamID: UInt32, fileIndex: Int32) throws {
         try send(RDPClipboardFileContentsRequestPDU.size(streamID: streamID, fileIndex: fileIndex).encoded())
     }
 
+    /// Asks for up to `requestedByteCount` bytes of file `fileIndex` from `position`; the
+    /// server can send fewer. Answered and given up like `requestRemoteFileSize`.
     public func requestRemoteFileRange(
         streamID: UInt32,
         fileIndex: Int32,
