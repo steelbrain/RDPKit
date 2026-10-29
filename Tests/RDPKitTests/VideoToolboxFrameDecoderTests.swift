@@ -343,7 +343,7 @@ private func nv12Sample(atX x: Int, y: Int, in imageBuffer: CVImageBuffer) throw
 }
 
 /// Renders the image the way the frame compositor does.
-private func coreImageBGRA(_ imageBuffer: CVImageBuffer) throws -> [UInt8] {
+func coreImageBGRA(_ imageBuffer: CVImageBuffer) throws -> [UInt8] {
     let width = CVPixelBufferGetWidth(imageBuffer)
     let height = CVPixelBufferGetHeight(imageBuffer)
     var bytes = [UInt8](repeating: 0, count: width * height * 4)
