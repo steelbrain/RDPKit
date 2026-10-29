@@ -133,6 +133,29 @@ private func makePasteboard() -> NSPasteboard {
     #expect(session.publishedTexts.last == "newer")
 }
 
+/// RDPKit sends "\" as a folder separator, so "a\b.txt" would paste on Windows as "b.txt"
+/// in a folder "a".
+@MainActor
+@Test func aBackslashInACopiedFileNameIsNotAFolder() async throws {
+    let pasteboard = makePasteboard()
+    defer { pasteboard.releaseGlobally() }
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let fileURL = directory.appendingPathComponent("a\\b.txt")
+    try Data("hello".utf8).write(to: fileURL)
+    pasteboard.clearContents()
+    pasteboard.writeObjects([fileURL as NSURL])
+
+    let session = RecordedClipboard()
+    let clipboard = RDPRemoteSessionClipboard(isSharingEnabled: true, pasteboard: pasteboard)
+    clipboard.attach(session)
+    for _ in 0 ..< 200 where session.publishedFiles.isEmpty {
+        try await Task.sleep(nanoseconds: 10_000_000)
+    }
+    #expect(session.publishedFiles.map { $0.map(\.descriptor.fileName) } == [["a_b.txt"]])
+}
+
 /// Offers one remote file of `contents` and answers the size request.
 @MainActor
 private func startRemoteFileDownload(

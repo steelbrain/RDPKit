@@ -347,7 +347,9 @@ final class RDPRemoteSessionClipboard {
 
         for url in urls {
             let fileURL = url.standardizedFileURL
-            let fileName = fileURL.lastPathComponent
+            // RDPKit sends "\" as a folder separator, and a Mac file name may hold one. Each
+            // copied file is shared on its own, so it is kept out of any folder.
+            let fileName = fileURL.lastPathComponent.replacingOccurrences(of: "\\", with: "_")
             guard fileName.isEmpty == false else {
                 return .unsupported("Local file clipboard was not shared.")
             }
