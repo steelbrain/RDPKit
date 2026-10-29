@@ -394,6 +394,7 @@ final class RDPRemoteSessionClipboard {
             var nextTransfer = transfer
             let fileURL = transfer.downloadDirectory.appendingPathComponent(currentFile.fileName, isDirectory: false)
             try transfer.receivedData.write(to: fileURL, options: .atomic)
+            try Self.quarantine(fileURL)
             nextTransfer.downloadedFileURLs.append(fileURL)
 
             guard nextTransfer.currentFileOffset + 1 < nextTransfer.files.count else {
@@ -409,6 +410,18 @@ final class RDPRemoteSessionClipboard {
         } catch {
             failFileTransfer(transfer, message: "Remote file could not be saved.")
         }
+    }
+
+    /// Marks a file the server sent as downloaded, so Gatekeeper checks it before it is
+    /// opened, as it checks a browser download. Copies pasted from it keep the mark.
+    nonisolated private static func quarantine(_ fileURL: URL) throws {
+        var fileURL = fileURL
+        var values = URLResourceValues()
+        values.quarantineProperties = [
+            kLSQuarantineAgentNameKey as String: "RDPClient",
+            kLSQuarantineTypeKey as String: kLSQuarantineTypeOtherDownload as String,
+        ]
+        try fileURL.setResourceValues(values)
     }
 
     private func requestFileSize(_ transfer: RemoteFileTransfer) {

@@ -275,3 +275,22 @@ private func pasteboardFileURLs(_ pasteboard: NSPasteboard) -> [URL] {
     #expect(pasteboard.changeCount == changeCount)
     #expect(clipboard.statusMessage == "Remote file transfer timed out.")
 }
+
+@MainActor
+@Test func downloadedFilesAreQuarantined() throws {
+    let pasteboard = makePasteboard()
+    defer { pasteboard.releaseGlobally() }
+    let session = RecordedClipboard()
+    let clipboard = RDPRemoteSessionClipboard(isSharingEnabled: true, pasteboard: pasteboard)
+    clipboard.attach(session)
+    let contents = Data("remote".utf8)
+
+    try startRemoteFileDownload(contents, to: clipboard, from: session)
+    try answerRangeRequest(with: contents, to: clipboard, from: session)
+    let fileURL = try #require(pasteboardFileURLs(pasteboard).first)
+    defer { try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent()) }
+    let quarantine = try #require(try fileURL.resourceValues(forKeys: [.quarantinePropertiesKey]).quarantineProperties)
+
+    #expect(quarantine[kLSQuarantineTypeKey as String] as? String == kLSQuarantineTypeOtherDownload as String)
+    #expect(quarantine[kLSQuarantineAgentNameKey as String] as? String == "RDPClient")
+}
