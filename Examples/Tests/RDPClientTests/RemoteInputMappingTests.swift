@@ -435,6 +435,33 @@ private func windowsTypes(
     #expect(windowsTypes("_", scancode: 0x73, keyboard: japanese) == false)
 }
 
+/// Windows' Japanese layout with a 101-key keyboard types what US types on every key, Caps Lock
+/// too, where the 106/109-key one types the JIS legends.
+@Test func theJapanese101KeyTableTypesWhatUSTypes() throws {
+    let japanese101 = try #require(MacRDPWindowsKeyboardLayout.layout(.japanese101))
+    let unitedStates = try #require(MacRDPWindowsKeyboardLayout.layout(.unitedStates))
+    for code in MacRDPWindowsKeyboardLayout.scancodes {
+        for (isShifted, isCapsLocked) in [(false, false), (true, false), (false, true), (true, true)] {
+            let scancode = RDPKeyboardScancode(code: code)
+            #expect(
+                japanese101.character(for: scancode, isShifted: isShifted, isCapsLocked: isCapsLocked)
+                    == unitedStates.character(for: scancode, isShifted: isShifted, isCapsLocked: isCapsLocked)
+            )
+        }
+    }
+    let keyboard = MacRDPWindowsKeyboard.japanese101
+    #expect(windowsTypes("@", scancode: 0x03, .shift, keyboard: keyboard))
+    #expect(windowsTypes("\"", scancode: 0x03, .shift, keyboard: keyboard) == false)
+    #expect(windowsTypes("`", scancode: 0x29, keyboard: keyboard))
+    #expect(windowsTypes("~", scancode: 0x29, .shift, keyboard: keyboard))
+    #expect(windowsTypes("A", scancode: 0x1E, .capsLock, keyboard: keyboard))
+    // The ISO key types "\" and "|", and the JIS keys nothing.
+    #expect(windowsTypes("\\", scancode: 0x56, keyboard: keyboard))
+    #expect(windowsTypes("|", scancode: 0x56, .shift, keyboard: keyboard))
+    #expect(windowsTypes("\\", scancode: 0x73, keyboard: keyboard) == false)
+    #expect(windowsTypes("\\", scancode: 0x7D, keyboard: keyboard) == false)
+}
+
 @Test func macInputSourcesMapToWindowsLayoutsWithCapturedTables() {
     func layout(_ name: String) -> UInt32 {
         MacRDPKeyboardLayout.windowsLayout(forInputSourceID: "com.apple.keylayout." + name).rawValue

@@ -540,6 +540,12 @@ extension MacRDPWindowsKeyboardLayout {
     /// Windows' Japanese layout (0x0000_0411) per keyboard subtype, announced with keyboard
     /// type 7 (see MacRDPWindowsKeyboard), in the same form.
     static let japaneseLayouts: [UInt32: (unshifted: String, shifted: String, capsLock: String)] = [
+        // 101-key keyboard (kbd101.dll): written out, not captured
+        0: (
+            "1234567890-=qwertyuiop[]asdfghjkl;'`\\zxcvbnm,./\\\0\0",
+            "!@#$%^&*()_+QWERTYUIOP{}ASDFGHJKL:\"~|ZXCVBNM<>?|\0\0",
+            "------------SSSSSSSSSS--SSSSSSSSS----SSSSSSS------"
+        ),
         // 106/109-key keyboard (kbd106.dll): written out, not captured
         2: (
             "1234567890-^qwertyuiop@[asdfghjkl;:\0]zxcvbnm,./\0\\\\",

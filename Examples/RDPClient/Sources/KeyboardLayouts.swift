@@ -16,6 +16,8 @@ struct MacRDPWindowsKeyboard: Hashable {
     static let unitedStates = MacRDPWindowsKeyboard(layout: .unitedStates)
     /// Windows' Japanese layout with a 106/109-key keyboard (kbd106.dll).
     static let japanese106 = MacRDPWindowsKeyboard(layout: MacRDPKeyboardLayout.japanese, type: .japanese, subType: 2)
+    /// Windows' Japanese layout with a 101-key keyboard (kbd101.dll).
+    static let japanese101 = MacRDPWindowsKeyboard(layout: MacRDPKeyboardLayout.japanese, type: .japanese)
 }
 
 /// The Windows keyboard layout to announce for the Mac's current one, so the server turns

@@ -44,6 +44,14 @@ JAPANESE_KLID = 0x0000_0411
 # what each key in SCANCODES types without and with Shift ("\0" for nothing); Caps Lock shifts
 # the letters only.
 JAPANESE = {
+    # A 101-key keyboard (kbd101.dll): every key types what US English types, the ISO key (0x56)
+    # included, and the JIS keys type nothing. A capture in a Windows 11 session announced so
+    # matched this key for key, Caps Lock too (live, 2026-10-29).
+    0: (
+        "101-key keyboard (kbd101.dll)",
+        "1234567890-=qwertyuiop[]asdfghjkl;'`\\zxcvbnm,./\\\0\0",
+        "!@#$%^&*()_+QWERTYUIOP{}ASDFGHJKL:\"~|ZXCVBNM<>?|\0\0",
+    ),
     # A 106/109-key keyboard (kbd106.dll): every key types its JIS legend; Ro (0x73) and Yen
     # (0x7D) both type "\" (U+005C), which Japanese fonts draw as a yen sign. Shift-0 and
     # Hankaku/Zenkaku (0x29) type nothing, and 0x56, which these keyboards lack, is left as
