@@ -161,6 +161,34 @@ import Testing
     #expect(delta.residentMemoryPeakDeltaBytes == 2000)
 }
 
+@Test func frameBenchmarkReportsDecodeStagesOnlyForTheStrategyThatTimesThem() {
+    let rect = RDPFrameRect(left: 0, top: 0, right: 2, bottom: 2)
+    let frame = RDPGraphicsFrameSnapshot(
+        frameID: 1,
+        surfaceID: 0,
+        codecID: 0,
+        codecName: "surface-bgra",
+        pixelFormat: 32,
+        destinationRect: rect,
+        regionRects: [rect],
+        encodedVideoData: Data(),
+        contentKind: .bitmap,
+        decodedBitmapData: Data(repeating: 0xFF, count: 16),
+        decodedBitmapBytesPerRow: 8
+    )
+
+    let pixelBuffer = RDPFrameBenchmark.benchmarkStrategy(.pixelBuffer, frames: [frame])
+    let cgImage = RDPFrameBenchmark.benchmarkStrategy(.cgImage, frames: [frame])
+
+    #expect(pixelBuffer.decodedFrameCount == 1)
+    #expect(pixelBuffer.samplePreparationAverageMilliseconds != nil)
+    #expect(cgImage.decodedFrameCount == 1)
+    // decode(_:) does not time its stages, so 0 ms would be a made-up measurement.
+    #expect(cgImage.samplePreparationAverageMilliseconds == nil)
+    #expect(cgImage.videoToolboxAverageMilliseconds == nil)
+    #expect(cgImage.imageConversionAverageMilliseconds == nil)
+}
+
 @Test func connectionOptionsRejectPortZero() {
     #expect(throws: RDPCommandLineError.invalidValue(option: "--port", value: "0", expected: "1...65535")) {
         try FirstFrameCaptureOptions.parse(["RDPFirstFrameCapture", "--port", "0"])

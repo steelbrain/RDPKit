@@ -19,7 +19,7 @@ struct BenchmarkArguments {
     }
 }
 
-private enum BenchmarkStrategy: String, CaseIterable, Encodable {
+enum BenchmarkStrategy: String, CaseIterable, Encodable {
     case pixelBuffer
     case cgImage
 }
@@ -67,7 +67,7 @@ private struct CapturedFrameReport: Encodable {
     var payloadByteCount: Int
 }
 
-private struct StrategyBenchmarkReport: Encodable {
+struct StrategyBenchmarkReport: Encodable {
     var strategy: BenchmarkStrategy
     var decodedFrameCount: Int
     var failedFrameCount: Int
@@ -363,7 +363,7 @@ enum RDPFrameBenchmark {
         )
     }
 
-    private static func benchmarkStrategy(
+    static func benchmarkStrategy(
         _ strategy: BenchmarkStrategy,
         frames: [RDPGraphicsFrameSnapshot]
     ) -> StrategyBenchmarkReport {
@@ -420,6 +420,8 @@ enum RDPFrameBenchmark {
         let measurement = measurementDelta(start: start, end: end, peakResidentMemoryBytes: peakResidentMemoryBytes)
         let wallTimes = frameTimings.map(\.wallMilliseconds)
         let decodedFrameCount = frames.count - failedFrameCount
+        // Only decodeDetailed(_:) times its stages; decode(_:) returns just the image.
+        let stageFrameCount = strategy == .pixelBuffer ? decodedFrameCount : 0
         return StrategyBenchmarkReport(
             strategy: strategy,
             decodedFrameCount: decodedFrameCount,
@@ -433,9 +435,9 @@ enum RDPFrameBenchmark {
             averageCPUMilliseconds: frameTimings.isEmpty ? nil : measurement.cpuMilliseconds / Double(frameTimings.count),
             residentMemoryDeltaBytes: measurement.residentMemoryDeltaBytes,
             residentMemoryPeakDeltaBytes: measurement.residentMemoryPeakDeltaBytes,
-            samplePreparationAverageMilliseconds: averageComponent(samplePreparationMilliseconds, decodedFrameCount),
-            videoToolboxAverageMilliseconds: averageComponent(videoToolboxMilliseconds, decodedFrameCount),
-            imageConversionAverageMilliseconds: averageComponent(imageConversionMilliseconds, decodedFrameCount),
+            samplePreparationAverageMilliseconds: averageComponent(samplePreparationMilliseconds, stageFrameCount),
+            videoToolboxAverageMilliseconds: averageComponent(videoToolboxMilliseconds, stageFrameCount),
+            imageConversionAverageMilliseconds: averageComponent(imageConversionMilliseconds, stageFrameCount),
             decodedPixelFormats: Array(decodedPixelFormats).sorted(),
             usesHardwareAcceleration: usesHardwareAcceleration,
             outputPixelCount: outputPixelCount,
@@ -456,8 +458,8 @@ enum RDPFrameBenchmark {
             first=\(profile.firstFrameCodecName ?? "none")/\(profile.firstFrameContentKind?.rawValue ?? "none")
             """)
             print("""
-              capture wall=\(format(profile.captureWallMilliseconds))ms \
-              cpu=\(format(profile.captureCPUMilliseconds))ms \
+              capture wall=\(milliseconds(profile.captureWallMilliseconds)) \
+              cpu=\(milliseconds(profile.captureCPUMilliseconds)) \
               rssΔ=\(formatBytes(profile.captureResidentMemoryDeltaBytes)) \
               rssPeakΔ=\(formatBytes(profile.captureResidentMemoryPeakDeltaBytes)) \
               wire=\(profile.wireByteCount)B payload=\(profile.framePayloadByteCount)B
@@ -477,14 +479,14 @@ enum RDPFrameBenchmark {
                 print("""
               \(strategy.strategy.rawValue): \
               frames=\(strategy.decodedFrameCount) failed=\(strategy.failedFrameCount) \
-              wall avg=\(format(strategy.averageWallMilliseconds))ms \
-              p50=\(format(strategy.p50WallMilliseconds))ms \
-              p95=\(format(strategy.p95WallMilliseconds))ms \
-              max=\(format(strategy.maxWallMilliseconds))ms \
-              cpu avg=\(format(strategy.averageCPUMilliseconds))ms \
-              sample=\(format(strategy.samplePreparationAverageMilliseconds))ms \
-              vt=\(format(strategy.videoToolboxAverageMilliseconds))ms \
-              image=\(format(strategy.imageConversionAverageMilliseconds))ms \
+              wall avg=\(milliseconds(strategy.averageWallMilliseconds)) \
+              p50=\(milliseconds(strategy.p50WallMilliseconds)) \
+              p95=\(milliseconds(strategy.p95WallMilliseconds)) \
+              max=\(milliseconds(strategy.maxWallMilliseconds)) \
+              cpu avg=\(milliseconds(strategy.averageCPUMilliseconds)) \
+              sample=\(milliseconds(strategy.samplePreparationAverageMilliseconds)) \
+              vt=\(milliseconds(strategy.videoToolboxAverageMilliseconds)) \
+              image=\(milliseconds(strategy.imageConversionAverageMilliseconds)) \
               rssΔ=\(formatBytes(strategy.residentMemoryDeltaBytes)) \
               rssPeakΔ=\(formatBytes(strategy.residentMemoryPeakDeltaBytes)) \
               hw=\(strategy.usesHardwareAcceleration.map(String.init) ?? "n/a")
@@ -613,6 +615,10 @@ private func percentile(_ values: [Double], percentile: Double) -> Double? {
     let clamped = min(1, max(0, percentile))
     let index = Int((Double(sorted.count - 1) * clamped).rounded(.up))
     return sorted[index]
+}
+
+private func milliseconds(_ value: Double?) -> String {
+    value.map { "\(format($0))ms" } ?? "n/a"
 }
 
 private func format(_ value: Double?) -> String {
