@@ -345,6 +345,28 @@ private func twoMonitorLayout() throws -> RDPMonitorLayout {
     #expect(core[146...] == defaultCore[146...])
 }
 
+/// Client Core Data requests a bounding box wider than 8192 pixels as it is: a server takes a
+/// desktop past its largest as that largest (MS-RDPBCGR 3.3.5.3.3), and Windows 11 and
+/// gnome-remote-desktop 51 make the desktop of the monitors (observed live). Client Monitor
+/// Data allows 32,766 pixels each way (2.2.1.3.6).
+@Test func clientCoreDataRequestsABoundingBoxWiderThan8192Pixels() throws {
+    let layout = try RDPMonitorLayout(monitors: [
+        .singlePrimary(width: 3840, height: 2160),
+        RDPDisplayControlMonitorLayout(left: 3840, width: 3840, height: 2160),
+        RDPDisplayControlMonitorLayout(left: 7680, width: 3840, height: 2160),
+    ])
+    let pdu = MCSConnectInitialPDU(configuration: MCSConnectInitialConfiguration(monitorLayout: layout))
+
+    #expect(pdu.encodedClientCoreData()[8 ..< 12] == hexData("00 2d 70 08"))
+    #expect(pdu.encodedClientMonitorData(layout) == hexData("""
+    05 c0 48 00
+    00 00 00 00 03 00 00 00
+    00 00 00 00 00 00 00 00 ff 0e 00 00 6f 08 00 00 01 00 00 00
+    00 0f 00 00 00 00 00 00 ff 1d 00 00 6f 08 00 00 00 00 00 00
+    00 1e 00 00 00 00 00 00 ff 2c 00 00 6f 08 00 00 00 00 00 00
+    """))
+}
+
 /// The monitor blocks follow the network block and go before the message channel's.
 @Test func clientDataBlocksCarryTheMonitorLayout() throws {
     let blocks = try MCSConnectInitialPDU(configuration: MCSConnectInitialConfiguration(

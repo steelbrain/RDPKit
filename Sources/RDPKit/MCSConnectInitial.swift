@@ -110,9 +110,11 @@ struct MCSConnectInitialConfiguration: Equatable, Sendable {
     /// data blocks a server takes only with EXTENDED_CLIENT_DATA_SUPPORTED ([MS-RDPBCGR] 2.2.1.3).
     var monitorLayout: RDPMonitorLayout?
 
-    /// With `monitorLayout`, the desktop is its bounding box, which must fit the 8192 x 8192
-    /// pixels Client Core Data holds ([MS-RDPBCGR] 2.2.1.3.2); `desktopWidth` and `desktopHeight`
-    /// go unused.
+    /// With `monitorLayout`, the desktop is its bounding box, at most the 32,766 pixels each way
+    /// Client Monitor Data allows ([MS-RDPBCGR] 2.2.1.3.6); `desktopWidth` and `desktopHeight` go
+    /// unused. A server takes a Client Core Data desktop past its largest as that largest
+    /// (3.3.5.3.3), 8,192 pixels for Windows; Windows 11 and gnome-remote-desktop 51 make the
+    /// desktop of the monitors either way (observed live).
     init(
         desktopWidth: UInt16 = 1280,
         desktopHeight: UInt16 = 720,
@@ -133,7 +135,6 @@ struct MCSConnectInitialConfiguration: Equatable, Sendable {
         precondition(requestedProtocols.canSelect(selectedProtocol))
 
         if let monitorLayout {
-            precondition(monitorLayout.desktopWidth <= 8192 && monitorLayout.desktopHeight <= 8192)
             self.desktopWidth = UInt16(monitorLayout.desktopWidth)
             self.desktopHeight = UInt16(monitorLayout.desktopHeight)
         } else {

@@ -97,10 +97,10 @@ import Testing
     #expect(kept.physicalSize == RDPDisplayPhysicalSize(widthMillimeters: 600, heightMillimeters: 340))
 }
 
-/// A monitor layout wider or taller than the 8192 pixels Client Core Data's desktop holds is
-/// dropped, by the initializer or, when set after it, before the connection sends it; and none
-/// goes to a server that does not accept extended client data blocks ([MS-RDPBCGR] 2.2.1.3).
-@Test func connectionConfigurationSendsOnlyAMonitorLayoutClientCoreDataHolds() throws {
+/// A monitor layout goes to a server that accepts extended client data blocks ([MS-RDPBCGR]
+/// 2.2.1.3), also one wider than 8192 pixels: Windows 11 and gnome-remote-desktop 51 start
+/// three 3840x2160 monitors at 11520x2160 (observed live).
+@Test func connectionConfigurationSendsAMonitorLayoutWiderThan8192Pixels() throws {
     let layout = try RDPMonitorLayout(monitors: [
         .singlePrimary(width: 3840, height: 2160),
         RDPDisplayControlMonitorLayout(left: 3840, width: 3840, height: 2160),
@@ -108,16 +108,15 @@ import Testing
     let wide = try RDPMonitorLayout(monitors: layout.monitors + [
         RDPDisplayControlMonitorLayout(left: -3840, width: 3840, height: 2160),
     ])
-    var configuration = RDPConnectionConfiguration(host: "example.test", monitorLayout: layout)
+    var configuration = RDPConnectionConfiguration(host: "example.test", monitorLayout: wide)
 
     #expect(RDPConnectionConfiguration(host: "example.test").monitorLayout == nil)
-    #expect(RDPConnectionConfiguration(host: "example.test", monitorLayout: wide).monitorLayout == nil)
-    #expect(configuration.monitorLayout == layout)
-    #expect(configuration.connectionMonitorLayout(extendedClientDataSupported: true) == layout)
+    #expect(configuration.monitorLayout == wide)
+    #expect(configuration.connectionMonitorLayout(extendedClientDataSupported: true) == wide)
     #expect(configuration.connectionMonitorLayout(extendedClientDataSupported: false) == nil)
 
-    configuration.monitorLayout = wide
-    #expect(configuration.connectionMonitorLayout(extendedClientDataSupported: true) == nil)
+    configuration.monitorLayout = layout
+    #expect(configuration.connectionMonitorLayout(extendedClientDataSupported: true) == layout)
 }
 
 /// Client Core Data holds 15 UTF-16 code units before its terminator ([MS-RDPBCGR] 2.2.1.3.2);
