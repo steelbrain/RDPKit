@@ -82,15 +82,15 @@ final class RemoteInputCaptureNSView: NSView {
     }
 
     override func mouseDragged(with event: NSEvent) {
-        sendPointerMove(event)
+        sendPointerMove(event, isDragging: true)
     }
 
     override func rightMouseDragged(with event: NSEvent) {
-        sendPointerMove(event)
+        sendPointerMove(event, isDragging: true)
     }
 
     override func otherMouseDragged(with event: NSEvent) {
-        sendPointerMove(event)
+        sendPointerMove(event, isDragging: true)
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -287,9 +287,9 @@ final class RemoteInputCaptureNSView: NSView {
         }
     }
 
-    private func sendPointerMove(_ event: NSEvent) {
+    private func sendPointerMove(_ event: NSEvent, isDragging: Bool = false) {
         releaseModifiers(missingFrom: event.modifierFlags)
-        guard let point = remotePoint(from: event) else {
+        guard let point = remotePoint(from: event, clampingToDesktop: isDragging) else {
             return
         }
         inputSession?.send([inputState.pointerMove(to: point)])
@@ -328,16 +328,20 @@ final class RemoteInputCaptureNSView: NSView {
         inputSession?.send(inputState.releasePressedInputs())
     }
 
-    private func remotePoint(from event: NSEvent) -> RDPRemotePoint? {
+    /// `clampingToDesktop` moves a point outside the desktop, such as a drag's past the
+    /// letterbox, onto the desktop's nearest edge.
+    private func remotePoint(from event: NSEvent, clampingToDesktop: Bool = false) -> RDPRemotePoint? {
         guard let rdpFrame else {
             return nil
         }
-        let localPoint = convert(event.locationInWindow, from: nil)
-        return RDPRemoteDisplayViewport(
-            frame: rdpFrame,
-            bounds: bounds,
-            coordinateOrigin: .bottomLeft
-        ).remotePoint(from: localPoint)
+        let viewport = RDPRemoteDisplayViewport(frame: rdpFrame, bounds: bounds, coordinateOrigin: .bottomLeft)
+        var localPoint = convert(event.locationInWindow, from: nil)
+        if clampingToDesktop {
+            let desktop = viewport.contentRect
+            localPoint.x = min(max(localPoint.x, desktop.minX), desktop.maxX.nextDown)
+            localPoint.y = min(max(localPoint.y, desktop.minY), desktop.maxY.nextDown)
+        }
+        return viewport.remotePoint(from: localPoint)
     }
 }
 

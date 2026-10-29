@@ -274,3 +274,42 @@ private func keyEvent(
         .keyboard(scancode: leftWindows, isReleased: true),
     ])
 }
+
+// A drag that leaves the letterboxed desktop holds the pointer on its edge; a plain move there
+// sends nothing.
+@MainActor
+@Test func aDragPastTheDesktopStopsOnItsEdge() throws {
+    let input = RecordedInput()
+    let view = RemoteInputCaptureNSView()
+    view.inputSession = input
+    view.frame = CGRect(x: 0, y: 0, width: 200, height: 100)
+    view.rdpFrame = RDPFrameMetadata(RDPGraphicsFrameSnapshot(
+        frameID: nil,
+        surfaceID: 0,
+        codecID: 0,
+        codecName: "test",
+        pixelFormat: 0,
+        destinationRect: RDPFrameRect(left: 0, top: 0, right: 100, bottom: 100),
+        regionRects: [],
+        encodedVideoData: Data()
+    ))
+    func event(_ type: NSEvent.EventType, at location: CGPoint) throws -> NSEvent {
+        try #require(NSEvent.mouseEvent(
+            with: type,
+            location: location,
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            eventNumber: 0,
+            clickCount: 1,
+            pressure: 1
+        ))
+    }
+
+    view.mouseMoved(with: try event(.mouseMoved, at: CGPoint(x: 180, y: 50)))
+    #expect(input.events.isEmpty)
+    view.mouseDragged(with: try event(.leftMouseDragged, at: CGPoint(x: 180, y: 50)))
+    view.mouseDragged(with: try event(.leftMouseDragged, at: CGPoint(x: 10, y: -20)))
+    #expect(input.events == [.pointerMove(x: 99, y: 50), .pointerMove(x: 0, y: 99)])
+}
