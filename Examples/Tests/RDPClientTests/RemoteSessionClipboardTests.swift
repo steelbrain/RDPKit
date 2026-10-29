@@ -284,6 +284,29 @@ private func pasteboardFileURLs(_ pasteboard: NSPasteboard) -> [URL] {
 }
 
 @MainActor
+@Test func aLocalCopyJustBeforeARemoteFileCopyLosesToIt() throws {
+    let pasteboard = makePasteboard()
+    defer { pasteboard.releaseGlobally() }
+    let session = RecordedClipboard()
+    let clipboard = RDPRemoteSessionClipboard(isSharingEnabled: true, pasteboard: pasteboard)
+    clipboard.attach(session)
+    let contents = Data("remote".utf8)
+
+    // Copied within the second before the server's copy, so no poll has seen it.
+    pasteboard.clearContents()
+    pasteboard.setString("local text", forType: .string)
+    try startRemoteFileDownload(contents, to: clipboard, from: session)
+    clipboard.poll()
+    #expect(session.publishedTexts == [nil])
+
+    try answerRangeRequest(with: contents, to: clipboard, from: session)
+    let fileURL = try #require(pasteboardFileURLs(pasteboard).first)
+    defer { try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent()) }
+    #expect(try Data(contentsOf: fileURL) == contents)
+    #expect(clipboard.statusMessage == "Remote file copied: big.bin.")
+}
+
+@MainActor
 @Test func aDownloadTheServerStopsAnsweringTimesOut() throws {
     let pasteboard = makePasteboard()
     defer { pasteboard.releaseGlobally() }

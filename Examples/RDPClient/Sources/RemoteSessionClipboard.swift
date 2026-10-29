@@ -168,6 +168,8 @@ final class RDPRemoteSessionClipboard {
         }
         cancelLocalFileRead()
         discardFileTransfer()
+        // A local copy the poll has not published yet is older than these files.
+        pasteboardChangeCount = pasteboard.changeCount
         do {
             let files = try descriptorList.remoteFileTransferFiles(
                 maximumTotalByteCount: UInt64(maximumClipboardFileBytes)
@@ -176,7 +178,7 @@ final class RDPRemoteSessionClipboard {
                 files: files,
                 streamID: makeStreamID(),
                 downloadDirectory: try makeDownloadDirectory(),
-                pasteboardChangeCount: pasteboard.changeCount
+                pasteboardChangeCount: pasteboardChangeCount
             ))
         } catch let error as RDPClipboardRemoteFileTransferPlanningError {
             message = planningMessage(for: error)
