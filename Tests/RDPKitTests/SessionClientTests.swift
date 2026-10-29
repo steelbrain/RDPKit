@@ -131,6 +131,15 @@ import Testing
             audioPlaybackEnabled: true
         ).staticVirtualChannels == [.drdynvc, .cliprdr, .rdpdr, .rdpsnd]
     )
+    // Shared drives need rdpsnd as well as rdpdr, even with audio off.
+    #expect(
+        RDPConnectionConfiguration(
+            host: "example.test",
+            clipboardEnabled: false,
+            audioPlaybackEnabled: false,
+            sharedDrives: [RDPSharedDrive(name: "share", url: URL(fileURLWithPath: "/tmp"))]
+        ).staticVirtualChannels == [.drdynvc, .rdpdr, .rdpsnd]
+    )
 }
 
 @Test func connectionConfigurationCarriesGraphicsCapabilityProfile() throws {

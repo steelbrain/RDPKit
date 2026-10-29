@@ -24,6 +24,8 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
     /// the handshake with them fails with `KEY_USAGE_BIT_INCORRECT`. RSA key exchange has no
     /// forward secrecy, so set this only to retry after that failure.
     public var legacyRSAKeyExchange: Bool
+    /// Local folders the server sees as drives. Sharing one joins the rdpsnd channel too.
+    public var sharedDrives: [RDPSharedDrive]
     var redirectionRoutingToken: Data?
     var redirectionSessionID: UInt32?
     var redirectionPasswordCookie: Data?
@@ -47,7 +49,8 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
         keyboardType: RDPKeyboardType = .ibmEnhanced,
         keyboardSubType: UInt32 = 0,
         keyboardFunctionKeyCount: UInt32 = 12,
-        legacyRSAKeyExchange: Bool = false
+        legacyRSAKeyExchange: Bool = false,
+        sharedDrives: [RDPSharedDrive] = []
     ) {
         self.host = host.trimmingCharacters(in: .whitespacesAndNewlines)
         self.port = port
@@ -67,6 +70,7 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
         self.keyboardSubType = keyboardSubType
         self.keyboardFunctionKeyCount = keyboardFunctionKeyCount
         self.legacyRSAKeyExchange = legacyRSAKeyExchange
+        self.sharedDrives = sharedDrives
         self.redirectionRoutingToken = nil
         self.redirectionSessionID = nil
         self.redirectionPasswordCookie = nil
@@ -89,7 +93,8 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
         keyboardType: RDPKeyboardType = .ibmEnhanced,
         keyboardSubType: UInt32 = 0,
         keyboardFunctionKeyCount: UInt32 = 12,
-        legacyRSAKeyExchange: Bool = false
+        legacyRSAKeyExchange: Bool = false,
+        sharedDrives: [RDPSharedDrive] = []
     ) {
         self.init(
             host: target.host,
@@ -109,7 +114,8 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
             keyboardType: keyboardType,
             keyboardSubType: keyboardSubType,
             keyboardFunctionKeyCount: keyboardFunctionKeyCount,
-            legacyRSAKeyExchange: legacyRSAKeyExchange
+            legacyRSAKeyExchange: legacyRSAKeyExchange,
+            sharedDrives: sharedDrives
         )
     }
 
@@ -140,8 +146,11 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
         if clipboardEnabled {
             channels.append(.cliprdr)
         }
-        if audioPlaybackEnabled {
+        if audioPlaybackEnabled || !sharedDrives.isEmpty {
             channels.append(.rdpdr)
+            // Windows 11 sends nothing on rdpdr unless rdpsnd is joined too (FreeRDP joins
+            // a "fake" rdpsnd for drives). With audio off, INFO_NOAUDIOPLAYBACK keeps the
+            // server from sending audio on it.
             channels.append(.rdpsnd)
         }
         return channels

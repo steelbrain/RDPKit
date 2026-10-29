@@ -64,6 +64,13 @@
   not digitalSignature. BoringSSL refuses ECDHE with such a certificate, and
   the report's error now names `KEY_USAGE_BIT_INCORRECT` and this option. RSA
   key exchange has no forward secrecy, so it is off by default.
+- Drive redirection: `RDPConnectionConfiguration.sharedDrives` shares local
+  folders (`RDPSharedDrive`) that Windows shows as `\\tsclient\<name>`. The
+  server can list, read, write, create, rename and delete inside a folder and
+  nowhere else: `..`, and links whose target is outside the folder, are
+  refused. File access runs off the connection thread. A missing folder or a
+  drive the server refuses is reported as a warning. Sharing a drive also
+  joins rdpsnd, without audio, since Windows starts rdpdr only then.
 
 ### Compatibility and fixes
 

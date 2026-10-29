@@ -13,10 +13,15 @@ enum RDPDeviceRedirectionPacketID {
     static let serverCapability: UInt16 = 0x5350
     static let clientCapability: UInt16 = 0x4350
     static let userLoggedOn: UInt16 = 0x554C
+    static let deviceReply: UInt16 = 0x6472
+    static let deviceIORequest: UInt16 = 0x4952
+    static let deviceIOCompletion: UInt16 = 0x4943
 }
 
 enum RDPDeviceRedirectionVersion {
     static let major: UInt16 = 0x0001
+    /// Servers this old send no User Logged On, so drives are announced on Client ID Confirm.
+    static let minorRDP51: UInt16 = 0x0005
     static let minorRDP6: UInt16 = 0x000C
 }
 
@@ -28,6 +33,13 @@ private enum RDPDeviceRedirectionGeneralCapability {
     static let allIOCode1: UInt32 = 0x0000_FFFF
     /// RDPDR_DEVICE_REMOVE_PDUS | RDPDR_CLIENT_DISPLAY_NAME_PDU | RDPDR_USER_LOGGEDON_PDU.
     static let extendedPDU: UInt32 = 0x0000_0007
+}
+
+/// DRIVE_CAPS_SET: a capability header alone ([MS-RDPEFS] 2.2.2.7.5).
+private enum RDPDeviceRedirectionDriveCapability {
+    static let type: UInt16 = 0x0004
+    static let length: UInt16 = 8
+    static let version2: UInt32 = 0x0000_0002
 }
 
 struct RDPDeviceRedirectionHeader: Equatable, Sendable {
@@ -70,6 +82,12 @@ struct RDPDeviceRedirectionPDU: Equatable, Sendable {
             "rdpdr-client-capability"
         case RDPDeviceRedirectionPacketID.userLoggedOn:
             "rdpdr-user-logged-on"
+        case RDPDeviceRedirectionPacketID.deviceReply:
+            "rdpdr-device-reply"
+        case RDPDeviceRedirectionPacketID.deviceIORequest:
+            "rdpdr-device-io-request"
+        case RDPDeviceRedirectionPacketID.deviceIOCompletion:
+            "rdpdr-device-io-completion"
         default:
             "rdpdr-0x\(String(format: "%04x", header.packetID))"
         }
@@ -168,14 +186,15 @@ struct RDPDeviceRedirectionClientNameRequest: Equatable, Sendable {
     }
 }
 
-/// Client Core Capability Response carrying only the general capability set,
-/// since the client redirects no devices ([MS-RDPEFS] 2.2.2.8).
+/// Client Core Capability Response: the general capability set, and the drive
+/// set when drives are shared ([MS-RDPEFS] 2.2.2.8).
 struct RDPDeviceRedirectionClientCapabilities: Equatable, Sendable {
     var minorVersion: UInt16
+    var sharesDrives = false
 
     func encoded() -> Data {
         var payload = Data()
-        payload.appendLittleEndianUInt16(1)
+        payload.appendLittleEndianUInt16(sharesDrives ? 2 : 1)
         payload.appendLittleEndianUInt16(0)
         payload.appendLittleEndianUInt16(RDPDeviceRedirectionGeneralCapability.type)
         payload.appendLittleEndianUInt16(RDPDeviceRedirectionGeneralCapability.length)
@@ -190,6 +209,13 @@ struct RDPDeviceRedirectionClientCapabilities: Equatable, Sendable {
         payload.appendLittleEndianUInt32(0)
         payload.appendLittleEndianUInt32(0)
         payload.appendLittleEndianUInt32(0)
+        if sharesDrives {
+            // A server does not take a filesystem device from a client that did not
+            // advertise drive support.
+            payload.appendLittleEndianUInt16(RDPDeviceRedirectionDriveCapability.type)
+            payload.appendLittleEndianUInt16(RDPDeviceRedirectionDriveCapability.length)
+            payload.appendLittleEndianUInt32(RDPDeviceRedirectionDriveCapability.version2)
+        }
         return RDPDeviceRedirectionPDU(
             header: RDPDeviceRedirectionHeader(packetID: RDPDeviceRedirectionPacketID.clientCapability),
             payload: payload
@@ -197,10 +223,62 @@ struct RDPDeviceRedirectionClientCapabilities: Equatable, Sendable {
     }
 }
 
+/// DEVICE_ANNOUNCE for one device ([MS-RDPEFS] 2.2.1.3).
+struct RDPDeviceAnnounce: Equatable, Sendable {
+    var deviceType: UInt32
+    var deviceID: UInt32
+    /// Up to eight ASCII characters, not NUL-terminated when eight long.
+    var preferredDOSName: String
+    var deviceData: Data
+
+    /// A filesystem device. Its DeviceData is the drive name as NUL-terminated ASCII,
+    /// which Windows shows as `\\tsclient\<name>`, as FreeRDP's drive channel sends it.
+    static func drive(deviceID: UInt32, name: String) -> RDPDeviceAnnounce {
+        let name = deviceName(name)
+        var deviceData = Data(name.utf8)
+        deviceData.appendUInt8(0)
+        return RDPDeviceAnnounce(
+            deviceType: RDPDeviceType.filesystem,
+            deviceID: deviceID,
+            preferredDOSName: String(name.prefix(8)),
+            deviceData: deviceData
+        )
+    }
+
+    /// A name a server accepts: ASCII without the characters DEVICE_ANNOUNCE forbids,
+    /// each other character replaced by `_`, as FreeRDP does.
+    static func deviceName(_ name: String) -> String {
+        let characters = name.unicodeScalars.map { scalar -> Character in
+            guard scalar.isASCII, scalar.value >= 0x21, !"<>\"/\\|:*?".unicodeScalars.contains(scalar) else {
+                return "_"
+            }
+            return Character(scalar)
+        }
+        return characters.isEmpty ? "_" : String(characters)
+    }
+
+    func encoded() -> Data {
+        var data = Data()
+        data.appendLittleEndianUInt32(deviceType)
+        data.appendLittleEndianUInt32(deviceID)
+        let dosName = Data(preferredDOSName.utf8.prefix(8))
+        data.append(dosName)
+        data.append(Data(count: 8 - dosName.count))
+        data.appendLittleEndianUInt32(UInt32(deviceData.count))
+        data.append(deviceData)
+        return data
+    }
+}
+
 struct RDPDeviceRedirectionDeviceListAnnounce: Equatable, Sendable {
+    var devices: [RDPDeviceAnnounce] = []
+
     func encoded() -> Data {
         var payload = Data()
-        payload.appendLittleEndianUInt32(0)
+        payload.appendLittleEndianUInt32(UInt32(devices.count))
+        for device in devices {
+            payload.append(device.encoded())
+        }
         return RDPDeviceRedirectionPDU(
             header: RDPDeviceRedirectionHeader(packetID: RDPDeviceRedirectionPacketID.deviceListAnnounce),
             payload: payload
@@ -208,39 +286,61 @@ struct RDPDeviceRedirectionDeviceListAnnounce: Equatable, Sendable {
     }
 }
 
-/// Runs the rdpdr initialization with an empty device list ([MS-RDPEFS] 3.1.3).
-/// The channel exists for audio: Windows sends nothing on RDPSND unless the
+/// What the application is told about device redirection.
+enum RDPDeviceRedirectionEvent: Equatable, Sendable {
+    /// The drive's folder does not exist, so it was not announced.
+    case driveUnavailable(name: String)
+    /// The server refused the drive with an NTSTATUS ([MS-RDPEFS] 2.2.2.1).
+    case driveRejected(name: String, status: UInt32)
+}
+
+/// Runs the rdpdr initialization ([MS-RDPEFS] 3.1.3) and serves the shared drives.
+/// The channel also exists for audio: Windows sends nothing on RDPSND unless the
 /// client advertises rdpdr ([MS-RDPEA] Appendix A, note on section 2.1).
+///
+/// Drive I/O runs on a serial queue of its own, so file access never holds up the
+/// connection thread that receives graphics.
 final class RDPDeviceRedirectionSession: @unchecked Sendable {
     let staticChannelID: UInt16
     private let userChannelID: UInt16
     private let channel: Channel
     private let computerName: String
+    private let chunkSize: RDPStaticVirtualChannelChunkSize
+    private let drives: [RDPSharedDriveDevice]
+    private let ioQueue = DispatchQueue(label: "RDPKit.device-redirection")
     private let lock = NSLock()
     private var minorVersion = RDPDeviceRedirectionVersion.minorRDP6
     private var announcedClientID: UInt32?
+    /// Only the connection thread reads and writes these.
+    private var announcedDriveIDs: Set<UInt32> = []
+    private var hasAnnouncedDrives = false
 
     init(
         userChannelID: UInt16,
         staticChannelID: UInt16,
         channel: Channel,
-        computerName: String
+        computerName: String,
+        drives: [RDPSharedDrive] = [],
+        chunkSize: RDPStaticVirtualChannelChunkSize = RDPStaticVirtualChannelChunkSize()
     ) {
         self.userChannelID = userChannelID
         self.staticChannelID = staticChannelID
         self.channel = channel
         self.computerName = computerName
+        self.chunkSize = chunkSize
+        self.drives = drives.enumerated().map { RDPSharedDriveDevice(deviceID: UInt32($0.offset + 1), drive: $0.element) }
     }
 
-    func receive(_ pdu: RDPDeviceRedirectionPDU) throws {
+    @discardableResult
+    func receive(_ pdu: RDPDeviceRedirectionPDU) throws -> [RDPDeviceRedirectionEvent] {
         guard pdu.header.component == RDPDeviceRedirectionComponent.core else {
-            return
+            return []
         }
 
         switch pdu.header.packetID {
         case RDPDeviceRedirectionPacketID.serverAnnounce:
             guard let announce = try RDPDeviceRedirectionVersionAndID.parse(from: pdu) else {
-                return
+                return []
             }
             let clientID = announce.clientIDForReply {
                 UInt32.random(in: UInt32.min ... UInt32.max)
@@ -254,39 +354,112 @@ final class RDPDeviceRedirectionSession: @unchecked Sendable {
 
         case RDPDeviceRedirectionPacketID.serverCapability:
             let minorVersion = lock.withLock { self.minorVersion }
-            send(RDPDeviceRedirectionClientCapabilities(minorVersion: minorVersion).encoded())
+            send(RDPDeviceRedirectionClientCapabilities(
+                minorVersion: minorVersion,
+                sharesDrives: !drives.isEmpty
+            ).encoded())
 
         case RDPDeviceRedirectionPacketID.clientIDConfirm:
             guard let confirm = try RDPDeviceRedirectionVersionAndID.parse(from: pdu) else {
-                return
+                return []
             }
             // The confirmed ClientId MUST match the Client Announce Reply ([MS-RDPEFS] 3.2.5.1.6).
             guard confirm.clientID == lock.withLock({ announcedClientID }) else {
                 throw RDPDecodeError.invalidStaticVirtualChannelPDU
             }
-            send(RDPDeviceRedirectionDeviceListAnnounce().encoded())
+            // Drives wait for User Logged On, as in FreeRDP, from servers that send it.
+            let announcesDrives = lock.withLock { minorVersion } <= RDPDeviceRedirectionVersion.minorRDP51
+            return announceDevices(includingDrives: announcesDrives)
 
         case RDPDeviceRedirectionPacketID.userLoggedOn:
             guard pdu.payload.isEmpty else {
                 throw RDPDecodeError.invalidStaticVirtualChannelPDU
             }
-            send(RDPDeviceRedirectionDeviceListAnnounce().encoded())
+            return announceDevices(includingDrives: true)
+
+        case RDPDeviceRedirectionPacketID.deviceReply:
+            var cursor = ByteCursor(pdu.payload)
+            let deviceID = try cursor.readLittleEndianUInt32()
+            let status = try cursor.readLittleEndianUInt32()
+            guard status != RDPNTStatus.success, let drive = drives.first(where: { $0.deviceID == deviceID }) else {
+                return []
+            }
+            announcedDriveIDs.remove(deviceID)
+            return [.driveRejected(name: drive.drive.name, status: status)]
+
+        case RDPDeviceRedirectionPacketID.deviceIORequest:
+            serve(try RDPDeviceIORequest.parse(from: pdu))
 
         default:
+            break
+        }
+        return []
+    }
+
+    /// The device list: empty until drives are due, then each drive whose folder exists,
+    /// once per connection.
+    private func announceDevices(includingDrives: Bool) -> [RDPDeviceRedirectionEvent] {
+        var devices: [RDPDeviceAnnounce] = []
+        var events: [RDPDeviceRedirectionEvent] = []
+        if includingDrives, !hasAnnouncedDrives {
+            hasAnnouncedDrives = true
+            let available = ioQueue.sync { drives.filter { $0.resolveRoot() } }
+            for drive in drives {
+                if available.contains(where: { $0 === drive }) {
+                    announcedDriveIDs.insert(drive.deviceID)
+                    devices.append(.drive(deviceID: drive.deviceID, name: drive.drive.name))
+                } else {
+                    events.append(.driveUnavailable(name: drive.drive.name))
+                }
+            }
+        }
+        send(RDPDeviceRedirectionDeviceListAnnounce(devices: devices).encoded())
+        return events
+    }
+
+    private func serve(_ request: RDPDeviceIORequest) {
+        guard announcedDriveIDs.contains(request.deviceID),
+              let drive = drives.first(where: { $0.deviceID == request.deviceID })
+        else {
+            send(RDPDeviceIOCompletion(
+                deviceID: request.deviceID,
+                completionID: request.completionID,
+                status: RDPNTStatus.unsuccessful,
+                body: request.failureReplyBody
+            ).encoded())
             return
+        }
+        ioQueue.async {
+            if let completion = drive.completion(for: request) {
+                self.send(completion.encoded())
+            }
         }
     }
 
+    /// Waits for the drive I/O queued so far, for tests.
+    func waitForDriveIO() {
+        ioQueue.sync {}
+    }
+
+    /// Sends one message, chunked; its chunks reach the wire together, as one event
+    /// loop task.
     private func send(_ payload: Data) {
-        let packet = RDPStaticVirtualChannelPDU(payload: payload)
-            .encodedTPKT(initiator: userChannelID, channelID: staticChannelID)
+        let packets = RDPStaticVirtualChannelPDU.encodedTPKTs(
+            payload: payload,
+            chunkByteCount: chunkSize.byteCount,
+            initiator: userChannelID,
+            channelID: staticChannelID
+        )
         channel.eventLoop.execute {
             guard self.channel.isActive else {
                 return
             }
-            var buffer = self.channel.allocator.buffer(capacity: packet.count)
-            buffer.writeBytes(packet)
-            self.channel.writeAndFlush(buffer, promise: nil)
+            for packet in packets {
+                var buffer = self.channel.allocator.buffer(capacity: packet.count)
+                buffer.writeBytes(packet)
+                self.channel.write(buffer, promise: nil)
+            }
+            self.channel.flush()
         }
     }
 }

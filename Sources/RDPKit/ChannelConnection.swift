@@ -159,7 +159,9 @@ extension RDPClientConnection {
                     userChannelID: userChannelID,
                     staticChannelID: channelID,
                     channel: channel,
-                    computerName: clientName
+                    computerName: clientName,
+                    drives: configuration.sharedDrives,
+                    chunkSize: staticChannelChunkSize
                 )
             default:
                 break

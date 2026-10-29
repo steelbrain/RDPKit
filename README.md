@@ -12,8 +12,8 @@ and networking primitives instead of FreeRDP.
 - HEVC/H.265 Annex B parsing and VideoToolbox decode helpers
 - SwiftNIO and SwiftNIO SSL transport, including TLS upgrade on an existing RDP
   socket
-- Keyboard, pointer, display control, clipboard, remote file transfer, audio,
-  certificate trust, and live render metrics
+- Keyboard, pointer, display control, clipboard, remote file transfer, drive
+  redirection, audio, certificate trust, and live render metrics
 - Pure Swift protocol implementation with no FreeRDP, no C/C++/Rust RDP core,
   and no non-Apple package dependencies
 - Swift 6 package for macOS, iOS, tvOS, Mac Catalyst, and visionOS clients
@@ -176,6 +176,10 @@ itself.
 - File Group Descriptor W parsing and encoding
 - File contents requests and responses
 - Local-to-remote and remote-to-local clipboard file transfer plumbing
+- Drive redirection: `sharedDrives` shows local folders on the server as
+  `\\tsclient\<name>`. The server can read, write, create, rename, and delete
+  inside a shared folder and nowhere else; links that point outside it are
+  refused.
 
 ### Audio
 

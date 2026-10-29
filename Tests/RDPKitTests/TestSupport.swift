@@ -28,6 +28,10 @@ extension Data {
         UInt32(littleEndianUInt16(at: offset)) | UInt32(littleEndianUInt16(at: offset + 2)) << 16
     }
 
+    func littleEndianUInt64(at offset: Int) -> UInt64 {
+        UInt64(littleEndianUInt32(at: offset)) | UInt64(littleEndianUInt32(at: offset + 4)) << 32
+    }
+
     func containsSubsequence(_ needle: Data) -> Bool {
         range(of: needle) != nil
     }
