@@ -142,3 +142,49 @@ import Testing
     #expect(lines.vertical == 120 && lines.horizontal == -120)
     #expect(points.vertical == 20 && points.horizontal == 5)
 }
+
+private final class RecordedInput: RDPInputEventSending {
+    var events: [RDPSlowPathInputEvent] = []
+
+    func send(_ events: [RDPSlowPathInputEvent]) {
+        self.events += events
+    }
+}
+
+@MainActor
+private func keyEvent(
+    _ type: NSEvent.EventType,
+    keyCode: Int,
+    characters: String = "",
+    modifierFlags: NSEvent.ModifierFlags = []
+) throws -> NSEvent {
+    try #require(NSEvent.keyEvent(
+        with: type,
+        location: .zero,
+        modifierFlags: modifierFlags,
+        timestamp: 0,
+        windowNumber: 0,
+        context: nil,
+        characters: characters,
+        charactersIgnoringModifiers: characters,
+        isARepeat: false,
+        keyCode: UInt16(keyCode)
+    ))
+}
+
+@MainActor
+@Test func keysHeldWhenTheViewLosesFocusAreReleased() throws {
+    let input = RecordedInput()
+    let view = RemoteInputCaptureNSView()
+    view.inputSession = input
+    view.flagsChanged(with: try keyEvent(.flagsChanged, keyCode: kVK_Shift, modifierFlags: .shift))
+    view.keyDown(with: try keyEvent(.keyDown, keyCode: kVK_DownArrow, modifierFlags: .shift))
+    input.events.removeAll()
+
+    _ = view.resignFirstResponder()
+
+    #expect(input.events == [
+        .keyboard(scancode: RDPKeyboardScancode(code: 0x2A), isReleased: true),
+        .keyboard(scancode: RDPKeyboardScancode(code: 0x50, isExtended: true), isReleased: true),
+    ])
+}

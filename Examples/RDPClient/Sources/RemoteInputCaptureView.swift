@@ -2,9 +2,16 @@ import AppKit
 import Carbon.HIToolbox
 import RDPKit
 
+/// Where the capture view sends input: the session's `RDPInputSession`.
+protocol RDPInputEventSending: AnyObject {
+    func send(_ events: [RDPSlowPathInputEvent])
+}
+
+extension RDPInputSession: RDPInputEventSending {}
+
 final class RemoteInputCaptureNSView: NSView {
     var rdpFrame: RDPFrameMetadata?
-    var inputSession: RDPInputSession? {
+    var inputSession: (any RDPInputEventSending)? {
         willSet {
             if inputSession != nil, inputSession !== newValue {
                 releasePressedInputs()
@@ -262,7 +269,7 @@ final class RemoteInputCaptureNSView: NSView {
         guard let point = remotePoint(from: event) else {
             return
         }
-        inputSession?.send(inputState.pointerMove(to: point))
+        inputSession?.send([inputState.pointerMove(to: point)])
     }
 
     private func sendPointerButton(_ button: RDPPointerButton, isDown: Bool, event: NSEvent) {
