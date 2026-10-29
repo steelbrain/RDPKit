@@ -64,7 +64,9 @@
 - `RDPClipboardSession.fetchesRemoteCopies` lets a client join cliprdr
   without fetching the server's copies: their Format Lists are acknowledged
   and nothing is requested. Set it in `onClipboardReady` to cover the
-  server's first copy.
+  server's first copy. Joining still announces the client's clipboard, empty
+  until it publishes, and Windows 11 then empties its own clipboard;
+  `clipboardEnabled` off leaves it untouched.
 - `RDPRemotePointerBitmap(_:)` turns an `RDPRemotePointerImage` from
   `onRemotePointer` into premultiplied RGBA (`pixels`, `bytesPerRow`) and a
   hot spot clamped into the image, with a `cgImage` for
@@ -127,7 +129,8 @@
     goes as Unicode where the remote layout has no "=" on the main "=" key,
     as on German.
   - Clipboard sharing can be turned on mid-session; with it off, nothing
-    crosses either way.
+    crosses either way. To allow that, RDPClient always joins the clipboard
+    channel, which empties a Windows server's clipboard at connect.
   - Remote file downloads:
     - A download no longer replaces text or files copied after it began.
       A remote file copy cancels a local file read still in progress, and

@@ -975,7 +975,9 @@ public final class RDPClipboardSession: @unchecked Sendable {
     /// Format Lists are acknowledged and nothing is requested, so none of its clipboard reaches
     /// this client, and the rest of a copy already being fetched is dropped. Set it in
     /// `onClipboardReady`, which runs before the server's first copy is handled, to keep that
-    /// copy from being fetched too.
+    /// copy from being fetched too. It does not keep the server's clipboard as it was: joining
+    /// cliprdr announces the client's clipboard, empty until something is published, and
+    /// Windows then empties its own (see `RDPConnectionConfiguration.clipboardEnabled`).
     public var fetchesRemoteCopies: Bool {
         get {
             lock.withLock { isFetchingRemoteCopies }

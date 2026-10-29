@@ -218,7 +218,9 @@ let report = client.run(
 
 ### Clipboard And Files
 
-- Unicode text clipboard
+- Unicode text clipboard. Joining the clipboard channel announces the client's
+  clipboard, empty until it publishes something, and Windows then empties the
+  server's clipboard; leave `clipboardEnabled` off to keep it untouched.
 - HTML (CF_HTML), RTF, and bitmap (CF_DIB) clipboard content in both
   directions through `RDPClipboardContent`, with `RDPClipboardBitmap` to
   convert a DIB to and from `CGImage`. Windows 11 passes text, RTF, and

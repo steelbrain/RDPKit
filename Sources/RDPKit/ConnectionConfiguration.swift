@@ -16,6 +16,12 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
     /// The desktop's physical size, sent with the scale factors; nil, or a size servers
     /// ignore (under 10 mm or over 10,000 mm), sends none.
     public var physicalSize: RDPDisplayPhysicalSize?
+    /// Joins cliprdr. Joining sends the Format List [MS-RDPECLIP] 1.3.2.1 requires at startup, of
+    /// what the client has published, empty until it publishes; Windows 11 takes that as the
+    /// client's copy and empties the server's clipboard (observed live; gnome-remote-desktop 51
+    /// keeps it). A client that must leave the server's clipboard alone, and can wait for a
+    /// reconnect to share, keeps this off; `RDPClipboardSession.fetchesRemoteCopies` controls
+    /// only what the client fetches.
     public var clipboardEnabled: Bool
     public var audioPlaybackEnabled: Bool
     public var earlyUserAuthorizationEnabled: Bool
