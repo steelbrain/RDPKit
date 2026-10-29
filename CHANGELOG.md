@@ -141,6 +141,11 @@
   sent. `shouldCancel` is polled while connecting, during the TLS handshake,
   certificate evaluation and sends, and cancelling during a redirection returns
   the report of the session that ran.
+- `RDPVideoToolboxFrameDecoder.decode(_:)` returns only the frame, not the
+  rows and columns its coded picture rounds up to: gnome-remote-desktop codes
+  1280x720 frames as 1280x768 pictures. `RDPDecodedFramePresentation` documents
+  that its `imageBuffer` can be larger than the frame, and RDPFirstFrameCapture
+  writes only the frame. RDPFrameBenchmark drops its `cgImageCrop` strategy.
 - Negotiate only PCM rates `AVAudioEngine` can play.
 - `onDisplayControlReady` runs once the first graphics frame has arrived:
   KRdp ignores a monitor layout that arrives before its video stream starts.

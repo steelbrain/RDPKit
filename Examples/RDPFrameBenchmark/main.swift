@@ -41,7 +41,6 @@ private struct BenchmarkDisplaySize: Equatable {
 private enum BenchmarkStrategy: String, CaseIterable, Encodable {
     case pixelBuffer
     case cgImage
-    case cgImageCrop
 }
 
 private struct BenchmarkReport: Encodable {
@@ -103,7 +102,6 @@ private struct StrategyBenchmarkReport: Encodable {
     var samplePreparationAverageMilliseconds: Double?
     var videoToolboxAverageMilliseconds: Double?
     var imageConversionAverageMilliseconds: Double?
-    var cropAverageMilliseconds: Double?
     var decodedPixelFormats: [UInt32]
     var usesHardwareAcceleration: Bool?
     var outputPixelCount: Int
@@ -372,7 +370,6 @@ private enum RDPFrameBenchmark {
         var samplePreparationMilliseconds = 0.0
         var videoToolboxMilliseconds = 0.0
         var imageConversionMilliseconds = 0.0
-        var cropMilliseconds = 0.0
         var decodedPixelFormats: Set<UInt32> = []
         var usesHardwareAcceleration: Bool?
         var outputPixelCount = 0
@@ -400,12 +397,6 @@ private enum RDPFrameBenchmark {
                     case .cgImage:
                         let image = try decoder.decode(frame)
                         outputPixelCount += image.width * image.height
-                    case .cgImageCrop:
-                        let image = try decoder.decode(frame)
-                        let cropStart = Date()
-                        let cropped = try cropToDestinationRect(image, frame: frame)
-                        cropMilliseconds += Date().timeIntervalSince(cropStart) * 1000
-                        outputPixelCount += cropped.width * cropped.height
                     }
 
                     let frameEnd = processSample()
@@ -443,7 +434,6 @@ private enum RDPFrameBenchmark {
             samplePreparationAverageMilliseconds: averageComponent(samplePreparationMilliseconds, decodedFrameCount),
             videoToolboxAverageMilliseconds: averageComponent(videoToolboxMilliseconds, decodedFrameCount),
             imageConversionAverageMilliseconds: averageComponent(imageConversionMilliseconds, decodedFrameCount),
-            cropAverageMilliseconds: averageComponent(cropMilliseconds, decodedFrameCount),
             decodedPixelFormats: Array(decodedPixelFormats).sorted(),
             usesHardwareAcceleration: usesHardwareAcceleration,
             outputPixelCount: outputPixelCount,
@@ -493,7 +483,6 @@ private enum RDPFrameBenchmark {
               sample=\(format(strategy.samplePreparationAverageMilliseconds))ms \
               vt=\(format(strategy.videoToolboxAverageMilliseconds))ms \
               image=\(format(strategy.imageConversionAverageMilliseconds))ms \
-              crop=\(format(strategy.cropAverageMilliseconds))ms \
               rssΔ=\(formatBytes(strategy.residentMemoryDeltaBytes)) \
               rssPeakΔ=\(formatBytes(strategy.residentMemoryPeakDeltaBytes)) \
               hw=\(strategy.usesHardwareAcceleration.map(String.init) ?? "n/a")
@@ -588,33 +577,6 @@ private func frameTiming(start: ProcessSample, end: ProcessSample) -> FrameTimin
     )
 }
 
-/// Crops a decoded image to the frame's size, as a client that cannot present
-/// a padded decoder buffer must.
-private func cropToDestinationRect(_ image: CGImage, frame: RDPGraphicsFrameSnapshot) throws -> CGImage {
-    let width = Int(frame.width)
-    let height = Int(frame.height)
-    guard width > 0, height > 0, image.width >= width, image.height >= height,
-          image.width != width || image.height != height
-    else {
-        return image
-    }
-    guard let cropped = image.cropping(to: CGRect(x: 0, y: 0, width: width, height: height)) else {
-        throw BenchmarkCropError(sourceWidth: image.width, sourceHeight: image.height, width: width, height: height)
-    }
-    return cropped
-}
-
-private struct BenchmarkCropError: Error, CustomStringConvertible {
-    var sourceWidth: Int
-    var sourceHeight: Int
-    var width: Int
-    var height: Int
-
-    var description: String {
-        "CoreGraphics could not crop decoded frame from \(sourceWidth)x\(sourceHeight) to \(width)x\(height)."
-    }
-}
-
 private func rectArea(_ rect: RDPFrameRect) -> Int {
     Int(rect.width) * Int(rect.height)
 }
@@ -666,7 +628,7 @@ private func printUsage() {
     print("""
     Usage: RDPFrameBenchmark --host <host> [--port 3389] [--username <name>] [--domain <domain>] [--password-env <env>] [--timeout-seconds 60] [--frames 10] [--desktop-size 1920x1080] [--display-resize 2768x1492] [--graphics-profile automatic|avcThinClient|avc420|legacy] [--hide-certificate-warnings] [--json]
 
-    Captures live RDPGFX frames and replays them through pixelBuffer, cgImage, and cgImageCrop decode strategies.
+    Captures live RDPGFX frames and replays them through pixelBuffer and cgImage decode strategies.
     Pass --graphics-profile multiple times to benchmark a subset; default is all profiles.
     """)
 }

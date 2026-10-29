@@ -26,9 +26,16 @@ public final class RDPVideoToolboxFrameDecoder {
         avc444Decoders.removeAll()
     }
 
+    /// Decodes `frame` into the picture it shows: the top-left `width` x `height` of the
+    /// coded picture, which can be larger.
     public func decode(_ frame: RDPGraphicsFrameSnapshot) throws -> CGImage {
         let ciImage = CIImage(cvImageBuffer: try decodeDetailed(frame).imageBuffer)
-        guard let image = imageContext.createCGImage(ciImage, from: ciImage.extent) else {
+        let extent = ciImage.extent
+        let height = CGFloat(frame.height)
+        // Core Image counts rows from the bottom.
+        let shown = CGRect(x: extent.minX, y: extent.maxY - height, width: CGFloat(frame.width), height: height)
+            .intersection(extent)
+        guard let image = imageContext.createCGImage(ciImage, from: shown) else {
             throw RDPVideoDecodeError.imageConversionFailed
         }
         return image

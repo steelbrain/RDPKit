@@ -33,7 +33,15 @@ private enum FirstFrameCapture {
                 shouldCancel: { cancellation.isCancelled },
                 onDecoded: { presentation, _, _, _ in
                     let image = CIImage(cvImageBuffer: presentation.imageBuffer)
-                    guard let capturedImage = imageContext.createCGImage(image, from: image.extent) else {
+                    // The frame is the top-left of the decoded picture; Core Image counts rows from the bottom.
+                    let height = CGFloat(presentation.frame.height)
+                    let shown = CGRect(
+                        x: image.extent.minX,
+                        y: image.extent.maxY - height,
+                        width: CGFloat(presentation.frame.width),
+                        height: height
+                    ).intersection(image.extent)
+                    guard let capturedImage = imageContext.createCGImage(image, from: shown) else {
                         recorder.recordFailure("could not convert the decoded frame to an image")
                         return
                     }

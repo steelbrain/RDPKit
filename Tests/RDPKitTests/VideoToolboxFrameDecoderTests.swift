@@ -202,6 +202,32 @@ func avc420FixtureFramesPresentAsFullRangeBT709(fixture: String, x: Int, y: Int,
     #expect(Double(difference) / Double(count) < 1.5)
 }
 
+/// gnome-remote-desktop codes its 1280x720 frames as 1280x768 pictures without SPS cropping;
+/// the 48 rows past the frame are black, below the login screen's grey.
+@Test func decodedImagesShowOnlyTheFrame() throws {
+    let frame = try firstTranscriptFrame("gnome-negotiation-transcript")
+    let decoder = RDPVideoToolboxFrameDecoder()
+    #expect(try CVPixelBufferGetHeight(decoder.decodeDetailed(frame).imageBuffer) == 768)
+
+    let image = try decoder.decode(frame)
+
+    #expect(image.width == 1280)
+    #expect(image.height == 720)
+    var pixels = [UInt8](repeating: 0, count: image.width * image.height * 4)
+    let context = try #require(CGContext(
+        data: &pixels,
+        width: image.width,
+        height: image.height,
+        bitsPerComponent: 8,
+        bytesPerRow: image.width * 4,
+        space: CGColorSpaceCreateDeviceRGB(),
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+    ))
+    context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+    let bottomRow = (image.height - 1) * image.width * 4
+    #expect(pixels[bottomRow + 100 * 4 ..< bottomRow + 100 * 4 + 3].allSatisfy { $0 > 16 })
+}
+
 /// KRdp 6.8 encodes through KPipeWire's libx264 path, which feeds x264 limited-range BT.601
 /// and signals no range, against MS-RDPEGFX 3.3.8.3.1. The fixture's first frame is a chart
 /// of flat patches drawn on a KRdp virtual monitor; each must present as the colour drawn.

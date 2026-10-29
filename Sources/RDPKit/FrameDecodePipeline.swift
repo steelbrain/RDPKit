@@ -4,6 +4,8 @@ import Foundation
 
 public struct RDPDecodedFramePresentation: @unchecked Sendable {
     public var frame: RDPGraphicsFrameSnapshot
+    /// The decoded picture. Coded video can be larger than `frame`: only its top-left
+    /// `frame.width` x `frame.height` is shown.
     public var imageBuffer: CVImageBuffer
 
     public init(frame: RDPGraphicsFrameSnapshot, imageBuffer: CVImageBuffer) {
