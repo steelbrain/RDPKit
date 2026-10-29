@@ -291,7 +291,9 @@
     reading Keychain again, so the saved password is still filled in, or
     removed with Remember unticked; a password typed or a Remember choice
     made while the lookup was on its way stands. The Connections window does
-    the same, and a session window opened from it takes the answer that
+    the same, and choosing Connect on a connection that is not selected
+    fills the form from it once and looks its password up once. A session
+    window opened from it takes the answer that
     window already had, so connecting reads Keychain once. Delete Profile
     learns from the deletion whether a password was saved instead of reading
     it first.
@@ -304,7 +306,10 @@
     a newer build wrote, no longer empties the list, and saving keeps it and
     any fields a newer build added. Saving a connection typed as `LAB\anees`
     updates the saved one for `anees` in domain LAB, which shares its saved
-    password, instead of adding a second.
+    password, instead of adding a second. Two saved connections for one
+    account, saved by an earlier build, share its saved password: Delete
+    Profile keeps it while the other remains, says so, and deletes it with
+    the last.
 - RDPPreflight:
   - Prints `redirection depth: N` after `target:` when a Server Redirection
     led to the target, as its JSON's `redirectionDepth` already showed.
