@@ -38,6 +38,9 @@ import Testing
         try options.credentials(environment: [:])
     }
     #expect(try options.credentials(environment: ["RDP_PASSWORD": "secret"])?.username == "user")
+    #expect(throws: RDPCredentialValidationError.fieldTooLong(.password)) {
+        try options.credentials(environment: ["RDP_PASSWORD": String(repeating: "p", count: 256)])
+    }
 }
 
 @Test func firstFrameCaptureWaitsThirtySecondsByDefault() throws {

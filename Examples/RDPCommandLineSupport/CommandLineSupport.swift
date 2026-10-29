@@ -167,7 +167,8 @@ public struct RDPCommandLineConnectionOptions: Equatable, Sendable {
     }
 
     /// Reads the password from the environment variable named by `--password-env`, so it never
-    /// appears in the process arguments.
+    /// appears in the process arguments. Credentials too long to send fail here, naming the field,
+    /// rather than at connect.
     public func credentials(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) throws -> RDPCredentials? {
@@ -183,7 +184,7 @@ public struct RDPCommandLineConnectionOptions: Equatable, Sendable {
         guard let password = environment[passwordEnv], password.isEmpty == false else {
             throw RDPCommandLineError.missingPasswordEnv(passwordEnv)
         }
-        return RDPCredentials(username: username, domain: domain, password: password)
+        return try RDPCredentials.validated(username: username, domain: domain, password: password)
     }
 
     public func configuration(
