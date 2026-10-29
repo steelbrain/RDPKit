@@ -139,7 +139,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         launchStore?.registerDiagnostics(diagnosticsModel, for: sessionID)
         startDiagnosticsLoop()
         startClipboardPollingLoop()
-        loadRememberedPasswordIfAvailable()
+        loadRememberedPasswordIfAvailable(keepingEnteredPassword: true)
         render()
         if shouldAutoConnect {
             shouldAutoConnect = false
@@ -1251,7 +1251,9 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         ].joined(separator: "x")
     }
 
-    private func loadRememberedPasswordIfAvailable() {
+    /// `keepingEnteredPassword` keeps a password the user already entered for this account, and
+    /// its Remember choice, over the saved one: the draft's password may be newer than Keychain's.
+    private func loadRememberedPasswordIfAvailable(keepingEnteredPassword: Bool = false) {
         guard !isConnecting,
               let key = KeychainCredentialKey(host: host, portText: port, username: username, domain: domain)
         else {
@@ -1271,6 +1273,9 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
             }
 
             hasRememberedPassword = true
+            guard keepingEnteredPassword == false || password.isEmpty else {
+                return
+            }
             rememberPassword = true
             password = savedPassword
             keychainMessage = "Password loaded from Keychain."
