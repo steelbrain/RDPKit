@@ -234,7 +234,8 @@
 - RDPClient:
   - Ends a session none of whose frames decode, for example video in an
     H.264 profile VideoToolbox refuses, at the connection timeout instead of
-    staying on Connecting.
+    staying on Connecting. One the server ends before any frame was shown
+    says it ended before the desktop appeared.
   - Explains why a session ended or failed in plain words, including the
     server's reason after the desktop was shown, and offers the credentials
     again after a refused sign-in. RDPKit's own text stays in Stats for
