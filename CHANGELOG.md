@@ -280,6 +280,9 @@
     characters, dead keys included, go as their scancodes for the server's
     own layout to type. The Mac's composed characters and accents are not
     sent.
+  - RDPClient keeps track of held keys while it has no session, so a
+    session attached later is not sent a stale key, such as a Windows key
+    release left over from a Command shortcut pressed before it attached.
   - Clipboard sharing can be turned on mid-session; with it off, nothing
     crosses either way. To allow that, RDPClient always joins the clipboard
     channel, which empties a Windows server's clipboard at connect. Turning
