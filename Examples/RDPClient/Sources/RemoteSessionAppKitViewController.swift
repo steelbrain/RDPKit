@@ -485,15 +485,8 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         case nil:
             break
         }
-        if let warning = report?.warnings.first ?? serverCertificateInfo?.warnings.first {
-            return RDPAppKitNoticeState(
-                title: warning.code,
-                message: warning.message,
-                systemImage: "lock.trianglebadge.exclamationmark.fill",
-                actionTitle: "Trust Certificate",
-                action: .trustCertificate
-            )
-        }
+        // Only a refused certificate is offered for trust. The session's other warnings are not
+        // about the certificate; Stats for Nerds lists them.
         if let certificateTrustMessage {
             return RDPAppKitNoticeState(
                 title: "Certificate",

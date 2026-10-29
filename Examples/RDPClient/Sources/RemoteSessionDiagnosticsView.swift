@@ -235,6 +235,7 @@ struct RemoteSessionDiagnosticsWindowContent: View {
                     DiagnosticRow("Status", statusText(snapshot))
                     DiagnosticRow("Stage", snapshot.report?.stage ?? "not started")
                     DiagnosticRow("Disconnect Reason", disconnectReason(snapshot))
+                    DiagnosticRow("Warnings", warningSummary(snapshot.report?.warnings))
                     DiagnosticRow("Requested Desktop", snapshot.requestedDesktopSize)
                     DiagnosticRow("Viewer Size", snapshot.viewerPixelSize?.label ?? "unknown")
                     DiagnosticRow("Requested Protocols", snapshot.report?.requestedProtocols.joined(separator: ", ") ?? "none")
@@ -475,6 +476,15 @@ struct RemoteSessionDiagnosticsWindowContent: View {
             return error
         }
         return "none"
+    }
+
+    private func warningSummary(_ warnings: [RDPConnectionWarning]?) -> String {
+        guard let warnings, !warnings.isEmpty else {
+            return "none"
+        }
+        return warnings
+            .map { "\($0.code): \($0.message)" }
+            .joined(separator: "\n")
     }
 
     private func certificateState(_ snapshot: RemoteSessionDiagnosticsSnapshot) -> String {
