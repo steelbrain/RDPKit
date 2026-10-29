@@ -581,11 +581,11 @@ import Testing
     // Over black and over white, each pointer matches Windows' own drawing of the cursor, except
     // where Windows XORs the screen: those pixels are black, and the transparent ones next to
     // them white.
-    for pointer in try windowsPointerFixtures() {
+    for pointer in try capturedPointers("windows-pointers") {
         let bitmap = try #require(RDPRemotePointerBitmap(pointer.image))
         let pixels = [UInt8](bitmap.pixels)
-        let overBlack = [UInt8](pointer.drawnOverBlack)
-        let overWhite = [UInt8](pointer.drawnOverWhite)
+        let overBlack = try [UInt8](#require(pointer.drawnOverBlack))
+        let overWhite = try [UInt8](#require(pointer.drawnOverWhite))
         // A pixel Windows draws darker over white than over black XORs the screen.
         let xors = (0 ..< pointer.width * pointer.height).map { index in
             (index * 3 ..< index * 3 + 3).contains { overWhite[$0] < overBlack[$0] }
@@ -622,7 +622,7 @@ import Testing
     // The probe cursor's colors, which Windows holds not premultiplied, from the top: red at
     // alpha 128 at (0, 0), white at alpha 64 at (0, 16), opaque magenta under AND bits of 1
     // at (24, 0), and transparent black under AND bits of 0 at (24, 20).
-    let probe = try #require(windowsPointerFixtures().first { $0.name == "alpha-probe" })
+    let probe = try #require(capturedPointers("windows-pointers").first { $0.name == "alpha-probe" })
     let pixels = try [UInt8](#require(RDPRemotePointerBitmap(probe.image)).pixels)
     func pixel(row: Int, column: Int) -> [UInt8] {
         Array(pixels[(row * probe.width + column) * 4 ..< (row * probe.width + column) * 4 + 4])
@@ -634,11 +634,31 @@ import Testing
     #expect(pixel(row: 24, column: 20) == clear)
 }
 
-/// Pointers Windows 11 25H2 (build 26200) sent on 2026-10-29, each with Windows' own drawing
-/// of the cursor (DrawIconEx) over black and over white, as RGB rows from the top. `-probe`
-/// pointers are test cursors: `monochrome-probe` made by CreateCursor, which arrives at 24 bpp;
-/// `alpha-probe` with alpha; `color-probe` without alpha, with inverting and XOR-red pixels.
-private struct WindowsPointerFixture: Decodable {
+@Test func pointerBitmapKeepsGNOMEPremultipliedColors() throws {
+    // gnome-remote-desktop 51.0's arrow has a white fill, yet no soft edge pixel's color exceeds
+    // its alpha: the colors are premultiplied, so they pass through.
+    let arrow = try #require(capturedPointers("gnome-pointers").first)
+    let xorMask = [UInt8](arrow.xorMask)
+    let pixels = try [UInt8](#require(RDPRemotePointerBitmap(arrow.image)).pixels)
+    // The wire's blue, green, red and alpha bytes, bottom-up.
+    var wirePixels: [UInt8] = []
+    for row in (0 ..< arrow.height).reversed() {
+        for pixel in stride(from: row * arrow.width * 4, to: (row + 1) * arrow.width * 4, by: 4) {
+            wirePixels += [xorMask[pixel + 2], xorMask[pixel + 1], xorMask[pixel], xorMask[pixel + 3]]
+        }
+    }
+
+    #expect(arrow.andMask.isEmpty)
+    #expect(pixels == wirePixels)
+}
+
+/// Pointers captured from servers on 2026-10-29: `windows-pointers` from Windows 11 25H2 (build
+/// 26200), each with Windows' own drawing of the cursor (DrawIconEx) over black and over white
+/// as RGB rows from the top, and `gnome-pointers` from gnome-remote-desktop 51.0. Windows'
+/// `-probe` pointers are test cursors: `monochrome-probe` made by CreateCursor, which arrives at
+/// 24 bpp; `alpha-probe` with alpha; `color-probe` without alpha, with inverting and XOR-red
+/// pixels.
+private struct CapturedPointer: Decodable {
     var name: String
     var xorBitsPerPixel: UInt16
     var width: Int
@@ -646,8 +666,8 @@ private struct WindowsPointerFixture: Decodable {
     var hotSpot: [UInt16]
     var xorMask: Data
     var andMask: Data
-    var drawnOverBlack: Data
-    var drawnOverWhite: Data
+    var drawnOverBlack: Data?
+    var drawnOverWhite: Data?
 
     var image: RDPRemotePointerImage {
         RDPRemotePointerImage(
@@ -662,13 +682,9 @@ private struct WindowsPointerFixture: Decodable {
     }
 }
 
-private func windowsPointerFixtures() throws -> [WindowsPointerFixture] {
-    let url = try #require(Bundle.module.url(
-        forResource: "windows-pointers",
-        withExtension: "json",
-        subdirectory: "Fixtures"
-    ))
-    return try JSONDecoder().decode([WindowsPointerFixture].self, from: Data(contentsOf: url))
+private func capturedPointers(_ name: String) throws -> [CapturedPointer] {
+    let url = try #require(Bundle.module.url(forResource: name, withExtension: "json", subdirectory: "Fixtures"))
+    return try JSONDecoder().decode([CapturedPointer].self, from: Data(contentsOf: url))
 }
 
 private let black: [UInt8] = [0x00, 0x00, 0x00, 0xff]

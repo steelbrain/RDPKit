@@ -20,11 +20,12 @@ import Foundation
 ///   monochrome cursor at 24 bpp.
 /// - 16 bpp: RGB565, RDP's 16-bit color ([MS-RDPBCGR] 2.2.1.3.2).
 /// - 24 bpp: blue, green and red bytes.
-/// - 32 bpp: blue, green, red and alpha bytes. Windows premultiplies the colors by alpha, and
-///   KRdp does not; a mask with any color above its alpha is taken as not premultiplied. A
-///   mask with any non-zero alpha, or with no AND mask (KRdp sends none), is an alpha cursor:
-///   alpha alone gives the shape, and an AND mask is ignored, as Windows draws one. With an AND
-///   mask and only zero alpha, the colors are opaque and combine with the AND mask like 24 bpp.
+/// - 32 bpp: blue, green, red and alpha bytes. Windows and gnome-remote-desktop premultiply the
+///   colors by alpha, and KRdp does not; a mask with any color above its alpha is taken as not
+///   premultiplied. A mask with any non-zero alpha, or with no AND mask (KRdp and
+///   gnome-remote-desktop send none), is an alpha cursor: alpha alone gives the shape, and an
+///   AND mask is ignored, as Windows draws one. With an AND mask and only zero alpha, the
+///   colors are opaque and combine with the AND mask like 24 bpp.
 /// - 4 and 8 bpp index the session palette, which only sessions of 8 bpp or fewer have.
 ///   RDPKit asks for 15 bpp or more, so these depths are not decoded.
 public struct RDPRemotePointerBitmap: Equatable, Sendable {
@@ -59,8 +60,9 @@ public struct RDPRemotePointerBitmap: Equatable, Sendable {
         let usesAlpha = bitsPerPixel == 32
             && (andMask.isEmpty || stride(from: 3, to: xorMask.count, by: 4).contains { xorMask[$0] != 0 })
         // Windows 11 25H2 sends premultiplied colors (Fixtures/windows-pointers.json: its cursors'
-        // own straight colors arrive multiplied by alpha). KRdp sends straight colors, some above
-        // their alpha (krdp-negotiation-transcript.json), which premultiplied colors cannot be.
+        // own straight colors arrive multiplied by alpha), and so does gnome-remote-desktop 51
+        // (gnome-pointers.json). KRdp sends straight colors, some above their alpha
+        // (krdp-negotiation-transcript.json), which premultiplied colors cannot be.
         let isPremultiplied = usesAlpha && stride(from: 0, to: xorMask.count, by: 4).allSatisfy {
             max(xorMask[$0], xorMask[$0 + 1], xorMask[$0 + 2]) <= xorMask[$0 + 3]
         }
