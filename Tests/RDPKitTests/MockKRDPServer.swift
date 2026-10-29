@@ -1342,7 +1342,7 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
         stage = .graphicsFrameAcknowledge
         if options.graphicsBehavior == .endSessionLikeGnomeAfterFirstFrame {
             write(MockKRDPFixtures.setErrorInfo(0x0000_0001), context: context)
-            write(MockKRDPFixtures.disconnectProviderUltimatum(reason: 3), context: context)
+            write(MockKRDPFixtures.disconnectProviderUltimatum(), context: context)
             context.close(promise: nil)
         }
     }
@@ -1735,11 +1735,13 @@ private enum MockKRDPFixtures {
         return shareDataPacket(pduType2: 0x26, payload: payload)
     }
 
+    /// grantId is the client's user channel and controlId the server channel
+    /// ([MS-RDPBCGR] 2.2.1.21), as KRdp and gnome-remote-desktop send them.
     static func controlGranted() -> Data {
         var payload = Data()
         payload.appendLittleEndianUInt16(0x0002)
-        payload.appendLittleEndianUInt16(MockKRDPConstants.serverUserID)
-        payload.appendLittleEndianUInt32(UInt32(MockKRDPConstants.userChannelID))
+        payload.appendLittleEndianUInt16(MockKRDPConstants.userChannelID)
+        payload.appendLittleEndianUInt32(UInt32(RDPServerChannelID.fixed))
         return shareDataPacket(pduType2: 0x14, payload: payload)
     }
 
@@ -1823,13 +1825,8 @@ private enum MockKRDPFixtures {
         )
     }
 
-    static func disconnectProviderUltimatum(reason: UInt8 = 3) -> Data {
-        Data([
-            0x03, 0x00, 0x00, 0x09,
-            0x02, 0xF0, 0x80,
-            0x20 | ((reason >> 1) & 0x01),
-            (reason & 0x01) << 7,
-        ])
+    static func disconnectProviderUltimatum() -> Data {
+        MCSDisconnectProviderUltimatumPDU.userRequested.encodedTPKT()
     }
 
     static func dynamicCapabilitiesRequest(version: UInt16 = 2) -> Data {
