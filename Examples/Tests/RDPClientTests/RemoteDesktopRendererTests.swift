@@ -223,6 +223,7 @@ private func placeOnePixelWiderThanTheDesktop(_ view: NSView) -> (window: NSWind
 }
 
 private final class RecordedPointerInput: RDPInputEventSending {
+    let supportsUnicodeInput = true
     var events: [RDPSlowPathInputEvent] = []
 
     func send(_ events: [RDPSlowPathInputEvent]) {

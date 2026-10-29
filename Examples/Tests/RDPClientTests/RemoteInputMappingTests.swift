@@ -73,8 +73,11 @@ import Testing
     let nothingDown = RDPInputStateTracker()
     var inputState = RDPInputStateTracker()
     var heldKeys = MacRDPDeferredModifierKeys()
-    #expect(MacRDPDeferredModifierKeys.isDeferred(rightAlt))
-    #expect(MacRDPDeferredModifierKeys.isDeferred(RDPKeyboardScancode(code: 0x38)) == false)
+    #expect(MacRDPDeferredModifierKeys.isDeferred(rightAlt, holdsBackAlt: true))
+    #expect(MacRDPDeferredModifierKeys.isDeferred(RDPKeyboardScancode(code: 0x38), holdsBackAlt: true) == false)
+    // A server without Unicode input gets right Alt at once, but the Windows keys still wait.
+    #expect(MacRDPDeferredModifierKeys.isDeferred(rightAlt, holdsBackAlt: false) == false)
+    #expect(MacRDPDeferredModifierKeys.isDeferred(leftWindows, holdsBackAlt: false))
 
     // Released alone: an Alt tap; ahead of another key: Alt down.
     heldKeys.press(rightAlt, inputState: nothingDown)
@@ -705,6 +708,7 @@ private func windowsTypes(
 }
 
 private final class RecordedInput: RDPInputEventSending {
+    var supportsUnicodeInput = true
     var events: [RDPSlowPathInputEvent] = []
 
     func send(_ events: [RDPSlowPathInputEvent]) {
@@ -1183,6 +1187,62 @@ private let rightOptionFlags = NSEvent.ModifierFlags(rawValue: NSEvent.ModifierF
             .keyboard(scancode: rightAlt, isReleased: true),
         ] + keyAPress
         + altE + composedA)
+}
+
+/// A server that takes no Unicode input gets the keys pressed, so its own layout types the
+/// text: right Option goes as Alt at once (AltGr), and a key whose character would have gone as
+/// Unicode, a dead key included, goes as its scancode with Shift as held. The Mac's composed
+/// characters and accents never go, and no other key stands in for them.
+@MainActor
+@Test func withoutUnicodeInputEveryKeyGoesAsItsScancode() throws {
+    let rightAlt = RDPKeyboardScancode(code: 0x38, isExtended: true)
+    let leftShift = RDPKeyboardScancode(code: 0x2A)
+    let input = RecordedInput()
+    input.supportsUnicodeInput = false
+    let view = RemoteInputCaptureNSView()
+    view.inputSession = input
+    view.keyboard = MacRDPWindowsKeyboard(layout: RDPKeyboardLayout(rawValue: 0x0000_0407))
+    view.isDeadKey = { keyCode, _ in Int(keyCode) == kVK_ANSI_Equal }
+    view.uncomposedOutput = { keyCode, _ in [kVK_ANSI_E: "e", kVK_Return: "\r"][Int(keyCode)] }
+    func modifier(_ keyCode: Int, _ flags: NSEvent.ModifierFlags) throws {
+        view.flagsChanged(with: try keyEvent(.flagsChanged, keyCode: keyCode, modifierFlags: flags))
+    }
+    func press(_ keyCode: Int, _ characters: String, _ ignoring: String, _ flags: NSEvent.ModifierFlags = []) throws {
+        view.keyDown(with: try keyEvent(.keyDown, keyCode: keyCode, characters: characters, charactersIgnoringModifiers: ignoring, modifierFlags: flags))
+        view.keyUp(with: try keyEvent(.keyUp, keyCode: keyCode, characters: characters, charactersIgnoringModifiers: ignoring, modifierFlags: flags))
+    }
+    func scancodes(_ codes: UInt16...) -> [RDPSlowPathInputEvent] {
+        codes.flatMap { code in
+            [true, false].map { .keyboard(scancode: RDPKeyboardScancode(code: code), isReleased: !$0) }
+        }
+    }
+
+    // German Mac: Option-L types "@", which German Windows has on AltGr-Q.
+    try modifier(kVK_RightOption, rightOptionFlags)
+    try press(kVK_ANSI_L, "@", "l", rightOptionFlags)
+    try modifier(kVK_RightOption, [])
+    // The dead key "´", then "e", which the Mac composes to "é"; then "´" and Return ("´\r").
+    try press(kVK_ANSI_Equal, "", "´")
+    try press(kVK_ANSI_E, "é", "e")
+    try press(kVK_ANSI_Equal, "", "´")
+    try press(kVK_Return, "´\r", "\r")
+    // A layout with no table: every character would have gone as Unicode.
+    view.keyboard = MacRDPWindowsKeyboard(layout: RDPKeyboardLayout(rawValue: 0x1234_5678))
+    try press(kVK_ANSI_Q, "q", "q")
+    let shift = NSEvent.ModifierFlags(rawValue: NSEvent.ModifierFlags.shift.rawValue | 0x2)
+    try modifier(kVK_Shift, shift)
+    try press(kVK_ANSI_Q, "Q", "Q", shift)
+    try modifier(kVK_Shift, [])
+    // A key with no scancode sends nothing.
+    try press(kVK_ANSI_KeypadClear, "\u{F739}", "\u{F739}")
+
+    #expect(input.events == [.keyboard(scancode: rightAlt, isReleased: false)]
+        + scancodes(0x26)
+        + [.keyboard(scancode: rightAlt, isReleased: true)]
+        + scancodes(0x0D, 0x12, 0x0D, 0x1C, 0x10)
+        + [.keyboard(scancode: leftShift, isReleased: false)]
+        + scancodes(0x10)
+        + [.keyboard(scancode: leftShift, isReleased: true)])
 }
 
 /// Left Option goes as Alt at once, for shortcuts; right Option goes as Alt ahead of a key it
