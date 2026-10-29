@@ -1084,9 +1084,11 @@ public final class RDPClipboardSession: @unchecked Sendable {
         let answered = slot.response
         switch answered {
         case .unicodeText where !requestsRichFormats:
-            return response.ok ? try .text(response.decodedUnicodeText()) : nil
+            return response.ok ? try event(.text(response.decodedUnicodeText()), ifStillCurrent: slot) : nil
         case .fileGroupDescriptorW:
-            return response.ok ? try .fileGroupDescriptor(response.decodedFileGroupDescriptorW()) : nil
+            return response.ok
+                ? try event(.fileGroupDescriptor(response.decodedFileGroupDescriptorW()), ifStillCurrent: slot)
+                : nil
         default:
             break
         }
@@ -1118,6 +1120,12 @@ public final class RDPClipboardSession: @unchecked Sendable {
             }
             return .content(remoteContent)
         }
+    }
+
+    /// `event`, decoded from the response to `slot` outside the lock, or nil when fetching
+    /// was turned off or a new copy came since, as for a part of a rich copy.
+    private func event(_ event: RDPClipboardEvent, ifStillCurrent slot: RDPClipboardFormatDataRequestSlot) -> RDPClipboardEvent? {
+        lock.withLock { slot.copyID == remoteCopyID } ? event : nil
     }
 
     /// The server waits for an answer to these even when they cannot be processed, and
