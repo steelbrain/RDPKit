@@ -95,6 +95,7 @@ final class RDPRemoteSessionClipboard {
 
     /// The user's choice, which also ends a temporary share.
     func setSharingEnabled(_ enabled: Bool) {
+        let wasEnabled = isSharingEnabled
         isSharingEnabled = enabled
         temporarySharingExpiresAt = nil
         session?.fetchesRemoteCopies = enabled
@@ -106,12 +107,18 @@ final class RDPRemoteSessionClipboard {
             pasteboardChangeCount = pasteboard.changeCount
             return
         }
+        // The server may hold a newer copy, or be sending one, that the pasteboard would replace.
+        guard wasEnabled == false else {
+            return
+        }
         message = session == nil ? nil : "Ready."
         publishPasteboardIfChanged(force: true)
     }
 
+    /// Sends a local copy the next poll would. The pasteboard as last sent or received is
+    /// not sent again, so a newer remote copy, or its download, is kept.
     func syncNow() {
-        publishPasteboardIfChanged(force: true)
+        publishPasteboardIfChanged()
     }
 
     func startTemporarySharing() {
@@ -236,6 +243,8 @@ final class RDPRemoteSessionClipboard {
         continueFileTransfer(transfer)
     }
 
+    /// `force` sends an unchanged pasteboard too, to a server that has had nothing of it:
+    /// one just attached, or with sharing just turned on.
     private func publishPasteboardIfChanged(force: Bool = false) {
         guard isSharingEnabled, session != nil else {
             pasteboardChangeCount = pasteboard.changeCount

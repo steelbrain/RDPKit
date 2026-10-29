@@ -306,6 +306,41 @@ private func pasteboardFileURLs(_ pasteboard: NSPasteboard) -> [URL] {
     #expect(clipboard.statusMessage == "Remote file copied: big.bin.")
 }
 
+/// Sync Now and another "Share for 30s" send only a change, so the server's newer copy and
+/// its download are kept.
+@MainActor
+@Test func syncingAnUnchangedPasteboardKeepsARemoteDownload() throws {
+    let pasteboard = makePasteboard()
+    defer { pasteboard.releaseGlobally() }
+    let session = RecordedClipboard()
+    let clipboard = RDPRemoteSessionClipboard(isSharingEnabled: false, pasteboard: pasteboard)
+    clipboard.attach(session)
+    let contents = Data("remote".utf8)
+
+    // A share that starts sends the pasteboard as it is.
+    pasteboard.clearContents()
+    pasteboard.setString("local text", forType: .string)
+    clipboard.startTemporarySharing()
+    #expect(session.publishedTexts == [nil, "local text"])
+
+    try startRemoteFileDownload(contents, to: clipboard, from: session)
+    clipboard.syncNow()
+    clipboard.startTemporarySharing()
+    #expect(clipboard.isSharingEnabled)
+    try answerRangeRequest(with: contents, to: clipboard, from: session)
+    let fileURL = try #require(pasteboardFileURLs(pasteboard).first)
+    defer { try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent()) }
+    #expect(try Data(contentsOf: fileURL) == contents)
+    #expect(session.publishedTexts == [nil, "local text"])
+    #expect(session.publishedFiles.isEmpty)
+
+    // A change is sent at once.
+    pasteboard.clearContents()
+    pasteboard.setString("newer local text", forType: .string)
+    clipboard.syncNow()
+    #expect(session.publishedTexts.last == "newer local text")
+}
+
 @MainActor
 @Test func aDownloadTheServerStopsAnsweringTimesOut() throws {
     let pasteboard = makePasteboard()
