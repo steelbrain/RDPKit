@@ -160,6 +160,9 @@ public struct RDPRemotePointerBitmap: Equatable, Sendable {
             let level: UInt8 = mask[row + column / 8] & (0x80 >> (column % 8)) == 0 ? 0 : 0xFF
             return XORColor(red: level, green: level, blue: level, alpha: 0xFF, isNonZero: level != 0)
         case 16:
+            // rdesktop reads RGB565 too (SPLITCOLOUR16 in xwin.c), as FreeRDP did when it began reading
+            // 16-bpp pointers from Windows XP (FreeRDP pull request 2692); FreeRDP has read RGB555
+            // since 2016, with no reason given. Windows 11 sends none, even in a 16-bpp session.
             let value = Int(mask[row + column * 2]) | Int(mask[row + column * 2 + 1]) << 8
             return XORColor(
                 red: UInt8(((value >> 11) * 255 + 15) / 31),
