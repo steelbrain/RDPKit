@@ -38,6 +38,10 @@ final class RemoteDesktopSampleBufferNSView: NSView {
     private let displayLayer = AVSampleBufferDisplayLayer()
     private let sampleBufferFactory = RDPFrameSampleBufferFactory()
     private var lastPresentationID: Int?
+    /// Shown again when the layer fails between frames; an idle remote screen sends no new one.
+    private var lastPresentation: RDPDecodedFramePresentation?
+    private var didResendLastPresentation = false
+    private var displayLayerObservers: [any NSObjectProtocol] = []
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -52,6 +56,7 @@ final class RemoteDesktopSampleBufferNSView: NSView {
     deinit {
         MainActor.assumeIsolated {
             clear()
+            displayLayerObservers.forEach(NotificationCenter.default.removeObserver)
         }
     }
 
@@ -85,7 +90,22 @@ final class RemoteDesktopSampleBufferNSView: NSView {
         guard lastPresentationID != id else {
             return
         }
+        if enqueue(presentation) {
+            lastPresentationID = id
+            lastPresentation = presentation
+            didResendLastPresentation = false
+        }
+    }
 
+    func clear() {
+        displayLayer.flushAndRemoveImage()
+        lastPresentationID = nil
+        lastPresentation = nil
+        didResendLastPresentation = false
+        sampleBufferFactory.reset()
+    }
+
+    private func enqueue(_ presentation: RDPDecodedFramePresentation) -> Bool {
         let disposition = rdpSampleBufferDisplayDisposition(
             displayFormatWillChange: sampleBufferFactory.willChangeDisplayFormat(for: presentation),
             rendererFailed: displayLayer.status == .failed,
@@ -101,16 +121,28 @@ final class RemoteDesktopSampleBufferNSView: NSView {
         do {
             let sampleBuffer = try sampleBufferFactory.makeSampleBuffer(for: presentation)
             displayLayer.enqueue(sampleBuffer)
-            lastPresentationID = id
+            return true
         } catch {
             flushQueuedSamples()
+            return false
         }
     }
 
-    func clear() {
-        flushQueuedSamples()
-        lastPresentationID = nil
-        sampleBufferFactory.reset()
+    /// Shows the last frame again once, so a layer that failed or needs a flush does not stay
+    /// blank until the remote screen changes.
+    private func displayLayerNeedsRecovery() {
+        guard rdpShouldResendLastPresentation(
+            hasLastPresentation: lastPresentation != nil,
+            didResendLastPresentation: didResendLastPresentation,
+            rendererFailed: displayLayer.status == .failed,
+            requiresFlushToResume: displayLayer.requiresFlushToResumeDecoding
+        ),
+            let lastPresentation
+        else {
+            return
+        }
+        didResendLastPresentation = true
+        _ = enqueue(lastPresentation)
     }
 
     private func configureLayers() {
@@ -121,6 +153,22 @@ final class RemoteDesktopSampleBufferNSView: NSView {
         displayLayer.videoGravity = .resizeAspect
         layer?.addSublayer(displayLayer)
         updateContentsScale()
+        observeDisplayLayer()
+    }
+
+    /// AVFoundation can post these on its own threads. The observer runs on the posting thread
+    /// and only schedules the recovery on the main thread, so the post never waits for it.
+    private func observeDisplayLayer() {
+        displayLayerObservers = [
+            NSNotification.Name.AVSampleBufferDisplayLayerFailedToDecode,
+            .AVSampleBufferDisplayLayerRequiresFlushToResumeDecodingDidChange,
+        ].map { name in
+            NotificationCenter.default.addObserver(forName: name, object: displayLayer, queue: nil) { [weak self] _ in
+                DispatchQueue.main.async {
+                    self?.displayLayerNeedsRecovery()
+                }
+            }
+        }
     }
 
     private func updateContentsScale() {
@@ -147,6 +195,17 @@ func rdpSampleBufferDisplayDisposition(
         return .flushAndEnqueue
     }
     return .enqueue
+}
+
+/// Once per frame: a layer that fails again on the same frame waits for the next one rather than
+/// retrying in a loop.
+func rdpShouldResendLastPresentation(
+    hasLastPresentation: Bool,
+    didResendLastPresentation: Bool,
+    rendererFailed: Bool,
+    requiresFlushToResume: Bool
+) -> Bool {
+    hasLastPresentation && !didResendLastPresentation && (rendererFailed || requiresFlushToResume)
 }
 
 /// Holds the one decoded frame waiting for the next display-link tick.

@@ -62,6 +62,39 @@ func displayResetConditionsFlushBeforeEnqueue(
     #expect(window.firstResponder is RemoteInputCaptureNSView)
 }
 
+@Test func aFailedLayerShowsTheLastFrameAgainOnce() {
+    #expect(rdpShouldResendLastPresentation(
+        hasLastPresentation: true,
+        didResendLastPresentation: false,
+        rendererFailed: true,
+        requiresFlushToResume: false
+    ))
+    #expect(rdpShouldResendLastPresentation(
+        hasLastPresentation: true,
+        didResendLastPresentation: false,
+        rendererFailed: false,
+        requiresFlushToResume: true
+    ))
+    #expect(!rdpShouldResendLastPresentation(
+        hasLastPresentation: true,
+        didResendLastPresentation: true,
+        rendererFailed: true,
+        requiresFlushToResume: false
+    ))
+    #expect(!rdpShouldResendLastPresentation(
+        hasLastPresentation: false,
+        didResendLastPresentation: false,
+        rendererFailed: true,
+        requiresFlushToResume: true
+    ))
+    #expect(!rdpShouldResendLastPresentation(
+        hasLastPresentation: true,
+        didResendLastPresentation: false,
+        rendererFailed: false,
+        requiresFlushToResume: false
+    ))
+}
+
 private func frameMetadata(width: UInt16, height: UInt16) -> RDPFrameMetadata {
     RDPFrameMetadata(RDPGraphicsFrameSnapshot(
         frameID: nil,
