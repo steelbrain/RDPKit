@@ -113,10 +113,6 @@ struct ByteCursor {
         bytes.count - offset
     }
 
-    var currentOffset: Int {
-        offset
-    }
-
     mutating func readUInt8() throws -> UInt8 {
         try require(1)
         defer { offset += 1 }
