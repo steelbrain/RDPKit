@@ -278,30 +278,34 @@ private struct RDPGFXCAVideoStreamSummary {
     init(_ data: Data) throws {
         var cursor = ByteCursor(data)
         while cursor.remaining > 0 {
-            try addBlock(from: &cursor)
+            let block = try readRemoteFXBlock(&cursor)
+            add(block.type)
+            if block.type == Self.tileSetBlockType {
+                try addTiles(of: block.body)
+            }
         }
     }
 
-    private mutating func addBlock(from cursor: inout ByteCursor) throws {
-        let block = try readRemoteFXBlock(&cursor)
-        blockTypeNames.append(remoteFXBlockName(block.type, names: Self.blockNames))
-        switch block.type {
-        case Self.tileSetBlockType:
-            // Channel header, subtype and idx precede the properties; the quant
-            // count is followed by tileSize, numTiles, tilesDataSize and the quant values.
-            var body = ByteCursor(block.body)
-            _ = try body.readData(count: 6)
-            let properties = try body.readLittleEndianUInt16()
-            tileSetEntropyAlgorithms.append(Self.entropyAlgorithmName((properties >> 10) & 0x0F))
-            let quantCount = try body.readUInt8()
-            _ = try body.readData(count: 7 + Int(quantCount) * 5)
-            while body.remaining > 0 {
-                try addBlock(from: &body)
-            }
-        case Self.tileBlockType:
+    private mutating func add(_ blockType: UInt16) {
+        blockTypeNames.append(remoteFXBlockName(blockType, names: Self.blockNames))
+        if blockType == Self.tileBlockType {
             tileCount += 1
-        default:
-            break
+        }
+    }
+
+    /// A tile set holds tiles (MS-RDPRFX 2.2.2.3.4), so the blocks in it are listed but
+    /// not walked: walking them would let a server nest tile sets as deep as it likes.
+    private mutating func addTiles(of tileSet: Data) throws {
+        // Channel header, subtype and idx precede the properties; the quant
+        // count is followed by tileSize, numTiles, tilesDataSize and the quant values.
+        var body = ByteCursor(tileSet)
+        _ = try body.readData(count: 6)
+        let properties = try body.readLittleEndianUInt16()
+        tileSetEntropyAlgorithms.append(Self.entropyAlgorithmName((properties >> 10) & 0x0F))
+        let quantCount = try body.readUInt8()
+        _ = try body.readData(count: 7 + Int(quantCount) * 5)
+        while body.remaining > 0 {
+            try add(readRemoteFXBlock(&body).type)
         }
     }
 

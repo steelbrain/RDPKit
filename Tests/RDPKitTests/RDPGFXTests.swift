@@ -967,6 +967,36 @@ import Testing
     #expect(summary.cavideoTileCount == 1)
 }
 
+/// A tile set holds tiles; one nested in another is listed, not walked, however deep a
+/// server nests them.
+@Test func summarizesCAVideoTileSetsNestedWithoutBound() throws {
+    let depth = 100_000
+    // Each tile set: channel header, subtype, idx, properties (RLGR3), no quant values,
+    // tileSize, numTiles and tilesDataSize, then the next one.
+    let tileSetFields = Data([0x01, 0x00, 0xC2, 0xCA, 0x00, 0x00, 0x51, 0x10, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
+    var stream = Data()
+    for level in 0 ..< depth {
+        stream.appendLittleEndianUInt16(0xCCC7)
+        stream.appendLittleEndianUInt32(UInt32((depth - level) * (6 + tileSetFields.count)))
+        stream.append(tileSetFields)
+    }
+    var payload = Data()
+    payload.appendLittleEndianUInt16(9)
+    payload.appendLittleEndianUInt16(RDPGFXCodecID.cavideo)
+    payload.appendUInt8(0x20)
+    payload.append(rectangleBytes(left: 0, top: 0, right: 64, bottom: 64))
+    payload.appendLittleEndianUInt32(UInt32(stream.count))
+    payload.append(stream)
+
+    let summary = try RDPGFXMessageSummary.summarize(
+        RDPGFXHeader.parse(from: graphicsMessage(commandID: RDPGFXCommandID.wireToSurface1, payload: payload))
+    )
+
+    #expect(summary.cavideoBlockTypeNames == ["tile-set", "tile-set"])
+    #expect(summary.cavideoTileSetEntropyAlgorithms == ["rlgr3"])
+    #expect(summary.cavideoTileCount == 0)
+}
+
 @Test func summarizesCAVideoRemoteFXCompressedTilePayload() throws {
     let cavideoStream = cavideoRemoteFXGrayTileStream(
         frameIndex: 9,
