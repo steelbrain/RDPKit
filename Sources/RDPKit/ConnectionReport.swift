@@ -521,7 +521,8 @@ extension RDPConnectionError {
         RDPConnectionError(.clientFailure, description: message)
     }
 
-    /// The `onGraphicsFrame` handler threw; the server's data was not at fault.
+    /// The `onGraphicsFrame` handler threw. RDPKit had parsed the frame, but what the handler
+    /// did with it, such as decoding its video, may still have failed on the server's data.
     static func graphicsFrameHandler(_ error: any Error) -> RDPConnectionError {
         RDPConnectionError(.graphicsFrameHandler, description: "graphics frame handler failed: \(error)")
     }
