@@ -770,6 +770,17 @@ final class RDPRemoteFXDecoder {
     // MARK: - RemoteFX (classic)
 
     func decode(_ data: Data) throws -> RDPRemoteFXDecodedFrame {
+        do {
+            return try decodeClassicMessage(data)
+        } catch {
+            // The frame a failed message left open is lost; the next message starts afresh.
+            classicDataBlockState = .frameBegin
+            classicRegionRects = []
+            throw error
+        }
+    }
+
+    private func decodeClassicMessage(_ data: Data) throws -> RDPRemoteFXDecodedFrame {
         var cursor = ByteCursor(data)
         var frameIndex: UInt32?
         var decodedTiles: [RDPRemoteFXDecodedTile] = []

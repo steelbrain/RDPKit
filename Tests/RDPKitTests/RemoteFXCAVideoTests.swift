@@ -46,6 +46,19 @@ import Testing
     #expect(frame.tiles.count == 1)
 }
 
+@Test func cavideoRemoteFXDecodesNextMessageAfterOneFailsInsideAFrame() throws {
+    let decoder = RDPRemoteFXDecoder()
+    // The tile set's quantization factor is invalid, so decoding fails after FRAME_BEGIN.
+    #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
+        _ = try decoder.decode(cavideoRemoteFXGrayTileStream(quantData: Data([0x65, 0x66, 0x77, 0x88, 0x98])))
+    }
+
+    let frame = try decoder.decode(cavideoRemoteFXGrayTileStream(frameIndex: 2))
+
+    #expect(frame.frameIndex == 2)
+    #expect(frame.tiles.count == 1)
+}
+
 @Test func cavideoRemoteFXRejectsOutOfSequenceFrameBlocks() throws {
     let blocks = cavideoRemoteFXBlocks(cavideoRemoteFXGrayTileStream())
     let blockOrder = [0, 1, 2, 3, 4, 6, 5, 7]
