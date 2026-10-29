@@ -110,7 +110,7 @@ import VideoToolbox
         "67 64 08 28 ac 2b 20 0a 00 c3 7f e0 02 00 01 e2 00 00 07 d0 00 03 a9 81 08",
         "67 64 08 28 ac 2b 20 0a 00 c3 7f e0 02 00 01 ed c0 43 40 50 00 00 3e 80 00 1d 4c 08 40"
     ),
-    // KRdp: Baseline profile with timing info and bitstream restrictions, here not from x264.
+    // KRdp: Baseline profile with timing info and bitstream restrictions, here not from KPipeWire.
     (
         "67 42 c0 3e da 00 f0 01 2d a1 00 00 03 00 01 00 00 07 d0 8f 08 04 2a",
         "67 42 c0 3e da 00 f0 01 2d a6 e0 21 a0 28 00 00 03 00 08 00 00 3e 84 78 40 21 50"
@@ -122,12 +122,12 @@ import VideoToolbox
 ])
 func sequenceParameterSetSignalsFullRangeBT709(originalHex: String, expectedHex: String) throws {
     let original = hexData(originalHex)
-    let rewritten = try #require(RDPH264SequenceParameterSet.signalingSampleColours(original, encodedByX264: false))
+    let rewritten = try #require(RDPH264SequenceParameterSet.signalingSampleColours(original, encodedByKPipeWire: false))
 
     #expect(rewritten == hexData(expectedHex))
-    #expect(RDPH264SequenceParameterSet.signalingSampleColours(rewritten, encodedByX264: false) == rewritten)
-    // x264 streams keep a range they signal.
-    #expect(RDPH264SequenceParameterSet.signalingSampleColours(rewritten, encodedByX264: true) == rewritten)
+    #expect(RDPH264SequenceParameterSet.signalingSampleColours(rewritten, encodedByKPipeWire: false) == rewritten)
+    // KPipeWire streams keep a range they signal.
+    #expect(RDPH264SequenceParameterSet.signalingSampleColours(rewritten, encodedByKPipeWire: true) == rewritten)
     let originalSize = CMVideoFormatDescriptionGetDimensions(try h264FormatDescription(sequenceParameterSet: original))
     let rewrittenFormat = try h264FormatDescription(sequenceParameterSet: rewritten)
     let rewrittenSize = CMVideoFormatDescriptionGetDimensions(rewrittenFormat)
@@ -135,9 +135,9 @@ func sequenceParameterSetSignalsFullRangeBT709(originalHex: String, expectedHex:
     try expectColours(of: rewrittenFormat, fullRange: true, matrix: kCMFormatDescriptionYCbCrMatrix_ITU_R_709_2)
 }
 
-@Test func x264SequenceParameterSetWithoutRangeSignalsLimitedRangeBT601() throws {
+@Test func kPipeWireSequenceParameterSetWithoutRangeSignalsLimitedRangeBT601() throws {
     let original = hexData("67 42 c0 3e da 00 f0 01 2d a1 00 00 03 00 01 00 00 07 d0 8f 08 04 2a")
-    let rewritten = try #require(RDPH264SequenceParameterSet.signalingSampleColours(original, encodedByX264: true))
+    let rewritten = try #require(RDPH264SequenceParameterSet.signalingSampleColours(original, encodedByKPipeWire: true))
 
     #expect(rewritten == hexData("67 42 c0 3e da 00 f0 01 2d a6 a0 21 a0 c8 00 00 03 00 08 00 00 3e 84 78 40 21 50"))
     try expectColours(
@@ -148,8 +148,8 @@ func sequenceParameterSetSignalsFullRangeBT709(originalHex: String, expectedHex:
 }
 
 @Test func sequenceParameterSetRewriteRejectsTruncatedSPS() {
-    #expect(RDPH264SequenceParameterSet.signalingSampleColours(hexData("67 64 08 28 ac"), encodedByX264: false) == nil)
-    #expect(RDPH264SequenceParameterSet.signalingSampleColours(hexData("68 ce 38 80"), encodedByX264: false) == nil)
+    #expect(RDPH264SequenceParameterSet.signalingSampleColours(hexData("67 64 08 28 ac"), encodedByKPipeWire: false) == nil)
+    #expect(RDPH264SequenceParameterSet.signalingSampleColours(hexData("68 ce 38 80"), encodedByKPipeWire: false) == nil)
 }
 
 /// FreeRDP's encoders code 1920x1080 as 1920x1088 pictures cropped in the SPS (freerdp-shadow
@@ -167,8 +167,8 @@ func sequenceParameterSetSignalsFullRangeBT709(originalHex: String, expectedHex:
     #expect(RDPH264SequenceParameterSet.removingFrameCropping(uncropped) == uncropped)
     // The VUI after the cropping is copied whole.
     #expect(
-        RDPH264SequenceParameterSet.signalingSampleColours(uncropped, encodedByX264: false).flatMap(RDPH264SequenceParameterSet.removingFrameCropping)
-            == RDPH264SequenceParameterSet.signalingSampleColours(cropped, encodedByX264: false).flatMap(RDPH264SequenceParameterSet.removingFrameCropping)
+        RDPH264SequenceParameterSet.signalingSampleColours(uncropped, encodedByKPipeWire: false).flatMap(RDPH264SequenceParameterSet.removingFrameCropping)
+            == RDPH264SequenceParameterSet.signalingSampleColours(cropped, encodedByKPipeWire: false).flatMap(RDPH264SequenceParameterSet.removingFrameCropping)
     )
 }
 
@@ -180,12 +180,39 @@ func sequenceParameterSetSignalsFullRangeBT709(originalHex: String, expectedHex:
     #expect(RDPH264SequenceParameterSet.croppedWidth(hexData("67 64 08 28 ac")) == nil)
 }
 
-@Test func x264IsIdentifiedByItsVersionSEI() throws {
-    #expect(try RDPAnnexB.identifiesX264(firstTranscriptFrame("krdp-colour-chart-transcript").encodedVideoData))
-    #expect(try !RDPAnnexB.identifiesX264(firstTranscriptFrame("gnome-negotiation-transcript").encodedVideoData))
+@Test func kPipeWireIsIdentifiedByItsX264Options() throws {
+    #expect(try RDPAnnexB.identifiesKPipeWire(firstTranscriptFrame("krdp-colour-chart-transcript").encodedVideoData))
+    #expect(try RDPAnnexB.identifiesKPipeWire(firstTranscriptFrame("krdp-negotiation-transcript").encodedVideoData))
+    // x264 configured by FreeRDP, and another encoder.
+    #expect(try !RDPAnnexB.identifiesKPipeWire(
+        firstTranscriptFrame("freerdp-shadow-avc420-transcript", graphicsCapabilityProfile: .avc420).encodedVideoData
+    ))
+    #expect(try !RDPAnnexB.identifiesKPipeWire(firstTranscriptFrame("gnome-negotiation-transcript").encodedVideoData))
+
+    let options = "cabac=0 ref=1 deblock=0:0:0 analyse=0:0 me=dia subme=0 psy=1 psy_rd=1,00:0,00 mixed_ref=0 "
+        + "me_range=16 chroma_me=1 trellis=0 8x8dct=0 cqm=0 deadzone=21,11 fast_pskip=1 chroma_qp_offset=0 "
+    #expect(RDPAnnexB.identifiesKPipeWire(x264VersionSEI(options: options + "keyint=100 rc=crf crf=21,0")))
+    #expect(!RDPAnnexB.identifiesKPipeWire(x264VersionSEI(options: options + "keyint=250 rc=crf crf=23.0")))
+    #expect(!RDPAnnexB.identifiesKPipeWire(x264VersionSEI(options: options + "keyint=100 rc=abr bitrate=10000")))
     // An SEI of another payload type, and one cut short.
-    #expect(!RDPAnnexB.identifiesX264(hexData("00 00 00 01 06 04 10 dc 45 e9 bd e6 d9 48 b7 96 2c d8 20 d9 23 ee ef")))
-    #expect(!RDPAnnexB.identifiesX264(hexData("00 00 00 01 06 05 10 dc 45 e9")))
+    #expect(!RDPAnnexB.identifiesKPipeWire(x264VersionSEI(options: "keyint=100 rc=crf", payloadType: 4)))
+    #expect(!RDPAnnexB.identifiesKPipeWire(x264VersionSEI(options: "keyint=100 rc=crf").prefix(30)))
+}
+
+/// FreeRDP converts to full-range BT.709 itself (MS-RDPEGFX 3.3.8.3.1) and encodes through x264
+/// with no range signalled. The fixture's first frame shows mpv's test pattern in a 1280x720
+/// window at the top left: six colour bars about 213 pixels wide, of which red, green, and blue
+/// are checked against what gnome-remote-desktop's video and FreeRDP's RemoteFX show of them.
+@Test func freeRDPX264FramePresentsFullRangeBT709() throws {
+    let frame = try firstTranscriptFrame("freerdp-shadow-avc420-transcript", graphicsCapabilityProfile: .avc420)
+    let imageBuffer = try RDPVideoToolboxFrameDecoder().decodeDetailed(frame).imageBuffer
+    let rendered = try coreImageBGRA(imageBuffer)
+    let width = CVPixelBufferGetWidth(imageBuffer)
+    for (bar, colour) in [(0, [253, 23, 0]), (1, [0, 216, 0]), (3, [0, 14, 255])] {
+        let offset = (660 * width + bar * 213 + 100) * 4
+        let presented = [Int(rendered[offset + 2]), Int(rendered[offset + 1]), Int(rendered[offset])]
+        #expect(zip(presented, colour).allSatisfy { abs($0 - $1) <= 4 }, "bar \(bar): \(presented)")
+    }
 }
 
 /// gnome-remote-desktop encodes full-range samples under an SPS without a video signal type.
@@ -417,8 +444,19 @@ private func expectColours(of format: CMVideoFormatDescription, fullRange: Bool,
     #expect(extensions[kCMFormatDescriptionExtension_TransferFunction] as? String == kCMFormatDescriptionTransferFunction_sRGB as String)
 }
 
-private func firstTranscriptFrame(_ fixture: String) throws -> RDPGraphicsFrameSnapshot {
-    try #require(replayTranscriptFixture(fixture).report.rdpGraphicsFirstFrame)
+private func firstTranscriptFrame(
+    _ fixture: String,
+    graphicsCapabilityProfile: RDPGraphicsCapabilityProfile = .avcThinClient
+) throws -> RDPGraphicsFrameSnapshot {
+    try #require(replayTranscriptFixture(fixture, graphicsCapabilityProfile: graphicsCapabilityProfile).report.rdpGraphicsFirstFrame)
+}
+
+/// An access unit holding x264's version SEI with `options`.
+private func x264VersionSEI(options: String, payloadType: UInt8 = 5) -> Data {
+    let uuid: [UInt8] = [0xDC, 0x45, 0xE9, 0xBD, 0xE6, 0xD9, 0x48, 0xB7, 0x96, 0x2C, 0xD8, 0x20, 0xD9, 0x23, 0xEE, 0xEF]
+    let payload = uuid + Array("x264 - core 165 r3222 b35605a - H.264/MPEG-4 AVC codec - options: \(options)".utf8) + [0]
+    let size = [UInt8](repeating: 0xFF, count: payload.count / 255) + [UInt8(payload.count % 255)]
+    return Data([0, 0, 0, 1, 0x06, payloadType] + size + payload + [0x80])
 }
 
 private enum PixelReadError: Error {

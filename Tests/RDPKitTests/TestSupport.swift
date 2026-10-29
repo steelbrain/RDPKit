@@ -267,9 +267,11 @@ func loadTranscriptFixture(_ name: String) throws -> [RDPWireEvent] {
     return try JSONDecoder().decode([RDPWireEvent].self, from: Data(contentsOf: url))
 }
 
-/// Replays a captured transcript to the client until its first graphics frame.
+/// Replays a captured transcript to the client until its first graphics frame. The client
+/// advertises `graphicsCapabilityProfile`, which must be the one the transcript was captured with.
 func replayTranscriptFixture(
     _ name: String,
+    graphicsCapabilityProfile: RDPGraphicsCapabilityProfile = .avcThinClient,
     onGraphicsFrame: RDPGraphicsFrameHandler? = nil
 ) throws -> (report: RDPConnectionReport, clientPackets: [Data]) {
     let credentials = RDPCredentials(username: "rdp-user", password: "rdp-user")
@@ -283,7 +285,7 @@ func replayTranscriptFixture(
         timeoutSeconds: 10,
         hideCertificateWarnings: true,
         clipboardEnabled: false,
-        graphicsCapabilityProfile: .avcThinClient
+        graphicsCapabilityProfile: graphicsCapabilityProfile
     ), onGraphicsFrame: onGraphicsFrame)
     return (report, server.clientPackets.value)
 }

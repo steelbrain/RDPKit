@@ -58,11 +58,13 @@ enum RDPH264SequenceParameterSet {
     /// or nil when the SPS cannot be parsed. Every other field is copied bit for bit.
     ///
     /// MS-RDPEGFX 2.2.4.4 and 3.3.8.3.1 define RDPGFX H.264 samples as full-range BT.709, whatever
-    /// the VUI says; gnome-remote-desktop encodes that and signals no range (gnome fixture). The
-    /// exception is an x264 stream that signals no range: x264 then holds what FFmpeg's default
-    /// RGB conversion feeds it, limited-range BT.601. KRdp 6.8 sends that (krdp-colour-chart
-    /// fixture). Primaries are BT.709 and the transfer sRGB, those of desktop content.
-    static func signalingSampleColours(_ nalUnit: Data, encodedByX264: Bool) -> Data? {
+    /// the VUI says; gnome-remote-desktop encodes that and signals no range (gnome fixture), and so
+    /// does FreeRDP through x264 (freerdp-shadow fixtures). The exception is KPipeWire's libx264
+    /// encoder (see `RDPAnnexB.identifiesKPipeWire`) when it signals no range: x264 then holds what
+    /// FFmpeg's default RGB conversion feeds it, limited-range BT.601. KRdp 6.8 sends that
+    /// (krdp-colour-chart fixture). Primaries are BT.709 and the transfer sRGB, those of desktop
+    /// content.
+    static func signalingSampleColours(_ nalUnit: Data, encodedByKPipeWire: Bool) -> Data? {
         guard let (header, rbsp, stopBitPosition) = rbsp(of: nalUnit) else {
             return nil
         }
@@ -95,7 +97,7 @@ enum RDPH264SequenceParameterSet {
             } else {
                 writer.write(0, bitCount: 2) // aspect_ratio_info_present_flag, overscan_info_present_flag
             }
-            let isLimitedBT601 = encodedByX264 && !signalsRange
+            let isLimitedBT601 = encodedByKPipeWire && !signalsRange
             writer.write(1, bitCount: 1) // video_signal_type_present_flag
             writer.write(videoFormat, bitCount: 3)
             writer.write(isLimitedBT601 ? 0 : 1, bitCount: 1) // video_full_range_flag
@@ -397,39 +399,60 @@ enum RDPAnnexB {
         }
     }
 
-    /// Whether the H.264 access unit carries x264's version SEI: a user_data_unregistered message
-    /// (H.264 D.1.7) under x264's UUID, which x264 writes into the first access unit it encodes.
-    static func identifiesX264(_ data: Data) -> Bool {
+    /// Whether the H.264 access unit comes from KPipeWire's libx264 encoder: x264's options name
+    /// its fixed 100-frame GOP and its quality-based rate control. KRdp 6.8 sends those at every
+    /// quality (krdp-colour-chart and krdp-negotiation fixtures: keyint=100, rc=crf at crf 19.8
+    /// and 21). FreeRDP's x264 encoder keeps x264's GOP of 250 and sets a bitrate
+    /// (freerdp-shadow fixtures: keyint=250, rc=abr).
+    static func identifiesKPipeWire(_ data: Data) -> Bool {
+        guard let options = x264Options(data)?.split(separator: " ") else {
+            return false
+        }
+        return options.contains("keyint=100") && options.contains("rc=crf")
+    }
+
+    /// The options x264 lists in its version SEI, a user_data_unregistered message (H.264 D.1.7)
+    /// under x264's UUID that it writes into the first access unit it encodes; nil when the access
+    /// unit has none.
+    private static func x264Options(_ data: Data) -> Substring? {
         let x264UUID: [UInt8] = [
             0xDC, 0x45, 0xE9, 0xBD, 0xE6, 0xD9, 0x48, 0xB7, 0x96, 0x2C, 0xD8, 0x20, 0xD9, 0x23, 0xEE, 0xEF,
         ]
-        return data.withUnsafeBytes { rawBytes in
+        let userData = data.withUnsafeBytes { rawBytes -> [UInt8]? in
             let bytes = rawBytes.bindMemory(to: UInt8.self)
-            return nalUnitPayloadRanges(in: bytes, codec: .h264).contains { range in
-                guard bytes[range.lowerBound] & 0x1F == 6 else {
-                    return false
-                }
+            for range in nalUnitPayloadRanges(in: bytes, codec: .h264) where bytes[range.lowerBound] & 0x1F == 6 {
                 // payloadType and payloadSize are runs of 0xFF closed by a smaller byte (D.1.1).
                 var index = range.lowerBound + 1
-                var payloadType = 0
-                while index < range.upperBound, bytes[index] == 0xFF {
-                    payloadType += 255
-                    index += 1
+                func readRun() -> Int? {
+                    var value = 0
+                    while index < range.upperBound, bytes[index] == 0xFF {
+                        value += 255
+                        index += 1
+                    }
+                    guard index < range.upperBound else {
+                        return nil
+                    }
+                    defer { index += 1 }
+                    return value + Int(bytes[index])
                 }
-                guard index < range.upperBound else {
-                    return false
+                guard readRun() == 5, let payloadSize = readRun() else {
+                    continue
                 }
-                payloadType += Int(bytes[index])
-                index += 1
-                while index < range.upperBound, bytes[index] == 0xFF {
-                    index += 1
+                let end = min(range.upperBound, index + payloadSize)
+                guard index + x264UUID.count <= end,
+                      bytes[index ..< index + x264UUID.count].elementsEqual(x264UUID)
+                else {
+                    continue
                 }
-                index += 1
-                return payloadType == 5
-                    && index + x264UUID.count <= range.upperBound
-                    && bytes[index ..< index + x264UUID.count].elementsEqual(x264UUID)
+                return Array(bytes[index + x264UUID.count ..< end].prefix { $0 != 0 })
             }
+            return nil
         }
+        guard let userData else {
+            return nil
+        }
+        let text = String(decoding: userData, as: UTF8.self)
+        return text.range(of: " - options: ").map { text[$0.upperBound...] }
     }
 
     static func nalUnitPayloadRanges(in bytes: UnsafeBufferPointer<UInt8>, codec: Codec) -> [Range<Int>] {

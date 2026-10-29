@@ -12,9 +12,9 @@ public final class RDPVideoToolboxFrameDecoder {
     }
 
     private var sequenceDecoders: [SequenceKey: RDPVideoToolboxSequenceDecoder] = [:]
-    /// x264 names itself only in the first access unit it encodes, so a surface created later
-    /// in the session inherits what an earlier one learned.
-    private var sawX264 = false
+    /// x264 lists its options only in the first access unit it encodes, so a surface created
+    /// later in the session inherits what an earlier one learned.
+    private var sawKPipeWire = false
     private var avc444Decoders: [UInt16: RDPAVC444FrameDecoder] = [:]
     private let bitmapDecoder = RDPBitmapFrameDecoder()
     private lazy var imageContext = CIContext()
@@ -50,7 +50,7 @@ public final class RDPVideoToolboxFrameDecoder {
             return try avc444Decoder(for: frame.surfaceID).decodeDetailed(frame)
         }
         let decoder = sequenceDecoder(for: frame.surfaceID, codec: frame.videoCodec)
-        defer { sawX264 = sawX264 || decoder.encodedByX264 }
+        defer { sawKPipeWire = sawKPipeWire || decoder.encodedByKPipeWire }
         return try decoder.decodeDetailed(frame.encodedVideoData)
     }
 
@@ -74,7 +74,7 @@ public final class RDPVideoToolboxFrameDecoder {
             return decoder
         }
         let decoder = RDPVideoToolboxSequenceDecoder(codec: codec)
-        decoder.encodedByX264 = sawX264
+        decoder.encodedByKPipeWire = sawKPipeWire
         sequenceDecoders[key] = decoder
         return decoder
     }
@@ -264,8 +264,8 @@ final class RDPVideoToolboxSequenceDecoder {
     private let codec: RDPVideoCodec
     private let preservesCodedSamples: Bool
     private let sequenceParameterSetRewrite: (Data, Bool) -> Data?
-    /// Whether the stream named x264 as its encoder, which decides its colours.
-    var encodedByX264 = false
+    /// Whether the stream came from KPipeWire's libx264 encoder, which decides its colours.
+    var encodedByKPipeWire = false
     /// SPS and PPS for H.264; VPS, SPS, and PPS for HEVC.
     private var parameterSets: [Data?]
     private var formatDescription: CMVideoFormatDescription?
@@ -304,8 +304,8 @@ final class RDPVideoToolboxSequenceDecoder {
         let parameterSetsChanged = updateParameterSets(sample.parameterSets)
         if session == nil || parameterSetsChanged {
             // x264 writes its version SEI next to the parameter sets of its first access unit.
-            if codec == .h264, !encodedByX264 {
-                encodedByX264 = RDPAnnexB.identifiesX264(annexBData)
+            if codec == .h264, !encodedByKPipeWire {
+                encodedByKPipeWire = RDPAnnexB.identifiesKPipeWire(annexBData)
             }
             try rebuildSession()
         }
@@ -410,7 +410,7 @@ final class RDPVideoToolboxSequenceDecoder {
         // The SPS states the colours the samples hold (see signalingSampleColours). If CoreMedia
         // rejects the rewritten SPS, the original still decodes, only with the signalled range.
         if codec == .h264,
-           let sequenceParameterSet = sequenceParameterSetRewrite(parameterSets[0], encodedByX264),
+           let sequenceParameterSet = sequenceParameterSetRewrite(parameterSets[0], encodedByKPipeWire),
            let signalledFormatDescription = try? makeFormatDescription(
                parameterSets: [sequenceParameterSet] + parameterSets.dropFirst()
            )
