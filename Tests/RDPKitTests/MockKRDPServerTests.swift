@@ -58,6 +58,24 @@ struct MockKRDPServerTests {
         #expect(info.warnings.first?.code == "unrecognized-certificate")
     }
 
+    /// BoringSSL refuses ECDHE with a certificate that does not allow digitalSignature.
+    @Test func clientExplainsKeyUsageHandshakeFailure() throws {
+        let report = try runMock(.init(keyEnciphermentOnlyCertificate: true)).report
+
+        #expect(report.status == "failure")
+        #expect(report.stage == "tls-handshake")
+        #expect(report.error?.contains("KEY_USAGE_BIT_INCORRECT") == true)
+        #expect(report.error?.contains("legacyRSAKeyExchange") == true)
+    }
+
+    @Test func clientConnectsWithLegacyRSAKeyExchangeToKeyEnciphermentOnlyCertificate() throws {
+        let report = try runMock(.init(keyEnciphermentOnlyCertificate: true), { $0.legacyRSAKeyExchange = true }).report
+
+        #expect(report.status == "success")
+        #expect(report.tlsProtocol == "tls1.2")
+        #expect(report.rdpGraphicsFirstFrame != nil)
+    }
+
     /// Cancelling from onCertificate rejects the server before any credential is
     /// sent (decision: the security gate runs right after the certificate callback).
     @Test func clientCancelledFromCertificateCallbackSendsNoCredentials() throws {

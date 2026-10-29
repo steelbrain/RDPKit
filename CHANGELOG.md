@@ -59,6 +59,11 @@
   They go in the Client Core Data and the Input Capability Set, and default
   to what RDPKit sent before: US English, an IBM enhanced keyboard, subtype 0
   and 12 function keys.
+- `RDPConnectionConfiguration.legacyRSAKeyExchange` offers only TLS 1.2 RSA
+  key exchange, for a server whose RSA certificate allows keyEncipherment but
+  not digitalSignature. BoringSSL refuses ECDHE with such a certificate, and
+  the report's error now names `KEY_USAGE_BIT_INCORRECT` and this option. RSA
+  key exchange has no forward secrecy, so it is off by default.
 
 ### Compatibility and fixes
 

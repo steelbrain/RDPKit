@@ -144,7 +144,9 @@ itself.
 ### Session
 
 - TPKT and X.224 connection negotiation
-- TLS upgrade through SwiftNIO SSL
+- TLS upgrade through SwiftNIO SSL, with an opt-in RSA key exchange mode
+  (`legacyRSAKeyExchange`) for servers whose certificate lacks
+  digitalSignature
 - CredSSP with NTLM Network Level Authentication and Early User Authorization
 - MCS connect, channel join, static virtual channels, and dynamic virtual
   channels

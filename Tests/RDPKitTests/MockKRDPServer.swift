@@ -76,6 +76,8 @@ final class MockKRDPServer: LoopbackTestServer {
         var audioEnabled = false
         var waitForCompatibilityTraffic = false
         var requireBitmapCodecsCapability = false
+        /// Serve a certificate whose key usage allows keyEncipherment but not digitalSignature.
+        var keyEnciphermentOnlyCertificate = false
     }
 
     let transcript: Locked<MockKRDPServerTranscript>
@@ -86,7 +88,9 @@ final class MockKRDPServer: LoopbackTestServer {
     }
 
     init(_ options: Options = Options()) throws {
-        let tlsContext = try NIOSSLContext(configuration: MockKRDPTLS.configuration())
+        let tlsContext = try NIOSSLContext(configuration: MockKRDPTLS.configuration(
+            keyEnciphermentOnly: options.keyEnciphermentOnlyCertificate
+        ))
         let transcript = Locked(MockKRDPServerTranscript())
         let connections = Locked(0)
         self.transcript = transcript
@@ -3196,8 +3200,10 @@ private extension ByteCursor {
 }
 
 enum MockKRDPTLS {
-    static func configuration() throws -> TLSConfiguration {
-        let certificates = try certificates()
+    static func configuration(keyEnciphermentOnly: Bool = false) throws -> TLSConfiguration {
+        let certificates = try keyEnciphermentOnly
+            ? NIOSSLCertificate.fromPEMBytes(Array(keyEnciphermentOnlyCertificatePEM.utf8))
+            : certificates()
         let privateKey = try NIOSSLPrivateKey(bytes: Array(privateKeyPEM.utf8), format: .pem)
         return TLSConfiguration.makeServerConfiguration(
             certificateChain: certificates.map { .certificate($0) },
@@ -3264,6 +3270,28 @@ enum MockKRDPTLS {
     GA/NBc4FjB1RHCmPb42tTxUx7FSjrABRfy1AERKnjvSwZoVEQXHY/K66rrsdmBWt
     z4YuDi9E2uHN4IxRSxVPCkjku9nzah0MjPfcRsnLQjfqnOSYe8sCrIEj+29xXyQS
     8wewUI+W+BPAKEpB8w==
+    -----END CERTIFICATE-----
+    """
+
+    /// The same key, with key usage keyEncipherment and dataEncipherment only.
+    private static let keyEnciphermentOnlyCertificatePEM = """
+    -----BEGIN CERTIFICATE-----
+    MIIC+DCCAeCgAwIBAgIUD/ogfkeIVwd1Q0mCLMdCsq4kZGYwDQYJKoZIhvcNAQEL
+    BQAwFDESMBAGA1UEAwwJbG9jYWxob3N0MB4XDTI2MTAyOTA1MjA0MloXDTM2MTAy
+    NjA1MjA0MlowFDESMBAGA1UEAwwJbG9jYWxob3N0MIIBIjANBgkqhkiG9w0BAQEF
+    AAOCAQ8AMIIBCgKCAQEAnzHzi0fY39RU7w2DrelHL+V2nQSPPiI8J4vJYvrkre5d
+    xW92Tb2yOnW9qP3u3JMUx9UzS/YkLiRS0+d1npGdumO5Ui+Mm4jKt2BJIIc5LdSl
+    dOS8DsbZe6TrZhlftgFgquqaMTi0Oc8gNrjHq7qoTyG0FayTQqFEMDYLkDlKPQyY
+    8e0bldfF32SBWozPYzSv15QEjXRQByl5R0GDKP0p7dXvD+aLCrMBbqPqVH69Wv1D
+    2q9fTK0lvTbiZIyi8+LU3hn+qa1FOJ55lNGeMnu8FQNA890tCik+HwvZVJ/wsUf7
+    /oe7ppNudkozLEC97ebncgefMmMm7r4b6cxBX9rkKwIDAQABo0IwQDAdBgNVHQ4E
+    FgQUieHycV/Z8lC3N4/QjGUYCw2CwJUwDwYDVR0TAQH/BAUwAwEB/zAOBgNVHQ8B
+    Af8EBAMCBDAwDQYJKoZIhvcNAQELBQADggEBAF6+pltc7jmeNxw4w632A1UQQRBF
+    ShXLaEwtF5959LeNV7KY22cwQLTJ4Oe+4Vm58UwfMcsc/pZKKV91VdiVyFHmBXpQ
+    sQ5LbxvudJ8abNeyBnYQY7oKnCjeOpfKIuBLvJBE0ydXYx2zvT8TPBPYKu9FZHOm
+    KpKDlUYUIb39TTs2pBeCk0678owjET4/lbS6EG0LCcchfAjCBLbvfSkxCO20PMRQ
+    7qC/IAlcdRwzd7iIxqwKwUnFVfVkB1iqdKqJ2cdKzii3Az2N51dsfLifdm9IQBYa
+    EYyhZYr/cmaAsY4IJDNSLavKi+N3iqTtdEKYelnJxo2eHfltD6jJzB2i3sk=
     -----END CERTIFICATE-----
     """
 

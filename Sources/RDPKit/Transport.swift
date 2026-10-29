@@ -419,6 +419,14 @@ final class RDPTransport {
         channel.close(promise: nil)
     }
 
+    /// The TLS 1.2 RSA key exchange suites BoringSSL offers, AEAD first.
+    static let rsaKeyExchangeCipherSuites: [NIOTLSCipher] = [
+        .TLS_RSA_WITH_AES_256_GCM_SHA384,
+        .TLS_RSA_WITH_AES_128_GCM_SHA256,
+        .TLS_RSA_WITH_AES_256_CBC_SHA,
+        .TLS_RSA_WITH_AES_128_CBC_SHA,
+    ]
+
     /// From now on `disconnect` sends the Disconnect Provider Ultimatum.
     func noteJoinedDomain() {
         let owesDisconnectUltimatum = owesDisconnectUltimatum
@@ -576,7 +584,10 @@ final class RDPTransport {
     /// Starts TLS on the open connection and returns the certificate chain the
     /// server presented and the negotiated version once the handshake completes.
     /// The handshake accepts any certificate; the caller evaluates the chain.
-    func startTLS(serverHostname: String?) throws -> (certificates: [NIOSSLCertificate], version: TLSVersion?) {
+    func startTLS(
+        serverHostname: String?,
+        legacyRSAKeyExchange: Bool = false
+    ) throws -> (certificates: [NIOSSLCertificate], version: TLSVersion?) {
         var configuration = TLSConfiguration.makeClientConfiguration()
         // Verification runs, so the callback below sees the presented chain,
         // but the callback replaces all of BoringSSL's checks.
@@ -584,6 +595,10 @@ final class RDPTransport {
         // Windows RDP can issue RSA certificates without digitalSignature,
         // which BoringSSL rejects on the TLS 1.3 certificate path.
         configuration.maximumTLSVersion = .tlsv12
+        if legacyRSAKeyExchange {
+            // In TLS 1.2 only ECDHE needs digitalSignature; RSA key exchange needs keyEncipherment.
+            configuration.cipherSuiteValues = Self.rsaKeyExchangeCipherSuites
+        }
         configuration.shutdownTimeout = .seconds(1)
         let context = try NIOSSLContext(configuration: configuration)
 
@@ -622,6 +637,13 @@ final class RDPTransport {
             throw RDPConnectionError.tls("connection closed before the TLS handshake completed")
         } catch {
             try callbacks.throwIfCancelled()
+            // NIOSSL keeps BoringSSL's error codes private, so the reason is matched by name.
+            if !legacyRSAKeyExchange, String(describing: error).contains("KEY_USAGE_BIT_INCORRECT") {
+                throw RDPConnectionError.tls(
+                    "the server's certificate does not allow ECDHE key exchange (KEY_USAGE_BIT_INCORRECT); "
+                        + "legacyRSAKeyExchange allows RSA key exchange"
+                )
+            }
             throw RDPConnectionError.tls(String(describing: error))
         }
 

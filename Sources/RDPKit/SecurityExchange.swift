@@ -10,7 +10,10 @@ extension RDPClientConnection {
         }
         stage = .tlsHandshake
         try transport.setRecordedLayer(nil)
-        let tls = try transport.startTLS(serverHostname: sniHostname(for: configuration.host))
+        let tls = try transport.startTLS(
+            serverHostname: sniHostname(for: configuration.host),
+            legacyRSAKeyExchange: configuration.legacyRSAKeyExchange
+        )
         report.tlsProtocol = tlsVersionName(tls.version)
         let certificate = try inspectPeerCertificates(
             tls.certificates,

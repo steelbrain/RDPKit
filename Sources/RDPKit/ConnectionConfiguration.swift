@@ -19,6 +19,11 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
     /// An OEM-dependent value; 0 for most keyboards.
     public var keyboardSubType: UInt32
     public var keyboardFunctionKeyCount: UInt32
+    /// Offers only TLS 1.2 RSA key exchange cipher suites. Some servers' RSA certificates
+    /// allow keyEncipherment but not the digitalSignature that ECDHE key exchange needs, and
+    /// the handshake with them fails with `KEY_USAGE_BIT_INCORRECT`. RSA key exchange has no
+    /// forward secrecy, so set this only to retry after that failure.
+    public var legacyRSAKeyExchange: Bool
     var redirectionRoutingToken: Data?
     var redirectionSessionID: UInt32?
     var redirectionPasswordCookie: Data?
@@ -41,7 +46,8 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
         keyboardLayout: RDPKeyboardLayout = .unitedStates,
         keyboardType: RDPKeyboardType = .ibmEnhanced,
         keyboardSubType: UInt32 = 0,
-        keyboardFunctionKeyCount: UInt32 = 12
+        keyboardFunctionKeyCount: UInt32 = 12,
+        legacyRSAKeyExchange: Bool = false
     ) {
         self.host = host.trimmingCharacters(in: .whitespacesAndNewlines)
         self.port = port
@@ -60,6 +66,7 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
         self.keyboardType = keyboardType
         self.keyboardSubType = keyboardSubType
         self.keyboardFunctionKeyCount = keyboardFunctionKeyCount
+        self.legacyRSAKeyExchange = legacyRSAKeyExchange
         self.redirectionRoutingToken = nil
         self.redirectionSessionID = nil
         self.redirectionPasswordCookie = nil
@@ -81,7 +88,8 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
         keyboardLayout: RDPKeyboardLayout = .unitedStates,
         keyboardType: RDPKeyboardType = .ibmEnhanced,
         keyboardSubType: UInt32 = 0,
-        keyboardFunctionKeyCount: UInt32 = 12
+        keyboardFunctionKeyCount: UInt32 = 12,
+        legacyRSAKeyExchange: Bool = false
     ) {
         self.init(
             host: target.host,
@@ -100,7 +108,8 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
             keyboardLayout: keyboardLayout,
             keyboardType: keyboardType,
             keyboardSubType: keyboardSubType,
-            keyboardFunctionKeyCount: keyboardFunctionKeyCount
+            keyboardFunctionKeyCount: keyboardFunctionKeyCount,
+            legacyRSAKeyExchange: legacyRSAKeyExchange
         )
     }
 
