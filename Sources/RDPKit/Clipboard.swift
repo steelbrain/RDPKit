@@ -491,8 +491,9 @@ struct RDPClipboardFormatDataResponsePDU: Equatable, Sendable {
         ).encoded()
     }
 
+    /// CRLF line ends of CF_UNICODETEXT become the LF line ends of Apple text.
     func decodedUnicodeText() throws -> String {
-        try decodeNullTerminatedUTF16(data)
+        try decodeNullTerminatedUTF16(data).replacingOccurrences(of: "\r\n", with: "\n")
     }
 
     func decodedFileGroupDescriptorW() throws -> RDPClipboardFileGroupDescriptorW {
@@ -774,10 +775,13 @@ public enum RDPClipboardLimits {
     /// Largest CF_UNICODETEXT payload, terminator included, that the session sends.
     public static let maximumUnicodeTextByteCount = 16 * 1024 * 1024
 
+    /// Counted after LF line ends become CRLF, as they are sent.
     public static let maximumUnicodeTextUTF16CodeUnitCount = maximumUnicodeTextByteCount / 2 - 1
 
     public static func canPublishUnicodeText(_ text: String) -> Bool {
-        text.utf16.count <= maximumUnicodeTextUTF16CodeUnitCount
+        var codeUnitCount = 0
+        forEachClipboardUnicodeTextCodeUnit(of: text) { _ in codeUnitCount += 1 }
+        return codeUnitCount <= maximumUnicodeTextUTF16CodeUnitCount
     }
 }
 
@@ -1246,9 +1250,26 @@ enum RDPClipboardEvent: Equatable, Sendable {
 }
 
 private func encodedClipboardUnicodeText(_ text: String) -> Data {
-    var codeUnits = text.utf16.map(\.littleEndian)
+    var codeUnits: [UInt16] = []
+    codeUnits.reserveCapacity(text.utf16.count + 1)
+    forEachClipboardUnicodeTextCodeUnit(of: text) { codeUnits.append($0.littleEndian) }
     codeUnits.append(0)
     return codeUnits.withUnsafeBytes { Data($0) }
+}
+
+/// CF_UNICODETEXT ends every line with CRLF (Standard Clipboard Formats), so each LF of
+/// Apple text that has no CR before it is sent as CRLF.
+private func forEachClipboardUnicodeTextCodeUnit(of text: String, _ body: (UInt16) -> Void) {
+    let carriageReturn: UInt16 = 0x000D
+    let lineFeed: UInt16 = 0x000A
+    var previous: UInt16 = 0
+    for codeUnit in text.utf16 {
+        if codeUnit == lineFeed, previous != carriageReturn {
+            body(carriageReturn)
+        }
+        body(codeUnit)
+        previous = codeUnit
+    }
 }
 
 /// Decodes UTF-16LE up to the first NUL, as used by CF_UNICODETEXT and fixed-size name fields.

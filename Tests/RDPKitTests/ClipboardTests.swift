@@ -360,6 +360,29 @@ import Testing
     #expect(RDPClipboardFormatDataResponsePDU.unicodeTextIfEncodable(oversizedText) == nil)
 }
 
+/// CF_UNICODETEXT ends lines with CRLF (Standard Clipboard Formats); Apple text uses LF.
+@Test func clipboardUnicodeTextSendsCRLFLineEndsAndDeliversLF() throws {
+    let response = RDPClipboardFormatDataResponsePDU.unicodeText("one\ntwo\r\nthree\n")
+    var expected = Data()
+    for codeUnit in "one\r\ntwo\r\nthree\r\n\0".utf16 {
+        expected.appendLittleEndianUInt16(codeUnit)
+    }
+    let parsed = try #require(try RDPClipboardFormatDataResponsePDU.parseIfPresent(
+        from: RDPClipboardPDU.parse(from: response.encoded())
+    ))
+
+    #expect(response.data == expected)
+    #expect(try parsed.decodedUnicodeText() == "one\ntwo\nthree\n")
+}
+
+@Test func clipboardUnicodeTextLimitCountsTheCarriageReturnsAdded() {
+    let maximumCodeUnitCount = RDPClipboardLimits.maximumUnicodeTextUTF16CodeUnitCount
+    let lineFeeds = String(repeating: "\n", count: maximumCodeUnitCount / 2)
+
+    #expect(RDPClipboardLimits.canPublishUnicodeText(lineFeeds))
+    #expect(!RDPClipboardLimits.canPublishUnicodeText(lineFeeds + "\n"))
+}
+
 @Test func clipboardFormatDataResponseRoundTripsFileGroupDescriptor() throws {
     let descriptorList = RDPClipboardFileGroupDescriptorW(descriptors: [
         RDPClipboardLocalFile(fileName: "notes.txt", contents: Data([0x01, 0x02])).descriptor,
