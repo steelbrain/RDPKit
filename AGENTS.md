@@ -46,6 +46,9 @@ resize, keyboard, pointer, clipboard, and audio as first-class library concerns.
 
 Suggested checks:
 
+- Everything CI runs, with CI's Xcode (26.6): `Scripts/ci.sh`. Run it before
+  code reaches `main`: the default Xcode's newer Swift accepts code that CI's
+  rejects. `Scripts/ci.sh test` or `Scripts/ci.sh platform iOS` runs one part.
 - Library behavior: `swift test`
 - Swift style gate: `swiftlint lint --strict`
 - Example app and tool builds:

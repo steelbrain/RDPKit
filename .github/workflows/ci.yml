@@ -24,26 +24,17 @@ jobs:
         run: brew install swiftlint
 
       - name: Lint Swift sources
-        run: swiftlint lint --strict
+        run: Scripts/ci.sh lint
 
       - name: Run RDPKit tests
         timeout-minutes: 10
-        run: swift test --no-parallel
+        run: Scripts/ci.sh test
 
       - name: Run example tests
-        run: swift test --package-path Examples
+        run: Scripts/ci.sh example-tests
 
-      - name: Build RDPClient app
-        run: swift build --package-path Examples --product RDPClient
-
-      - name: Build first-frame capture tool
-        run: swift build --package-path Examples --product RDPFirstFrameCapture
-
-      - name: Build preflight tool
-        run: swift build --package-path Examples --product RDPPreflight
-
-      - name: Build frame benchmark tool
-        run: swift build --package-path Examples --product RDPFrameBenchmark
+      - name: Build example apps and tools
+        run: Scripts/ci.sh example-builds
 
   apple-platforms:
     name: ${{ matrix.name }} build
@@ -52,25 +43,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - name: iOS
-            destination: generic/platform=iOS
-          - name: tvOS
-            destination: generic/platform=tvOS
-          - name: Mac Catalyst
-            destination: generic/platform=macOS,variant=Mac Catalyst
-          - name: visionOS
-            destination: generic/platform=visionOS
+        name: [iOS, tvOS, Mac Catalyst, visionOS]
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
 
       - name: Build RDPKit
-        run: >-
-          xcodebuild
-          -quiet
-          -scheme RDPKit
-          -destination '${{ matrix.destination }}'
-          CODE_SIGNING_ALLOWED=NO
-          build
+        run: Scripts/ci.sh platform '${{ matrix.name }}'
