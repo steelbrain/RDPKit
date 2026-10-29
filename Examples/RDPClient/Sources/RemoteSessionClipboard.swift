@@ -3,9 +3,12 @@ import RDPKit
 
 private let maximumClipboardFileBytes = 32 * 1024 * 1024
 /// The most asked for in one FILECONTENTS_RANGE request; servers may send less anyway.
-private let maximumFileRangeByteCount: UInt64 = 1024 * 1024
-/// How long a file contents request may go unanswered before the transfer fails.
-private let fileContentsRequestTimeout: TimeInterval = 30
+/// Half a MiB arrives within the timeout down to about 4 KB/s, and costs a round trip per
+/// range: 64 for the 32 MiB limit.
+private let maximumFileRangeByteCount: UInt64 = 512 * 1024
+/// How long a file contents request may go unanswered before the transfer fails: long
+/// enough for a range on a slow link, or a server that fetches a cloud file first.
+private let fileContentsRequestTimeout: TimeInterval = 120
 /// Age at which a download folder an earlier run left is removed at launch. A newer one
 /// may belong to another copy of the app that is still downloading.
 private let staleDownloadDirectoryAge: TimeInterval = 60 * 60

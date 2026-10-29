@@ -167,9 +167,11 @@ private func startRemoteFileDownload(
         let request = try #require(session.rangeRequests.last)
         session.rangeRequests.removeAll()
         #expect(request.position == UInt64(received))
-        #expect(request.requestedByteCount <= 1024 * 1024)
+        #expect(request.requestedByteCount <= 512 * 1024)
+        // Each range has two minutes to arrive over a slow link.
+        clipboard.poll(now: Date().addingTimeInterval(115))
         // Windows caps how much one answer carries.
-        let end = received + min(Int(request.requestedByteCount), 700_000)
+        let end = received + min(Int(request.requestedByteCount), 300_000)
         clipboard.receiveFileContents(RDPClipboardFileContentsResponse(
             streamID: request.streamID,
             ok: true,
@@ -265,9 +267,10 @@ private func pasteboardFileURLs(_ pasteboard: NSPasteboard) -> [URL] {
     let changeCount = pasteboard.changeCount
 
     try startRemoteFileDownload(contents, to: clipboard, from: session)
-    clipboard.poll(now: Date().addingTimeInterval(25))
+    // A server that fetches a cloud file first can take minutes to answer.
+    clipboard.poll(now: Date().addingTimeInterval(115))
     #expect(clipboard.statusMessage == "Downloading remote file: big.bin.")
-    clipboard.poll(now: Date().addingTimeInterval(31))
+    clipboard.poll(now: Date().addingTimeInterval(121))
     #expect(clipboard.statusMessage == "Remote file transfer timed out.")
 
     // The answer that comes too late changes nothing.
