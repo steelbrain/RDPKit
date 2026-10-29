@@ -61,11 +61,13 @@
   `RDPDisplayControlMonitorLayout.isPrimary` reads and sets the primary flag.
 - `RDPConnectionConfiguration.monitorLayout` starts a session with several
   monitors. It goes as Client Monitor Data and Client Monitor Extended Data,
-  with the desktop set to their bounding box, to servers that accept extended
-  client data blocks; a layout larger than 8192 x 8192 is dropped. The
-  server's Monitor Layout PDU is recorded in
-  `RDPConnectionReport.rdpMonitorLayout`. Without a layout, the connection
-  sends exactly what it sent before.
+  with the desktop set to their bounding box, up to 32,766 x 32,766 pixels,
+  to servers that accept extended client data blocks. A layout whose
+  monitors form separate groups is dropped: Windows 11 starts one monitor of
+  their bounding box instead. Display Control still sends one. The server's
+  Monitor Layout PDU is recorded in `RDPConnectionReport.rdpMonitorLayout`,
+  which an `RDPLiveConnectionReport` snapshot shows as soon as it arrives.
+  Without a layout, the connection sends exactly what it sent before.
 - `RDPConnectionIdentity.legacyCredentialAccountNames` gives the name RDPKit
   0.1 to 0.3 used for `credentialAccountName`, which kept the host's case, so
   a client can find a password saved under it with a direct lookup and move
@@ -132,6 +134,10 @@
 
 ### Compatibility and fixes
 
+- A Demand Active may set a desktop of up to 32,766 pixels each way, not
+  only 8192. A session without RDPGFX that Windows 11 reactivates at
+  11520x2160, for a Display Control layout of three 4K monitors, now draws
+  at that size instead of failing the updates outside the old one.
 - Connections: a live session's wait for its first frame is bounded by the
   timeout at every step, however much other traffic or how many empty frames
   the server sends. 0.4.0 bounded it only in capture runs. After its first

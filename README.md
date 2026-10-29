@@ -218,7 +218,8 @@ let report = client.run(
 - Display control channel support for resize and multi-monitor layouts
   (`RDPMonitorLayout`), checked against the server's capabilities
 - Connect-time multi-monitor layouts in Client Monitor Data and Client Monitor
-  Extended Data, and the server's Monitor Layout PDU in the report
+  Extended Data, up to 32,766 x 32,766 pixels, and the server's Monitor Layout
+  PDU in the report, live through `RDPLiveConnectionReport`
 - Connect-time desktop and device scale factors and physical size, for servers
   without display control
 - HiDPI-aware display scale models for Apple clients
