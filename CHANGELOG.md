@@ -150,6 +150,11 @@
   Info PDU's limit, checked after `DOMAIN\user` is split. Apps can report
   the field before connecting instead of failing with
   `invalidConfiguration`.
+- An `onGraphicsFrame` handler can throw `RDPGraphicsFrameNotPresented` for a
+  frame it could not show, such as video that failed to decode. The session
+  goes on and acknowledges the frame, but a live session keeps waiting for
+  its first frame, within the timeout, until the handler shows one. If none
+  is shown in time, it ends with `RDPConnectionFailure.graphicsFrameHandler`.
 - `RDPInputSession.supportsUnicodeInput` tells whether the server takes
   Unicode keyboard events (INPUT_FLAG_UNICODE). `send` drops `.unicode`
   events when it does not, so an app can send scancodes instead.
@@ -220,6 +225,9 @@
 ### Examples
 
 - RDPClient:
+  - Ends a session none of whose frames decode, for example video in an
+    H.264 profile VideoToolbox refuses, at the connection timeout instead of
+    staying on Connecting.
   - Explains why a session ended or failed in plain words, including the
     server's reason after the desktop was shown, and offers the credentials
     again after a refused sign-in. RDPKit's own text stays in Stats for
