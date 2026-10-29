@@ -349,7 +349,7 @@ private func cappedAreaProduct(_ lhs: UInt32, _ rhs: UInt32, _ other: UInt32) ->
     return second.overflow ? UInt64.max : second.partialValue
 }
 
-public final class RDPDisplayControlSession: @unchecked Sendable {
+public final class RDPDisplayControlSession: Sendable {
     public let dynamicChannelID: UInt32
     public let capabilities: RDPDisplayControlCapabilities
     private let userChannelID: UInt16
