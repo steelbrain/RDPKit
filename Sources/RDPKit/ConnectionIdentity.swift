@@ -105,13 +105,33 @@ public struct RDPConnectionIdentity: Equatable, Hashable, Sendable {
         return "\(domain)\\\(username)"
     }
 
-    /// The account a password for this identity is stored under. Host names are matched
-    /// without regard to case, as in `hasSameConnectionIdentity(as:)`, so the host is lowercased.
+    /// The account a password for this identity is stored under: `qualifiedUsername`, then `@`,
+    /// the host in lowercase, `:` and the port, as in `LAB\anees@server.local:3389`. Nil without
+    /// a username.
+    ///
+    /// The name ignores case exactly where `hasSameConnectionIdentity(as:)` does: in the host
+    /// only. The username and domain keep their case: Windows ignores it, but other servers need
+    /// not. RDPKit keeps this name stable across releases; if it ever changes, the old form is
+    /// added to `legacyCredentialAccountNames`.
     public var credentialAccountName: String? {
         guard let qualifiedUsername else {
             return nil
         }
         return "\(qualifiedUsername)@\(normalizedHost):\(port)"
+    }
+
+    /// Names earlier RDPKit releases gave `credentialAccountName` for this identity, newest
+    /// first, without any that equal the current name. A client that finds nothing saved under
+    /// `credentialAccountName` can look these up and move what it finds to the current name.
+    ///
+    /// RDPKit 0.1 to 0.3 kept the host's case, as in `LAB\anees@Server.Local:3389`, so a
+    /// password saved then is found only while the host is entered as it was when saving.
+    public var legacyCredentialAccountNames: [String] {
+        guard let qualifiedUsername else {
+            return []
+        }
+        let hostAsEntered = "\(qualifiedUsername)@\(host):\(port)"
+        return hostAsEntered == credentialAccountName ? [] : [hostAsEntered]
     }
 
     public func hasSameConnectionIdentity(as other: RDPConnectionIdentity) -> Bool {

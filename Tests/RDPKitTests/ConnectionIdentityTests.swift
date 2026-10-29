@@ -41,6 +41,40 @@ import Testing
     )
 }
 
+@Test func connectionIdentityCredentialAccountNameIgnoresOnlyTheHostsCase() {
+    let identity = RDPConnectionIdentity(host: " Server.Local ", port: 3390, username: " Anees ", domain: " Lab ")
+
+    // Clients key saved passwords by this name, so its form must not change between releases.
+    #expect(identity.credentialAccountName == "Lab\\Anees@server.local:3390")
+    #expect(
+        RDPConnectionIdentity(host: "server.local", port: 3390, username: "anees", domain: "Lab").credentialAccountName
+            != identity.credentialAccountName
+    )
+    #expect(
+        RDPConnectionIdentity(host: "server.local", port: 3390, username: "Anees", domain: "LAB").credentialAccountName
+            != identity.credentialAccountName
+    )
+    #expect(
+        RDPConnectionIdentity(host: "server.local", port: 3390, username: "Anees", domain: "").credentialAccountName
+            == "Anees@server.local:3390"
+    )
+}
+
+@Test func connectionIdentityListsTheAccountNamesEarlierReleasesUsed() {
+    // RDPKit 0.1 to 0.3 kept the host as entered.
+    #expect(
+        RDPConnectionIdentity(host: "Server.Local", port: 3390, username: "Anees", domain: "LAB")
+            .legacyCredentialAccountNames == ["LAB\\Anees@Server.Local:3390"]
+    )
+    #expect(
+        RDPConnectionIdentity(host: " DESKTOP ", username: "anees").legacyCredentialAccountNames
+            == ["anees@DESKTOP:3389"]
+    )
+    // A lowercase host had the same name then, so there is nothing to move.
+    #expect(RDPConnectionIdentity(host: "server.local", username: "anees").legacyCredentialAccountNames.isEmpty)
+    #expect(RDPConnectionIdentity(host: "Server.Local").legacyCredentialAccountNames.isEmpty)
+}
+
 @Test func connectionIdentityTrimsComponents() {
     let identity = RDPConnectionIdentity(
         host: "  Server.Local  ",
