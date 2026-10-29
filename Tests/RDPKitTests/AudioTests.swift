@@ -81,7 +81,7 @@ import Testing
 
     #expect(encoded == Data([
         0x07, 0x00, 0x26, 0x00,
-        0x03, 0x00, 0x00, 0x00,
+        0x01, 0x00, 0x00, 0x00,
         0xFF, 0xFF, 0xFF, 0xFF,
         0x00, 0x00, 0x00, 0x00,
         0x00, 0x00,
@@ -97,7 +97,8 @@ import Testing
         0x10, 0x00,
         0x00, 0x00,
     ]))
-    #expect(parsed.flags == RDPAudioCapabilityFlags.alive | RDPAudioCapabilityFlags.volume)
+    // No TSSNDCAPS_VOLUME: the client does not apply Volume PDUs (MS-RDPEA 3.2.5.3.1.1).
+    #expect(parsed.flags == RDPAudioCapabilityFlags.alive)
     #expect(parsed.volume == 0xFFFF_FFFF)
     #expect(parsed.datagramPort == 0)
     #expect(parsed.version == 6)

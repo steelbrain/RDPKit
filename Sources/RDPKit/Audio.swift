@@ -450,9 +450,11 @@ struct RDPAudioFormatsPDU: Equatable, Sendable {
         self.formats = formats
     }
 
+    /// Advertises no TSSNDCAPS_VOLUME: a client that sets it MUST apply the server's Volume PDUs
+    /// (MS-RDPEA 3.2.5.3.1.1), and samples are delivered without any volume applied.
     static func client(version: UInt16, formats: [RDPAudioFormat]) -> RDPAudioFormatsPDU {
         RDPAudioFormatsPDU(
-            flags: RDPAudioCapabilityFlags.alive | RDPAudioCapabilityFlags.volume,
+            flags: RDPAudioCapabilityFlags.alive,
             volume: 0xFFFF_FFFF,
             version: version,
             formats: formats
