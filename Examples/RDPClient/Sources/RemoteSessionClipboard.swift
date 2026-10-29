@@ -44,6 +44,9 @@ final class RDPRemoteSessionClipboard {
     private var fileTransfer: RemoteFileTransfer?
     /// The last download put on the pasteboard, kept while the pasteboard may list its files.
     private var pastedDownload: PastedDownload?
+    /// The pasteboard's change count once a remote copy was put on it: while it is unchanged,
+    /// the pasteboard holds what came from the server.
+    private var remoteCopyChangeCount: Int?
     private var nextStreamID: UInt32 = 1
 
     init(isSharingEnabled: Bool, pasteboard: NSPasteboard = .general) {
@@ -91,6 +94,8 @@ final class RDPRemoteSessionClipboard {
     func detach() {
         session = nil
         message = nil
+        // A later session's server has a clipboard of its own.
+        remoteCopyChangeCount = nil
         discardFileTransfer()
         cancelLocalFileRead()
         removePastedDownloadUnlessOnPasteboard()
@@ -178,8 +183,33 @@ final class RDPRemoteSessionClipboard {
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
         pasteboardChangeCount = pasteboard.changeCount
+        remoteCopyChangeCount = pasteboardChangeCount
         localCopyIsUnsent = false
         message = "Remote text copied."
+    }
+
+    /// A remote copy none of which comes: the server's clipboard was emptied (`isEmpty`), or
+    /// holds nothing this bridge takes, such as an image. It is newer than the remote copy
+    /// before it, whose download is dropped. An emptied clipboard also clears the pasteboard
+    /// while it holds what came from the server, as [MS-RDPECLIP] 3.1.5.2.2 has a Format List
+    /// replace the local clipboard, so a password a password manager cleared there does not
+    /// stay here; a local copy since is kept.
+    func receiveRemoteCopyUnavailable(isEmpty: Bool) {
+        guard isSharingEnabled else {
+            return
+        }
+        cancelLocalFileRead()
+        discardFileTransfer()
+        if isEmpty, pasteboard.changeCount == remoteCopyChangeCount {
+            pasteboard.clearContents()
+            remoteCopyChangeCount = nil
+            message = "Remote clipboard emptied; cleared here too."
+        } else {
+            message = isEmpty ? "Remote clipboard emptied." : "Remote copy has no text or files."
+        }
+        // A local copy the poll has not published yet is older than this one.
+        pasteboardChangeCount = pasteboard.changeCount
+        localCopyIsUnsent = false
     }
 
     func receiveFileList(_ descriptorList: RDPClipboardFileGroupDescriptorW) {
@@ -508,6 +538,7 @@ final class RDPRemoteSessionClipboard {
         }
 
         pasteboardChangeCount = pasteboard.changeCount
+        remoteCopyChangeCount = pasteboardChangeCount
         fileTransfer = nil
         // The files these replaced on the pasteboard can go.
         if let pastedDownload {

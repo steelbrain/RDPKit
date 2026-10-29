@@ -431,6 +431,69 @@ private func waitUntil(_ condition: () -> Bool) async throws {
     #expect(session.publishedTexts.last == "newer local text")
 }
 
+/// A server whose clipboard is emptied, as a password manager clears a copied password, takes
+/// the copy it sent off the pasteboard too; a local copy since stays.
+@MainActor
+@Test func anEmptiedRemoteClipboardClearsOnlyTheCopyItSent() throws {
+    let pasteboard = makePasteboard()
+    defer { pasteboard.releaseGlobally() }
+    let session = RecordedClipboard()
+    let clipboard = RDPRemoteSessionClipboard(isSharingEnabled: true, pasteboard: pasteboard)
+    clipboard.attach(session)
+    let contents = Data("remote".utf8)
+
+    clipboard.receiveText("password")
+    clipboard.receiveRemoteCopyUnavailable(isEmpty: true)
+    #expect(pasteboard.string(forType: .string) == nil)
+    #expect(clipboard.statusMessage == "Remote clipboard emptied; cleared here too.")
+    // The emptied pasteboard is not sent back.
+    clipboard.poll()
+    #expect(session.publishedTexts == [nil])
+
+    // Downloaded files go too, at the next poll.
+    try startRemoteFileDownload(contents, to: clipboard, from: session)
+    try answerRangeRequest(with: contents, to: clipboard, from: session)
+    let directory = try #require(pasteboardFileURLs(pasteboard).first).deletingLastPathComponent()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    clipboard.receiveRemoteCopyUnavailable(isEmpty: true)
+    clipboard.poll()
+    #expect(pasteboardFileURLs(pasteboard).isEmpty)
+    #expect(FileManager.default.fileExists(atPath: directory.path) == false)
+
+    clipboard.receiveText("remote text")
+    pasteboard.clearContents()
+    pasteboard.setString("local text", forType: .string)
+    clipboard.receiveRemoteCopyUnavailable(isEmpty: true)
+    #expect(pasteboard.string(forType: .string) == "local text")
+    #expect(clipboard.statusMessage == "Remote clipboard emptied.")
+    #expect(session.publishedTexts == [nil])
+}
+
+/// A remote copy this bridge takes nothing of, such as an image, is newer than the remote
+/// files still downloading, which are dropped; the pasteboard keeps what it has.
+@MainActor
+@Test func aRemoteCopyWithNoTextOrFilesEndsTheDownloadBeforeIt() throws {
+    let pasteboard = makePasteboard()
+    defer { pasteboard.releaseGlobally() }
+    let session = RecordedClipboard()
+    let clipboard = RDPRemoteSessionClipboard(isSharingEnabled: true, pasteboard: pasteboard)
+    clipboard.attach(session)
+    let contents = Data("remote".utf8)
+
+    clipboard.receiveText("remote text")
+    try startRemoteFileDownload(contents, to: clipboard, from: session)
+    clipboard.receiveRemoteCopyUnavailable(isEmpty: false)
+    #expect(clipboard.statusMessage == "Remote copy has no text or files.")
+    try answerRangeRequest(with: contents, to: clipboard, from: session)
+    #expect(pasteboardFileURLs(pasteboard).isEmpty)
+    #expect(pasteboard.string(forType: .string) == "remote text")
+
+    // The pasteboard still holds text that came from the server, so emptying the server's
+    // clipboard takes it too.
+    clipboard.receiveRemoteCopyUnavailable(isEmpty: true)
+    #expect(pasteboard.string(forType: .string) == nil)
+}
+
 @MainActor
 @Test func aDownloadTheServerStopsAnsweringTimesOut() throws {
     let pasteboard = makePasteboard()

@@ -860,6 +860,12 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                         controller.render()
                     }
                 },
+                onClipboardRemoteCopyUnavailable: { isEmpty in
+                    sink.apply { controller in
+                        controller.clipboard.receiveRemoteCopyUnavailable(isEmpty: isEmpty)
+                        controller.render()
+                    }
+                },
                 onAudioSample: { sample in
                     sink.apply { controller in
                         guard controller.audioPlaybackEnabled else {
