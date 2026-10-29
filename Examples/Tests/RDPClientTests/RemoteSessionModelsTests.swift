@@ -142,3 +142,17 @@ import Testing
     #expect(state.displayLinkFramesPerSecond == 120)
     #expect(state.clockState == "window display link")
 }
+
+@Test func keyframeRequestsArePacedAndStopUntilVideoDecodesAgain() {
+    var throttle = RDPKeyframeRequestThrottle()
+    let start = Date()
+    func requests(atIntervals intervals: [Double]) -> [Bool] {
+        intervals.map { throttle.shouldRequest(at: start.addingTimeInterval($0 * RDPKeyframeRequestThrottle.minimumInterval)) }
+    }
+
+    #expect(requests(atIntervals: [0, 0.5, 1, 2, 3]) == [true, false, true, true, false])
+
+    throttle.recordDecodedVideo()
+
+    #expect(requests(atIntervals: [4]) == [true])
+}

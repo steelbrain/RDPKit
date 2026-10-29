@@ -84,3 +84,30 @@ struct RDPSessionEndReason: Equatable {
         "\(statusText): \(message)"
     }
 }
+
+/// Paces the keyframe requests sent after video fails to decode: one at most every few seconds,
+/// and only a few until video decodes again, so video that never decodes does not make the
+/// server reset its graphics forever.
+struct RDPKeyframeRequestThrottle {
+    static let minimumInterval: TimeInterval = 3
+    static let maximumUnansweredRequests = 3
+
+    private var lastRequestAt: Date?
+    private var unansweredRequests = 0
+
+    mutating func shouldRequest(at date: Date) -> Bool {
+        guard unansweredRequests < Self.maximumUnansweredRequests else {
+            return false
+        }
+        if let lastRequestAt, date.timeIntervalSince(lastRequestAt) < Self.minimumInterval {
+            return false
+        }
+        lastRequestAt = date
+        unansweredRequests += 1
+        return true
+    }
+
+    mutating func recordDecodedVideo() {
+        unansweredRequests = 0
+    }
+}

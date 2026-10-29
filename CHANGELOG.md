@@ -63,6 +63,11 @@
     are right on every tested server, including KRdp's.
   - `RDPVideoToolboxFrameDecoder.decode(_:)` returns only the visible frame;
     `RDPDecodedFramePresentation.imageBuffer` can be larger than the frame.
+  - After video fails to decode, for example once iOS invalidates the
+    decoder in the background, its surface keeps its last picture until a
+    keyframe instead of decoding updates without their reference, failing
+    them as the new `RDPVideoDecodeError.awaitingKeyframe`. Windows sends a
+    keyframe when the client sends its monitor layout again.
 - Other graphics: fixes for RemoteFX, RemoteFX Progressive, ClearCodec,
   NSCodec, planar and legacy bitmaps, and pointers. Deleted surfaces free
   their decoders. Every frame is acknowledged, even ones that fail to decode.
@@ -100,6 +105,8 @@
 - RDPClient asks before trusting an unknown server certificate and refuses a
   changed one. It also fixes keyboard modifiers, Windows-key and keypad
   input, clipboard file downloads and display resize after a redirection.
+  When video fails to decode, it keeps the session and asks the server for a
+  fresh picture.
 
 ## 0.3.1
 

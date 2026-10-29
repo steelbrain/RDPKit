@@ -668,6 +668,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         // RDPSessionClient.run blocks for the whole session, so it gets its own thread
         // rather than holding a Swift concurrency worker.
         let sessionThread = Thread {
+            var keyframeRequests = RDPKeyframeRequestThrottle()
             let decodeQueue = RDPFrameDecodeQueue(
                 shouldCancel: {
                     cancellation.isCancelled
@@ -725,13 +726,27 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
             let nextReport = RDPSessionClient().run(
                 configuration: configuration,
                 onGraphicsFrame: { frame in
-                    try decodeQueue.submitAndWait(
+                    let completion = decodeQueue.submitAndWait(
                         frame,
                         receivedAt: Date(),
                         shouldContinue: {
                             cancellation.isCancelled == false
                         }
-                    ).requireDecoded()
+                    )
+                    if frame.contentKind == .video, completion == .decoded {
+                        keyframeRequests.recordDecodedVideo()
+                    }
+                    // An update that fails to decode leaves stale pixels, not a broken session.
+                    // Failed video waits for a keyframe, which the server is asked for.
+                    if case .failed = completion {
+                        if frame.contentKind == .video, keyframeRequests.shouldRequest(at: Date()) {
+                            sink.apply { controller in
+                                controller.requestKeyframe(desktopSize: requestedDesktopSize)
+                            }
+                        }
+                        return
+                    }
+                    try completion.requireDecoded()
                 },
                 onInputReady: { session in
                     let persistenceResult = persistCredentialsIfNeeded(
@@ -1112,6 +1127,19 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         lastRequestedDisplayRequest = request
         displayControlMessage = "Resize requested: \(request.label)."
         formError = nil
+        render()
+    }
+
+    /// Windows sends no keyframe by itself, but answers the monitor layout sent again by
+    /// resetting its graphics, which starts every video stream afresh.
+    private func requestKeyframe(desktopSize: RDPDesktopSize) {
+        guard let displayControlSession else {
+            return
+        }
+        let request = lastRequestedDisplayRequest
+            ?? makeDisplayRequest(width: UInt32(desktopSize.width), height: UInt32(desktopSize.height))
+        displayControlSession.send(request)
+        displayControlMessage = "Video failed to decode; asked the server for a fresh picture."
         render()
     }
 
