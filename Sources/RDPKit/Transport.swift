@@ -148,6 +148,8 @@ final class RDPTransportReader: ChannelDuplexHandler, RemovableChannelHandler {
     private var handshake: EventLoopPromise<Void>?
     private(set) var failure: Error?
     private var readPending = false
+    /// Whether `wake` came while nothing waited, so the next wait ends at once.
+    private var isWoken = false
     /// The certificate chain the server presented in the TLS handshake, leaf first.
     var presentedCertificates: [NIOSSLCertificate] = []
 
@@ -176,8 +178,23 @@ final class RDPTransportReader: ChannelDuplexHandler, RemovableChannelHandler {
             resumeReadingIfNeeded()
         } else if let failure {
             promise.fail(failure)
+        } else if isWoken {
+            isWoken = false
+            promise.succeed(Data())
         } else {
             waiter = promise
+        }
+    }
+
+    /// Ends the session loop's wait with an empty message, which no server message is, so it
+    /// runs work another thread queued for it; with no wait, the next one ends at once. Only
+    /// the session loop's receive expects it: what calls this exists only once that loop runs.
+    func wake() {
+        if let waiter {
+            self.waiter = nil
+            waiter.succeed(Data())
+        } else {
+            isWoken = true
         }
     }
 
@@ -541,6 +558,18 @@ final class RDPTransport {
         try channel.eventLoop.submit {
             reader.value.recordedLayer = layer
         }.wait()
+    }
+
+    /// Ends the session loop's current or next wait for a message from any thread, with the
+    /// empty message `RDPTransportReader.wake` explains.
+    var wake: @Sendable () -> Void {
+        let reader = reader
+        let eventLoop = channel.eventLoop
+        return {
+            eventLoop.execute {
+                reader.value.wake()
+            }
+        }
     }
 
     /// Waits for the next message. A nil `timeout` waits until the connection

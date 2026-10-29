@@ -23,9 +23,10 @@ public typealias RDPClipboardFileGroupDescriptorHandler = @Sendable (RDPClipboar
 /// Called for a remote copy none of which is fetched, so the copy delivered before is no
 /// longer the server's: `isEmpty` when the server's clipboard was emptied (an empty Format
 /// List), and otherwise it holds only formats the session does not fetch, such as a bitmap
-/// without `onClipboardContent`. Not called while `fetchesRemoteCopies` is off. Windows 11
-/// sends an empty Format List when its clipboard is emptied; gnome-remote-desktop 51 sends
-/// nothing then.
+/// without `onClipboardContent`. Not called while `fetchesRemoteCopies` is off; a copy that
+/// came then is reported once it is turned back on, unless a newer copy, local or remote,
+/// replaced it first. Windows 11 sends an empty Format List when its clipboard is emptied;
+/// gnome-remote-desktop 51 sends nothing then.
 public typealias RDPClipboardRemoteCopyUnavailableHandler = @Sendable (_ isEmpty: Bool) -> Void
 public typealias RDPClipboardFileContentsHandler = @Sendable (RDPClipboardFileContentsResponse) -> Void
 public typealias RDPAudioSampleHandler = @Sendable (RDPAudioSample) -> Void

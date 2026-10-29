@@ -30,6 +30,12 @@ extension RDPClientConnection {
             try handleConnectionEnd(error)
             return
         }
+        // An empty message is the transport's wake: another thread queued a clipboard event,
+        // which goes out here, on the session's thread like every other.
+        guard !message.isEmpty else {
+            deliverPendingClipboardEvent()
+            return
+        }
         if report.rdpClientInfoResponseHex == nil {
             report.rdpClientInfoResponseHex = message.redactingServerSecrets.rdpHexString
         }

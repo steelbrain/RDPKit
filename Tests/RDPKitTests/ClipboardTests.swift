@@ -1252,6 +1252,55 @@ private final class ClipboardPublishRace: @unchecked Sendable {
     _ = try channel.finish()
 }
 
+/// A copy with nothing to fetch, announced while fetching was off, is reported once fetching
+/// is turned back on, as on arrival, unless a newer copy, local or remote, replaced it first.
+@Test func clipboardSessionReportsAnUnavailableCopyAnnouncedWhileFetchingWasOff() throws {
+    let channel = EmbeddedChannel()
+    let wakes = Locked(0)
+    let session = RDPClipboardSession(
+        userChannelID: 1006,
+        staticChannelID: 1007,
+        channel: channel,
+        pendingEventHandler: { wakes.withLock { $0 += 1 } }
+    )
+    let emptyCopy = RDPClipboardFormatListPDU(entries: []).encoded()
+    // Without onClipboardContent a bitmap is not fetched.
+    let bitmapCopy = RDPClipboardFormatListPDU(entries: [
+        RDPClipboardFormatListEntry(formatID: RDPClipboardFormatID.dib),
+    ]).encoded()
+    let textCopy = RDPClipboardFormatListPDU(entries: [
+        RDPClipboardFormatListEntry(formatID: RDPClipboardFormatID.unicodeText),
+    ]).encoded()
+    func announceWhileOff(_ formatList: Data) throws {
+        session.fetchesRemoteCopies = false
+        #expect(try session.receive(RDPClipboardPDU.parse(from: formatList)) == nil)
+        session.fetchesRemoteCopies = true
+    }
+
+    _ = try session.receive(RDPClipboardPDU.parse(from: RDPClipboardCapabilitiesPDU().encoded()))
+    _ = try session.receive(RDPClipboardPDU(messageType: RDPClipboardMessageType.monitorReady))
+    try announceWhileOff(emptyCopy)
+    #expect(wakes.value == 1)
+    #expect(session.takePendingEvent() == .remoteCopyUnavailable(isEmpty: true))
+    #expect(session.takePendingEvent() == nil)
+    try announceWhileOff(bitmapCopy)
+    #expect(session.takePendingEvent() == .remoteCopyUnavailable(isEmpty: false))
+
+    try announceWhileOff(emptyCopy)
+    session.publishLocalUnicodeText("local")
+    #expect(session.takePendingEvent() == nil)
+    try announceWhileOff(emptyCopy)
+    _ = try session.receive(RDPClipboardPDU.parse(from: textCopy))
+    #expect(session.takePendingEvent() == nil)
+
+    // A copy with formats is fetched, and has nothing to report.
+    try announceWhileOff(textCopy)
+    #expect(session.isAwaitingRemoteCopy)
+    #expect(session.takePendingEvent() == nil)
+    #expect(wakes.value == 4)
+    _ = try channel.finish()
+}
+
 @Test func clipboardSessionOffersAndAnswersEveryLocalFormat() throws {
     let channel = EmbeddedChannel()
     let sent = ClipboardSentMessages()

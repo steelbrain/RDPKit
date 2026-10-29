@@ -160,9 +160,10 @@ extension RDPClientConnection {
     }
 
     private func openStaticChannelSessions() {
-        guard let channel = transport?.channel else {
+        guard let transport else {
             return
         }
+        let channel = transport.channel
         for (channelID, name) in staticChannelNames {
             switch name {
             case RDPStaticVirtualChannel.cliprdr.name:
@@ -174,7 +175,9 @@ extension RDPClientConnection {
                     channel: channel,
                     chunkSize: staticChannelChunkSize,
                     requestsRichFormats: callbacks.onClipboardContent != nil,
-                    sentMessageHandler: { summary, _ in storage.recordClipboardSent(summary) }
+                    sentMessageHandler: { summary, _ in storage.recordClipboardSent(summary) },
+                    // Its event goes out from the session loop, which the wake runs.
+                    pendingEventHandler: transport.wake
                 )
             case RDPStaticVirtualChannel.rdpsnd.name:
                 report.rdpAudioChannelID = channelID

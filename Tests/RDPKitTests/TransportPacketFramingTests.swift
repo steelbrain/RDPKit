@@ -139,6 +139,26 @@ private let tpkt = Data([0x03, 0x00, 0x00, 0x07, 0x02, 0xF0, 0x80])
     }
 }
 
+/// A wake ends the wait with an empty message, which no server message is, or the next wait
+/// when nothing waits; messages the server sent keep their order.
+@Test func readerWakeEndsTheCurrentOrNextWaitWithAnEmptyMessage() throws {
+    let (channel, reader, _) = try readerChannel()
+    let waiting = channel.eventLoop.makePromise(of: Data.self)
+    reader.next(waiting)
+    reader.wake()
+    #expect(try waiting.futureResult.wait() == Data())
+
+    reader.wake()
+    #expect(try nextMessage(reader, channel) == Data())
+    try channel.writeInbound(buffer(tpkt))
+    #expect(try nextMessage(reader, channel) == tpkt)
+
+    try channel.writeInbound(buffer(tpkt))
+    reader.wake()
+    #expect(try nextMessage(reader, channel) == tpkt)
+    #expect(try nextMessage(reader, channel) == Data())
+}
+
 /// After the CredSSP credentials the server either moves on to the next
 /// layer or rejects them with a TSRequest errorCode ([MS-CSSP] 2.2.1).
 @Test func readerReportsACredSSPErrorAnsweringTheCredentials() throws {

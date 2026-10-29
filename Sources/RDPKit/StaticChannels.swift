@@ -55,27 +55,38 @@ extension RDPClientConnection {
         do {
             let pdu = try RDPClipboardPDU.parse(from: payload)
             report.rdpClipboardMessages.appendCapped(.summarize(pdu), limit: RDPRecordLimit.messages)
-            switch try clipboard.receive(pdu) {
-            case .ready:
-                callbacks.onClipboardReady?(clipboard)
-            case let .text(text):
-                callbacks.onClipboardText?(text)
-            case let .content(content):
-                if let text = content.text {
-                    callbacks.onClipboardText?(text)
-                }
-                callbacks.onClipboardContent?(content)
-            case let .fileGroupDescriptor(descriptor):
-                callbacks.onClipboardFileGroupDescriptor?(descriptor)
-            case let .remoteCopyUnavailable(isEmpty):
-                callbacks.onClipboardRemoteCopyUnavailable?(isEmpty)
-            case let .fileContents(contents):
-                callbacks.onClipboardFileContents?(contents)
-            case nil:
-                break
-            }
+            try deliver(clipboard.receive(pdu), from: clipboard)
         } catch {
             recordChannelError(RDPStaticVirtualChannel.cliprdr.name, error)
+        }
+    }
+
+    /// Delivers the event turning `fetchesRemoteCopies` on queued, if it still holds.
+    func deliverPendingClipboardEvent() {
+        if let clipboard {
+            deliver(clipboard.takePendingEvent(), from: clipboard)
+        }
+    }
+
+    private func deliver(_ event: RDPClipboardEvent?, from clipboard: RDPClipboardSession) {
+        switch event {
+        case .ready:
+            callbacks.onClipboardReady?(clipboard)
+        case let .text(text):
+            callbacks.onClipboardText?(text)
+        case let .content(content):
+            if let text = content.text {
+                callbacks.onClipboardText?(text)
+            }
+            callbacks.onClipboardContent?(content)
+        case let .fileGroupDescriptor(descriptor):
+            callbacks.onClipboardFileGroupDescriptor?(descriptor)
+        case let .remoteCopyUnavailable(isEmpty):
+            callbacks.onClipboardRemoteCopyUnavailable?(isEmpty)
+        case let .fileContents(contents):
+            callbacks.onClipboardFileContents?(contents)
+        case nil:
+            break
         }
     }
 

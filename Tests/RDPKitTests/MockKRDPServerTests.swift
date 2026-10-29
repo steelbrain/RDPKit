@@ -1880,6 +1880,51 @@ struct MockKRDPServerTests {
         #expect(!run.transcript.clientClipboardMessages.map(\.typeName).contains("clipboard-format-data-request"))
     }
 
+    /// A client that turns fetching off in onClipboardReady and back on from another thread,
+    /// as RDPClient does from its main thread, hears of a clipboard emptied in between. The
+    /// report comes on the session's thread, like every handler, though no more traffic does.
+    @Test func clientReportsAClipboardEmptiedWhileFetchingWasOff() throws {
+        let unavailable = Locked<[Bool]>([])
+        let clipboard = Locked<(session: RDPClipboardSession, thread: Thread)?>(nil)
+        let reportedOnSessionThread = Locked<Bool?>(nil)
+        let cancellation = RDPConnectionCancellation()
+        _ = try runMock(.init(emptyRemoteClipboard: true), {
+            $0.clipboardEnabled = true
+            $0.graphicsFrameCaptureLimit = nil
+        }, client: {
+            RDPSessionClient().run(
+                configuration: $0,
+                onGraphicsFrame: { _ in
+                    // The empty Format List came before the frame.
+                    guard let session = clipboard.value?.session, !session.fetchesRemoteCopies else {
+                        return
+                    }
+                    Thread.detachNewThread {
+                        session.fetchesRemoteCopies = true
+                    }
+                    // Ends a session the report never reaches, so the test fails rather than hangs.
+                    Thread.detachNewThread {
+                        Thread.sleep(forTimeInterval: 5)
+                        cancellation.cancel()
+                    }
+                },
+                onClipboardReady: { session in
+                    session.fetchesRemoteCopies = false
+                    clipboard.withLock { $0 = (session, Thread.current) }
+                },
+                onClipboardRemoteCopyUnavailable: { isEmpty in
+                    unavailable.withLock { $0.append(isEmpty) }
+                    reportedOnSessionThread.withLock { $0 = Thread.current === clipboard.value?.thread }
+                    cancellation.cancel()
+                },
+                cancellation: cancellation
+            )
+        })
+
+        #expect(unavailable.value == [true])
+        #expect(reportedOnSessionThread.value == true)
+    }
+
     /// The traffic a Windows server sees once a session is up: input, clipboard
     /// both ways, display control, device redirection and audio. The mock
     /// sends the first frame only after all of it arrived.
