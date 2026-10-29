@@ -1039,12 +1039,18 @@ public final class RDPClipboardSession: @unchecked Sendable {
             useLongFormatNames: usesLongFormatNames
         ) {
             sendFormatListResponse(ok: true)
-            if let formatID = formatList.fileGroupDescriptorWFormatID {
-                requestRemoteCopy([.fileGroupDescriptorW(formatID: formatID)])
+            let requests: [RDPClipboardRequestedFormatDataResponse] = if let formatID = formatList.fileGroupDescriptorWFormatID {
+                [.fileGroupDescriptorW(formatID: formatID)]
             } else {
-                requestRemoteCopy(formatList.contentRequests(includingRichFormats: requestsRichFormats))
+                formatList.contentRequests(includingRichFormats: requestsRichFormats)
             }
-            return nil
+            // The list replaces the server's clipboard (MS-RDPECLIP 3.1.5.2.2), so a copy with
+            // no formats, or none this session fetches, still retires the one the application
+            // has: an empty list is the server's clipboard emptied.
+            guard requestRemoteCopy(requests), requests.isEmpty else {
+                return nil
+            }
+            return .remoteCopyUnavailable(isEmpty: formatList.entries.isEmpty)
         }
         if let request = try RDPClipboardFormatDataRequestPDU.parseIfPresent(from: pdu) {
             respondToFormatDataRequest(request)
@@ -1193,14 +1199,17 @@ public final class RDPClipboardSession: @unchecked Sendable {
     }
 
     /// Starts fetching a remote copy: its requests replace those of an older copy that
-    /// have not gone out yet. While fetching is off, nothing is requested.
-    func requestRemoteCopy(_ requests: [RDPClipboardRequestedFormatDataResponse]) {
-        lock.withLock {
+    /// have not gone out yet. While fetching is off, nothing is requested. Returns whether
+    /// fetching is on.
+    func requestRemoteCopy(_ requests: [RDPClipboardRequestedFormatDataResponse]) -> Bool {
+        let isFetching = lock.withLock {
             // Checked under the lock that queues the requests, so turning fetching off
             // on another thread cannot come between the check and the queueing.
             replaceRemoteCopy(with: isFetchingRemoteCopies ? requests : [])
+            return isFetchingRemoteCopies
         }
         sendNextFormatDataRequest()
+        return isFetching
     }
 
     /// Makes a new copy current with `requests`, dropping the older copy's requests that
@@ -1442,6 +1451,9 @@ enum RDPClipboardEvent: Equatable, Sendable {
     /// Every format fetched of a remote copy, when rich formats are fetched.
     case content(RDPClipboardContent)
     case fileGroupDescriptor(RDPClipboardFileGroupDescriptorW)
+    /// A remote copy none of which is fetched: the server's clipboard was emptied, or holds
+    /// only formats this session does not fetch.
+    case remoteCopyUnavailable(isEmpty: Bool)
     case fileContents(RDPClipboardFileContentsResponse)
 }
 

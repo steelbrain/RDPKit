@@ -1738,6 +1738,22 @@ struct MockKRDPServerTests {
         )])
     }
 
+    /// A server whose clipboard is emptied sends a Format List with no formats; the
+    /// application hears of it, as nothing would be fetched.
+    @Test func clientReportsAnEmptiedRemoteClipboard() throws {
+        let unavailable = Locked<[Bool]>([])
+        let run = try runMock(.init(emptyRemoteClipboard: true), { $0.clipboardEnabled = true }, client: {
+            RDPSessionClient().run(
+                configuration: $0,
+                onClipboardRemoteCopyUnavailable: { isEmpty in unavailable.withLock { $0.append(isEmpty) } }
+            )
+        })
+
+        #expect(run.report.status == "success")
+        #expect(unavailable.value == [true])
+        #expect(!run.transcript.clientClipboardMessages.map(\.typeName).contains("clipboard-format-data-request"))
+    }
+
     /// The traffic a Windows server sees once a session is up: input, clipboard
     /// both ways, display control, device redirection and audio. The mock
     /// sends the first frame only after all of it arrived.

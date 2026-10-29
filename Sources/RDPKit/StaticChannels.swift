@@ -67,6 +67,8 @@ extension RDPClientConnection {
                 callbacks.onClipboardContent?(content)
             case let .fileGroupDescriptor(descriptor):
                 callbacks.onClipboardFileGroupDescriptor?(descriptor)
+            case let .remoteCopyUnavailable(isEmpty):
+                callbacks.onClipboardRemoteCopyUnavailable?(isEmpty)
             case let .fileContents(contents):
                 callbacks.onClipboardFileContents?(contents)
             case nil:

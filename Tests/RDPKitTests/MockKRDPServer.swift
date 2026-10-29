@@ -76,6 +76,8 @@ final class MockKRDPServer: LoopbackTestServer {
         /// Offer HTML beside the text of the remote copy, and send the first frame
         /// only after the client asked for it.
         var remoteClipboardHTML: String?
+        /// Announce an empty clipboard: a Format List with no formats.
+        var emptyRemoteClipboard = false
         var audioEnabled = false
         var waitForCompatibilityTraffic = false
         var requireBitmapCodecsCapability = false
@@ -1127,6 +1129,7 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
 
     private var clipboardEnabled: Bool {
         options.clipboardFiles.isEmpty == false || options.remoteClipboardText != nil || options.remoteClipboardHTML != nil
+            || options.emptyRemoteClipboard
     }
 
     private var clientRequestedProtocols: RDPSecurityProtocols {

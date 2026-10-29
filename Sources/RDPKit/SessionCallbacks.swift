@@ -20,6 +20,13 @@ public typealias RDPClipboardTextHandler = @Sendable (String) -> Void
 /// HTML, RTF and bitmaps as well as text; `onClipboardText` still receives the text.
 public typealias RDPClipboardContentHandler = @Sendable (RDPClipboardContent) -> Void
 public typealias RDPClipboardFileGroupDescriptorHandler = @Sendable (RDPClipboardFileGroupDescriptorW) -> Void
+/// Called for a remote copy none of which is fetched, so the copy delivered before is no
+/// longer the server's: `isEmpty` when the server's clipboard was emptied (an empty Format
+/// List), and otherwise it holds only formats the session does not fetch, such as a bitmap
+/// without `onClipboardContent`. Not called while `fetchesRemoteCopies` is off. Windows 11
+/// sends an empty Format List when its clipboard is emptied; gnome-remote-desktop 51 sends
+/// nothing then.
+public typealias RDPClipboardRemoteCopyUnavailableHandler = @Sendable (_ isEmpty: Bool) -> Void
 public typealias RDPClipboardFileContentsHandler = @Sendable (RDPClipboardFileContentsResponse) -> Void
 public typealias RDPAudioSampleHandler = @Sendable (RDPAudioSample) -> Void
 /// Runs on the NIO event loop for every server message, before it is processed.
@@ -50,6 +57,7 @@ struct RDPSessionCallbacks {
     var onClipboardContent: RDPClipboardContentHandler?
     var onClipboardFileGroupDescriptor: RDPClipboardFileGroupDescriptorHandler?
     var onClipboardFileContents: RDPClipboardFileContentsHandler?
+    var onClipboardRemoteCopyUnavailable: RDPClipboardRemoteCopyUnavailableHandler?
     var onAudioSample: RDPAudioSampleHandler?
     var onCertificate: RDPServerCertificateHandler?
     var onWireReceive: RDPWireReceiveHandler?

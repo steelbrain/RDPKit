@@ -1071,6 +1071,64 @@ private final class ClipboardPublishRace: @unchecked Sendable {
     }
 }
 
+/// A Format List replaces the server's clipboard (MS-RDPECLIP 3.1.5.2.2), so one the session
+/// fetches nothing of still retires the copy the application has: an empty list, which a
+/// server sends when its clipboard is emptied, or only formats the session does not fetch.
+@Test func clipboardSessionReportsARemoteCopyItFetchesNothingOf() throws {
+    let emptyCopy = RDPClipboardFormatListPDU(entries: []).encoded()
+    let bitmapCopy = RDPClipboardFormatListPDU(entries: [
+        RDPClipboardFormatListEntry(formatID: 2),
+        RDPClipboardFormatListEntry(formatID: RDPClipboardFormatID.dib),
+    ]).encoded()
+    let customCopy = RDPClipboardFormatListPDU(entries: [
+        RDPClipboardFormatListEntry(formatID: 0xC0B0, formatName: "Custom Format"),
+    ]).encoded()
+    let textCopy = RDPClipboardFormatListPDU(entries: [
+        RDPClipboardFormatListEntry(formatID: RDPClipboardFormatID.unicodeText),
+    ]).encoded()
+    let bitmap = Data([40, 0, 0, 0])
+
+    for requestsRichFormats in [false, true] {
+        let channel = EmbeddedChannel()
+        let sent = ClipboardSentMessages()
+        let session = RDPClipboardSession(
+            userChannelID: 1006,
+            staticChannelID: 1007,
+            channel: channel,
+            requestsRichFormats: requestsRichFormats,
+            sentMessageHandler: sent.record
+        )
+        _ = try session.receive(RDPClipboardPDU.parse(from: RDPClipboardCapabilitiesPDU().encoded()))
+        _ = try session.receive(RDPClipboardPDU(messageType: RDPClipboardMessageType.monitorReady))
+
+        #expect(try session.receive(RDPClipboardPDU.parse(from: emptyCopy)) == .remoteCopyUnavailable(isEmpty: true))
+        #expect(try session.receive(RDPClipboardPDU.parse(from: customCopy)) == .remoteCopyUnavailable(isEmpty: false))
+        if requestsRichFormats {
+            #expect(try session.receive(RDPClipboardPDU.parse(from: bitmapCopy)) == nil)
+            #expect(try session.receive(RDPClipboardPDU.parse(from: RDPClipboardFormatDataResponsePDU(ok: true, data: bitmap).encoded()))
+                == .content(RDPClipboardContent(bitmap: bitmap)))
+        } else {
+            #expect(try session.receive(RDPClipboardPDU.parse(from: bitmapCopy)) == .remoteCopyUnavailable(isEmpty: false))
+        }
+
+        // The answer for a copy the server emptied since is dropped.
+        #expect(try session.receive(RDPClipboardPDU.parse(from: textCopy)) == nil)
+        #expect(try session.receive(RDPClipboardPDU.parse(from: emptyCopy)) == .remoteCopyUnavailable(isEmpty: true))
+        #expect(try session.receive(RDPClipboardPDU.parse(from: RDPClipboardFormatDataResponsePDU.unicodeText("old").encoded())) == nil)
+
+        // While fetching is off, nothing of the server's clipboard reaches the application.
+        session.fetchesRemoteCopies = false
+        #expect(try session.receive(RDPClipboardPDU.parse(from: emptyCopy)) == nil)
+        #expect(try session.receive(RDPClipboardPDU.parse(from: customCopy)) == nil)
+
+        #expect(try sentFormatDataRequestIDs(sent) == (requestsRichFormats ? [8, 13] : [13]))
+        #expect(sent.summaries.filter { $0.typeName == "clipboard-format-list-response" }.allSatisfy {
+            $0.messageFlags == RDPClipboardMessageFlags.responseOK
+        })
+        _ = try channel.finish()
+    }
+}
+
 /// A client that does not share its clipboard still joins cliprdr, so it can start sharing
 /// later; until then it asks the server for nothing.
 @Test func clipboardSessionFetchesNoRemoteCopyWhileFetchingIsOff() throws {
