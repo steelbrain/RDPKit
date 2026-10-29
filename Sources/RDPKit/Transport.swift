@@ -585,14 +585,21 @@ final class RDPTransport {
         let reader = reader
         let timeoutSeconds = timeoutSeconds
         let handshake = channel.eventLoop.makePromise(of: Void.self)
-        try channel.eventLoop.submit {
-            let tls = try NIOSSLClientHandler(context: context, serverHostname: serverHostname) { chain, verified in
-                reader.value.presentedCertificates = chain
-                verified.succeed(.certificateVerified)
+        let tls = NIOLoopBoundBox.makeEmptyBox(valueType: NIOSSLClientHandler.self, eventLoop: channel.eventLoop)
+        channel.eventLoop.execute {
+            do {
+                let handler = try NIOSSLClientHandler(context: context, serverHostname: serverHostname) { chain, verified in
+                    reader.value.presentedCertificates = chain
+                    verified.succeed(.certificateVerified)
+                }
+                try channel.pipeline.syncOperations.addHandler(handler, position: .first)
+                tls.value = handler
+                reader.value.awaitHandshake(handshake)
+            } catch {
+                // A channel the server already closed refuses the handler.
+                handshake.fail(reader.value.failure ?? error)
             }
-            try channel.pipeline.syncOperations.addHandler(tls, position: .first)
-            reader.value.awaitHandshake(handshake)
-        }.wait()
+        }
         let timeout = channel.eventLoop.scheduleTask(in: .seconds(Int64(timeoutSeconds))) {
             handshake.fail(RDPConnectionError.tls("TLS handshake timed out after \(timeoutSeconds) seconds"))
             channel.close(promise: nil)
@@ -612,9 +619,10 @@ final class RDPTransport {
             throw RDPConnectionError.tls(String(describing: error))
         }
 
+        // The handler, not a pipeline lookup: a server that closes right after
+        // the handshake has already emptied the pipeline.
         return try channel.eventLoop.submit {
-            let tls = try channel.pipeline.syncOperations.handler(type: NIOSSLClientHandler.self)
-            return (reader.value.presentedCertificates, tls.tlsVersion)
+            (reader.value.presentedCertificates, tls.value?.tlsVersion)
         }.wait()
     }
 }

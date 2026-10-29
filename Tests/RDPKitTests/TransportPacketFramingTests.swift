@@ -188,6 +188,42 @@ private let tpkt = Data([0x03, 0x00, 0x00, 0x07, 0x02, 0xF0, 0x80])
     #expect(error.map(String.init(describing:)) == "CredSSP server returned STATUS_LOGON_FAILURE (0xc000006d)")
 }
 
+/// A server can close after the X.224 Connection Confirm, before the client
+/// starts TLS: the closed channel refuses the TLS handler.
+@Test func startingTLSOnAClosedConnectionReportsTheClose() throws {
+    let server = try ServerBootstrap(group: MultiThreadedEventLoopGroup.singleton)
+        .childChannelInitializer { channel in
+            channel.eventLoop.makeCompletedFuture {
+                try channel.pipeline.syncOperations.addHandler(ClosingHandler())
+            }
+        }
+        .bind(host: "127.0.0.1", port: 0)
+        .wait()
+    defer { server.close(promise: nil) }
+    let transport = try RDPTransport.connect(
+        host: "127.0.0.1",
+        port: UInt16(try #require(server.localAddress?.port)),
+        timeoutSeconds: 10,
+        callbacks: RDPSessionCallbacks()
+    )
+    try transport.send(X224ConnectionRequest().encodedTPKT())
+    try transport.channel.closeFuture.wait()
+
+    let error = #expect(throws: RDPConnectionError.self) {
+        try transport.startTLS(serverHostname: nil)
+    }
+    #expect(error.map(String.init(describing:)) == "TLS failed: connection closed before the TLS handshake completed")
+}
+
+/// Closes the connection on the client's first bytes.
+private final class ClosingHandler: ChannelInboundHandler, Sendable {
+    typealias InboundIn = ByteBuffer
+
+    func channelRead(context: ChannelHandlerContext, data _: NIOAny) {
+        context.close(promise: nil)
+    }
+}
+
 /// Answers the client's first bytes with a CredSSP errorCode, then closes.
 private final class CredSSPRejectingHandler: ChannelInboundHandler {
     typealias InboundIn = ByteBuffer
