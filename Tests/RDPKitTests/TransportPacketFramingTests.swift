@@ -188,6 +188,37 @@ private let tpkt = Data([0x03, 0x00, 0x00, 0x07, 0x02, 0xF0, 0x80])
     #expect(error.map(String.init(describing:)) == "CredSSP server returned STATUS_LOGON_FAILURE (0xc000006d)")
 }
 
+/// A server that accepts and closes at once (a port forward with nothing behind
+/// it) fails the connect, if it does, with a connection error, not NIO's.
+@Test func connectingToAServerThatClosesAtOnceFailsWithAConnectionError() throws {
+    let server = try ServerBootstrap(group: MultiThreadedEventLoopGroup.singleton)
+        .childChannelInitializer { channel in
+            channel.close()
+        }
+        .bind(host: "127.0.0.1", port: 0)
+        .wait()
+    defer { server.close(promise: nil) }
+    let port = UInt16(try #require(server.localAddress?.port))
+
+    // The close races the connecting thread; enough busy attempts lose that race.
+    let foreignErrors = Locked<[String]>([])
+    DispatchQueue.concurrentPerform(iterations: 8) { _ in
+        for _ in 0 ..< 100 {
+            do {
+                try RDPTransport.connect(
+                    host: "127.0.0.1",
+                    port: port,
+                    timeoutSeconds: 10,
+                    callbacks: RDPSessionCallbacks()
+                ).close()
+            } catch where !(error is RDPConnectionError) {
+                foreignErrors.withLock { $0.append(String(describing: error)) }
+            } catch {}
+        }
+    }
+    #expect(foreignErrors.value == [])
+}
+
 /// A server can close after the X.224 Connection Confirm, before the client
 /// starts TLS: the closed channel refuses the TLS handler.
 @Test func startingTLSOnAClosedConnectionReportsTheClose() throws {

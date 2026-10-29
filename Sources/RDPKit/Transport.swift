@@ -403,9 +403,15 @@ final class RDPTransport {
         } catch {
             throw RDPConnectionError.connect(connectionErrorDescription(error))
         }
-        let reader = try eventLoop.submit {
-            try NIOLoopBound(channel.pipeline.syncOperations.handler(type: RDPTransportReader.self), eventLoop: eventLoop)
-        }.wait()
+        let reader: NIOLoopBound<RDPTransportReader>
+        do {
+            reader = try eventLoop.submit {
+                try NIOLoopBound(channel.pipeline.syncOperations.handler(type: RDPTransportReader.self), eventLoop: eventLoop)
+            }.wait()
+        } catch {
+            // Only closing empties the pipeline: the server dropped the connection as it accepted it.
+            throw RDPConnectionError.connect("the server closed the connection")
+        }
         return RDPTransport(channel: channel, reader: reader, timeoutSeconds: timeoutSeconds, callbacks: callbacks)
     }
 
