@@ -237,8 +237,8 @@ extension RDPClientConnection {
         }
     }
 
-    /// Presents the stored license when it matches the server's product,
-    /// otherwise asks for a new one.
+    /// Presents the stored license when it matches the server's product and fits
+    /// the PDU, otherwise asks for a new one.
     private func answerLicenseRequest(_ request: RDPServerLicenseRequest) throws {
         guard let serverPublicKey = request.serverCertificatePublicKey ?? serverCertificatePublicKey else {
             throw RDPConnectionError.protocolViolation("server did not provide a usable licensing public key")
@@ -246,24 +246,10 @@ extension RDPClientConnection {
         let packet: Data
         let clientRandom: Data
         let premasterSecret: Data?
-        if let storedLicense = configuration.storedClientLicense, storedLicense.matches(request) {
-            let information = try RDPClientLicenseInformationPDU(
-                channelID: ioChannelID,
-                serverPublicKey: serverPublicKey,
-                serverRandom: request.serverRandom,
-                storedLicense: storedLicense
-            )
-            do {
-                packet = try information.encodedTPKT(userChannelID: userChannelID)
-            } catch {
-                // The rest of the PDU is fixed-size but for the premaster secret encrypted to
-                // the server's key, 512 bytes for a 4096-bit key: the stored license is too large.
-                throw RDPConnectionError.invalidConfiguration(
-                    "storedClientLicense does not fit the Client License Information PDU: \(error)"
-                )
-            }
-            clientRandom = information.clientRandom
-            premasterSecret = information.premasterSecret
+        if let information = try storedLicenseInformation(answering: request, serverPublicKey: serverPublicKey) {
+            packet = information.packet
+            clientRandom = information.pdu.clientRandom
+            premasterSecret = information.pdu.premasterSecret
         } else {
             let newLicenseRequest = try RDPClientNewLicenseRequestPDU(
                 channelID: ioChannelID,
@@ -279,6 +265,36 @@ extension RDPClientConnection {
             try RDPLicenseKeys.derive(clientRandom: clientRandom, serverRandom: request.serverRandom, premasterSecret: $0)
         }
         try send(packet)
+    }
+
+    /// The Client License Information PDU presenting the stored license, or nil when there is
+    /// none, it does not match the server's product, or it is too large to present.
+    private func storedLicenseInformation(
+        answering request: RDPServerLicenseRequest,
+        serverPublicKey: RDPRSAPublicKey
+    ) throws -> (pdu: RDPClientLicenseInformationPDU, packet: Data)? {
+        guard let storedLicense = configuration.storedClientLicense, storedLicense.matches(request) else {
+            return nil
+        }
+        let information = try RDPClientLicenseInformationPDU(
+            channelID: ioChannelID,
+            serverPublicKey: serverPublicKey,
+            serverRandom: request.serverRandom,
+            storedLicense: storedLicense
+        )
+        do {
+            return (information, try information.encodedTPKT(userChannelID: userChannelID))
+        } catch {
+            // The rest of the PDU is fixed-size but for the premaster secret encrypted to the
+            // server's key, 512 bytes for a 4096-bit key: the stored license is too large. Failing
+            // would fail every connect until the app drops it; a new license request still works.
+            appendWarning(
+                code: "stored-license-too-large",
+                message: "storedClientLicense (\(storedLicense.licenseInfo.count) bytes) is too large to present "
+                    + "in a Client License Information PDU (\(error)); asked for a new license"
+            )
+            return nil
+        }
     }
 
     // MARK: Message channel ([MS-RDPBCGR] 2.2.14)

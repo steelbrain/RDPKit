@@ -701,7 +701,7 @@ struct MockKRDPServerTests {
     }
 
     @Test func clientSendsClientLicenseInformationForMatchingStoredLicense() throws {
-        let report = try runMock(.init(licensingBehavior: .serverLicenseRequestWithStoredClientLicense)) {
+        let run = try runMock(.init(licensingBehavior: .serverLicenseRequestWithStoredClientLicense)) {
             $0.storedClientLicense = RDPStoredClientLicense(
                 version: 0x0006_0001,
                 scope: "localhost",
@@ -709,18 +709,22 @@ struct MockKRDPServerTests {
                 productID: "A02",
                 licenseInfo: Data([0x30, 0x82, 0x01, 0x02])
             )
-        }.report
+        }
+        let report = run.report
 
         #expect(report.status == "success")
         #expect(report.rdpLicensingResponseType == "license-request")
         #expect(report.rdpPostLicensingResponseType == "server-demand-active")
         #expect(report.rdpConfirmActiveRequestHex != nil)
         #expect(report.error == nil)
+        #expect(run.transcript.licenseMachineName == nil)
+        #expect(report.warnings.contains { $0.code == "stored-license-too-large" } == false)
     }
 
-    /// A stored license too large for one Client License Information PDU is the configuration's fault.
-    @Test func storedLicenseTooLargeToPresentIsAnInvalidConfiguration() throws {
-        let report = try runMock(.init(licensingBehavior: .serverLicenseRequestWithStoredClientLicense)) {
+    /// A stored license too large for one Client License Information PDU must not fail every
+    /// connect: the client asks for a new license, as for one that does not match.
+    @Test func storedLicenseTooLargeToPresentFallsBackToNewLicenseRequest() throws {
+        let run = try runMock(.init(licensingBehavior: .serverLicenseRequestWithStoredClientLicense)) {
             $0.storedClientLicense = RDPStoredClientLicense(
                 version: 0x0006_0001,
                 scope: "localhost",
@@ -728,12 +732,16 @@ struct MockKRDPServerTests {
                 productID: "A02",
                 licenseInfo: Data(repeating: 0x30, count: 16340)
             )
-        }.report
+        }
+        let report = run.report
 
-        #expect(report.status == "failure")
-        #expect(report.connectionStage == .licensing)
-        #expect(report.failure == .invalidConfiguration)
-        #expect(report.error?.hasPrefix("storedClientLicense does not fit the Client License Information PDU: ") == true)
+        #expect(report.status == "success")
+        #expect(report.failure == nil)
+        #expect(report.error == nil)
+        #expect(report.rdpPostLicensingResponseType == "server-demand-active")
+        #expect(run.transcript.licenseMachineName == "RDPKIT")
+        let warning = report.warnings.first { $0.code == "stored-license-too-large" }
+        #expect(warning?.message.hasPrefix("storedClientLicense (16340 bytes) is too large to present") == true)
     }
 
     @Test func clientReportsLicensingFailureWithTheServerErrorCode() throws {

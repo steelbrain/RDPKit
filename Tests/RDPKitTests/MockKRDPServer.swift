@@ -867,7 +867,12 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
 
         case .clientLicenseInformation:
             let request = try MockKRDPFixtures.expectSendDataRequest(packet, channelID: MockKRDPConstants.ioChannelID)
-            try MockKRDPFixtures.expectClientLicenseInformation(request.userData)
+            // A client that cannot present its stored license asks for a new one instead.
+            if let machineName = try? MockKRDPFixtures.expectClientNewLicenseRequest(request.userData) {
+                transcript.withLock { $0.licenseMachineName = machineName }
+            } else {
+                try MockKRDPFixtures.expectClientLicenseInformation(request.userData)
+            }
             write(MockKRDPFixtures.demandActive(), context: context)
             stage = .confirmActive
 

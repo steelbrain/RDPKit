@@ -406,8 +406,7 @@ public enum RDPConnectionFailure: Encodable, Equatable, Sendable {
     /// The server broke the protocol, or needs something RDPKit does not support.
     case protocolViolation
     /// The configuration holds something RDPKit cannot send: credentials longer
-    /// than the Client Info PDU ([MS-RDPBCGR] 2.2.1.11.1.1) or NTLM holds, or a
-    /// `storedClientLicense` too large for the Client License Information PDU.
+    /// than the Client Info PDU ([MS-RDPBCGR] 2.2.1.11.1.1) or NTLM holds.
     /// The server was not at fault.
     case invalidConfiguration
     /// RDPKit failed on this device: the system could not generate random
