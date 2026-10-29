@@ -4,7 +4,9 @@ Pure Swift RDP library for Apple platforms, built around Apple media, security,
 and networking primitives instead of FreeRDP.
 
 - RDPGFX rendering with AVC420/H.264, AVC444/AVC444v2, RemoteFX Progressive,
-  classic RemoteFX, ClearCodec, NSCodec, and RDP bitmap codecs
+  classic RemoteFX, ClearCodec, planar, and alpha codecs
+- Surface command and bitmap update rendering with RemoteFX, NSCodec, planar,
+  and Interleaved RLE
 - Persistent mapped-surface composition, VideoToolbox decode, Metal AVC444
   reconstruction, and zero-copy CoreVideo presentation where available
 - HEVC/H.265 Annex B parsing and VideoToolbox decode helpers
@@ -183,8 +185,9 @@ itself.
   compatibility flows
 - First-frame capture tooling with configurable geometry, settle windows, and
   optional wire-transcript recording
-- Preflight tooling for connection, security, channel, graphics, clipboard, and
-  audio inspection plus input, clipboard, display, and audio probes
+- Preflight tooling for connection, security, channel, graphics, display
+  control, clipboard, and audio inspection plus input, clipboard, and audio
+  probes
 - Frame benchmark tooling for live capture measurements and pixel-buffer or
   Core Graphics decode strategies
 - Captured negotiation fixtures and offline transcript replay tests
@@ -192,7 +195,8 @@ itself.
 
 ### Compatibility
 
-Live compatibility is validated against Microsoft Windows RDP and KDE KRdp.
+Live compatibility is validated against Microsoft Windows RDP, KDE KRdp, and
+GNOME Remote Desktop.
 Mock-server tests cover Windows and KRdp compatibility, while captured KRdp and
 GNOME Remote Desktop transcripts replay connection and graphics flows without
 a live host.
