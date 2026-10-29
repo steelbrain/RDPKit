@@ -27,11 +27,13 @@ final class RDPTranscriptReplayServer: LoopbackTestServer {
     let clientPackets: Locked<[Data]>
 
     /// `onSegmentEnd` runs on the event loop once a connection's recorded
-    /// server events are all sent, so a test can script what follows.
+    /// server events are all sent, so a test can script what follows, and
+    /// `onTrailingClientPacket` for each packet the client sends after that.
     init(
         transcript: [RDPWireEvent],
         credentials: RDPCredentials,
-        onSegmentEnd: (@Sendable (Channel) -> Void)? = nil
+        onSegmentEnd: (@Sendable (Channel) -> Void)? = nil,
+        onTrailingClientPacket: (@Sendable (Channel, Data) -> Void)? = nil
     ) throws {
         let segments = Self.segment(transcript)
         let tlsContext = try NIOSSLContext(configuration: MockKRDPTLS.configuration())
@@ -45,7 +47,8 @@ final class RDPTranscriptReplayServer: LoopbackTestServer {
                 segments: segments,
                 connectionCount: connectionCount,
                 clientPackets: clientPackets,
-                onSegmentEnd: onSegmentEnd
+                onSegmentEnd: onSegmentEnd,
+                onTrailingClientPacket: onTrailingClientPacket
             )
         }
     }
@@ -108,6 +111,7 @@ private final class RDPTranscriptReplayHandler: ChannelInboundHandler {
     private let connectionCount: Locked<Int>
     private let clientPackets: Locked<[Data]>
     private let onSegmentEnd: (@Sendable (Channel) -> Void)?
+    private let onTrailingClientPacket: (@Sendable (Channel, Data) -> Void)?
 
     private var segment: RDPTranscriptReplayServer.ConnectionSegment?
     private var stage = Stage.x224
@@ -134,7 +138,8 @@ private final class RDPTranscriptReplayHandler: ChannelInboundHandler {
         segments: [RDPTranscriptReplayServer.ConnectionSegment],
         connectionCount: Locked<Int>,
         clientPackets: Locked<[Data]>,
-        onSegmentEnd: (@Sendable (Channel) -> Void)?
+        onSegmentEnd: (@Sendable (Channel) -> Void)?,
+        onTrailingClientPacket: (@Sendable (Channel, Data) -> Void)?
     ) {
         self.tlsContext = tlsContext
         self.credentials = credentials
@@ -142,6 +147,7 @@ private final class RDPTranscriptReplayHandler: ChannelInboundHandler {
         self.connectionCount = connectionCount
         self.clientPackets = clientPackets
         self.onSegmentEnd = onSegmentEnd
+        self.onTrailingClientPacket = onTrailingClientPacket
     }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
@@ -179,6 +185,7 @@ private final class RDPTranscriptReplayHandler: ChannelInboundHandler {
                 // Record, but do not answer, trailing client packets.
                 guard let packet = try received.nextPacket() else { return }
                 clientPackets.withLock { $0.append(packet) }
+                onTrailingClientPacket?(context.channel, packet)
             }
         }
     }

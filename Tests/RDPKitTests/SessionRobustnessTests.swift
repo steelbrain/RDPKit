@@ -199,12 +199,13 @@ func chattyServerStillMissesTheMilestoneDeadline(prefix: Int, error: String) thr
     (KRdpCapture.ConnectionEnd.corruptTLSRecord, "receive failed: connection lost:"),
 ] as [(KRdpCapture.ConnectionEnd, String?)])
 func liveSessionReportsALostConnectionAsAFailure(end: KRdpCapture.ConnectionEnd, error: String?) throws {
-    let run = try KRdpCapture.run(frameCaptureLimit: nil) { channel in
-        // After the client has the frame.
-        channel.eventLoop.scheduleTask(in: .milliseconds(300)) {
+    // Once the client acknowledges the frame: it has the frame and sends nothing
+    // more, so a close finds nothing unread and stays a clean close.
+    let run = try KRdpCapture.run(frameCaptureLimit: nil, onTrailingClientPacket: { channel, packet in
+        if packet.containsSubsequence(KRdpCapture.frameAcknowledgeHeader) {
             KRdpCapture.endConnection(channel, end)
         }
-    }
+    })
 
     #expect(run.report.rdpGraphicsFirstFrame != nil)
     if let error {
@@ -301,6 +302,9 @@ enum KRdpCapture {
     static let drdynvcChannelID: UInt16 = 1004
     static let messageChannelID: UInt16 = 1005
     static let graphicsChannelID: UInt32 = 1
+    /// How a client RDPGFX_FRAME_ACKNOWLEDGE_PDU on the graphics channel starts:
+    /// DVC Data with a one-byte channel ID, then the RDPGFX command ID.
+    static let frameAcknowledgeHeader = Data([0x30, UInt8(graphicsChannelID), 0x0D, 0x00])
 
     struct Run {
         var report: RDPConnectionReport
@@ -312,15 +316,18 @@ enum KRdpCapture {
     }
 
     /// Replays the capture (or its first `prefix` events) followed by
-    /// `appending`, then hands the connection to `onEnd`. The run is cancelled
-    /// after `guardSeconds` so a hang fails the test instead of stalling it.
+    /// `appending`, then hands the connection to `onEnd`, and to
+    /// `onTrailingClientPacket` with each packet the client sends after that.
+    /// The run is cancelled after `guardSeconds` so a hang fails the test
+    /// instead of stalling it.
     static func run(
         prefix: Int? = nil,
         appending packets: [Data] = [],
         frameCaptureLimit: Int? = 1,
         timeoutSeconds: Int = 10,
         guardSeconds: Double = 20,
-        onEnd: (@Sendable (Channel) -> Void)? = nil
+        onEnd: (@Sendable (Channel) -> Void)? = nil,
+        onTrailingClientPacket: (@Sendable (Channel, Data) -> Void)? = nil
     ) throws -> Run {
         var events = try events()
         if let prefix {
@@ -336,7 +343,12 @@ enum KRdpCapture {
             ))
         }
         let credentials = RDPCredentials(username: "rdp-user", password: "rdp-user")
-        let server = try RDPTranscriptReplayServer(transcript: events, credentials: credentials, onSegmentEnd: onEnd)
+        let server = try RDPTranscriptReplayServer(
+            transcript: events,
+            credentials: credentials,
+            onSegmentEnd: onEnd,
+            onTrailingClientPacket: onTrailingClientPacket
+        )
         defer { server.stop() }
 
         let cancellation = RDPConnectionCancellation()
