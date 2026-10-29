@@ -102,6 +102,13 @@ let report = client.run(
 print(report.status)
 ```
 
+When a run fails, `report.failure` says why without matching text, for example
+`.credSSP(status: .logonFailure)`, `.connect(error:)` with the errno and its
+category, or `.tlsKeyUsageIncorrect` (retry with `legacyRSAKeyExchange`);
+`report.error` describes it in words. `report.remoteTermination?.category`
+says how the server ended a session: logoff, an administrator, an idle limit,
+another connection, and so on.
+
 `RDPSessionClient` exposes callbacks for graphics frames, remote pointer
 updates, input readiness, display control, clipboard messages, audio
 samples, TLS certificate inspection, wire bandwidth samples, and cancellation.
@@ -127,6 +134,9 @@ configuration.keyboardLayout = RDPKeyboardLayout(rawValue: 0x0000_0407)
 configuration.sharedDrives = [
     RDPSharedDrive(name: "Shared", url: URL(fileURLWithPath: "/Users/me/Shared")),
 ]
+// Start at a Retina Mac's scale, under a name the server's session list shows.
+configuration.scaleFactors = RDPDisplayScaleFactors(backingScaleFactor: 2)
+configuration.clientName = "Studio-Mac"
 
 let report = client.run(
     configuration: configuration,
@@ -182,6 +192,10 @@ let report = client.run(
   certificate warning visibility
 - A connection timeout for every milestone before the first frame, TCP
   keepalive during live sessions, and cancellation from any thread
+- Typed failure reasons (`RDPConnectionFailure`) and named, categorized server
+  termination codes (`RDPRemoteTermination`)
+- A configurable client name, and the server's auto-reconnect cookie, which a
+  later connection can send back to rejoin the same session
 
 ### Input And Display
 
@@ -191,6 +205,8 @@ let report = client.run(
 - Pointer motion, buttons, extended buttons, vertical wheel, and horizontal wheel
 - Remote pointer shapes, system pointers, and pointer-cache updates
 - Display control channel support for resize and monitor layout updates
+- Connect-time desktop and device scale factors and physical size, for servers
+  without display control
 - HiDPI-aware display scale models for Apple clients
 
 ### Clipboard And Files
@@ -201,8 +217,12 @@ let report = client.run(
   convert a DIB to and from `CGImage`. Windows 11 passes text, RTF, and
   bitmaps but drops HTML in both directions.
 - File Group Descriptor W parsing and encoding
-- File contents requests and responses
-- Local-to-remote and remote-to-local clipboard file transfer plumbing
+- File contents requests and responses. They have no timeout: to give one
+  up, ignore answers for its stream ID and use a new one for the next request.
+- Local-to-remote and remote-to-local clipboard file transfer plumbing. Local
+  file names are made valid on Windows before they are offered: forbidden
+  characters, device names such as `CON`, trailing dots and spaces, names over
+  259 UTF-16 code units, and duplicates that differ only in case.
 - Drive redirection: `sharedDrives` shows local folders on the server as
   `\\tsclient\<name>`. The server can read, write, create, rename, and delete
   inside a shared folder and nowhere else; links that point outside it are

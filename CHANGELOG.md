@@ -2,6 +2,131 @@
 
 ## Unreleased
 
+### Breaking changes
+
+- `RDPConnectionError` is a struct with `failure` (`RDPConnectionFailure`)
+  and `description` instead of an enum: match `error.failure` instead of its
+  cases. `connect` now throws only `RDPConnectionError`.
+- Once the graphics have opened, a session that an administrator, a time
+  limit or another connection ends is an ended session (`status` "success",
+  no `error`, `remoteTermination` set), not a failure.
+- Set Error Info 0xB is named `ERRINFO_RPC_INITIATED_DISCONNECT_BYUSER`.
+  `error` names RDP_NEG_FAILURE codes, as in "RDP negotiation failed with
+  HYBRID_REQUIRED_BY_SERVER (0x00000005)", and the newly named Set Error Info
+  codes.
+
+### Additions
+
+- `RDPConnectionReport.failure` (`RDPConnectionFailure`) says why a run failed
+  without matching text: connect errors with their errno and a category
+  (`RDPSocketError`), RDP_NEG_FAILURE codes (`RDPNegotiationFailureCode`),
+  TLS failures, including `tlsKeyUsageIncorrect` (retry with
+  `legacyRSAKeyExchange`), CredSSP NTSTATUS codes (`RDPLogonStatus`), missing
+  credentials, Early User Authorization, licensing, server termination, lost
+  or closed connections, timeouts, cancellation, protocol violations and a
+  throwing `onGraphicsFrame`. `error` keeps the details in words.
+- `RDPConnectionStage` is public, and `report.connectionStage` returns it.
+  `report.remoteTermination` (`RDPRemoteTermination`) names the Set Error
+  Info code ([MS-RDPBCGR] 2.2.5.1.1) and gives its category: user, admin,
+  time limit, replaced, access denied, licensing and others.
+- `RDPConnectionConfiguration.clientName` sets the name servers show for the
+  client in session lists and per-device licensing, instead of `RDPKIT`. It
+  goes in the Client Core Data, the licensing request and the rdpdr Client
+  Name Request; control characters are dropped and it is cut to 15
+  characters.
+- `RDPConnectionConfiguration.scaleFactors` (`RDPDisplayScaleFactors`) and
+  `physicalSize` (`RDPDisplayPhysicalSize`, in millimetres) go in the Client
+  Core Data, so a session starts at the client's scale, also on servers
+  without Display Control. The defaults send 100% and no size, as before.
+- Auto-reconnect: `report.rdpAutoReconnectCookie` (`RDPAutoReconnectCookie`)
+  keeps the latest cookie the server sent, and
+  `RDPConnectionConfiguration.autoReconnectCookie` sends it back in the Client
+  Info PDU to reconnect to the same session. CredSSP still needs the
+  credentials. The cookie is a secret: the report's encoding, descriptions
+  and mirrors keep only its logon ID, and wire transcripts never record the
+  client's PDUs.
+- `RDPConnectionIdentity.legacyCredentialAccountNames` gives the name RDPKit
+  0.1 to 0.3 used for `credentialAccountName`, which kept the host's case, so
+  a client can find a password saved under it with a direct lookup and move
+  it. `credentialAccountName` is documented as stable: the host is lowercased,
+  and the username and domain keep their case.
+- `RDPClipboardSession.fetchesRemoteCopies` lets a client join cliprdr
+  without fetching the server's copies: their Format Lists are acknowledged
+  and nothing is requested. Set it in `onClipboardReady` to cover the
+  server's first copy.
+- `RDPRemoteDisplayViewport.remotePoint(from:contentRect:)` maps a point with
+  the desktop drawn in a given rect, such as `contentRect` aligned to the
+  screen's pixels.
+
+### Compatibility and fixes
+
+- Connections: a live session's wait for its first frame is bounded by the
+  timeout at every step, however much other traffic or how many empty frames
+  the server sends. 0.4.0 bounded it only in capture runs. After its first
+  frame a live session still waits indefinitely, with TCP keepalive.
+- `RDPCredentials` splits a `DOMAIN\user` user name when no domain is given,
+  as mstsc and FreeRDP do, so NTLM and the Client Info PDU carry the domain.
+  A UPN stays as it is. `qualifiedUsername`, and so `credentialAccountName`,
+  is unchanged; the report's `username` and `domain` show the two parts.
+- Clipboard: local files reach the server under names Windows accepts.
+  `publishLocalFiles` replaces `\ / : * ? " < > |` and control characters
+  with `_`, puts `_` before device names such as `CON` and `NUL.txt`, drops
+  trailing dots and spaces, shortens a name past 259 UTF-16 code units before
+  its extension, and numbers names that differ only in case.
+
+### Examples
+
+- RDPClient:
+  - Explains why a session ended or failed in plain words, including the
+    server's reason after the desktop was shown, and offers the credentials
+    again after a refused sign-in. RDPKit's own text stays in Stats for
+    Nerds. A session shown through bitmap updates without RDPGFX no longer
+    ends as one that never opened RDPGFX.
+  - Connects again once with RSA key exchange when the server's certificate
+    refuses ECDHE (`KEY_USAGE_BIT_INCORRECT`), and says that this window has
+    no forward secrecy.
+  - On a Retina Mac, Reconnect and Trust and Connect ask for the view's point
+    size at 100% instead of its pixel size, so a server without Display
+    Control no longer shows a half-size desktop. Display Control still raises
+    a capable server to the pixel size.
+  - Servers list RDPClient under the Mac's name, not `RDPKIT`.
+  - Types the characters a Mac layout puts on Option, such as "@" (Option-L
+    on German), €, [ ] { } | \ and ~. Right Option is held back, and such a
+    character goes as Unicode without Alt; other keys still get Alt, and
+    right Option released alone still taps Alt. Left Option goes as Alt at
+    once, for shortcuts.
+  - Scrolling with Command held sends the Windows key with the wheel, so
+    releasing Command no longer opens the server's Start menu. Keypad "="
+    goes as Unicode where the remote layout has no "=" on the main "=" key,
+    as on German.
+  - Clipboard sharing can be turned on mid-session; with it off, nothing
+    crosses either way. A remote file download no longer replaces text or
+    files copied after it began, and fails after 30 seconds without an
+    answer. Downloaded files are quarantined, so Gatekeeper checks them
+    before they open. Their temporary folder is removed when the session
+    closes unless the pasteboard still holds them, and launch removes folders
+    earlier runs left behind.
+  - Only a refused certificate offers trust; other warnings are listed in
+    Stats for Nerds. "Hide certificate warnings" is renamed "Accept untrusted
+    certificates" and explains its risk.
+  - Resizing the window and back within 350 ms no longer leaves the remote at
+    the in-between size. The desktop is drawn on whole pixels, so a view of
+    odd width no longer blurs it at 1x, and pointer input maps to the same
+    rect.
+  - The frame clock's display link runs only while a frame waits for the next
+    refresh, and the session view no longer re-renders on every frame or
+    failed decode. The report's first frame is decoded only when the session
+    presented none. Clearing the display removes its last image, a display
+    layer that fails between frames shows the last frame again, and Stats for
+    Nerds' "Presented Frames" counts presented frames.
+  - Saved passwords are looked up off the main thread once typing pauses, and
+    ones saved before 0.4.0 are found by their old name instead of by listing
+    every Keychain item. RDPClient no longer sets a Keychain accessibility
+    that the login keychain ignores.
+  - Each saved connection is read on its own. One it cannot read, such as one
+    a newer build wrote, no longer empties the list, and saving keeps it and
+    any fields a newer build added.
+
 ## 0.4.0
 
 ### Breaking changes
