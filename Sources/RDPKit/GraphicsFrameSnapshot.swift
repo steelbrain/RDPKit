@@ -102,6 +102,9 @@ public struct RDPGraphicsFrameSnapshot: Encodable, Equatable, Sendable {
     public var videoCodec: RDPVideoCodec
     public var pixelFormat: UInt8
     public var graphicsOutputRect: RDPFrameRect?
+    /// Where the surface is in the graphics output. Nil with a ``graphicsOutputRect`` for a
+    /// surface not mapped to the output: a decoder keeps the update for later copies out of
+    /// the surface and presents nothing.
     public var surfaceRect: RDPFrameRect?
     public var mappedOutputRect: RDPFrameRect?
     public var destinationRect: RDPFrameRect

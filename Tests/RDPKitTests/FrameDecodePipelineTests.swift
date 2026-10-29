@@ -5,7 +5,7 @@ import Testing
 
 @Test func decodedVideoCompositorBlitsPartialUpdatesIntoPersistentSurface() throws {
     let compositor = RDPDecodedVideoSurfaceCompositor()
-    let firstPresentation = try compositor.presentation(
+    let firstPresentation = try compositor.presented(
         for: videoFrame(
             id: 1,
             surfaceRect: RDPFrameRect(left: 0, top: 0, right: 4, bottom: 4),
@@ -20,7 +20,7 @@ import Testing
     #expect(CVPixelBufferGetWidth(firstPresentation.imageBuffer) == 4)
     #expect(CVPixelBufferGetHeight(firstPresentation.imageBuffer) == 4)
 
-    let secondPresentation = try compositor.presentation(
+    let secondPresentation = try compositor.presented(
         for: videoFrame(
             id: 2,
             surfaceRect: RDPFrameRect(left: 0, top: 0, right: 4, bottom: 4),
@@ -46,7 +46,7 @@ import Testing
     let compositor = RDPDecodedVideoSurfaceCompositor()
     let outputRect = RDPFrameRect(left: 0, top: 0, right: 4, bottom: 4)
     let decodedImageBuffer = try bgraPixelBuffer(width: 4, height: 4, pixel: [0x10, 0x20, 0x30, 0xFF])
-    let presentation = try compositor.presentation(
+    let presentation = try compositor.presented(
         for: videoFrame(
             id: 1,
             graphicsOutputRect: outputRect,
@@ -65,7 +65,7 @@ import Testing
 @Test func decodedVideoCompositorMaterializesDirectFrameForLaterPartialUpdate() throws {
     let compositor = RDPDecodedVideoSurfaceCompositor()
     let outputRect = RDPFrameRect(left: 0, top: 0, right: 4, bottom: 4)
-    _ = try compositor.presentation(
+    _ = try compositor.presented(
         for: videoFrame(
             id: 1,
             graphicsOutputRect: outputRect,
@@ -75,7 +75,7 @@ import Testing
         ),
         decodedImageBuffer: try bgraPixelBuffer(width: 4, height: 4, pixel: [0x10, 0x20, 0x30, 0xFF])
     )
-    let presentation = try compositor.presentation(
+    let presentation = try compositor.presented(
         for: videoFrame(
             id: 2,
             graphicsOutputRect: outputRect,
@@ -95,7 +95,7 @@ import Testing
     let compositor = RDPDecodedVideoSurfaceCompositor()
     let outputRect = RDPFrameRect(left: 0, top: 0, right: 4, bottom: 4)
     let initialBuffer = try bgraPixelBuffer(width: 4, height: 4, pixel: [0x10, 0x20, 0x30, 0xFF])
-    _ = try compositor.presentation(
+    _ = try compositor.presented(
         for: RDPGraphicsFrameSnapshot(
             frameID: 1,
             surfaceID: 1,
@@ -116,7 +116,7 @@ import Testing
     )
 
     let updatedBuffer = try bgraPixelBuffer(width: 4, height: 4, pixel: [0xA0, 0xB0, 0xC0, 0xFF])
-    let presentation = try compositor.presentation(
+    let presentation = try compositor.presented(
         for: RDPGraphicsFrameSnapshot(
             frameID: 2,
             surfaceID: 1,
@@ -142,7 +142,7 @@ import Testing
 @Test func decodedVideoCompositorMaterializesDirectFrameBehindBitmapOverlay() throws {
     let compositor = RDPDecodedVideoSurfaceCompositor()
     let outputRect = RDPFrameRect(left: 0, top: 0, right: 4, bottom: 2)
-    _ = try compositor.presentation(
+    _ = try compositor.presented(
         for: RDPGraphicsFrameSnapshot(
             frameID: 1,
             surfaceID: 1,
@@ -158,7 +158,7 @@ import Testing
         ),
         decodedImageBuffer: try bgraPixelBuffer(width: 4, height: 2, pixel: [0x10, 0x20, 0x30, 0xFF])
     )
-    let presentation = try compositor.presentation(
+    let presentation = try compositor.presented(
         for: bitmapFrame(
             id: 2,
             surfaceID: 2,
@@ -177,7 +177,7 @@ import Testing
 
 @Test func decodedVideoCompositorUsesSurfaceRectWhenFirstUpdateIsPartial() throws {
     let compositor = RDPDecodedVideoSurfaceCompositor()
-    let presentation = try compositor.presentation(
+    let presentation = try compositor.presented(
         for: videoFrame(
             id: 1,
             surfaceRect: RDPFrameRect(left: 0, top: 0, right: 6, bottom: 5),
@@ -198,7 +198,7 @@ import Testing
 
 @Test func decodedVideoCompositorAppliesScaledOutputMapping() throws {
     let compositor = RDPDecodedVideoSurfaceCompositor()
-    let presentation = try compositor.presentation(
+    let presentation = try compositor.presented(
         for: videoFrame(
             id: 1,
             surfaceRect: RDPFrameRect(left: 10, top: 20, right: 12, bottom: 22),
@@ -235,7 +235,7 @@ import Testing
         avc444SubframeLayout: .yuv420AndChroma420
     )
 
-    let presentation = try compositor.presentation(
+    let presentation = try compositor.presented(
         for: frame,
         decodedImageBuffer: try bgraPixelBuffer(width: 4, height: 2, pixel: [0x10, 0x20, 0x30, 0xFF])
     )
@@ -251,7 +251,7 @@ import Testing
 @Test func decodedVideoCompositorForgetsDeletedSurfaces() throws {
     let compositor = RDPDecodedVideoSurfaceCompositor()
     let surfaceRect = RDPFrameRect(left: 0, top: 0, right: 4, bottom: 4)
-    _ = try compositor.presentation(
+    _ = try compositor.presented(
         for: videoFrame(id: 1, surfaceRect: surfaceRect, destinationRect: surfaceRect, regionRects: [surfaceRect]),
         decodedImageBuffer: try bgraPixelBuffer(width: 4, height: 4, pixel: [0x10, 0x20, 0x30, 0xFF])
     )
@@ -264,7 +264,7 @@ import Testing
         nalUnitTypes: [1]
     )
     update.deletedSurfaceIDs = [1]
-    let presentation = try compositor.presentation(
+    let presentation = try compositor.presented(
         for: update,
         decodedImageBuffer: try bgraPixelBuffer(width: 2, height: 2, pixel: [0xA0, 0xB0, 0xC0, 0xFF])
     )
@@ -280,7 +280,7 @@ import Testing
     let outputRect = RDPFrameRect(left: 0, top: 0, right: 4, bottom: 4)
     let text: [UInt8] = [0xA0, 0xB0, 0xC0, 0xFF]
     let firstVideo: [UInt8] = [0x10, 0x20, 0x30, 0xFF]
-    _ = try compositor.presentation(
+    _ = try compositor.presented(
         for: videoFrame(
             id: 1,
             graphicsOutputRect: outputRect,
@@ -294,7 +294,7 @@ import Testing
     var textFrame = bitmapFrame(id: 2, width: 4, height: 4, pixel: text, graphicsOutputRect: outputRect)
     textFrame.surfaceRect = outputRect
     textFrame.regionRects = [RDPFrameRect(left: 1, top: 1, right: 3, bottom: 2)]
-    let textPresentation = try compositor.presentation(for: textFrame, decodedImageBuffer: bgraPixelBuffer(
+    let textPresentation = try compositor.presented(for: textFrame, decodedImageBuffer: bgraPixelBuffer(
         width: 1,
         height: 1,
         pixel: [0, 0, 0, 0]
@@ -305,7 +305,7 @@ import Testing
 
     // A full-surface picture that changed only its lower half.
     let secondVideo: [UInt8] = [0x11, 0x21, 0x31, 0xFF]
-    let partialPresentation = try compositor.presentation(
+    let partialPresentation = try compositor.presented(
         for: videoFrame(
             id: 3,
             graphicsOutputRect: outputRect,
@@ -321,7 +321,7 @@ import Testing
     #expect(try bgraPixel(atX: 0, y: 3, in: partialPresentation.imageBuffer) == secondVideo)
 
     let thirdVideo: [UInt8] = [0x12, 0x22, 0x32, 0xFF]
-    let resyncPresentation = try compositor.presentation(
+    let resyncPresentation = try compositor.presented(
         for: videoFrame(
             id: 4,
             graphicsOutputRect: outputRect,
@@ -336,7 +336,7 @@ import Testing
 
     let coveringVideo: [UInt8] = [0x13, 0x23, 0x33, 0xFF]
     let coveringBuffer = try bgraPixelBuffer(width: 4, height: 4, pixel: coveringVideo)
-    let coveringPresentation = try compositor.presentation(
+    let coveringPresentation = try compositor.presented(
         for: videoFrame(
             id: 5,
             graphicsOutputRect: outputRect,
@@ -355,7 +355,7 @@ import Testing
 @Test func decodedVideoCompositorCopiesPartialUpdatesFromYUVPictures() throws {
     let compositor = RDPDecodedVideoSurfaceCompositor()
     let surfaceRect = RDPFrameRect(left: 0, top: 0, right: 32, bottom: 32)
-    let presentation = try compositor.presentation(
+    let presentation = try compositor.presented(
         for: videoFrame(
             id: 1,
             surfaceRect: surfaceRect,
@@ -381,7 +381,7 @@ import Testing
     let outputRect = RDPFrameRect(left: 0, top: 0, right: 4, bottom: 4)
     let video: [UInt8] = [0x10, 0x20, 0x30, 0xFF]
     let text: [UInt8] = [0xA0, 0xB0, 0xC0, 0xFF]
-    _ = try compositor.presentation(
+    _ = try compositor.presented(
         for: videoFrame(
             id: 1,
             graphicsOutputRect: outputRect,
@@ -397,7 +397,7 @@ import Testing
     textFrame.surfaceRect = surfaceRect
     textFrame.mappedOutputRect = outputRect
     textFrame.regionRects = [RDPFrameRect(left: 1, top: 0, right: 2, bottom: 1)]
-    let textPresentation = try compositor.presentation(for: textFrame, decodedImageBuffer: bgraPixelBuffer(
+    let textPresentation = try compositor.presented(for: textFrame, decodedImageBuffer: bgraPixelBuffer(
         width: 2,
         height: 2,
         pixel: text
@@ -409,7 +409,7 @@ import Testing
     #expect(try bgraPixel(atX: 3, y: 3, in: textPresentation.imageBuffer) == video)
 
     let laterVideo: [UInt8] = [0x11, 0x21, 0x31, 0xFF]
-    let videoPresentation = try compositor.presentation(
+    let videoPresentation = try compositor.presented(
         for: videoFrame(
             id: 3,
             graphicsOutputRect: outputRect,
@@ -431,7 +431,7 @@ import Testing
 @Test func decodedVideoCompositorCopiesDecodedVideoWithinASurface() throws {
     let compositor = RDPDecodedVideoSurfaceCompositor()
     let outputRect = RDPFrameRect(left: 0, top: 0, right: 32, bottom: 32)
-    _ = try compositor.presentation(
+    _ = try compositor.presented(
         for: videoFrame(id: 1, graphicsOutputRect: outputRect, surfaceRect: outputRect, destinationRect: outputRect, regionRects: [outputRect]),
         decodedImageBuffer: try yuvPixelBuffer(width: 32, height: 32, darkRows: 0 ..< 8)
     )
@@ -457,7 +457,7 @@ import Testing
 @Test func decodedVideoCompositorRestoresCachedVideoUntilEvicted() throws {
     let compositor = RDPDecodedVideoSurfaceCompositor()
     let outputRect = RDPFrameRect(left: 0, top: 0, right: 32, bottom: 32)
-    _ = try compositor.presentation(
+    _ = try compositor.presented(
         for: videoFrame(id: 1, graphicsOutputRect: outputRect, surfaceRect: outputRect, destinationRect: outputRect, regionRects: [outputRect]),
         decodedImageBuffer: try yuvPixelBuffer(width: 32, height: 32, darkRows: 0 ..< 8)
     )
@@ -483,9 +483,32 @@ import Testing
     )) == nil)
 }
 
+/// Video of a surface not mapped to the output shows nothing until a copy brings it there.
+@Test func decodedVideoCompositorKeepsVideoOfUnmappedSurfacesForCopies() throws {
+    let compositor = RDPDecodedVideoSurfaceCompositor()
+    let outputRect = RDPFrameRect(left: 0, top: 0, right: 32, bottom: 32)
+
+    #expect(try compositor.presentation(
+        for: videoFrame(id: 1, surfaceID: 2, graphicsOutputRect: outputRect, destinationRect: outputRect, regionRects: [outputRect]),
+        decodedImageBuffer: try yuvPixelBuffer(width: 32, height: 32, darkRows: 0 ..< 8)
+    ) == nil)
+    let presentation = try #require(try compositor.presentation(copying: surfaceCopyFrame(
+        id: 1,
+        outputRect: outputRect,
+        copy: RDPGraphicsSurfaceCopy(source: .surface(2), destination: .surface(1), blocks: [.init(
+            source: RDPFrameRect(left: 0, top: 4, right: 32, bottom: 12),
+            destination: RDPFrameRect(left: 0, top: 24, right: 32, bottom: 32)
+        )])
+    )))
+
+    #expect(try bgraPixel(atX: 3, y: 25, in: presentation.imageBuffer)[1] < 40)
+    #expect(try bgraPixel(atX: 3, y: 29, in: presentation.imageBuffer)[1] > 215)
+    #expect(try bgraPixel(atX: 3, y: 2, in: presentation.imageBuffer) == [0, 0, 0, 0])
+}
+
 @Test func decodedVideoCompositorClearsStaleSurfaceOnFullResyncFrame() throws {
     let compositor = RDPDecodedVideoSurfaceCompositor()
-    _ = try compositor.presentation(
+    _ = try compositor.presented(
         for: videoFrame(
             id: 1,
             surfaceRect: RDPFrameRect(left: 0, top: 0, right: 4, bottom: 4),
@@ -495,7 +518,7 @@ import Testing
         decodedImageBuffer: try bgraPixelBuffer(width: 4, height: 4, pixel: [0x10, 0x20, 0x30, 0xFF])
     )
 
-    let presentation = try compositor.presentation(
+    let presentation = try compositor.presented(
         for: videoFrame(
             id: 2,
             surfaceRect: RDPFrameRect(left: 0, top: 0, right: 2, bottom: 2),
@@ -513,7 +536,7 @@ import Testing
 
 @Test func decodedVideoCompositorSynchronizesBitmapFramesBeforeLaterVideoDeltas() throws {
     let compositor = RDPDecodedVideoSurfaceCompositor()
-    _ = try compositor.presentation(
+    _ = try compositor.presented(
         for: videoFrame(
             id: 1,
             surfaceRect: RDPFrameRect(left: 0, top: 0, right: 3, bottom: 3),
@@ -522,7 +545,7 @@ import Testing
         ),
         decodedImageBuffer: try bgraPixelBuffer(width: 3, height: 3, pixel: [0x10, 0x20, 0x30, 0xFF])
     )
-    _ = try compositor.presentation(
+    _ = try compositor.presented(
         for: bitmapFrame(
             id: 2,
             width: 3,
@@ -531,7 +554,7 @@ import Testing
         ),
         decodedImageBuffer: try bgraPixelBuffer(width: 3, height: 3, pixel: [0x60, 0x70, 0x80, 0xFF])
     )
-    let presentation = try compositor.presentation(
+    let presentation = try compositor.presented(
         for: videoFrame(
             id: 3,
             surfaceRect: RDPFrameRect(left: 0, top: 0, right: 3, bottom: 3),
@@ -550,12 +573,12 @@ import Testing
     let compositor = RDPDecodedVideoSurfaceCompositor()
     var truncatedBitmap = bitmapFrame(id: 1, width: 4, height: 4, pixel: [0x60, 0x70, 0x80, 0xFF])
     truncatedBitmap.decodedBitmapData = truncatedBitmap.decodedBitmapData?.prefix(16)
-    _ = try compositor.presentation(
+    _ = try compositor.presented(
         for: truncatedBitmap,
         decodedImageBuffer: try bgraPixelBuffer(width: 4, height: 4, pixel: [0x60, 0x70, 0x80, 0xFF])
     )
 
-    let presentation = try compositor.presentation(
+    let presentation = try compositor.presented(
         for: videoFrame(
             id: 2,
             surfaceRect: RDPFrameRect(left: 0, top: 0, right: 4, bottom: 4),
@@ -573,7 +596,7 @@ import Testing
 @Test func decodedVideoCompositorCombinesMappedSurfacesInGraphicsOutput() throws {
     let compositor = RDPDecodedVideoSurfaceCompositor()
     let outputRect = RDPFrameRect(left: 0, top: 0, right: 4, bottom: 2)
-    let leftPresentation = try compositor.presentation(
+    let leftPresentation = try compositor.presented(
         for: bitmapFrame(
             id: 1,
             surfaceID: 1,
@@ -592,7 +615,7 @@ import Testing
     #expect(try bgraPixel(atX: 0, y: 0, in: leftPresentation.imageBuffer) == [0x10, 0x20, 0x30, 0xFF])
     #expect(try bgraPixel(atX: 2, y: 0, in: leftPresentation.imageBuffer) == [0x00, 0x00, 0x00, 0x00])
 
-    let rightPresentation = try compositor.presentation(
+    let rightPresentation = try compositor.presented(
         for: bitmapFrame(
             id: 1,
             surfaceID: 2,
@@ -614,7 +637,7 @@ import Testing
 
 @Test func decodedVideoCompositorClearsGraphicsOutputAfterResize() throws {
     let compositor = RDPDecodedVideoSurfaceCompositor()
-    _ = try compositor.presentation(
+    _ = try compositor.presented(
         for: bitmapFrame(
             id: 1,
             width: 4,
@@ -625,7 +648,7 @@ import Testing
         decodedImageBuffer: try bgraPixelBuffer(width: 4, height: 2, pixel: [0x10, 0x20, 0x30, 0xFF])
     )
 
-    let presentation = try compositor.presentation(
+    let presentation = try compositor.presented(
         for: bitmapFrame(
             id: 2,
             width: 1,
@@ -750,8 +773,16 @@ import Testing
     #expect(completion == .cancelled)
 }
 
+private extension RDPDecodedVideoSurfaceCompositor {
+    /// The presentation of a frame for a surface that has one.
+    func presented(for frame: RDPGraphicsFrameSnapshot, decodedImageBuffer: CVImageBuffer) throws -> RDPDecodedFramePresentation {
+        try #require(try presentation(for: frame, decodedImageBuffer: decodedImageBuffer))
+    }
+}
+
 private func videoFrame(
     id: UInt32,
+    surfaceID: UInt16 = 1,
     graphicsOutputRect: RDPFrameRect? = nil,
     surfaceRect: RDPFrameRect? = nil,
     mappedOutputRect: RDPFrameRect? = nil,
@@ -761,7 +792,7 @@ private func videoFrame(
 ) -> RDPGraphicsFrameSnapshot {
     RDPGraphicsFrameSnapshot(
         frameID: id,
-        surfaceID: 1,
+        surfaceID: surfaceID,
         codecID: RDPGFXCodecID.avc420,
         codecName: "avc420",
         pixelFormat: 32,

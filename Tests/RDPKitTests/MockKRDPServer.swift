@@ -137,6 +137,7 @@ enum MockKRDPGraphicsBehavior: Equatable {
     case deleteAndRecreateSurfaceInSecondFrame
     case copyVideoFromStagingSurfacePerDamageRect
     case copyDecodedVideoThroughSurfacesAndCache
+    case copyVideoThroughHiddenSurface
     case sendMultipleBitmapSurfacesInFrame
     case sendMalformedAVCFrame
     case sendInvalidGraphicsPDU
@@ -2108,6 +2109,8 @@ private enum MockKRDPFixtures {
             [graphicsDynamicPacket(segmentedGraphicsData(stagedVideoFrameMessages()))]
         case .copyDecodedVideoThroughSurfacesAndCache:
             [graphicsDynamicPacket(segmentedGraphicsData(decodedVideoCopyFrameMessages()))]
+        case .copyVideoThroughHiddenSurface:
+            [graphicsDynamicPacket(segmentedGraphicsData(hiddenSurfaceVideoFrameMessages()))]
         case .sendMalformedAVCFrame:
             [graphicsDynamicPacket(segmentedGraphicsData(malformedAVCFrameMessages()))]
         case .sendInvalidGraphicsPDU:
@@ -2225,6 +2228,21 @@ private enum MockKRDPFixtures {
         messages += startFrameMessage(frameID: 3)
         messages += wireToSurfaceMessage(surfaceID: 1)
         messages += endFrameMessage(frameID: 3)
+        return messages
+    }
+
+    /// Video copied into unmapped surface 2, which then gets video of its own and is copied back.
+    static func hiddenSurfaceVideoFrameMessages() -> Data {
+        let fullSurface = RDPGFXRect16(left: 0, top: 0, right: MockKRDPConstants.width, bottom: MockKRDPConstants.height)
+        var messages = createSurfaceMessage(surfaceID: 1)
+        messages += createSurfaceMessage(surfaceID: 2)
+        messages += mapSurfaceToOutputMessage(surfaceID: 1, x: 0, y: 0)
+        messages += startFrameMessage(frameID: 1)
+        messages += wireToSurfaceMessage(surfaceID: 1)
+        messages += surfaceToSurfaceMessage(sourceSurfaceID: 1, destinationSurfaceID: 2, sourceRect: fullSurface)
+        messages += wireToSurfaceMessage(surfaceID: 2)
+        messages += surfaceToSurfaceMessage(sourceSurfaceID: 2, destinationSurfaceID: 1, sourceRect: fullSurface)
+        messages += endFrameMessage(frameID: 1)
         return messages
     }
 

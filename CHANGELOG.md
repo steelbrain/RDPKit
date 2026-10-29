@@ -116,7 +116,8 @@
   black, and now goes to the mapped surface's decoder with those rectangles as
   its regions. SurfaceToSurface, SurfaceToCache and CacheToSurface copies of
   video decoded in earlier frames, such as a scroll, are made from the decoded
-  pixels.
+  pixels. An unmapped surface those copies wrote to gets its own video decoded
+  too, without showing it, for the copies out of it.
 - Acknowledge every RDPGFX EndFrame and every surface frame marker, including
   after an update that fails to decode, and ignore cosmetic RDPGFX and DVC
   fields instead of ending the session.

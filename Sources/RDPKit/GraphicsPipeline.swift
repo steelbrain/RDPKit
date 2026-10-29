@@ -184,10 +184,10 @@ extension RDPClientConnection {
             }
         }
         let decoderFrames = frames.compactMap { frame -> RDPGraphicsFrameSnapshot? in
-            let surfaceRect = compositor.surfaceRect(surfaceID: frame.surfaceID)
-            guard frame.contentKind != .video || surfaceRect != nil else {
+            guard frame.contentKind != .video || compositor.isOnDecoder(surfaceID: frame.surfaceID) else {
                 return nil
             }
+            let surfaceRect = compositor.surfaceRect(surfaceID: frame.surfaceID)
             var mapped = frame
             mapped.graphicsOutputRect = compositor.outputRect()
             mapped.surfaceRect = surfaceRect

@@ -134,10 +134,12 @@ final class RDPDecodedVideoSurfaceCompositor {
     private let imageConverter = RDPDecodedImageBufferConverter()
     private let pixelBufferPool = RDPBGRAPixelBufferPool()
 
+    /// Composes `frame` and returns what the graphics output shows; nil for video of a
+    /// surface not mapped to it, which only later copies out of the surface bring there.
     func presentation(
         for frame: RDPGraphicsFrameSnapshot,
         decodedImageBuffer: CVImageBuffer
-    ) throws -> RDPDecodedFramePresentation {
+    ) throws -> RDPDecodedFramePresentation? {
         forgetDeletedState(before: frame)
         guard frame.contentKind == .video else {
             if let outputRect = frame.graphicsOutputRect {
@@ -177,7 +179,14 @@ final class RDPDecodedVideoSurfaceCompositor {
         }
 
         let updateRect = frame.destinationRect
-        let requestedSurfaceRect = frame.surfaceRect ?? inferredSurfaceRect(from: updateRect)
+        let isUnmapped = frame.graphicsOutputRect != nil && frame.surfaceRect == nil
+        // An unmapped surface is as large as what this compositor holds of it.
+        let heldSurface = isUnmapped ? surfaces[frame.surfaceID] : nil
+        let requestedSurfaceRect = frame.surfaceRect ?? inferredSurfaceRect(
+            from: updateRect,
+            minimumWidth: heldSurface?.width ?? 0,
+            minimumHeight: heldSurface?.height ?? 0
+        )
         let surfaceWidth = Int(requestedSurfaceRect.width)
         let surfaceHeight = Int(requestedSurfaceRect.height)
         guard surfaceWidth > 0, surfaceHeight > 0 else {
@@ -203,7 +212,7 @@ final class RDPDecodedVideoSurfaceCompositor {
             directSurfaces[frame.surfaceID] = nil
             chromaEnhancedAVC444Surfaces.remove(frame.surfaceID)
         }
-        let canPresentDirectly = canPresentDirectly(frame, surfaceRect: surfaceRect)
+        let canPresentDirectly = !isUnmapped && canPresentDirectly(frame, surfaceRect: surfaceRect)
         recordAVC444ChromaUpdate(frame)
         if canPresentDirectly,
            let presentation = directPresentation(
@@ -251,6 +260,9 @@ final class RDPDecodedVideoSurfaceCompositor {
             }
         }
         surfaces[frame.surfaceID] = surface
+        guard !isUnmapped else {
+            return nil
+        }
         return try presentation(from: frame, surface: surface, surfaceRect: surfaceRect)
     }
 
@@ -797,12 +809,12 @@ private extension [RDPVideoCopyRegion] {
     }
 }
 
-private func inferredSurfaceRect(from updateRect: RDPFrameRect) -> RDPFrameRect {
+private func inferredSurfaceRect(from updateRect: RDPFrameRect, minimumWidth: Int, minimumHeight: Int) -> RDPFrameRect {
     RDPFrameRect(
         left: 0,
         top: 0,
-        right: max(updateRect.right, updateRect.width),
-        bottom: max(updateRect.bottom, updateRect.height)
+        right: max(updateRect.right, updateRect.width, UInt16(clamping: minimumWidth)),
+        bottom: max(updateRect.bottom, updateRect.height, UInt16(clamping: minimumHeight))
     )
 }
 
@@ -1155,10 +1167,12 @@ public final class RDPFrameDecodeQueue: @unchecked Sendable {
                 }
                 let decodedFrame = try decoder.decodeDetailed(frame)
                 let decodedAt = Date()
-                let presentation = try videoCompositor.presentation(
+                guard let presentation = try videoCompositor.presentation(
                     for: frame,
                     decodedImageBuffer: decodedFrame.imageBuffer
-                )
+                ) else {
+                    return .decoded
+                }
                 onDecoded(
                     presentation,
                     receivedAt,

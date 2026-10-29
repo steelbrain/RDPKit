@@ -44,7 +44,7 @@ final class RDPGFXSurfaceCompositor {
         /// made put there. This surface's own pixels there are stale.
         var decodedRects: [RDPGFXRect16] = []
         /// Whether the decoder holds this surface: it gets the updates of a mapped surface,
-        /// and it holds what copies it made put into any surface.
+        /// and of an unmapped one its copies wrote to.
         var isOnDecoder = false
 
         var bytesPerRow: Int {

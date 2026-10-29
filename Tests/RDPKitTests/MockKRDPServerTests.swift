@@ -1074,6 +1074,26 @@ struct MockKRDPServerTests {
         ])
     }
 
+    /// Once the decoder holds an unmapped surface, because a copy it made wrote there, it
+    /// gets the surface's video too, for the copies out of it.
+    @Test func clientHandsVideoOfHiddenSurfacesTheDecoderHoldsToIt() throws {
+        let observed = Locked(Observed())
+        let report = try runMock(.init(graphicsBehavior: .copyVideoThroughHiddenSurface), client: {
+            RDPSessionClient().run(configuration: $0, onGraphicsFrame: { frame in
+                observed.withLock { $0.frames.append(frame) }
+            })
+        }).report
+
+        #expect(report.status == "success")
+        let frames = observed.value.frames
+        #expect(frames.map(\.contentKind) == [.video, .surfaceCopy, .video, .surfaceCopy])
+        #expect(frames.map(\.surfaceID) == [1, 2, 2, 1])
+        // Not mapped: the decoder keeps it and presents nothing.
+        let hiddenVideo = frames.first { $0.contentKind == .video && $0.surfaceID == 2 }
+        #expect(hiddenVideo?.graphicsOutputRect != nil)
+        #expect(hiddenVideo?.surfaceRect == nil)
+    }
+
     // MARK: Live sessions
 
     /// An empty frame is acknowledged but delivers no image; with no frame to
