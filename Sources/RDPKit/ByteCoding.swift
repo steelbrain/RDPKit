@@ -7,12 +7,9 @@ public enum RDPDecodeError: Error, Equatable, CustomStringConvertible {
     case invalidTPKTLength(declared: Int, actual: Int)
     case invalidX224Length(declared: Int, actual: Int)
     case invalidX224Type(UInt8)
-    case invalidX224ClassAndOptions(UInt8)
     case invalidNegotiationType(UInt8)
     case invalidNegotiationLength(UInt16)
-    case invalidNegotiationFlags(UInt8)
     case invalidNegotiationProtocol(UInt32)
-    case invalidNegotiationFailureCode(UInt32)
     case invalidX224DataTPDU
     case invalidMCSConnectResponseHeader
     case invalidMCSAttachUserConfirm
@@ -50,18 +47,12 @@ public enum RDPDecodeError: Error, Equatable, CustomStringConvertible {
             "invalid X.224 length \(declared), actual \(actual)"
         case let .invalidX224Type(type):
             "invalid X.224 TPDU type 0x\(String(type, radix: 16))"
-        case let .invalidX224ClassAndOptions(value):
-            "invalid X.224 class and options 0x\(String(value, radix: 16))"
         case let .invalidNegotiationType(type):
             "invalid RDP negotiation type \(type)"
         case let .invalidNegotiationLength(length):
             "invalid RDP negotiation length \(length)"
-        case let .invalidNegotiationFlags(flags):
-            "invalid RDP negotiation flags 0x\(String(flags, radix: 16))"
         case let .invalidNegotiationProtocol(protocols):
             "invalid RDP negotiation protocol 0x\(String(protocols, radix: 16))"
-        case let .invalidNegotiationFailureCode(code):
-            "invalid RDP negotiation failure code 0x\(String(code, radix: 16))"
         case .invalidX224DataTPDU:
             "invalid X.224 Data TPDU"
         case .invalidMCSConnectResponseHeader:
@@ -122,10 +113,6 @@ struct ByteCursor {
         bytes.count - offset
     }
 
-    var currentOffset: Int {
-        offset
-    }
-
     mutating func readUInt8() throws -> UInt8 {
         try require(1)
         defer { offset += 1 }
@@ -177,7 +164,7 @@ struct ByteCursor {
     }
 
     private func require(_ count: Int) throws {
-        guard remaining >= count else {
+        guard count >= 0, remaining >= count else {
             throw RDPDecodeError.truncated(needed: count, remaining: remaining)
         }
     }
@@ -213,29 +200,74 @@ extension Data {
         appendLittleEndianUInt32(UInt32(value & 0xFFFF_FFFF))
         appendLittleEndianUInt32(UInt32((value >> 32) & 0xFFFF_FFFF))
     }
+
+    /// `string` as UTF-16LE, with no terminator.
+    init(utf16LittleEndian string: String) {
+        self.init(capacity: string.utf16.count * 2)
+        for codeUnit in string.utf16 {
+            appendLittleEndianUInt16(codeUnit)
+        }
+    }
+
+    /// `string` as null-terminated UTF-16LE in a zero-padded field of `codeUnitCount` code
+    /// units, cut to fit but never inside a surrogate pair.
+    init(fixedUTF16LittleEndian string: String, codeUnitCount: Int) {
+        var codeUnits = Array(string.utf16.prefix(codeUnitCount - 1))
+        if let last = codeUnits.last, UTF16.isLeadSurrogate(last) {
+            codeUnits.removeLast()
+        }
+        self.init(capacity: codeUnitCount * 2)
+        for codeUnit in codeUnits {
+            appendLittleEndianUInt16(codeUnit)
+        }
+        append(Data(count: (codeUnitCount - codeUnits.count) * 2))
+    }
 }
 
 extension Data {
+    /// Lowercase hex bytes separated by single spaces.
     var rdpHexString: String {
-        map { String(format: "%02x", $0) }.joined(separator: " ")
+        let digits = Array("0123456789abcdef".utf8)
+        var characters: [UInt8] = []
+        characters.reserveCapacity(count * 3)
+        for byte in self {
+            if !characters.isEmpty {
+                characters.append(0x20)
+            }
+            characters.append(digits[Int(byte >> 4)])
+            characters.append(digits[Int(byte & 0x0F)])
+        }
+        return String(decoding: characters, as: UTF8.self)
     }
 
     /// Parses a hex string, ignoring any interspersed whitespace (spaces, tabs,
     /// newlines). Returns `nil` if the remaining digits are not an even number of
     /// valid hex characters. Round-trips with ``rdpHexString``.
     init?(rdpHexString: String) {
-        let digits = rdpHexString.unicodeScalars.filter { !$0.properties.isWhitespace }
-        guard digits.count.isMultiple(of: 2) else {
-            return nil
+        // Not UInt8(_:radix:), which also takes a sign: "+f" would read as 0x0F.
+        func nibble(_ scalar: Unicode.Scalar) -> UInt8? {
+            switch scalar {
+            case "0" ... "9": UInt8(scalar.value - 0x30)
+            case "a" ... "f": UInt8(scalar.value - 0x61 + 10)
+            case "A" ... "F": UInt8(scalar.value - 0x41 + 10)
+            default: nil
+            }
         }
         var bytes = [UInt8]()
-        bytes.reserveCapacity(digits.count / 2)
-        var iterator = digits.makeIterator()
-        while let high = iterator.next(), let low = iterator.next() {
-            guard let byte = UInt8(String(String.UnicodeScalarView([high, low])), radix: 16) else {
+        var high: UInt8?
+        for scalar in rdpHexString.unicodeScalars where !scalar.properties.isWhitespace {
+            guard let value = nibble(scalar) else {
                 return nil
             }
-            bytes.append(byte)
+            if let pending = high {
+                bytes.append(pending << 4 | value)
+                high = nil
+            } else {
+                high = value
+            }
+        }
+        guard high == nil else {
+            return nil
         }
         self = Data(bytes)
     }

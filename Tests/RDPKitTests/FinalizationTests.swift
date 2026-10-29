@@ -84,43 +84,25 @@ import Testing
     #expect(shareData.payload == hexData("00 00 00 00 03 00 04 00"))
 }
 
-@Test func finalizationTrackerCompletesOnlyOnFontMap() {
+@Test func finalizationTrackerCompletesOnlyOnFontMap() throws {
     var tracker = RDPConnectionFinalizationTracker()
-    tracker.observe(typeName: "server-synchronize")
-    tracker.observe(typeName: "control-cooperate")
-    tracker.observe(typeName: "control-granted-control")
+    try tracker.observe(serverShareData(pduType2: 0x1F, payload: Data([0x01, 0x00, 0xEA, 0x03])))
+    try tracker.observe(serverShareData(pduType2: 0x14, payload: controlPayload(action: 0x0004)))
+    try tracker.observe(serverShareData(pduType2: 0x14, payload: controlPayload(action: 0x0002)))
+    #expect(tracker.receivedServerSynchronize)
+    #expect(tracker.receivedControlCooperate)
+    #expect(tracker.receivedControlGranted)
     #expect(tracker.isComplete == false)
-    tracker.observe(typeName: "font-map")
+    try tracker.observe(serverShareData(pduType2: 0x28, payload: Data([0, 0, 0, 0, 3, 0, 4, 0])))
     #expect(tracker.isComplete == true)
 }
 
-@Test func finalizationTrackerAcceptsCooperateBeforeSynchronizeOrdering() {
+@Test func finalizationTrackerIgnoresOptionalInterveningPDUs() throws {
     var tracker = RDPConnectionFinalizationTracker()
-    tracker.observe(typeName: "control-cooperate")
-    tracker.observe(typeName: "server-synchronize")
-    tracker.observe(typeName: "control-granted-control")
-    tracker.observe(typeName: "font-map")
-
-    #expect(tracker.receivedControlCooperate)
-    #expect(tracker.receivedServerSynchronize)
-    #expect(tracker.isComplete)
-    #expect(tracker.observedTypeNames.prefix(2) == ["control-cooperate", "server-synchronize"])
-}
-
-@Test func finalizationTrackerIgnoresOptionalInterveningPDUs() {
-    var tracker = RDPConnectionFinalizationTracker()
-    tracker.observe(typeName: "save-session-info")
-    tracker.observe(typeName: "monitor-layout")
-    tracker.observe(typeName: "set-error-info")
-    #expect(tracker.isComplete == false)
-    #expect(RDPConnectionFinalizationTracker.isOptionalInterveningShareDataType("save-session-info"))
-    #expect(RDPConnectionFinalizationTracker.isOptionalInterveningShareDataType("monitor-layout"))
-    #expect(RDPConnectionFinalizationTracker.isConnectionFinalizationShareDataType("server-synchronize"))
-    #expect(RDPConnectionFinalizationTracker.isConnectionFinalizationShareDataType("font-map"))
-    tracker.observe(typeName: "server-synchronize")
-    tracker.observe(typeName: "control-cooperate")
-    tracker.observe(typeName: "font-map")
-    #expect(tracker.isComplete)
+    try tracker.observe(serverShareData(pduType2: 0x2F, payload: Data([0x09, 0x00, 0x00, 0x00])))
+    try tracker.observe(serverShareData(pduType2: 0x37, payload: Data([0, 0, 0, 0])))
+    try tracker.observe(serverShareData(pduType2: 0x14, payload: controlPayload(action: 0x0001)))
+    #expect(tracker == RDPConnectionFinalizationTracker())
 }
 
 @Test func finalizationTrackerObservesParsedShareDataPDUs() throws {
@@ -144,7 +126,14 @@ import Testing
     #expect(tracker.isComplete)
 }
 
-private func hexData(_ value: String) -> Data {
-    let bytes = value.split(whereSeparator: { $0.isWhitespace }).compactMap { UInt8($0, radix: 16) }
-    return Data(bytes)
+private func serverShareData(pduType2: UInt8, payload: Data) throws -> RDPShareDataPDU {
+    let userData = rdpShareDataPDUData(shareID: 0x0001_03EE, pduSource: 1006, pduType2: pduType2, payload: payload)
+    var indication = Data([0x68, 0x00, 0x05, 0x03, 0xEB, 0x70])
+    indication.appendPERLength(userData.count)
+    indication.append(userData)
+    return try #require(try RDPShareDataPDU.parseIfPresent(fromTPKT: X224DataTPDU.wrap(indication)))
+}
+
+private func controlPayload(action: UInt16) -> Data {
+    RDPClientControlPDU(shareID: 0, action: action).encodedPDUData(userChannelID: 0).suffix(8)
 }

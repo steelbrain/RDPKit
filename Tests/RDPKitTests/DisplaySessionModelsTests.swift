@@ -56,6 +56,18 @@ import Testing
     #expect(maximumRequest.height == 8192)
 }
 
+@Test func displayRequestClampsHugeViewportValuesWithoutTrapping() {
+    let request = RDPDisplayRequest(
+        pointSize: CGSize(width: 1e300, height: CGFloat.nan),
+        backingScaleFactor: 1e300
+    )
+
+    #expect(request.width == 8192)
+    #expect(request.height == 480)
+    #expect(request.scaleFactors.desktopScaleFactor == 500)
+    #expect(request.scaleFactors.deviceScaleFactor == 180)
+}
+
 @Test func displayRequestDefaultsInvalidViewportScaleToOne() {
     let request = RDPDisplayRequest(
         pointSize: CGSize(width: 800, height: 600),
@@ -87,34 +99,6 @@ import Testing
         scaleFactors: RDPDisplayScaleFactors(desktopScaleFactor: 200, deviceScaleFactor: 180)
     ))
     #expect(size.label == "1920x1080 view @2.0x, RDP scale 200%/180%")
-}
-
-@Test func framePacingStateNormalizesDisplayLinkTiming() {
-    let state = RDPFramePacingState(
-        screenName: "Studio Display",
-        backingScaleFactor: 2,
-        maximumFramesPerSecond: nil,
-        minimumRefreshInterval: 1.0 / 120.0,
-        maximumRefreshInterval: 1.0 / 48.0,
-        displayUpdateGranularity: 0,
-        displayLinkDuration: 0.0167,
-        hasDisplayLink: true,
-        isDisplayLinkPaused: false
-    )
-
-    #expect(state.displayLinkDuration == 1.0 / 60.0)
-    #expect(state.displayLinkFramesPerSecond == 60)
-    #expect(state.maximumRefreshRate == 120)
-    #expect(state.clockState == "window display link")
-}
-
-@Test func framePacingStateMarksUpdatedDisplayLinkActive() {
-    let state = RDPFramePacingState().updatingDisplayLinkDuration(1.0 / 120.0)
-
-    #expect(state.hasDisplayLink)
-    #expect(state.isDisplayLinkPaused == false)
-    #expect(state.displayLinkFramesPerSecond == 120)
-    #expect(state.clockState == "window display link")
 }
 
 @Test func frameMetadataCopiesReusableFrameSummary() {

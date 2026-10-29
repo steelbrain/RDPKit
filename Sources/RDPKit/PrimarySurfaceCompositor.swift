@@ -1,29 +1,46 @@
 import Foundation
 
 final class RDPPrimarySurfaceCompositor {
+    private static let maximumCompletedFrameIDCount = 256
+    /// Past this many rectangles the changed areas collapse into their bounding box, which
+    /// bounds them however long a server keeps a frame open.
+    private static let maximumDirtyRectCount = 1_024
+
     private let width: Int
     private let height: Int
-    private let bytesPerRow: Int
     private var data: Data
-    private var paletteEntries: Data?
+    private var palette: [UInt32]?
     private var dirtyRects: [RDPFrameRect] = []
     private var activeFrameID: UInt32?
+    private var completedFrameIDs: [UInt32] = []
     private let remoteFX = RDPRemoteFXDecoder()
+
+    private var bytesPerRow: Int {
+        width * 4
+    }
 
     init(width: UInt16, height: UInt16) {
         self.width = Int(width)
         self.height = Int(height)
-        bytesPerRow = Int(width) * 4
-        data = Data(repeating: 0, count: Int(width) * Int(height) * 4)
+        data = Data(count: Int(width) * Int(height) * 4)
     }
 
+    /// Applies the commands in order. A surface bits command that fails to
+    /// decode is skipped so later frame markers still end their frames (each
+    /// needs its acknowledgement); the first error is thrown afterwards, and
+    /// the changes it would have delivered go into the next snapshot.
     func process(_ commands: [RDPSurfaceCommand]) throws -> [RDPGraphicsFrameSnapshot] {
         var frames: [RDPGraphicsFrameSnapshot] = []
+        var firstError: Error?
         for command in commands {
             switch command {
             case .setSurfaceBits(let bits),
                  .streamSurfaceBits(let bits):
-                try blit(bits)
+                do {
+                    try blit(bits)
+                } catch {
+                    firstError = firstError ?? error
+                }
             case .frameMarker(let marker):
                 if marker.frameAction == 0 {
                     if activeFrameID == nil,
@@ -37,8 +54,17 @@ final class RDPPrimarySurfaceCompositor {
                         frames.append(frame)
                     }
                     activeFrameID = nil
+                    if completedFrameIDs.count == Self.maximumCompletedFrameIDCount {
+                        completedFrameIDs.removeFirst()
+                    }
+                    completedFrameIDs.append(marker.frameID)
                 }
             }
+        }
+        if let firstError {
+            dirtyRects = frames.flatMap(\.regionRects) + dirtyRects
+            boundDirtyRects()
+            throw firstError
         }
         if activeFrameID == nil,
            let frame = makeFrame(frameID: nil)
@@ -46,6 +72,15 @@ final class RDPPrimarySurfaceCompositor {
             frames.append(frame)
         }
         return frames
+    }
+
+    /// Returns and forgets the IDs of frames whose end marker (TS_FRAME_MARKER, MS-RDPBCGR
+    /// 2.2.9.2.3) has been processed, including frames that changed no pixels and so produced no
+    /// snapshot. Each needs a TS_FRAME_ACKNOWLEDGE_PDU (MS-RDPRFX 2.2.3.3); only the most recent
+    /// `maximumCompletedFrameIDCount` are kept between calls.
+    func takeCompletedFrameIDs() -> [UInt32] {
+        defer { completedFrameIDs.removeAll() }
+        return completedFrameIDs
     }
 
     func process(_ update: RDPBitmapUpdate) throws -> [RDPGraphicsFrameSnapshot] {
@@ -58,179 +93,97 @@ final class RDPPrimarySurfaceCompositor {
         return []
     }
 
+    /// Keeps the TS_PALETTE_ENTRY (red, green, blue) colors as BGRA pixels for 8 bpp bitmaps.
     func updatePalette(_ update: RDPPaletteUpdate) {
-        paletteEntries = update.entries
+        let entries = [UInt8](update.entries)
+        palette = stride(from: 0, to: entries.count - 2, by: 3).map {
+            UInt32(entries[$0 + 2]) | UInt32(entries[$0 + 1]) << 8 | UInt32(entries[$0]) << 16 | 0xFF00_0000
+        }
     }
 
     private func blit(_ command: RDPSurfaceBitsCommand) throws {
         let bitmap = command.bitmapData
-        if bitmap.codecID == 1 {
-            let decoded = try RDPNSCodecDecoder.decode(
-                bitmap.bitmapData,
-                width: Int(bitmap.width),
-                height: Int(bitmap.height)
-            )
-            try blitDecodedSurfaceBitmap(decoded, command: command)
-            return
-        }
-        if bitmap.codecID == 3 {
-            try blitRemoteFXSurfaceBitmap(bitmap.bitmapData, command: command)
-            return
-        }
-        guard bitmap.codecID == 0 else {
-            return
-        }
-
-        let sourceWidth = Int(bitmap.width)
-        let sourceHeight = Int(bitmap.height)
-        let sourceBytesPerPixel = try bytesPerPixel(for: bitmap.bitsPerPixel)
-        let sourceBytesPerRow = alignedBytesPerRow(width: sourceWidth, bytesPerPixel: sourceBytesPerPixel)
-        guard bitmap.bitmapData.count == sourceBytesPerRow * sourceHeight else {
+        let x = Int(command.destinationLeft)
+        let y = Int(command.destinationTop)
+        let width = Int(bitmap.width)
+        let height = Int(bitmap.height)
+        // RemoteFX tiles are clipped to the desktop; the other codecs fill the bitmap rectangle,
+        // which is validated before decoding sizes a buffer from it.
+        guard bitmap.codecID == 3 || (x + width <= self.width && y + height <= self.height) else {
             throw RDPDecodeError.invalidGraphicsUpdatePDU
         }
-
-        let destinationX = Int(command.destinationLeft)
-        let destinationY = Int(command.destinationTop)
-        guard destinationX >= 0,
-              destinationY >= 0,
-              destinationX + sourceWidth <= width,
-              destinationY + sourceHeight <= height
-        else {
-            throw RDPDecodeError.invalidGraphicsUpdatePDU
+        switch bitmap.codecID {
+        case 0:
+            let bitsPerPixel = Int(bitmap.bitsPerPixel)
+            let sourceBytesPerRow = try alignedBytesPerRow(width: width, bitsPerPixel: bitsPerPixel)
+            guard bitmap.bitmapData.count == sourceBytesPerRow * height else {
+                throw RDPDecodeError.invalidGraphicsUpdatePDU
+            }
+            try paint(bitmap.bitmapData, bitsPerPixel: bitsPerPixel, x: x, y: y, width: width, height: height) {
+                $0 * sourceBytesPerRow
+            }
+        case 1:
+            let decoded = try RDPNSCodecDecoder.decode(bitmap.bitmapData, width: width, height: height)
+            try paint(decoded, bitsPerPixel: 32, x: x, y: y, width: width, height: height) {
+                $0 * width * 4
+            }
+        case 3:
+            try paintRemoteFXTiles(bitmap.bitmapData, command: command)
+        default:
+            return
         }
-
-        try copySourceBitmap(
-            bitmap.bitmapData,
-            sourceBytesPerRow: sourceBytesPerRow,
-            sourceBytesPerPixel: sourceBytesPerPixel,
-            sourceBitsPerPixel: Int(bitmap.bitsPerPixel),
-            sourceWidth: sourceWidth,
-            sourceHeight: sourceHeight,
-            destinationX: destinationX,
-            destinationY: destinationY,
-            sourceIsBottomUp: false
-        )
-        dirtyRects.append(RDPFrameRect(
-            left: UInt16(destinationX),
-            top: UInt16(destinationY),
-            right: UInt16(destinationX + sourceWidth),
-            bottom: UInt16(destinationY + sourceHeight)
-        ))
     }
 
-    private func blitDecodedSurfaceBitmap(_ decoded: Data, command: RDPSurfaceBitsCommand) throws {
-        let width = Int(command.bitmapData.width)
-        let height = Int(command.bitmapData.height)
-        guard decoded.count == width * height * 4 else {
-            throw RDPDecodeError.invalidGraphicsUpdatePDU
-        }
-        try blitSurfaceBitmap(
-            decoded,
-            bytesPerRow: width * 4,
-            width: width,
-            height: height,
-            x: Int(command.destinationLeft),
-            y: Int(command.destinationTop)
-        )
-    }
-
-    private func blitRemoteFXSurfaceBitmap(_ encoded: Data, command: RDPSurfaceBitsCommand) throws {
+    private func paintRemoteFXTiles(_ encoded: Data, command: RDPSurfaceBitsCommand) throws {
         let frame: RDPRemoteFXDecodedFrame
         do {
             frame = try remoteFX.decode(encoded)
         } catch {
             throw RDPDecodeError.invalidGraphicsUpdatePDU
         }
+        let originX = Int(command.destinationLeft)
+        let originY = Int(command.destinationTop)
         for tile in frame.tiles {
             for region in frame.regionRects {
                 let left = max(tile.x, Int(region.left))
                 let top = max(tile.y, Int(region.top))
-                let right = min(
-                    tile.x + 64,
-                    Int(region.right),
-                    Int(command.bitmapData.width),
-                    width - Int(command.destinationLeft)
-                )
-                let bottom = min(
-                    tile.y + 64,
-                    Int(region.bottom),
-                    Int(command.bitmapData.height),
-                    height - Int(command.destinationTop)
-                )
+                let right = min(tile.x + 64, Int(region.right), Int(command.bitmapData.width), width - originX)
+                let bottom = min(tile.y + 64, Int(region.bottom), Int(command.bitmapData.height), height - originY)
                 guard right > left, bottom > top else {
                     continue
                 }
-                try blitSurfaceBitmap(
+                try paint(
                     tile.bgraData,
-                    bytesPerRow: tile.bytesPerRow,
-                    sourceX: left - tile.x,
-                    sourceY: top - tile.y,
+                    bitsPerPixel: 32,
+                    x: originX + left,
+                    y: originY + top,
                     width: right - left,
-                    height: bottom - top,
-                    x: Int(command.destinationLeft) + left,
-                    y: Int(command.destinationTop) + top
-                )
+                    height: bottom - top
+                ) {
+                    (top - tile.y + $0) * tile.bytesPerRow + (left - tile.x) * 4
+                }
             }
         }
-    }
-
-    private func blitSurfaceBitmap(
-        _ bitmap: Data,
-        bytesPerRow: Int,
-        sourceX: Int = 0,
-        sourceY: Int = 0,
-        width sourceWidth: Int,
-        height sourceHeight: Int,
-        x: Int,
-        y: Int
-    ) throws {
-        guard x >= 0,
-              y >= 0,
-              sourceX >= 0,
-              sourceY >= 0,
-              x + sourceWidth <= width,
-              y + sourceHeight <= height,
-              bytesPerRow >= (sourceX + sourceWidth) * 4,
-              bitmap.count >= bytesPerRow * (sourceY + sourceHeight)
-        else {
-            throw RDPDecodeError.invalidGraphicsUpdatePDU
-        }
-        try copySourceBitmap(
-            bitmap,
-            sourceBytesPerRow: bytesPerRow,
-            sourceBytesPerPixel: 4,
-            sourceBitsPerPixel: 32,
-            sourceWidth: sourceWidth,
-            sourceHeight: sourceHeight,
-            destinationX: x,
-            destinationY: y,
-            sourceIsBottomUp: false,
-            sourceX: sourceX,
-            sourceY: sourceY
-        )
-        dirtyRects.append(RDPFrameRect(
-            left: UInt16(x),
-            top: UInt16(y),
-            right: UInt16(x + sourceWidth),
-            bottom: UInt16(y + sourceHeight)
-        ))
     }
 
     private func blit(_ rectangle: RDPBitmapUpdateRectangle) throws {
         let sourceWidth = Int(rectangle.width)
         let sourceHeight = Int(rectangle.height)
-        let sourceBitsPerPixel = Int(rectangle.bitsPerPixel)
-        let sourceBytesPerPixel = try bytesPerPixel(for: sourceBitsPerPixel)
-        let destinationX = Int(rectangle.destinationLeft)
-        let destinationY = Int(rectangle.destinationTop)
-        let destinationRight = Int(rectangle.destinationRight)
-        let destinationBottom = Int(rectangle.destinationBottom)
-        guard destinationRight - destinationX + 1 == sourceWidth,
-              destinationBottom - destinationY + 1 == sourceHeight,
-              destinationX >= 0,
-              destinationY >= 0,
-              destinationX + sourceWidth <= width,
-              destinationY + sourceHeight <= height
+        let bitsPerPixel = Int(rectangle.bitsPerPixel)
+        let x = Int(rectangle.destinationLeft)
+        let y = Int(rectangle.destinationTop)
+        // destRight and destBottom are inclusive, and the bitmap may be larger than the destination:
+        // Windows and xrdp pad its width to a multiple of four pixels (the TS_CD_HEADER cbScanWidth
+        // rule). As in rdesktop and FreeRDP, only the top-left destination area is painted. The
+        // bitmap itself must still fit the desktop (its width rounded up to four pixels).
+        let width = Int(rectangle.destinationRight) - x + 1
+        let height = Int(rectangle.destinationBottom) - y + 1
+        guard sourceWidth >= width,
+              sourceHeight >= height,
+              sourceWidth <= (self.width + 3) & ~3,
+              sourceHeight <= self.height,
+              x + width <= self.width,
+              y + height <= self.height
         else {
             throw RDPDecodeError.invalidGraphicsUpdatePDU
         }
@@ -238,7 +191,7 @@ final class RDPPrimarySurfaceCompositor {
         let sourceData: Data
         let sourceBytesPerRow: Int
         if rectangle.isCompressed {
-            if sourceBitsPerPixel == 32 {
+            if bitsPerPixel == 32 {
                 sourceData = try RDP6BitmapDecoder.decode(
                     rectangle.bitmapDataStream,
                     width: sourceWidth,
@@ -249,10 +202,10 @@ final class RDPPrimarySurfaceCompositor {
                     rectangle.bitmapDataStream,
                     width: sourceWidth,
                     height: sourceHeight,
-                    bitsPerPixel: sourceBitsPerPixel
+                    bitsPerPixel: bitsPerPixel
                 )
             }
-            sourceBytesPerRow = sourceWidth * sourceBytesPerPixel
+            sourceBytesPerRow = try sourceWidth * bytesPerPixel(for: bitsPerPixel)
             if let compressedHeader = rectangle.compressedHeader {
                 let declaredUncompressedSize = Int(compressedHeader[6])
                     | Int(compressedHeader[7]) << 8
@@ -265,33 +218,16 @@ final class RDPPrimarySurfaceCompositor {
                 throw RDPDecodeError.invalidGraphicsUpdatePDU
             }
             sourceData = rectangle.bitmapDataStream
-            sourceBytesPerRow = alignedBytesPerRow(width: sourceWidth, bytesPerPixel: sourceBytesPerPixel)
+            sourceBytesPerRow = try alignedBytesPerRow(width: sourceWidth, bitsPerPixel: bitsPerPixel)
         }
         guard sourceData.count == sourceBytesPerRow * sourceHeight else {
             throw RDPDecodeError.invalidGraphicsUpdatePDU
         }
 
-        try copySourceBitmap(
-            sourceData,
-            sourceBytesPerRow: sourceBytesPerRow,
-            sourceBytesPerPixel: sourceBytesPerPixel,
-            sourceBitsPerPixel: sourceBitsPerPixel,
-            sourceWidth: sourceWidth,
-            sourceHeight: sourceHeight,
-            destinationX: destinationX,
-            destinationY: destinationY,
-            sourceIsBottomUp: true
-        )
-        dirtyRects.append(RDPFrameRect(
-            left: rectangle.destinationLeft,
-            top: rectangle.destinationTop,
-            right: UInt16(destinationX + sourceWidth),
-            bottom: UInt16(destinationY + sourceHeight)
-        ))
-    }
-
-    private func bytesPerPixel(for bitsPerPixel: UInt8) throws -> Int {
-        try bytesPerPixel(for: Int(bitsPerPixel))
+        // Bitmap update rows are stored bottom-up (MS-RDPBCGR 2.2.9.1.1.3.1.2.2).
+        try paint(sourceData, bitsPerPixel: bitsPerPixel, x: x, y: y, width: width, height: height) {
+            (sourceHeight - 1 - $0) * sourceBytesPerRow
+        }
     }
 
     private func bytesPerPixel(for bitsPerPixel: Int) throws -> Int {
@@ -309,99 +245,113 @@ final class RDPPrimarySurfaceCompositor {
         }
     }
 
-    private func alignedBytesPerRow(width: Int, bytesPerPixel: Int) -> Int {
-        let bytesPerRow = width * bytesPerPixel
+    private func alignedBytesPerRow(width: Int, bitsPerPixel: Int) throws -> Int {
+        let bytesPerRow = try width * bytesPerPixel(for: bitsPerPixel)
         return (bytesPerRow + 3) & ~3
     }
 
-    private func copySourceBitmap(
-        _ sourceData: Data,
-        sourceBytesPerRow: Int,
-        sourceBytesPerPixel: Int,
-        sourceBitsPerPixel: Int,
-        sourceWidth: Int,
-        sourceHeight: Int,
-        destinationX: Int,
-        destinationY: Int,
-        sourceIsBottomUp: Bool,
-        sourceX: Int = 0,
-        sourceY: Int = 0
+    /// Converts `width` x `height` source pixels to BGRA at (`x`, `y`) and marks the area dirty.
+    /// Source row `row` starts at byte offset `sourceRowOffset(row)` of `source`.
+    private func paint(
+        _ source: Data,
+        bitsPerPixel: Int,
+        x: Int,
+        y: Int,
+        width: Int,
+        height: Int,
+        sourceRowOffset: (Int) -> Int
     ) throws {
-        let paletteEntries = paletteEntries
-        try sourceData.withUnsafeBytes { sourceBuffer in
+        let sourceRowByteCount = try width * bytesPerPixel(for: bitsPerPixel)
+        let sourceRowOffsets = (0 ..< max(0, height)).map(sourceRowOffset)
+        guard x >= 0,
+              y >= 0,
+              width >= 0,
+              height >= 0,
+              x + width <= self.width,
+              y + height <= self.height,
+              sourceRowOffsets.allSatisfy({ $0 >= 0 && $0 + sourceRowByteCount <= source.count })
+        else {
+            throw RDPDecodeError.invalidGraphicsUpdatePDU
+        }
+
+        let palette = palette
+        let bytesPerRow = bytesPerRow
+        try source.withUnsafeBytes { sourceBuffer in
             try data.withUnsafeMutableBytes { destinationBuffer in
-                guard let sourceBase = sourceBuffer.baseAddress,
-                      let destinationBase = destinationBuffer.baseAddress
-                else {
-                    return
-                }
-                for row in 0 ..< sourceHeight {
-                    let sourceRowIndex = sourceIsBottomUp ? sourceHeight - 1 - row : sourceY + row
-                    let sourceRow = sourceBase.advanced(
-                        by: sourceRowIndex * sourceBytesPerRow + sourceX * sourceBytesPerPixel
-                    )
-                    let destinationRow = destinationBase.advanced(
-                        by: (destinationY + row) * bytesPerRow + destinationX * 4
-                    )
-                    try copySourceRow(
-                        sourceRow,
-                        destinationRow: destinationRow,
-                        sourceBytesPerPixel: sourceBytesPerPixel,
-                        sourceBitsPerPixel: sourceBitsPerPixel,
-                        paletteEntries: paletteEntries,
-                        sourceWidth: sourceWidth
+                for (row, sourceOffset) in sourceRowOffsets.enumerated() {
+                    let destinationOffset = (y + row) * bytesPerRow + x * 4
+                    try Self.convertRow(
+                        UnsafeRawBufferPointer(
+                            rebasing: sourceBuffer[sourceOffset ..< sourceOffset + sourceRowByteCount]
+                        ),
+                        to: UnsafeMutableRawBufferPointer(
+                            rebasing: destinationBuffer[destinationOffset ..< destinationOffset + width * 4]
+                        ),
+                        width: width,
+                        bitsPerPixel: bitsPerPixel,
+                        palette: palette
                     )
                 }
             }
+        }
+        dirtyRects.append(RDPFrameRect(
+            left: UInt16(x),
+            top: UInt16(y),
+            right: UInt16(x + width),
+            bottom: UInt16(y + height)
+        ))
+        boundDirtyRects()
+    }
+
+    private func boundDirtyRects() {
+        if dirtyRects.count > Self.maximumDirtyRectCount, let bounds = dirtyRects.boundingRect {
+            dirtyRects = [bounds]
         }
     }
 
-    private func copySourceRow(
-        _ sourceRow: UnsafeRawPointer,
-        destinationRow: UnsafeMutableRawPointer,
-        sourceBytesPerPixel: Int,
-        sourceBitsPerPixel: Int,
-        paletteEntries: Data?,
-        sourceWidth: Int
+    private static func convertRow(
+        _ source: UnsafeRawBufferPointer,
+        to destination: UnsafeMutableRawBufferPointer,
+        width: Int,
+        bitsPerPixel: Int,
+        palette: [UInt32]?
     ) throws {
-        if sourceBytesPerPixel == 4 {
-            memcpy(destinationRow, sourceRow, sourceWidth * 4)
-            return
-        }
-
-        let source = sourceRow.assumingMemoryBound(to: UInt8.self)
-        let destination = destinationRow.assumingMemoryBound(to: UInt8.self)
-        for column in 0 ..< sourceWidth {
-            let destinationOffset = column * 4
-            switch sourceBitsPerPixel {
-            case 8:
-                guard let paletteEntries else {
-                    throw RDPDecodeError.invalidGraphicsUpdatePDU
-                }
-                let paletteOffset = Int(source[column]) * 3
-                destination[destinationOffset] = paletteEntries[paletteOffset + 2]
-                destination[destinationOffset + 1] = paletteEntries[paletteOffset + 1]
-                destination[destinationOffset + 2] = paletteEntries[paletteOffset]
-            case 15, 16:
-                let sourceOffset = column * 2
-                let pixel = UInt16(source[sourceOffset]) | UInt16(source[sourceOffset + 1]) << 8
-                let greenBits = sourceBitsPerPixel == 15 ? 5 : 6
-                let blue = Int(pixel & 0x001F)
-                let green = Int((pixel >> 5) & UInt16((1 << greenBits) - 1))
-                let red = Int((pixel >> (5 + greenBits)) & 0x001F)
-                destination[destinationOffset] = UInt8((blue * 255 + 15) / 31)
-                destination[destinationOffset + 1] = UInt8((green * 255 + ((1 << greenBits) - 1) / 2)
-                    / ((1 << greenBits) - 1))
-                destination[destinationOffset + 2] = UInt8((red * 255 + 15) / 31)
-            case 24:
-                let sourceOffset = column * 3
-                destination[destinationOffset] = source[sourceOffset]
-                destination[destinationOffset + 1] = source[sourceOffset + 1]
-                destination[destinationOffset + 2] = source[sourceOffset + 2]
-            default:
+        switch bitsPerPixel {
+        case 32:
+            destination.copyMemory(from: source)
+        case 24:
+            for column in 0 ..< width {
+                destination[column * 4] = source[column * 3]
+                destination[column * 4 + 1] = source[column * 3 + 1]
+                destination[column * 4 + 2] = source[column * 3 + 2]
+                destination[column * 4 + 3] = 0xFF
+            }
+        case 15, 16:
+            let greenBitCount = bitsPerPixel == 15 ? 5 : 6
+            let greenMaximum = (1 << greenBitCount) - 1
+            for column in 0 ..< width {
+                let pixel = Int(source[column * 2]) | Int(source[column * 2 + 1]) << 8
+                let blue = pixel & 0x1F
+                let green = (pixel >> 5) & greenMaximum
+                let red = (pixel >> (5 + greenBitCount)) & 0x1F
+                destination[column * 4] = UInt8((blue * 255 + 15) / 31)
+                destination[column * 4 + 1] = UInt8((green * 255 + greenMaximum / 2) / greenMaximum)
+                destination[column * 4 + 2] = UInt8((red * 255 + 15) / 31)
+                destination[column * 4 + 3] = 0xFF
+            }
+        case 8:
+            guard let palette, palette.count == 256 else {
                 throw RDPDecodeError.invalidGraphicsUpdatePDU
             }
-            destination[destinationOffset + 3] = 0xFF
+            for column in 0 ..< width {
+                destination.storeBytes(
+                    of: palette[Int(source[column])].littleEndian,
+                    toByteOffset: column * 4,
+                    as: UInt32.self
+                )
+            }
+        default:
+            throw RDPDecodeError.invalidGraphicsUpdatePDU
         }
     }
 

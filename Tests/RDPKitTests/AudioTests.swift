@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import NIOEmbedded
 @testable import RDPKit
@@ -60,176 +61,28 @@ import Testing
     }
 }
 
-@Test func audioInputPDUParsesHeaderAndPayload() throws {
-    let pdu = try RDPAudioInputPDU.parse(from: Data([
-        0x01,
-        0x02, 0x00, 0x00, 0x00,
-    ]))
-
-    #expect(pdu.messageType == RDPAudioInputMessageType.version)
-    #expect(pdu.payload.rdpHexString == "02 00 00 00")
-    #expect(pdu.typeName == "audio-input-version")
-    #expect(pdu.encoded().rdpHexString == "01 02 00 00 00")
-}
-
-@Test func audioInputVersionParsesSpecExampleAndCapsClientVersion() throws {
-    let serverPDU = try RDPAudioInputPDU.parse(from: Data([
-        0x01,
-        0x01, 0x00, 0x00, 0x00,
-    ]))
-    let version = try #require(try RDPAudioInputVersionPDU.parseIfPresent(from: serverPDU))
-
-    #expect(version.version == 1)
-    #expect(RDPAudioInputVersionPDU(serverVersion: 3).encoded().rdpHexString == "01 02 00 00 00")
-}
-
-@Test func audioInputVersionRejectsZeroVersion() throws {
-    let pdu = try RDPAudioInputPDU.parse(from: Data([
-        0x01,
-        0x00, 0x00, 0x00, 0x00,
-    ]))
-
-    #expect(throws: RDPDecodeError.invalidAudioPDU) {
-        try RDPAudioInputVersionPDU.parseIfPresent(from: pdu)
-    }
-}
-
-@Test func audioInputFormatsParsesServerFormatsAndIgnoresExtraData() throws {
-    var data = Data([0x02])
-    data.appendLittleEndianUInt32(1)
-    data.appendLittleEndianUInt32(0x8000_0000)
-    data.append(RDPAudioFormat.pcmStereo48k16Bit.encoded())
-    data.append(contentsOf: [0xAA, 0xBB])
-
-    let pdu = try RDPAudioInputPDU.parse(from: data)
-    let formats = try #require(try RDPAudioInputFormatsPDU.parseIfPresent(from: pdu))
-
-    #expect(formats.cbSizeFormatsPacket == 0x8000_0000)
-    #expect(formats.formats == [.pcmStereo48k16Bit])
-    #expect(formats.extraData == Data([0xAA, 0xBB]))
-}
-
-@Test func audioInputFormatsEncodesClientSubsetSizeWithoutExtraData() {
-    let formats = RDPAudioInputFormatsPDU(
-        formats: [.pcmStereo48k16Bit],
-        extraData: Data([0xAA, 0xBB])
+@Test func audioFormatWithOverflowingBlockAlignIsNotPCM16BitInsteadOfTrapping() throws {
+    let hostile = try RDPAudioFormat(
+        formatTag: RDPAudioFormatTag.pcm,
+        channelCount: 0x8000,
+        samplesPerSecond: 48000,
+        averageBytesPerSecond: 0,
+        blockAlign: 0,
+        bitsPerSample: 16
     )
 
-    #expect(formats.encoded().rdpHexString == (
-        "02 01 00 00 00 1b 00 00 00 "
-            + "01 00 02 00 80 bb 00 00 00 ee 02 00 04 00 10 00 00 00 aa bb"
-    ))
-}
-
-@Test func audioInputFormatsRejectsImpossibleFormatCountBeforeAllocating() throws {
-    let pdu = try RDPAudioInputPDU.parse(from: Data([
-        0x02,
-        0xFF, 0xFF, 0xFF, 0x7F,
-        0x00, 0x00, 0x00, 0x00,
-    ]))
-
-    #expect(throws: RDPDecodeError.invalidAudioPDU) {
-        try RDPAudioInputFormatsPDU.parseIfPresent(from: pdu)
-    }
-}
-
-@Test func audioInputOpenParsesRequestedCaptureFormat() throws {
-    var data = Data([0x03])
-    data.appendLittleEndianUInt32(480)
-    data.appendLittleEndianUInt32(0)
-    data.append(RDPAudioFormat.pcmStereo48k16Bit.encoded())
-
-    let pdu = try RDPAudioInputPDU.parse(from: data)
-    let open = try #require(try RDPAudioInputOpenPDU.parseIfPresent(from: pdu))
-
-    #expect(open.framesPerPacket == 480)
-    #expect(open.initialFormat == 0)
-    #expect(open.format == .pcmStereo48k16Bit)
-}
-
-@Test func audioInputOpenRejectsMalformedWaveFormatExtensible() throws {
-    var data = Data([0x03])
-    data.appendLittleEndianUInt32(480)
-    data.appendLittleEndianUInt32(0)
-    data.appendLittleEndianUInt16(RDPAudioFormatTag.extensible)
-    data.appendLittleEndianUInt16(2)
-    data.appendLittleEndianUInt32(48000)
-    data.appendLittleEndianUInt32(192_000)
-    data.appendLittleEndianUInt16(4)
-    data.appendLittleEndianUInt16(16)
-    data.appendLittleEndianUInt16(0)
-
-    let pdu = try RDPAudioInputPDU.parse(from: data)
-
-    #expect(throws: RDPDecodeError.invalidAudioPDU) {
-        try RDPAudioInputOpenPDU.parseIfPresent(from: pdu)
-    }
-}
-
-@Test func audioInputOpenValidatesWaveFormatExtensibleFields() throws {
-    func openPDU(validBits: UInt16, channelMask: UInt32, subformat: Data) throws -> RDPAudioInputPDU {
-        var extraData = Data()
-        extraData.appendLittleEndianUInt16(validBits)
-        extraData.appendLittleEndianUInt32(channelMask)
-        extraData.append(subformat)
-        let format = try RDPAudioFormat(
-            formatTag: RDPAudioFormatTag.extensible,
-            channelCount: 2,
-            samplesPerSecond: 48000,
-            averageBytesPerSecond: 192_000,
-            blockAlign: 4,
-            bitsPerSample: 16,
-            extraData: extraData
-        )
-        var data = Data([RDPAudioInputMessageType.open])
-        data.appendLittleEndianUInt32(480)
-        data.appendLittleEndianUInt32(0)
-        data.append(format.encoded())
-        return try RDPAudioInputPDU.parse(from: data)
-    }
-
-    let pcmSubformat = Data([
-        0x01, 0x00, 0x00, 0x00,
-        0x00, 0x00,
-        0x10, 0x00,
-        0x80, 0x00,
-        0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71,
-    ])
-    let valid = try openPDU(validBits: 16, channelMask: 0x3, subformat: pcmSubformat)
-    #expect(try RDPAudioInputOpenPDU.parseIfPresent(from: valid)?.format.extraData.count == 22)
-
-    let invalidValidBits = try openPDU(validBits: 17, channelMask: 0x3, subformat: pcmSubformat)
-    #expect(throws: RDPDecodeError.invalidAudioPDU) {
-        try RDPAudioInputOpenPDU.parseIfPresent(from: invalidValidBits)
-    }
-
-    let invalidChannelMask = try openPDU(validBits: 16, channelMask: 0x0004_0000, subformat: pcmSubformat)
-    #expect(throws: RDPDecodeError.invalidAudioPDU) {
-        try RDPAudioInputOpenPDU.parseIfPresent(from: invalidChannelMask)
-    }
-
-    var floatSubformat = pcmSubformat
-    floatSubformat[0] = 0x03
-    let invalidSubformat = try openPDU(validBits: 16, channelMask: 0x3, subformat: floatSubformat)
-    #expect(throws: RDPDecodeError.invalidAudioPDU) {
-        try RDPAudioInputOpenPDU.parseIfPresent(from: invalidSubformat)
-    }
-}
-
-@Test func audioInputResponsePDUsEncodeSpecShapes() {
-    #expect(RDPAudioInputIncomingDataPDU().encoded().rdpHexString == "05")
-    #expect(RDPAudioInputFormatChangePDU(newFormat: 2).encoded().rdpHexString == "07 02 00 00 00")
-    #expect(RDPAudioInputOpenReplyPDU().encoded().rdpHexString == "04 05 40 00 80")
+    #expect(hostile.isPCM16Bit == false)
+    #expect(RDPAudioFormatsPDU.compatibleClientFormats(from: [hostile]) == [])
 }
 
 @Test func audioClientFormatsEncodePCMStaticChannelHandshake() throws {
-    let formats = RDPAudioFormatsPDU.clientPCM(version: 6)
+    let formats = RDPAudioFormatsPDU.client(version: 6, formats: [.pcmStereo48k16Bit])
     let encoded = formats.encoded()
     let parsed = try #require(try RDPAudioFormatsPDU.parseIfPresent(from: RDPAudioPDU.parse(from: encoded)))
 
     #expect(encoded == Data([
         0x07, 0x00, 0x26, 0x00,
-        0x03, 0x00, 0x00, 0x00,
+        0x01, 0x00, 0x00, 0x00,
         0xFF, 0xFF, 0xFF, 0xFF,
         0x00, 0x00, 0x00, 0x00,
         0x00, 0x00,
@@ -245,7 +98,8 @@ import Testing
         0x10, 0x00,
         0x00, 0x00,
     ]))
-    #expect(parsed.flags == RDPAudioCapabilityFlags.alive | RDPAudioCapabilityFlags.volume)
+    // No TSSNDCAPS_VOLUME: the client does not apply Volume PDUs (MS-RDPEA 3.2.5.3.1.1).
+    #expect(parsed.flags == RDPAudioCapabilityFlags.alive)
     #expect(parsed.volume == 0xFFFF_FFFF)
     #expect(parsed.datagramPort == 0)
     #expect(parsed.version == 6)
@@ -278,6 +132,50 @@ import Testing
     )
 
     #expect(RDPAudioFormatsPDU.compatibleClientFormats(from: [pcmStereo44k]) == [pcmStereo44k])
+}
+
+@Test func audioClientFormatsSkipPCMFormatsCarryingExtraData() throws {
+    let pcmWithExtraData = try RDPAudioFormat(
+        formatTag: RDPAudioFormatTag.pcm,
+        channelCount: 2,
+        samplesPerSecond: 48000,
+        averageBytesPerSecond: 192_000,
+        blockAlign: 4,
+        bitsPerSample: 16,
+        extraData: Data(count: 2_000)
+    )
+    let pcmMono = try RDPAudioFormat(
+        formatTag: RDPAudioFormatTag.pcm,
+        channelCount: 1,
+        samplesPerSecond: 22050,
+        averageBytesPerSecond: 44100,
+        blockAlign: 2,
+        bitsPerSample: 16
+    )
+
+    #expect(RDPAudioFormatsPDU.compatibleClientFormats(from: [pcmWithExtraData, pcmMono]) == [pcmMono])
+}
+
+@Test func audioClientFormatsSkipPCMFormatsAudioEngineCannotPlay() throws {
+    func pcm(channelCount: UInt16, samplesPerSecond: UInt32) throws -> RDPAudioFormat {
+        try RDPAudioFormat(
+            formatTag: RDPAudioFormatTag.pcm,
+            channelCount: channelCount,
+            samplesPerSecond: samplesPerSecond,
+            averageBytesPerSecond: samplesPerSecond * UInt32(channelCount) * 2,
+            blockAlign: channelCount * 2,
+            bitsPerSample: 16
+        )
+    }
+    let unplayable = [
+        try pcm(channelCount: 2, samplesPerSecond: 10_000_000),
+        try pcm(channelCount: 2, samplesPerSecond: 1),
+        try pcm(channelCount: 6, samplesPerSecond: 48000),
+    ]
+    let mono8k = try pcm(channelCount: 1, samplesPerSecond: 8000)
+
+    #expect(RDPAudioFormatsPDU.compatibleClientFormats(from: unplayable) == [])
+    #expect(RDPAudioFormatsPDU.compatibleClientFormats(from: unplayable + [mono8k]) == [mono8k])
 }
 
 @Test func audioClientFormatsDoNotInventPCMWhenServerDoesNotOfferIt() throws {
@@ -346,14 +244,15 @@ import Testing
 }
 
 @Test func audioSessionWrapsStaticAudioWithoutShowProtocolFlag() throws {
-    let packet = RDPAudioSession.encodedPacket(
+    let packets = RDPAudioSession.encodedPackets(
         RDPAudioQualityModePDU().encoded(),
         userChannelID: 1006,
         staticChannelID: 1004,
         dynamicChannelID: nil
     )
-    let request = try clientSendDataRequest(from: packet)
-    let pdu = try RDPStaticVirtualChannelPDU.parse(fromUserData: request.userData)
+    #expect(packets.count == 1)
+    let request = try mcsSendDataRequest(fromTPKT: packets[0])
+    let pdu = try RDPStaticVirtualChannelPDU.parse(fromUserData: request.userData, maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumPayloadByteCount)
 
     #expect(request.channelID == 1004)
     #expect(pdu.flags == RDPStaticVirtualChannelFlags.complete)
@@ -362,14 +261,15 @@ import Testing
 
 @Test func audioSessionWrapsDynamicAudioWithCompleteFlags() throws {
     let audioPayload = RDPAudioQualityModePDU().encoded()
-    let packet = RDPAudioSession.encodedPacket(
+    let packets = RDPAudioSession.encodedPackets(
         audioPayload,
         userChannelID: 1006,
         staticChannelID: 1004,
         dynamicChannelID: 0x1122_3344
     )
-    let request = try clientSendDataRequest(from: packet)
-    let pdu = try RDPStaticVirtualChannelPDU.parse(fromUserData: request.userData)
+    #expect(packets.count == 1)
+    let request = try mcsSendDataRequest(fromTPKT: packets[0])
+    let pdu = try RDPStaticVirtualChannelPDU.parse(fromUserData: request.userData, maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumPayloadByteCount)
     let dynamicPDU = try #require(try RDPDynamicVirtualChannelDataPDU.parseIfPresent(from: pdu.payload))
 
     #expect(request.channelID == 1004)
@@ -386,10 +286,10 @@ import Testing
         staticChannelID: 1004,
         dynamicChannelID: 7
     )
-    let firstRequest = try clientSendDataRequest(from: packets[0])
-    let secondRequest = try clientSendDataRequest(from: packets[1])
-    let firstStaticPDU = try RDPStaticVirtualChannelPDU.parse(fromUserData: firstRequest.userData)
-    let secondStaticPDU = try RDPStaticVirtualChannelPDU.parse(fromUserData: secondRequest.userData)
+    let firstRequest = try mcsSendDataRequest(fromTPKT: packets[0])
+    let secondRequest = try mcsSendDataRequest(fromTPKT: packets[1])
+    let firstStaticPDU = try RDPStaticVirtualChannelPDU.parse(fromUserData: firstRequest.userData, maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumPayloadByteCount)
+    let secondStaticPDU = try RDPStaticVirtualChannelPDU.parse(fromUserData: secondRequest.userData, maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumPayloadByteCount)
     let firstDynamicPDU = try #require(try RDPDynamicVirtualChannelDataFirstPDU.parseIfPresent(
         from: firstStaticPDU.payload
     ))
@@ -433,53 +333,6 @@ import Testing
 
     #expect(training.timestamp == 0x1234)
     #expect(training.packetSize == 0)
-}
-
-@Test func audioTrainingAcceptsNoDataProbeWithNonzeroPacketSize() throws {
-    let serverTraining = try RDPAudioPDU.parse(from: Data([
-        0x06, 0x00, 0x04, 0x00,
-        0x34, 0x12,
-        0x08, 0x00,
-    ]))
-    let training = try #require(try RDPAudioTrainingPDU.parseIfPresent(from: serverTraining))
-
-    #expect(training.timestamp == 0x1234)
-    #expect(training.packetSize == 8)
-}
-
-@Test func audioTrainingAcceptsDataLengthPacketSizeConvention() throws {
-    let serverTraining = try RDPAudioPDU.parse(from: Data([
-        0x06, 0x00, 0x08, 0x00,
-        0x34, 0x12,
-        0x04, 0x00,
-        0xAA, 0xBB, 0xCC, 0xDD,
-    ]))
-    let training = try #require(try RDPAudioTrainingPDU.parseIfPresent(from: serverTraining))
-
-    #expect(training.timestamp == 0x1234)
-    #expect(training.packetSize == 4)
-}
-
-@Test func audioTrainingRejectsPacketSizeInconsistentWithAcceptedLengthConventions() throws {
-    let nonEmptyDataWithZeroPacketSize = try RDPAudioPDU.parse(from: Data([
-        0x06, 0x00, 0x08, 0x00,
-        0x34, 0x12,
-        0x00, 0x00,
-        0xAA, 0xBB, 0xCC, 0xDD,
-    ]))
-    let nonEmptyDataWithUnexpectedPacketSize = try RDPAudioPDU.parse(from: Data([
-        0x06, 0x00, 0x08, 0x00,
-        0x34, 0x12,
-        0x08, 0x00,
-        0xAA, 0xBB, 0xCC, 0xDD,
-    ]))
-
-    #expect(throws: RDPDecodeError.invalidAudioPDU) {
-        try RDPAudioTrainingPDU.parseIfPresent(from: nonEmptyDataWithZeroPacketSize)
-    }
-    #expect(throws: RDPDecodeError.invalidAudioPDU) {
-        try RDPAudioTrainingPDU.parseIfPresent(from: nonEmptyDataWithUnexpectedPacketSize)
-    }
 }
 
 @Test func audioWaveInfoUsesHeaderBodySizeForFollowingWaveData() throws {
@@ -610,46 +463,6 @@ import Testing
     ]))
 }
 
-@Test func audioVolumeParsesChannelVolume() throws {
-    let pdu = try RDPAudioPDU.parse(from: Data([
-        0x03, 0x99, 0x04, 0x00,
-        0x00, 0x80, 0xFF, 0xFF,
-    ]))
-    let volume = try #require(try RDPAudioVolumePDU.parseIfPresent(from: pdu))
-
-    #expect(pdu.typeName == "audio-volume")
-    #expect(volume.volume == 0xFFFF_8000)
-}
-
-@Test func audioPitchParsesFixedPointMultiplier() throws {
-    let pdu = try RDPAudioPDU.parse(from: Data([
-        0x04, 0x99, 0x04, 0x00,
-        0x00, 0x80, 0x0F, 0x00,
-    ]))
-    let pitch = try #require(try RDPAudioPitchPDU.parseIfPresent(from: pdu))
-
-    #expect(pdu.typeName == "audio-pitch")
-    #expect(pitch.pitch == 0x000F_8000)
-}
-
-@Test func audioVolumeAndPitchRejectInvalidPayloadLength() throws {
-    let invalidVolume = try RDPAudioPDU.parse(from: Data([
-        0x03, 0x00, 0x03, 0x00,
-        0x00, 0x80, 0xFF,
-    ]))
-    let invalidPitch = try RDPAudioPDU.parse(from: Data([
-        0x04, 0x00, 0x05, 0x00,
-        0x00, 0x80, 0x0F, 0x00, 0x00,
-    ]))
-
-    #expect(throws: RDPDecodeError.invalidAudioPDU) {
-        _ = try RDPAudioVolumePDU.parseIfPresent(from: invalidVolume)
-    }
-    #expect(throws: RDPDecodeError.invalidAudioPDU) {
-        _ = try RDPAudioPitchPDU.parseIfPresent(from: invalidPitch)
-    }
-}
-
 @MainActor
 @Test func audioPlayerReportsReadyAfterReset() {
     let player = RDPAudioPlayer()
@@ -685,6 +498,29 @@ import Testing
 }
 
 @MainActor
+@Test func audioPlayerRejectsAbsurdSampleRateBeforeConfiguringEngine() throws {
+    let player = RDPAudioPlayer()
+    let sample = RDPAudioSample(
+        format: try RDPAudioFormat(
+            formatTag: RDPAudioFormatTag.pcm,
+            channelCount: 2,
+            samplesPerSecond: 10_000_000,
+            averageBytesPerSecond: 40_000_000,
+            blockAlign: 4,
+            bitsPerSample: 16
+        ),
+        timestamp: 0,
+        blockNo: 0,
+        data: Data(count: 4),
+        receivedAt: Date()
+    )
+
+    #expect(throws: RDPAudioPlayerError.unsupportedFormat) {
+        try player.enqueue(sample)
+    }
+}
+
+@MainActor
 @Test func audioPlayerDropsEmptyPCMSamplesBeforeStartingEngine() throws {
     let player = RDPAudioPlayer()
     let sample = RDPAudioSample(
@@ -699,16 +535,31 @@ import Testing
     #expect(player.statusMessage == "Ready.")
 }
 
-private func clientSendDataRequest(from packet: Data) throws -> (channelID: UInt16, userData: Data) {
-    var cursor = try ByteCursor(X224DataTPDU.unwrap(packet))
-    let header = try cursor.readUInt8()
-    _ = try cursor.readBigEndianUInt16()
-    let channelID = try cursor.readBigEndianUInt16()
-    let priority = try cursor.readUInt8()
-    let length = try cursor.readPERLength()
-    let userData = try cursor.readData(count: length)
-    guard header == 0x64, priority == 0x70, cursor.remaining == 0 else {
-        throw RDPDecodeError.invalidMCSSendDataIndication
+/// An audio interruption or output device change stops the engine with buffers still queued;
+/// they never drain, so they must not keep every later sample out of the queue.
+@MainActor
+@Test func audioPlayerResumesAfterTheEngineStopsWithAFullQueue() throws {
+    let player = RDPAudioPlayer()
+    // Offline manual rendering starts without an audio device and never drains the queue.
+    let renderFormat = try #require(AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2))
+    try player.engine.enableManualRenderingMode(.offline, format: renderFormat, maximumFrameCount: 4096)
+    let sample = RDPAudioSample(
+        format: .pcmStereo48k16Bit,
+        timestamp: 0,
+        blockNo: 0,
+        data: Data(count: 4 * 2_400),
+        receivedAt: Date()
+    )
+
+    var acceptedCount = 0
+    while acceptedCount < 32, try player.enqueue(sample) {
+        acceptedCount += 1
     }
-    return (channelID: channelID, userData: userData)
+    #expect(acceptedCount == 16)
+
+    player.engine.stop()
+
+    #expect(try player.enqueue(sample))
+    #expect(player.engine.isRunning)
+    player.reset()
 }

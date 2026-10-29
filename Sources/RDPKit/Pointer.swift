@@ -7,6 +7,7 @@ public struct RDPRemotePointerImage: Equatable, Sendable {
     public var height: UInt16
     public var xorBitsPerPixel: UInt16
     public var xorMaskData: Data
+    /// Empty for a 32-bpp pointer sent without an AND mask; its XOR alpha channel alone defines the shape.
     public var andMaskData: Data
 
     public init(
@@ -57,65 +58,28 @@ struct RDPColorPointerAttribute: Equatable, Sendable {
     var xorMaskData: Data
     var andMaskData: Data
 
-    static func parse(from cursor: inout ByteCursor, allowsTrailingPad: Bool = true) throws -> RDPColorPointerAttribute {
-        try parse(from: &cursor, xorBitsPerPixel: 24, allowsTrailingPad: allowsTrailingPad)
-    }
-
+    // TS_COLORPOINTERATTRIBUTE (MS-RDPBCGR 2.2.9.1.1.4.4); TS_POINTERATTRIBUTE wraps it with another XOR depth.
     static func parse(
         from cursor: inout ByteCursor,
-        xorBitsPerPixel: UInt16,
-        allowsTrailingPad: Bool = true
+        xorBitsPerPixel: UInt16 = 24
     ) throws -> RDPColorPointerAttribute {
-        guard cursor.remaining >= 14 else {
-            throw RDPDecodeError.invalidPointerPDU
-        }
-
-        let cacheIndex = try cursor.readLittleEndianUInt16()
-        let hotSpot = try RDPPoint16.parse(from: &cursor)
-        let width = try cursor.readLittleEndianUInt16()
-        let height = try cursor.readLittleEndianUInt16()
-        let andMaskLength = try Int(cursor.readLittleEndianUInt16())
-        let xorMaskLength = try Int(cursor.readLittleEndianUInt16())
-        guard width <= 96, height <= 96 else {
-            throw RDPDecodeError.invalidPointerPDU
-        }
-        try validatePointerMaskLengths(
-            width: width,
-            height: height,
-            xorBitsPerPixel: xorBitsPerPixel,
-            xorMaskLength: xorMaskLength,
-            andMaskLength: andMaskLength
-        )
-        guard xorMaskLength <= cursor.remaining else {
-            throw RDPDecodeError.invalidPointerPDU
-        }
-        let xorMaskData = try cursor.readData(count: xorMaskLength)
-        guard andMaskLength <= cursor.remaining else {
-            throw RDPDecodeError.invalidPointerPDU
-        }
-        let andMaskData = try cursor.readData(count: andMaskLength)
-        if allowsTrailingPad, cursor.remaining == 1 {
-            _ = try cursor.readUInt8()
-        }
-        guard cursor.remaining == 0 else {
-            throw RDPDecodeError.invalidPointerPDU
-        }
-
-        return RDPColorPointerAttribute(
-            cacheIndex: cacheIndex,
-            hotSpot: hotSpot,
-            width: width,
-            height: height,
-            xorMaskData: xorMaskData,
-            andMaskData: andMaskData
-        )
+        try parse(from: &cursor, xorBitsPerPixel: xorBitsPerPixel, isLarge: false)
     }
 
+    // TS_FP_LARGEPOINTERATTRIBUTE after xorBpp (2.2.9.1.2.1.11): 32-bit mask lengths and up to 384x384 pixels.
     static func parseLargeFastPath(
         from cursor: inout ByteCursor,
         xorBitsPerPixel: UInt16
     ) throws -> RDPColorPointerAttribute {
-        guard cursor.remaining >= 18 else {
+        try parse(from: &cursor, xorBitsPerPixel: xorBitsPerPixel, isLarge: true)
+    }
+
+    private static func parse(
+        from cursor: inout ByteCursor,
+        xorBitsPerPixel: UInt16,
+        isLarge: Bool
+    ) throws -> RDPColorPointerAttribute {
+        guard cursor.remaining >= (isLarge ? 18 : 14) else {
             throw RDPDecodeError.invalidPointerPDU
         }
 
@@ -123,27 +87,25 @@ struct RDPColorPointerAttribute: Equatable, Sendable {
         let hotSpot = try RDPPoint16.parse(from: &cursor)
         let width = try cursor.readLittleEndianUInt16()
         let height = try cursor.readLittleEndianUInt16()
-        let andMaskLength = try Int(cursor.readLittleEndianUInt32())
-        let xorMaskLength = try Int(cursor.readLittleEndianUInt32())
-        try validatePointerMaskLengths(
-            width: width,
-            height: height,
-            xorBitsPerPixel: xorBitsPerPixel,
-            xorMaskLength: xorMaskLength,
-            andMaskLength: andMaskLength
-        )
-        guard width <= 384,
-              height <= 384,
-              xorMaskLength <= cursor.remaining
+        let andMaskLength = try isLarge ? Int(cursor.readLittleEndianUInt32()) : Int(cursor.readLittleEndianUInt16())
+        let xorMaskLength = try isLarge ? Int(cursor.readLittleEndianUInt32()) : Int(cursor.readLittleEndianUInt16())
+        let maximumDimension: UInt16 = isLarge ? 384 : 96
+        // KRdp sends 32-bpp pointers without an AND mask (lengthAndMask = 0).
+        let omitsAndMask = andMaskLength == 0 && xorBitsPerPixel == 32
+        guard width > 0,
+              height > 0,
+              width <= maximumDimension,
+              height <= maximumDimension,
+              xorMaskLength == pointerMaskByteCount(width: width, height: height, bitsPerPixel: xorBitsPerPixel),
+              omitsAndMask || andMaskLength == pointerMaskByteCount(width: width, height: height, bitsPerPixel: 1),
+              xorMaskLength + andMaskLength <= cursor.remaining
         else {
             throw RDPDecodeError.invalidPointerPDU
         }
 
         let xorMaskData = try cursor.readData(count: xorMaskLength)
-        guard andMaskLength <= cursor.remaining else {
-            throw RDPDecodeError.invalidPointerPDU
-        }
         let andMaskData = try cursor.readData(count: andMaskLength)
+        // The optional pad byte MUST be ignored.
         if cursor.remaining == 1 {
             _ = try cursor.readUInt8()
         }
@@ -199,13 +161,6 @@ enum RDPServerPointerUpdate: Equatable, Sendable {
         }
     }
 
-    static func parseIfPresent(from shareData: RDPShareDataPDU) throws -> RDPServerPointerUpdate? {
-        guard shareData.pduType2 == 0x1B else {
-            return nil
-        }
-        return try parsePayload(shareData.payload)
-    }
-
     static func parsePayload(_ payload: Data) throws -> RDPServerPointerUpdate {
         guard payload.count >= 4 else {
             throw RDPDecodeError.invalidPointerPDU
@@ -254,7 +209,8 @@ enum RDPServerPointerUpdate: Equatable, Sendable {
 }
 
 final class RDPRemotePointerState {
-    private static let cacheSize: UInt16 = 32
+    // Matches the pointerCacheSize advertised in the client Pointer Capability Set.
+    static let cacheSize: UInt16 = 32
 
     private var images: [UInt16: RDPRemotePointerImage] = [:]
 
@@ -293,9 +249,14 @@ final class RDPRemotePointerState {
         guard attribute.cacheIndex < Self.cacheSize else {
             throw RDPDecodeError.invalidPointerPDU
         }
+        // MS-RDPBCGR 2.2.9.1.1.4.4 does not bound hotSpot. Clamp it onto the image so clients need no
+        // range check; no target server is known to send one outside (FreeRDP resets such a coordinate to 0).
         let image = RDPRemotePointerImage(
             cacheIndex: attribute.cacheIndex,
-            hotSpot: RDPRemotePoint(x: attribute.hotSpot.x, y: attribute.hotSpot.y),
+            hotSpot: RDPRemotePoint(
+                x: min(attribute.hotSpot.x, max(attribute.width, 1) - 1),
+                y: min(attribute.hotSpot.y, max(attribute.height, 1) - 1)
+            ),
             width: attribute.width,
             height: attribute.height,
             xorBitsPerPixel: xorBitsPerPixel,
@@ -307,29 +268,11 @@ final class RDPRemotePointerState {
     }
 }
 
-private func validatePointerMaskLengths(
-    width: UInt16,
-    height: UInt16,
-    xorBitsPerPixel: UInt16,
-    xorMaskLength: Int,
-    andMaskLength: Int
-) throws {
-    guard width > 0,
-          height > 0,
-          let xorStride = pointerStride(width: width, bitsPerPixel: xorBitsPerPixel),
-          let andStride = pointerStride(width: width, bitsPerPixel: 1),
-          xorMaskLength == xorStride * Int(height),
-          andMaskLength == andStride * Int(height)
-    else {
-        throw RDPDecodeError.invalidPointerPDU
-    }
-}
-
-private func pointerStride(width: UInt16, bitsPerPixel: UInt16) -> Int? {
+// Mask scan-lines are padded to a 2-byte boundary (2.2.9.1.1.4.4); nil for an unusable depth.
+private func pointerMaskByteCount(width: UInt16, height: UInt16, bitsPerPixel: UInt16) -> Int? {
     guard bitsPerPixel > 0 else {
         return nil
     }
-    let rowBits = Int(width) * Int(bitsPerPixel)
-    let rowBytes = (rowBits + 7) / 8
-    return (rowBytes + 1) & ~1
+    let rowBytes = (Int(width) * Int(bitsPerPixel) + 7) / 8
+    return ((rowBytes + 1) & ~1) * Int(height)
 }

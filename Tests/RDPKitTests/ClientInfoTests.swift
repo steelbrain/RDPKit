@@ -50,7 +50,7 @@ import Testing
     #expect(pduData.range(of: utf16LENullTerminated("rdp-user")) != nil)
     #expect(pduData.range(of: utf16LENullTerminated("secret")) != nil)
     #expect(pduData.range(of: utf16LENullTerminated("0.0.0.0")) != nil)
-    #expect(pduData.range(of: utf16LENullTerminated("KRDPSwift")) != nil)
+    #expect(pduData.range(of: utf16LENullTerminated("RDPKit")) != nil)
 }
 
 @Test func clientInfoTPKTUsesUserChannelAsInitiatorAndIOChannelAsTarget() throws {
@@ -76,13 +76,47 @@ import Testing
     #expect(flags == 0x000A_4153)
 }
 
+@Test func clientInfoSendsRedirectionPasswordCookieVerbatim() throws {
+    let credentials = RDPCredentials(username: "rdp-user", domain: "LAB", password: "secret")
+    let cookie = Data([0x01, 0x00, 0x00, 0x00, 0xD8, 0x00, 0xFF])
+    let pduData = try RDPClientInfoPDU(credentials: credentials, passwordCookie: cookie).encodedPDUData()
+    let passwordOffset = 22 + 8 + 18
+
+    #expect(pduData.littleEndianUInt16(at: 16) == UInt16(cookie.count))
+    #expect(Data(pduData[passwordOffset ..< passwordOffset + cookie.count + 2]) == cookie + Data([0, 0]))
+    #expect(pduData.range(of: utf16LENullTerminated("secret")) == nil)
+
+    let cookieOnly = try RDPClientInfoPDU(credentials: nil, passwordCookie: cookie).encodedPDUData()
+    #expect(cookieOnly.littleEndianUInt16(at: 8) & 0x0008 != 0) // INFO_AUTOLOGON
+}
+
+@Test func clientInfoAcceptsPKEncryptedRedirectionCookieFor4096BitKey() throws {
+    let cookie = Data(repeating: 0xA5, count: 512)
+    let pduData = try RDPClientInfoPDU(credentials: nil, passwordCookie: cookie).encodedPDUData()
+
+    #expect(pduData.littleEndianUInt16(at: 16) == 512)
+    #expect(pduData.range(of: cookie + Data([0, 0])) != nil)
+}
+
+/// A redirection PDU fits one 16 KB server PDU, so its cookie can leave no
+/// room for the rest of the Client Info: that throws instead of trapping.
+@Test func clientInfoRejectsRedirectionCookieTooLargeForOneMCSPDU() throws {
+    let fits = RDPClientInfoPDU(credentials: nil, passwordCookie: Data(repeating: 0xA5, count: 15000))
+    #expect(try fits.encodedTPKT(userChannelID: 1007, ioChannelID: 1003).count > 15000)
+
+    let tooLarge = RDPClientInfoPDU(credentials: nil, passwordCookie: Data(repeating: 0xA5, count: 16200))
+    #expect(throws: MCSUserDataTooLongError.self) {
+        try tooLarge.encodedTPKT(userChannelID: 1007, ioChannelID: 1003)
+    }
+}
+
 @Test func clientInfoUsesBasicSecurityHeaderForEnhancedSecurity() throws {
     let pduData = try RDPClientInfoPDU(credentials: nil).encodedPDUData()
-    let securityFlags = littleEndianUInt16(in: pduData, at: 0)
+    let securityFlags = pduData.littleEndianUInt16(at: 0)
 
     #expect(securityFlags & 0x0040 != 0)
     #expect(securityFlags & 0x0008 == 0)
-    #expect(littleEndianUInt16(in: pduData, at: 2) == 0)
+    #expect(pduData.littleEndianUInt16(at: 2) == 0)
 }
 
 @Test func clientInfoDoesNotAdvertiseBulkCompressionWithoutDecoderSupport() throws {
@@ -127,7 +161,7 @@ import Testing
     ).encodedPDUData()
     let extendedInfoOffset = try clientInfoExtendedInfoOffset(in: pduData)
 
-    #expect(littleEndianUInt16(in: pduData, at: extendedInfoOffset) == 0x0017)
+    #expect(pduData.littleEndianUInt16(at: extendedInfoOffset) == 0x0017)
     #expect(pduData.range(of: utf16LENullTerminated("2001:db8::7")) != nil)
 }
 
@@ -138,9 +172,9 @@ import Testing
     // MS-RDPBCGR 2.2.1.11.1.1.1 Extended Info: clientTimeZone (172) +
     // clientSessionId (4) + performanceFlags (4) + cbAutoReconnectCookie (2).
     #expect(Data(pduData[tailOffset ..< tailOffset + 172]) == Data(repeating: 0, count: 172))
-    #expect(littleEndianUInt32(in: pduData, at: tailOffset + 172) == 0)
-    #expect(littleEndianUInt32(in: pduData, at: tailOffset + 176) == 0)
-    #expect(littleEndianUInt16(in: pduData, at: tailOffset + 180) == 0)
+    #expect(pduData.littleEndianUInt32(at: tailOffset + 172) == 0)
+    #expect(pduData.littleEndianUInt32(at: tailOffset + 176) == 0)
+    #expect(pduData.littleEndianUInt16(at: tailOffset + 180) == 0)
     #expect(pduData.count == tailOffset + 182)
 }
 
@@ -152,8 +186,8 @@ import Testing
     ).encodedPDUData()
     let extendedInfoOffset = try clientInfoExtendedInfoOffset(in: pduData)
 
-    #expect(littleEndianUInt16(in: pduData, at: extendedInfoOffset) == 0x0017)
-    #expect(littleEndianUInt16(in: pduData, at: extendedInfoOffset + 2) == 80)
+    #expect(pduData.littleEndianUInt16(at: extendedInfoOffset) == 0x0017)
+    #expect(pduData.littleEndianUInt16(at: extendedInfoOffset + 2) == 80)
     #expect(pduData.range(of: utf16LENullTerminated(address)) != nil)
 }
 
@@ -210,38 +244,18 @@ import Testing
     }
 }
 
-private func utf16LENullTerminated(_ value: String) -> Data {
-    var data = Data()
-    for codeUnit in value.utf16 {
-        data.appendLittleEndianUInt16(codeUnit)
-    }
-    data.appendLittleEndianUInt16(0)
-    return data
-}
-
 private func clientInfoExtendedInfoOffset(in pduData: Data) throws -> Int {
     var offset = 22
     for lengthOffset in stride(from: 12, through: 20, by: 2) {
-        offset += Int(littleEndianUInt16(in: pduData, at: lengthOffset)) + 2
+        offset += Int(pduData.littleEndianUInt16(at: lengthOffset)) + 2
     }
     return offset
 }
 
 private func clientInfoExtendedTailOffset(in pduData: Data) throws -> Int {
     let extendedInfoOffset = try clientInfoExtendedInfoOffset(in: pduData)
-    let clientAddressLength = Int(littleEndianUInt16(in: pduData, at: extendedInfoOffset + 2))
+    let clientAddressLength = Int(pduData.littleEndianUInt16(at: extendedInfoOffset + 2))
     let clientDirectoryLengthOffset = extendedInfoOffset + 4 + clientAddressLength
-    let clientDirectoryLength = Int(littleEndianUInt16(in: pduData, at: clientDirectoryLengthOffset))
+    let clientDirectoryLength = Int(pduData.littleEndianUInt16(at: clientDirectoryLengthOffset))
     return clientDirectoryLengthOffset + 2 + clientDirectoryLength
-}
-
-private func littleEndianUInt16(in data: Data, at offset: Int) -> UInt16 {
-    UInt16(data[offset]) | UInt16(data[offset + 1]) << 8
-}
-
-private func littleEndianUInt32(in data: Data, at offset: Int) -> UInt32 {
-    UInt32(data[offset])
-        | UInt32(data[offset + 1]) << 8
-        | UInt32(data[offset + 2]) << 16
-        | UInt32(data[offset + 3]) << 24
 }

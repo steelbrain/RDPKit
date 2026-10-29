@@ -1,9 +1,10 @@
+import Foundation
 @testable import RDPClient
 import RDPKit
 import Testing
 
 @Test func successfulRemoteSessionEndUsesCleanDisconnectMessage() {
-    let report = RDPPreflightReport(
+    let report = RDPConnectionReport(
         status: "success",
         stage: "rdp-graphics-dynamic-channel",
         target: "127.0.0.1:3389",
@@ -21,7 +22,7 @@ import Testing
 }
 
 @Test func remoteSessionEndBeforeGraphicsChannelDescribesMissingRDPGFX() {
-    let report = RDPPreflightReport(
+    let report = RDPConnectionReport(
         status: "success",
         stage: "rdp-graphics-dynamic-channel",
         target: "127.0.0.1:3389",
@@ -39,7 +40,7 @@ import Testing
 }
 
 @Test func remoteSessionEndBeforeGraphicsChannelIncludesTerminationReason() {
-    let report = RDPPreflightReport(
+    let report = RDPConnectionReport(
         status: "success",
         stage: "rdp-graphics-dynamic-channel",
         target: "127.0.0.1:3389",
@@ -59,7 +60,7 @@ import Testing
 }
 
 @Test func remoteSessionEndBeforeFrameDescribesMissingGraphicsFrame() {
-    let report = RDPPreflightReport(
+    let report = RDPConnectionReport(
         status: "success",
         stage: "rdp-graphics-dynamic-channel",
         target: "127.0.0.1:3389",
@@ -79,7 +80,7 @@ import Testing
 }
 
 @Test func remoteSessionEndBeforeFrameIncludesTerminationReason() {
-    let report = RDPPreflightReport(
+    let report = RDPConnectionReport(
         status: "success",
         stage: "rdp-graphics-dynamic-channel",
         target: "127.0.0.1:3389",
@@ -98,4 +99,46 @@ import Testing
     #expect(reason.kind == RDPSessionEndReason.Kind.ended)
     #expect(reason.statusText == "Disconnected")
     #expect(reason.message == "Remote session ended before producing a graphics frame (ERRINFO_LOGOFF_BY_USER).")
+}
+
+@Test func legacyConnectionProfileDecodesWithDefaultOptions() throws {
+    let json = """
+    {"id":"6F9619FF-8B86-D011-B42D-00C04FC964FF","host":"server","port":3389,"username":"user",
+    "domain":"","desktopWidth":1920,"desktopHeight":1080,"hideCertificateWarnings":false,
+    "timeoutSeconds":10,"rememberPassword":true,"updatedAt":0}
+    """
+    let profile = try JSONDecoder().decode(ConnectionProfile.self, from: Data(json.utf8))
+
+    #expect(profile.graphicsCapabilityProfile == .automatic)
+    #expect(profile.clipboardSharingEnabled)
+    #expect(profile.audioPlaybackEnabled == false)
+    #expect(try JSONDecoder().decode(ConnectionProfile.self, from: JSONEncoder().encode(profile)) == profile)
+}
+
+@Test func framePacingStateNormalizesDisplayLinkTiming() {
+    let state = RDPFramePacingState(
+        screenName: "Studio Display",
+        backingScaleFactor: 2,
+        maximumFramesPerSecond: nil,
+        minimumRefreshInterval: 1.0 / 120.0,
+        maximumRefreshInterval: 1.0 / 48.0,
+        displayUpdateGranularity: 0,
+        displayLinkDuration: 0.0167,
+        hasDisplayLink: true,
+        isDisplayLinkPaused: false
+    )
+
+    #expect(state.displayLinkDuration == 1.0 / 60.0)
+    #expect(state.displayLinkFramesPerSecond == 60)
+    #expect(state.maximumRefreshRate == 120)
+    #expect(state.clockState == "window display link")
+}
+
+@Test func framePacingStateMarksUpdatedDisplayLinkActive() {
+    let state = RDPFramePacingState().updatingDisplayLinkDuration(1.0 / 120.0)
+
+    #expect(state.hasDisplayLink)
+    #expect(state.isDisplayLinkPaused == false)
+    #expect(state.displayLinkFramesPerSecond == 120)
+    #expect(state.clockState == "window display link")
 }

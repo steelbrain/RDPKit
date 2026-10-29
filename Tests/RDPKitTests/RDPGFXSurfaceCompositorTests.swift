@@ -229,7 +229,9 @@ import Testing
     #expect(Array(xrgbData) == [0x01, 0x02, 0x03, 0xFF])
 }
 
-@Test func compositorExcludesVideoSurfacesWithoutDroppingOtherDirtySurfaces() throws {
+/// Windows mixed mode draws text beside video on one surface. The snapshot keeps only what
+/// other codecs drew last, so the decoded video is not painted over from this compositor.
+@Test func compositorLeavesAreasVideoWroteLastOutOfItsSnapshots() throws {
     let compositor = RDPGFXSurfaceCompositor()
     let clearCodec = RDPClearCodecDecoder()
     for surfaceID: UInt16 in [1, 2] {
@@ -251,10 +253,386 @@ import Testing
         )
     }
 
-    let frames = compositor.makeFrames(frameID: 29, excludingSurfaceIDs: [1])
+    compositor.noteVideo(RDPGraphicsFrameSnapshot(
+        frameID: 29,
+        surfaceID: 1,
+        codecID: RDPGFXCodecID.avc420,
+        codecName: "avc420",
+        pixelFormat: RDPGFXPixelFormat.xrgb8888,
+        destinationRect: RDPFrameRect(left: 0, top: 0, right: 2, bottom: 2),
+        regionRects: [RDPFrameRect(left: 0, top: 0, right: 1, bottom: 2)],
+        encodedVideoData: Data([0x00, 0x00, 0x01, 0x65])
+    ))
+    let frames = compositor.makeFrames(frameID: 29)
 
-    #expect(frames.map(\.surfaceID) == [2])
+    #expect(frames.map(\.surfaceID) == [1, 2])
+    #expect(frames.map(\.regionRects) == [
+        [RDPFrameRect(left: 1, top: 0, right: 2, bottom: 2)],
+        [RDPFrameRect(left: 0, top: 0, right: 2, bottom: 2)],
+    ])
     #expect(compositor.makeFrames(frameID: 30).isEmpty)
+}
+
+/// Video regions are relative to the update's destination; the area around them stays dirty.
+@Test func compositorKeepsTextAroundVideoDrawnInsideIt() throws {
+    let compositor = RDPGFXSurfaceCompositor()
+    let clearCodec = RDPClearCodecDecoder()
+    try compositor.process(try createSurfaceMessage(surfaceID: 1, width: 4, height: 4), clearCodec: clearCodec)
+    try compositor.process(try mapSurfaceToOutputMessage(surfaceID: 1, x: 0, y: 0), clearCodec: clearCodec)
+    try compositor.process(
+        try solidFillMessage(
+            surfaceID: 1,
+            color: [0x01, 0x02, 0x03, 0xFF],
+            rects: [RDPGFXRect16(left: 0, top: 0, right: 4, bottom: 4)]
+        ),
+        clearCodec: clearCodec
+    )
+
+    compositor.noteVideo(RDPGraphicsFrameSnapshot(
+        frameID: 1,
+        surfaceID: 1,
+        codecID: RDPGFXCodecID.avc420,
+        codecName: "avc420",
+        pixelFormat: RDPGFXPixelFormat.xrgb8888,
+        destinationRect: RDPFrameRect(left: 1, top: 1, right: 3, bottom: 3),
+        regionRects: [RDPFrameRect(left: 0, top: 0, right: 2, bottom: 2)],
+        encodedVideoData: Data([0x00, 0x00, 0x01, 0x65])
+    ))
+
+    #expect(compositor.makeFrames(frameID: 1).map(\.regionRects) == [[
+        RDPFrameRect(left: 0, top: 0, right: 4, bottom: 1),
+        RDPFrameRect(left: 0, top: 3, right: 4, bottom: 4),
+        RDPFrameRect(left: 0, top: 1, right: 1, bottom: 3),
+        RDPFrameRect(left: 3, top: 1, right: 4, bottom: 3),
+    ]])
+}
+
+/// gnome-remote-desktop encodes AVC420 into unmapped surface 1 and copies it
+/// to mapped surface 0 every frame (gnome fixture, sequence 143-144). The copy
+/// brings pixels the compositor never decoded; neither this frame nor a later
+/// one without video may paint them as a black bitmap over the video.
+@Test func compositorDoesNotPaintCopiedVideoAsBlackInALaterFrame() throws {
+    let compositor = RDPGFXSurfaceCompositor(outputWidth: 64, outputHeight: 32)
+    let clearCodec = RDPClearCodecDecoder()
+    let fullSurface = RDPGFXRect16(left: 0, top: 0, right: 64, bottom: 32)
+    try compositor.process(try createSurfaceMessage(surfaceID: 0, width: 64, height: 32), clearCodec: clearCodec)
+    try compositor.process(try createSurfaceMessage(surfaceID: 1, width: 64, height: 32), clearCodec: clearCodec)
+    try compositor.process(try mapSurfaceToOutputMessage(surfaceID: 0, x: 0, y: 0), clearCodec: clearCodec)
+    let video = RDPGraphicsFrameSnapshot(
+        frameID: 1,
+        surfaceID: 1,
+        codecID: RDPGFXCodecID.avc420,
+        codecName: "avc420",
+        pixelFormat: RDPGFXPixelFormat.xrgb8888,
+        destinationRect: RDPFrameRect(fullSurface),
+        regionRects: [RDPFrameRect(fullSurface)],
+        encodedVideoData: Data([0x00, 0x00, 0x01, 0x65])
+    )
+    compositor.noteVideo(video)
+    let copy = try surfaceToSurfaceMessage(
+        sourceSurfaceID: 1,
+        destinationSurfaceID: 0,
+        sourceRect: fullSurface,
+        destinationPoints: [RDPGFXPoint16(x: 0, y: 0)]
+    )
+
+    // The decoder never got surface 1, so the client retargets its video instead.
+    #expect(try compositor.process(copy, clearCodec: clearCodec) == nil)
+    #expect(compositor.makeFrames(frameID: 1).isEmpty)
+    // The next frame has no updates.
+    #expect(compositor.makeFrames(frameID: 2).isEmpty)
+}
+
+/// A scroll of a surface carrying video copies pixels only the decoder holds, so the
+/// decoder makes the copy; the session paints only what it drew there itself.
+@Test func compositorHandsCopiesOfDecodedVideoToTheDecoder() throws {
+    let compositor = RDPGFXSurfaceCompositor(outputWidth: 64, outputHeight: 32)
+    let clearCodec = RDPClearCodecDecoder()
+    try compositor.process(try createSurfaceMessage(surfaceID: 0, width: 64, height: 32), clearCodec: clearCodec)
+    try compositor.process(try createSurfaceMessage(surfaceID: 2, width: 64, height: 32), clearCodec: clearCodec)
+    try compositor.process(try mapSurfaceToOutputMessage(surfaceID: 0, x: 0, y: 0), clearCodec: clearCodec)
+    compositor.noteVideo(fullSurfaceVideo(surfaceID: 0, width: 64, height: 32))
+    #expect(compositor.makeFrames(frameID: 1).isEmpty)
+
+    // Text over the video, then its top half scrolled down.
+    try compositor.process(
+        try solidFillMessage(surfaceID: 0, color: [0x01, 0x02, 0x03, 0xFF], rects: [RDPGFXRect16(left: 0, top: 0, right: 8, bottom: 8)]),
+        clearCodec: clearCodec
+    )
+    let scroll = try compositor.process(
+        try surfaceToSurfaceMessage(
+            sourceSurfaceID: 0,
+            destinationSurfaceID: 0,
+            sourceRect: RDPGFXRect16(left: 0, top: 0, right: 64, bottom: 16),
+            destinationPoints: [RDPGFXPoint16(x: 0, y: 16)]
+        ),
+        clearCodec: clearCodec
+    )
+    #expect(scroll?.surfaceCopy == RDPGraphicsSurfaceCopy(source: .surface(0), destination: .surface(0), blocks: [.init(
+        source: RDPFrameRect(left: 0, top: 0, right: 64, bottom: 16),
+        destination: RDPFrameRect(left: 0, top: 16, right: 64, bottom: 32)
+    )]))
+    // The decoder's copy lacks the text, which the session paints at both places.
+    #expect(compositor.makeFrames(frameID: 2).map(\.regionRects) == [[
+        RDPFrameRect(left: 0, top: 0, right: 8, bottom: 8),
+        RDPFrameRect(left: 0, top: 16, right: 8, bottom: 24),
+    ]])
+
+    // A copy of pixels only the session holds is the session's to paint.
+    try compositor.process(
+        try solidFillMessage(surfaceID: 2, color: [0x04, 0x05, 0x06, 0xFF], rects: [RDPGFXRect16(left: 0, top: 0, right: 64, bottom: 32)]),
+        clearCodec: clearCodec
+    )
+    let sessionCopy = try compositor.process(
+        try surfaceToSurfaceMessage(
+            sourceSurfaceID: 2,
+            destinationSurfaceID: 0,
+            sourceRect: RDPGFXRect16(left: 0, top: 0, right: 16, bottom: 16),
+            destinationPoints: [RDPGFXPoint16(x: 48, y: 0)]
+        ),
+        clearCodec: clearCodec
+    )
+    #expect(sessionCopy == nil)
+    #expect(compositor.makeFrames(frameID: 3).map(\.regionRects) == [[RDPFrameRect(left: 48, top: 0, right: 64, bottom: 16)]])
+
+    // The decoder holds what its copies put into an unmapped surface, and copies it on.
+    #expect(!compositor.isOnDecoder(surfaceID: 2))
+    try compositor.process(
+        try surfaceToSurfaceMessage(
+            sourceSurfaceID: 0,
+            destinationSurfaceID: 2,
+            sourceRect: RDPGFXRect16(left: 16, top: 16, right: 32, bottom: 32),
+            destinationPoints: [RDPGFXPoint16(x: 0, y: 0)]
+        ),
+        clearCodec: clearCodec
+    )
+    #expect(compositor.isOnDecoder(surfaceID: 2))
+    let copyBack = try compositor.process(
+        try surfaceToSurfaceMessage(
+            sourceSurfaceID: 2,
+            destinationSurfaceID: 0,
+            sourceRect: RDPGFXRect16(left: 0, top: 0, right: 16, bottom: 16),
+            destinationPoints: [RDPGFXPoint16(x: 48, y: 16)]
+        ),
+        clearCodec: clearCodec
+    )
+    #expect(copyBack?.surfaceCopy?.source == .surface(2))
+    #expect(compositor.makeFrames(frameID: 4).isEmpty)
+}
+
+/// Cache entries of decoded video are the decoder's too. It drops them when the server
+/// evicts them, or refills their slots with pixels only the session holds.
+@Test func compositorHandsCacheCopiesOfDecodedVideoToTheDecoder() throws {
+    let compositor = RDPGFXSurfaceCompositor(outputWidth: 64, outputHeight: 32)
+    let clearCodec = RDPClearCodecDecoder()
+    try compositor.process(try createSurfaceMessage(surfaceID: 0, width: 64, height: 32), clearCodec: clearCodec)
+    try compositor.process(try mapSurfaceToOutputMessage(surfaceID: 0, x: 0, y: 0), clearCodec: clearCodec)
+    compositor.noteVideo(fullSurfaceVideo(surfaceID: 0, width: 64, height: 32))
+
+    let store = try compositor.process(
+        try surfaceToCacheMessage(surfaceID: 0, cacheKey: 1, cacheSlot: 3, sourceRect: RDPGFXRect16(left: 0, top: 0, right: 16, bottom: 16)),
+        clearCodec: clearCodec
+    )
+    #expect(store?.surfaceCopy == RDPGraphicsSurfaceCopy(source: .surface(0), destination: .cacheSlot(3), blocks: [.init(
+        source: RDPFrameRect(left: 0, top: 0, right: 16, bottom: 16),
+        destination: RDPFrameRect(left: 0, top: 0, right: 16, bottom: 16)
+    )]))
+    let restore = try compositor.process(
+        try cacheToSurfaceMessage(cacheSlot: 3, surfaceID: 0, points: [RDPGFXPoint16(x: 48, y: 16)]),
+        clearCodec: clearCodec
+    )
+    #expect(restore?.surfaceCopy == RDPGraphicsSurfaceCopy(source: .cacheSlot(3), destination: .surface(0), blocks: [.init(
+        source: RDPFrameRect(left: 0, top: 0, right: 16, bottom: 16),
+        destination: RDPFrameRect(left: 48, top: 16, right: 64, bottom: 32)
+    )]))
+    #expect(compositor.makeFrames(frameID: 1).isEmpty)
+    #expect(compositor.decoderCacheSlots == [3])
+
+    try compositor.process(try evictCacheEntryMessage(cacheSlot: 3), clearCodec: clearCodec)
+    try compositor.process(
+        try surfaceToCacheMessage(surfaceID: 0, cacheKey: 2, cacheSlot: 4, sourceRect: RDPGFXRect16(left: 16, top: 0, right: 32, bottom: 16)),
+        clearCodec: clearCodec
+    )
+    try compositor.process(
+        try solidFillMessage(surfaceID: 0, color: [0x01, 0x02, 0x03, 0xFF], rects: [RDPGFXRect16(left: 0, top: 0, right: 64, bottom: 32)]),
+        clearCodec: clearCodec
+    )
+    let refill = try compositor.process(
+        try surfaceToCacheMessage(surfaceID: 0, cacheKey: 3, cacheSlot: 4, sourceRect: RDPGFXRect16(left: 16, top: 0, right: 32, bottom: 16)),
+        clearCodec: clearCodec
+    )
+    #expect(refill == nil)
+    #expect(compositor.takeEvictedDecoderCacheSlots() == [3, 4])
+    #expect(compositor.takeEvictedDecoderCacheSlots().isEmpty)
+    #expect(compositor.decoderCacheSlots.isEmpty)
+}
+
+/// ClearCodec layers draw over the destination: over video, only what they drew is the
+/// session's to paint.
+@Test func compositorKeepsVideoThatClearCodecLayersDoNotCover() throws {
+    let compositor = RDPGFXSurfaceCompositor(outputWidth: 8, outputHeight: 8)
+    let clearCodec = RDPClearCodecDecoder()
+    try compositor.process(try createSurfaceMessage(surfaceID: 0, width: 8, height: 8), clearCodec: clearCodec)
+    try compositor.process(try mapSurfaceToOutputMessage(surfaceID: 0, x: 0, y: 0), clearCodec: clearCodec)
+    compositor.noteVideo(fullSurfaceVideo(surfaceID: 0, width: 8, height: 8))
+
+    try compositor.process(
+        try wireToSurface1Message(
+            surfaceID: 0,
+            codecID: RDPGFXCodecID.clearCodec,
+            pixelFormat: 0x20,
+            destinationRect: RDPGFXRect16(left: 2, top: 2, right: 6, bottom: 6),
+            bitmapData: clearCodecRawRegionStream(width: 2, height: 1, pixels: [0x10, 0x20, 0x30, 0x40, 0x50, 0x60])
+        ),
+        clearCodec: clearCodec
+    )
+
+    #expect(compositor.makeFrames(frameID: 1).map(\.regionRects) == [[RDPFrameRect(left: 2, top: 2, right: 4, bottom: 3)]])
+}
+
+/// A ClearCodec glyph stored over video keeps video pixels only the decoder holds, so the
+/// decoder stores the glyph too, and draws it where the server hits it.
+@Test func compositorHandsClearCodecGlyphsOverVideoToTheDecoder() throws {
+    let compositor = RDPGFXSurfaceCompositor(outputWidth: 8, outputHeight: 8)
+    let clearCodec = RDPClearCodecDecoder()
+    try compositor.process(try createSurfaceMessage(surfaceID: 0, width: 8, height: 8), clearCodec: clearCodec)
+    try compositor.process(try mapSurfaceToOutputMessage(surfaceID: 0, x: 0, y: 0), clearCodec: clearCodec)
+    compositor.noteVideo(fullSurfaceVideo(surfaceID: 0, width: 8, height: 8))
+    let glyphRect = RDPFrameRect(left: 0, top: 0, right: 2, bottom: 2)
+
+    // One covered pixel; the glyph's other three are video.
+    var store = clearCodecRawRegionStream(width: 1, height: 1, pixels: [0x10, 0x20, 0x30])
+    store[0] = 0x01
+    store.insert(contentsOf: [0x05, 0x00], at: 2)
+    let stored = try compositor.process(
+        try wireToSurface1Message(
+            surfaceID: 0,
+            codecID: RDPGFXCodecID.clearCodec,
+            pixelFormat: 0x20,
+            destinationRect: RDPGFXRect16(left: 0, top: 0, right: 2, bottom: 2),
+            bitmapData: store
+        ),
+        clearCodec: clearCodec
+    )
+    #expect(stored?.surfaceCopy == RDPGraphicsSurfaceCopy(source: .surface(0), destination: .clearCodecGlyph(5), blocks: [.init(
+        source: glyphRect,
+        destination: glyphRect
+    )]))
+    #expect(compositor.makeFrames(frameID: 1).map(\.regionRects) == [[RDPFrameRect(left: 0, top: 0, right: 1, bottom: 1)]])
+
+    let hit = try compositor.process(
+        try wireToSurface1Message(
+            surfaceID: 0,
+            codecID: RDPGFXCodecID.clearCodec,
+            pixelFormat: 0x20,
+            destinationRect: RDPGFXRect16(left: 4, top: 4, right: 6, bottom: 6),
+            bitmapData: Data([0x03, 0x01, 0x05, 0x00])
+        ),
+        clearCodec: clearCodec
+    )
+    #expect(hit?.surfaceCopy == RDPGraphicsSurfaceCopy(source: .clearCodecGlyph(5), destination: .surface(0), blocks: [.init(
+        source: glyphRect,
+        destination: RDPFrameRect(left: 4, top: 4, right: 6, bottom: 6)
+    )]))
+    // The decoder's glyph lacks the covered pixel, which the session paints.
+    #expect(compositor.makeFrames(frameID: 2).map(\.regionRects) == [[RDPFrameRect(left: 4, top: 4, right: 5, bottom: 5)]])
+}
+
+/// Alpha over video, as Windows sends for RemoteApp windows: only the decoder has the
+/// colour of what video wrote last, so it takes the alpha there itself.
+@Test func compositorHandsAlphaOverVideoToTheDecoder() throws {
+    let compositor = RDPGFXSurfaceCompositor(outputWidth: 4, outputHeight: 4)
+    let clearCodec = RDPClearCodecDecoder()
+    try compositor.process(try createSurfaceMessage(surfaceID: 0, width: 4, height: 4), clearCodec: clearCodec)
+    try compositor.process(try mapSurfaceToOutputMessage(surfaceID: 0, x: 0, y: 0), clearCodec: clearCodec)
+    var video = fullSurfaceVideo(surfaceID: 0, width: 4, height: 4)
+    video.regionRects = [RDPFrameRect(left: 0, top: 1, right: 4, bottom: 4)]
+    compositor.noteVideo(video)
+
+    let alpha = try #require(try compositor.process(
+        try wireToSurface1Message(
+            surfaceID: 0,
+            codecID: RDPGFXCodecID.alpha,
+            pixelFormat: RDPGFXPixelFormat.argb8888,
+            destinationRect: RDPGFXRect16(left: 0, top: 0, right: 4, bottom: 4),
+            bitmapData: alphaBitmapStream(compressed: 0, payload: Data(repeating: 0x40, count: 16))
+        ),
+        clearCodec: clearCodec
+    ))
+
+    #expect(alpha.contentKind == .alpha)
+    #expect(alpha.destinationRect == RDPFrameRect(left: 0, top: 0, right: 4, bottom: 4))
+    #expect(alpha.regionRects == [RDPFrameRect(left: 0, top: 1, right: 4, bottom: 4)])
+    #expect(pixel(atX: 2, y: 3, data: try #require(alpha.decodedBitmapData), bytesPerRow: 16)[3] == 0x40)
+    // The row video never wrote is the session's, colour and alpha.
+    #expect(compositor.makeFrames(frameID: 1).map(\.regionRects) == [[RDPFrameRect(left: 0, top: 0, right: 4, bottom: 1)]])
+}
+
+@Test func compositorCollapsesHeldBackDirtyRectsIntoBoundingBox() throws {
+    let compositor = RDPGFXSurfaceCompositor()
+    let clearCodec = RDPClearCodecDecoder()
+    try compositor.process(try createSurfaceMessage(surfaceID: 1, width: 1_026, height: 2), clearCodec: clearCodec)
+    try compositor.process(
+        try solidFillMessage(
+            surfaceID: 1,
+            color: [0x01, 0x02, 0x03, 0xFF],
+            rects: (0 ..< 1_024).map { RDPGFXRect16(left: $0, top: 0, right: $0 + 1, bottom: 1) }
+                + [RDPGFXRect16(left: 1_025, top: 1, right: 1_026, bottom: 2)]
+        ),
+        clearCodec: clearCodec
+    )
+    try compositor.process(try mapSurfaceToOutputMessage(surfaceID: 1, x: 0, y: 0), clearCodec: clearCodec)
+
+    let frame = try #require(compositor.makeFrame(frameID: 1))
+
+    #expect(frame.regionRects == [RDPFrameRect(left: 0, top: 0, right: 1_026, bottom: 2)])
+}
+
+/// An area drawn twice, or inside one already drawn, is listed once.
+@Test func compositorListsEachChangedAreaOnce() throws {
+    let compositor = RDPGFXSurfaceCompositor(outputWidth: 4, outputHeight: 4)
+    let clearCodec = RDPClearCodecDecoder()
+    try compositor.process(try createSurfaceMessage(surfaceID: 1, width: 4, height: 4), clearCodec: clearCodec)
+    try compositor.process(try mapSurfaceToOutputMessage(surfaceID: 1, x: 0, y: 0), clearCodec: clearCodec)
+    let row = RDPGFXRect16(left: 0, top: 0, right: 4, bottom: 1)
+    let pixel = RDPGFXRect16(left: 1, top: 0, right: 2, bottom: 1)
+
+    try compositor.process(
+        try solidFillMessage(surfaceID: 1, color: [0x01, 0x02, 0x03, 0xFF], rects: [row, row, pixel]),
+        clearCodec: clearCodec
+    )
+    #expect(compositor.makeFrames(frameID: 1).map(\.regionRects) == [[RDPFrameRect(row)]])
+    try compositor.process(
+        try solidFillMessage(surfaceID: 1, color: [0x01, 0x02, 0x03, 0xFF], rects: [pixel, row]),
+        clearCodec: clearCodec
+    )
+    #expect(compositor.makeFrames(frameID: 2).map(\.regionRects) == [[RDPFrameRect(row)]])
+}
+
+/// Areas drawn over each other in part list their shared pixels once, cutting whichever
+/// side leaves fewer rectangles.
+@Test func compositorListsPartlyOverlappingAreasOnce() throws {
+    let compositor = RDPGFXSurfaceCompositor(outputWidth: 8, outputHeight: 4)
+    let clearCodec = RDPClearCodecDecoder()
+    try compositor.process(try createSurfaceMessage(surfaceID: 1, width: 8, height: 4), clearCodec: clearCodec)
+    try compositor.process(try mapSurfaceToOutputMessage(surfaceID: 1, x: 0, y: 0), clearCodec: clearCodec)
+    func fill(_ rects: [RDPGFXRect16]) throws {
+        try compositor.process(try solidFillMessage(surfaceID: 1, color: [0x01, 0x02, 0x03, 0xFF], rects: rects), clearCodec: clearCodec)
+    }
+
+    // Either cut leaves three rectangles; the earlier one loses the shared pixels.
+    try fill([RDPGFXRect16(left: 0, top: 0, right: 3, bottom: 2), RDPGFXRect16(left: 1, top: 1, right: 4, bottom: 4)])
+    #expect(compositor.makeFrames(frameID: 1).map(\.regionRects) == [[
+        RDPFrameRect(left: 0, top: 0, right: 3, bottom: 1),
+        RDPFrameRect(left: 0, top: 1, right: 1, bottom: 2),
+        RDPFrameRect(left: 1, top: 1, right: 4, bottom: 4),
+    ]])
+    // A glyph over the edge of a fill keeps only what sticks out, not three pieces of the fill.
+    try fill([RDPGFXRect16(left: 0, top: 0, right: 4, bottom: 4), RDPGFXRect16(left: 3, top: 1, right: 6, bottom: 3)])
+    #expect(compositor.makeFrames(frameID: 2).map(\.regionRects) == [[
+        RDPFrameRect(left: 0, top: 0, right: 4, bottom: 4),
+        RDPFrameRect(left: 4, top: 1, right: 6, bottom: 3),
+    ]])
 }
 
 @Test func compositorEvictsCachedSurfaceEntries() throws {
@@ -425,6 +803,88 @@ import Testing
     #expect(pixel(atX: 2, y: 1, data: bitmapData, bytesPerRow: 12) == [0x40, 0x50, 0x60, 0xFF])
 }
 
+@Test func compositorKeepsSurfacePixelsThatClearCodecLayersDoNotCover() throws {
+    let compositor = RDPGFXSurfaceCompositor()
+    let clearCodec = RDPClearCodecDecoder()
+
+    try compositor.process(try createSurfaceMessage(surfaceID: 3, width: 3, height: 1), clearCodec: clearCodec)
+    try compositor.process(try mapSurfaceToOutputMessage(surfaceID: 3, x: 0, y: 0), clearCodec: clearCodec)
+    try compositor.process(
+        try solidFillMessage(
+            surfaceID: 3,
+            color: [0x01, 0x02, 0x03, 0xFF],
+            rects: [RDPGFXRect16(left: 0, top: 0, right: 3, bottom: 1)]
+        ),
+        clearCodec: clearCodec
+    )
+    try compositor.process(
+        try wireToSurface1Message(
+            surfaceID: 3,
+            codecID: RDPGFXCodecID.clearCodec,
+            pixelFormat: 0x20,
+            destinationRect: RDPGFXRect16(left: 0, top: 0, right: 3, bottom: 1),
+            bitmapData: clearCodecRawRegionStream(width: 1, height: 1, pixels: [0x10, 0x20, 0x30])
+        ),
+        clearCodec: clearCodec
+    )
+
+    let bitmapData = try #require(compositor.makeFrame(frameID: 1)?.decodedBitmapData)
+
+    #expect(pixel(atX: 0, y: 0, data: bitmapData, bytesPerRow: 12) == [0x10, 0x20, 0x30, 0xFF])
+    #expect(pixel(atX: 1, y: 0, data: bitmapData, bytesPerRow: 12) == [0x01, 0x02, 0x03, 0xFF])
+    #expect(pixel(atX: 2, y: 0, data: bitmapData, bytesPerRow: 12) == [0x01, 0x02, 0x03, 0xFF])
+}
+
+@Test func compositorLeavesEmittedFramePixelsUnchanged() throws {
+    let compositor = RDPGFXSurfaceCompositor()
+    let clearCodec = RDPClearCodecDecoder()
+
+    try compositor.process(try createSurfaceMessage(surfaceID: 1, width: 1, height: 1), clearCodec: clearCodec)
+    try compositor.process(try mapSurfaceToOutputMessage(surfaceID: 1, x: 0, y: 0), clearCodec: clearCodec)
+    for color: UInt8 in [0x01, 0x02] {
+        try compositor.process(
+            try solidFillMessage(
+                surfaceID: 1,
+                color: [color, color, color, 0xFF],
+                rects: [RDPGFXRect16(left: 0, top: 0, right: 1, bottom: 1)]
+            ),
+            clearCodec: clearCodec
+        )
+    }
+    let first = try #require(compositor.makeFrame(frameID: 1)?.decodedBitmapData)
+    try compositor.process(
+        try solidFillMessage(
+            surfaceID: 1,
+            color: [0x03, 0x03, 0x03, 0xFF],
+            rects: [RDPGFXRect16(left: 0, top: 0, right: 1, bottom: 1)]
+        ),
+        clearCodec: clearCodec
+    )
+    let second = try #require(compositor.makeFrame(frameID: 2)?.decodedBitmapData)
+
+    #expect(first == Data([0x02, 0x02, 0x02, 0xFF]))
+    #expect(second == Data([0x03, 0x03, 0x03, 0xFF]))
+}
+
+@Test func compositorRejectsDestinationRectOutsideSurfaceBeforeDecoding() throws {
+    let compositor = RDPGFXSurfaceCompositor()
+    let clearCodec = RDPClearCodecDecoder()
+    try compositor.process(try createSurfaceMessage(surfaceID: 1, width: 4, height: 4), clearCodec: clearCodec)
+
+    #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
+        try compositor.process(
+            try wireToSurface1Message(
+                surfaceID: 1,
+                codecID: RDPGFXCodecID.planar,
+                pixelFormat: RDPGFXPixelFormat.xrgb8888,
+                destinationRect: RDPGFXRect16(left: 0, top: 0, right: 0xFFFF, bottom: 0xFFFF),
+                bitmapData: Data([0x30, 0x10])
+            ),
+            clearCodec: clearCodec
+        )
+    }
+}
+
 @Test func compositorAppliesScaledOutputOriginToSurfaceFrame() throws {
     let compositor = RDPGFXSurfaceCompositor()
     let clearCodec = RDPClearCodecDecoder()
@@ -454,9 +914,10 @@ import Testing
     #expect(frame.surfaceRect == RDPFrameRect(left: 40, top: 50, right: 43, bottom: 52))
     #expect(frame.mappedOutputRect == RDPFrameRect(left: 40, top: 50, right: 46, bottom: 54))
     #expect(compositor.mappedOutputRect(surfaceID: 19) == RDPFrameRect(left: 40, top: 50, right: 46, bottom: 54))
-    #expect(frame.destinationRect == RDPFrameRect(left: 40, top: 50, right: 46, bottom: 54))
-    #expect(frame.regionRects == [RDPFrameRect(left: 42, top: 50, right: 46, bottom: 54)])
-    #expect(frame.decodedBitmapBytesPerRow == 24)
+    // The snapshot is unscaled, like video; the decoder scales what it composes.
+    #expect(frame.destinationRect == RDPFrameRect(left: 40, top: 50, right: 43, bottom: 52))
+    #expect(frame.regionRects == [RDPFrameRect(left: 41, top: 50, right: 43, bottom: 52)])
+    #expect(frame.decodedBitmapBytesPerRow == 12)
 }
 
 @Test func compositorBlitsUncompressedBitmapIntoMappedSurface() throws {
@@ -915,27 +1376,43 @@ import Testing
     #expect(pixel(atX: 95, y: 95, data: bitmapData, bytesPerRow: 384) == [0x80, 0x80, 0x80, 0xFF])
 }
 
-@Test func compositorIgnoresCAPROGRESSIVETilesOutsideSurfaceBounds() throws {
+@Test func compositorRejectsSurfacesBeyondTheAllocationBudget() throws {
+    let compositor = RDPGFXSurfaceCompositor()
+    let clearCodec = RDPClearCodecDecoder()
+
+    #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
+        try compositor.process(
+            try createSurfaceMessage(surfaceID: 1, width: 65_535, height: 65_535),
+            clearCodec: clearCodec
+        )
+    }
+    try compositor.process(try createSurfaceMessage(surfaceID: 1, width: 1_920, height: 1_080), clearCodec: clearCodec)
+}
+
+// Like FreeRDP, a progressive tile outside the surface's tile grid rejects the PDU, so a
+// server cannot grow per-tile state for positions the surface does not have.
+@Test func compositorRejectsCAPROGRESSIVETilesOutsideSurfaceBounds() throws {
     let compositor = RDPGFXSurfaceCompositor()
     let clearCodec = RDPClearCodecDecoder()
 
     try compositor.process(try createSurfaceMessage(surfaceID: 32, width: 64, height: 64), clearCodec: clearCodec)
-    try compositor.process(
-        try wireToSurface2Message(
-            surfaceID: 32,
-            codecID: RDPGFXCodecID.caProgressive,
-            codecContextID: 0,
-            pixelFormat: 0x20,
-            bitmapData: caprogressiveRemoteFXGrayTileStream(
-                regionX: 64,
-                regionY: 0,
-                tileXIndex: 1,
-                tileYIndex: 0
-            )
-        ),
-        clearCodec: clearCodec
-    )
-
+    #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
+        try compositor.process(
+            try wireToSurface2Message(
+                surfaceID: 32,
+                codecID: RDPGFXCodecID.caProgressive,
+                codecContextID: 0,
+                pixelFormat: 0x20,
+                bitmapData: caprogressiveRemoteFXGrayTileStream(
+                    regionX: 64,
+                    regionY: 0,
+                    tileXIndex: 1,
+                    tileYIndex: 0
+                )
+            ),
+            clearCodec: clearCodec
+        )
+    }
     #expect(compositor.makeFrame(frameID: 18) == nil)
 }
 
@@ -1359,6 +1836,91 @@ import Testing
     }
 }
 
+/// An inverted region of a video update writes nothing: it must not wrap around the 16-bit
+/// coordinate space into an area that video did not write, where text drawn earlier is kept.
+@Test func compositorIgnoresAnInvertedVideoRegion() throws {
+    let compositor = RDPGFXSurfaceCompositor(outputWidth: 256, outputHeight: 64)
+    let clearCodec = RDPClearCodecDecoder()
+    try compositor.process(try createSurfaceMessage(surfaceID: 0, width: 256, height: 64), clearCodec: clearCodec)
+    try compositor.process(try mapSurfaceToOutputMessage(surfaceID: 0, x: 0, y: 0), clearCodec: clearCodec)
+    try compositor.process(
+        try solidFillMessage(surfaceID: 0, color: [0x01, 0x02, 0x03, 0xFF], rects: [RDPGFXRect16(left: 64, top: 0, right: 100, bottom: 64)]),
+        clearCodec: clearCodec
+    )
+    // Relative to the update, as it fits the update's size; 100 + 65500 wraps to 64.
+    compositor.noteVideo(RDPGraphicsFrameSnapshot(
+        frameID: 1,
+        surfaceID: 0,
+        codecID: RDPGFXCodecID.avc420,
+        codecName: "avc420",
+        pixelFormat: RDPGFXPixelFormat.xrgb8888,
+        destinationRect: RDPFrameRect(left: 100, top: 0, right: 200, bottom: 64),
+        regionRects: [RDPFrameRect(left: 65500, top: 0, right: 10, bottom: 64)],
+        encodedVideoData: Data([0x00, 0x00, 0x01, 0x65])
+    ))
+
+    #expect(compositor.makeFrames(frameID: 1).map(\.regionRects) == [[RDPFrameRect(left: 64, top: 0, right: 100, bottom: 64)]])
+}
+
+/// The decoder's copy to several points of a surface spans all of them.
+@Test func compositorNamesTheAreaADecoderCopyWrites() throws {
+    let compositor = RDPGFXSurfaceCompositor(outputWidth: 64, outputHeight: 32)
+    let clearCodec = RDPClearCodecDecoder()
+    try compositor.process(try createSurfaceMessage(surfaceID: 0, width: 64, height: 32), clearCodec: clearCodec)
+    try compositor.process(try mapSurfaceToOutputMessage(surfaceID: 0, x: 0, y: 0), clearCodec: clearCodec)
+    compositor.noteVideo(fullSurfaceVideo(surfaceID: 0, width: 64, height: 32))
+
+    let copy = try compositor.process(
+        try surfaceToSurfaceMessage(
+            sourceSurfaceID: 0,
+            destinationSurfaceID: 0,
+            sourceRect: RDPGFXRect16(left: 0, top: 0, right: 16, bottom: 16),
+            destinationPoints: [RDPGFXPoint16(x: 32, y: 16), RDPGFXPoint16(x: 8, y: 8)]
+        ),
+        clearCodec: clearCodec
+    )
+
+    #expect(copy?.regionRects == [
+        RDPFrameRect(left: 32, top: 16, right: 48, bottom: 32),
+        RDPFrameRect(left: 8, top: 8, right: 24, bottom: 24),
+    ])
+    #expect(copy?.destinationRect == RDPFrameRect(left: 8, top: 8, right: 48, bottom: 32))
+}
+
+/// A copy with a destination point outside the surface is rejected whole, so the copies to
+/// its other points are not recorded as ones the decoder made.
+@Test func compositorRejectsCopiesWithAnyDestinationOutsideTheSurface() throws {
+    let compositor = RDPGFXSurfaceCompositor(outputWidth: 64, outputHeight: 32)
+    let clearCodec = RDPClearCodecDecoder()
+    try compositor.process(try createSurfaceMessage(surfaceID: 0, width: 64, height: 32), clearCodec: clearCodec)
+    try compositor.process(try createSurfaceMessage(surfaceID: 2, width: 64, height: 32), clearCodec: clearCodec)
+    try compositor.process(try mapSurfaceToOutputMessage(surfaceID: 0, x: 0, y: 0), clearCodec: clearCodec)
+    compositor.noteVideo(fullSurfaceVideo(surfaceID: 0, width: 64, height: 32))
+
+    #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
+        try compositor.process(
+            try surfaceToSurfaceMessage(
+                sourceSurfaceID: 0,
+                destinationSurfaceID: 2,
+                sourceRect: RDPGFXRect16(left: 0, top: 0, right: 16, bottom: 16),
+                destinationPoints: [RDPGFXPoint16(x: 0, y: 0), RDPGFXPoint16(x: 56, y: 0)]
+            ),
+            clearCodec: clearCodec
+        )
+    }
+    #expect(!compositor.isOnDecoder(surfaceID: 2))
+    let copyBack = try compositor.process(
+        try surfaceToSurfaceMessage(
+            sourceSurfaceID: 2,
+            destinationSurfaceID: 0,
+            sourceRect: RDPGFXRect16(left: 0, top: 0, right: 16, bottom: 16),
+            destinationPoints: [RDPGFXPoint16(x: 0, y: 0)]
+        ),
+        clearCodec: clearCodec
+    )
+    #expect(copyBack == nil)
+}
+
 @Test func compositorRejectsSurfaceMappingWithMissingSurface() throws {
     let compositor = RDPGFXSurfaceCompositor()
     let clearCodec = RDPClearCodecDecoder()
@@ -1409,14 +1971,34 @@ import Testing
             surfaceID: 1,
             x: UInt32.max,
             y: UInt32.max,
-            targetWidth: UInt32.max,
-            targetHeight: UInt32.max
+            targetWidth: 2,
+            targetHeight: 2
         ),
         clearCodec: clearCodec
     )
 
     #expect(compositor.mappedOutputRect(surfaceID: 1) == nil)
     #expect(compositor.makeFrames(frameID: 2).isEmpty)
+}
+
+/// Every frame allocates the scaled target, so its size is bounded like a surface.
+@Test func compositorRejectsOversizedScaledOutputTargets() throws {
+    let compositor = RDPGFXSurfaceCompositor()
+    let clearCodec = RDPClearCodecDecoder()
+    try compositor.process(try createSurfaceMessage(surfaceID: 1, width: 2, height: 2), clearCodec: clearCodec)
+
+    for (width, height): (UInt32, UInt32) in [(UInt32.max, 2), (2, 32_767), (32_766, 32_766)] {
+        #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
+            try compositor.process(
+                try mapSurfaceToScaledOutputMessage(surfaceID: 1, x: 0, y: 0, targetWidth: width, targetHeight: height),
+                clearCodec: clearCodec
+            )
+        }
+    }
+    try compositor.process(
+        try mapSurfaceToScaledOutputMessage(surfaceID: 1, x: 0, y: 0, targetWidth: 16_384, targetHeight: 16_384),
+        clearCodec: clearCodec
+    )
 }
 
 @Test func compositorRejectsVideoUpdatesWithInvalidSurfaceBounds() throws {
@@ -1470,12 +2052,10 @@ import Testing
         try deleteEncodingContextMessage(surfaceID: 1, codecContextID: 42),
         clearCodec: clearCodec
     )
-    #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
-        try compositor.process(
-            try deleteEncodingContextMessage(surfaceID: 1, codecContextID: 42),
-            clearCodec: clearCodec
-        )
-    }
+    try compositor.process(
+        try deleteEncodingContextMessage(surfaceID: 1, codecContextID: 42),
+        clearCodec: clearCodec
+    )
 }
 
 @Test func compositorRequiresKnownCodecContextForProgressiveUpgrade() throws {
@@ -1531,6 +2111,110 @@ import Testing
         ),
         clearCodec: clearCodec
     )
+}
+
+@Test func compositorUpgradesProgressiveTileFirstSentEarlierInTheSamePDU() throws {
+    let compositor = RDPGFXSurfaceCompositor()
+    let clearCodec = RDPClearCodecDecoder()
+    try compositor.process(try createSurfaceMessage(surfaceID: 1, width: 64, height: 64), clearCodec: clearCodec)
+    let quantTables = [Data([50] + Array(repeating: UInt8(0x11), count: 15))]
+    let stream = caprogressiveRemoteFXRegionsStream(regions: [
+        caprogressiveRemoteFXGrayRegionBlock(
+            progressiveQuantTables: quantTables,
+            tiles: [CAPROGRESSIVERemoteFXGrayTile(blockType: 0xCCC6, xIndex: 0, yIndex: 0, progressiveQuality: 0)]
+        ),
+        caprogressiveRemoteFXGrayRegionBlock(
+            progressiveQuantTables: quantTables,
+            tiles: [CAPROGRESSIVERemoteFXGrayTile(
+                blockType: 0xCCC7,
+                xIndex: 0,
+                yIndex: 0,
+                progressiveQuality: 0xFF,
+                ySrlData: srlAllZeroComponent(count: 4015),
+                yRawData: Data(repeating: 0, count: 11),
+                cbSrlData: srlAllZeroComponent(count: 4015),
+                cbRawData: Data(repeating: 0, count: 11),
+                crSrlData: srlAllZeroComponent(count: 4015),
+                crRawData: Data(repeating: 0, count: 11)
+            )]
+        ),
+    ])
+
+    // The codec context is new, but its first pass of the tile precedes the upgrade.
+    try compositor.process(
+        try wireToSurface2Message(
+            surfaceID: 1,
+            codecID: RDPGFXCodecID.caProgressive,
+            codecContextID: 9,
+            pixelFormat: 0x20,
+            bitmapData: stream
+        ),
+        clearCodec: clearCodec
+    )
+}
+
+/// MS-RDPEGFX 2.2.4.2.1.5: a region may be covered by tiles an earlier WireToSurface2 of
+/// the same RDPGFX frame sent.
+@Test func compositorDrawsProgressiveRegionsWithTilesOfEarlierPDUsInTheFrame() throws {
+    let compositor = RDPGFXSurfaceCompositor()
+    let clearCodec = RDPClearCodecDecoder()
+    try compositor.process(try createSurfaceMessage(surfaceID: 1, width: 128, height: 64), clearCodec: clearCodec)
+    try compositor.process(try mapSurfaceToOutputMessage(surfaceID: 1, x: 0, y: 0), clearCodec: clearCodec)
+    func progressive(_ region: Data) throws -> RDPGFXHeader {
+        try wireToSurface2Message(
+            surfaceID: 1,
+            codecID: RDPGFXCodecID.caProgressive,
+            codecContextID: 1,
+            pixelFormat: 0x20,
+            bitmapData: caprogressiveRemoteFXRegionsStream(regions: [region])
+        )
+    }
+    let frameMessages = { (frameID: UInt32) throws -> (start: RDPGFXHeader, end: RDPGFXHeader) in
+        var start = Data()
+        start.appendLittleEndianUInt32(0)
+        start.appendLittleEndianUInt32(frameID)
+        var end = Data()
+        end.appendLittleEndianUInt32(frameID)
+        return try (
+            makeGraphicsMessage(commandID: RDPGFXCommandID.startFrame, payload: start),
+            makeGraphicsMessage(commandID: RDPGFXCommandID.endFrame, payload: end)
+        )
+    }
+
+    let first = try frameMessages(1)
+    try compositor.process(first.start, clearCodec: clearCodec)
+    try compositor.process(
+        progressive(caprogressiveRemoteFXGrayRegionBlock(
+            regionWidth: 32,
+            tiles: [CAPROGRESSIVERemoteFXGrayTile(xIndex: 0, yIndex: 0)]
+        )),
+        clearCodec: clearCodec
+    )
+    try compositor.process(
+        progressive(caprogressiveRemoteFXGrayRegionBlock(regionX: 32, regionWidth: 32, quantCount: 0, tiles: [])),
+        clearCodec: clearCodec
+    )
+    try compositor.process(first.end, clearCodec: clearCodec)
+    let firstFrame = try #require(compositor.makeFrame(frameID: 1)?.decodedBitmapData)
+
+    #expect(pixel(atX: 40, y: 10, data: firstFrame, bytesPerRow: 512) == [0x80, 0x80, 0x80, 0xFF])
+    #expect(pixel(atX: 70, y: 10, data: firstFrame, bytesPerRow: 512) == [0, 0, 0, 0])
+
+    // The next frame has none of the earlier frame's tiles.
+    let second = try frameMessages(2)
+    try compositor.process(
+        try solidFillMessage(surfaceID: 1, color: [1, 2, 3, 0xFF], rects: [RDPGFXRect16(left: 0, top: 0, right: 64, bottom: 64)]),
+        clearCodec: clearCodec
+    )
+    try compositor.process(second.start, clearCodec: clearCodec)
+    try compositor.process(
+        progressive(caprogressiveRemoteFXGrayRegionBlock(quantCount: 0, tiles: [])),
+        clearCodec: clearCodec
+    )
+    try compositor.process(second.end, clearCodec: clearCodec)
+    let secondFrame = try #require(compositor.makeFrame(frameID: 2)?.decodedBitmapData)
+
+    #expect(pixel(atX: 10, y: 10, data: secondFrame, bytesPerRow: 512) == [1, 2, 3, 0xFF])
 }
 
 @Test func compositorRejectsProgressiveUpdateWithMissingSurface() throws {
@@ -1618,6 +2302,19 @@ import Testing
             clearCodec: clearCodec
         )
     }
+}
+
+private func fullSurfaceVideo(surfaceID: UInt16, width: UInt16, height: UInt16) -> RDPGraphicsFrameSnapshot {
+    RDPGraphicsFrameSnapshot(
+        frameID: 1,
+        surfaceID: surfaceID,
+        codecID: RDPGFXCodecID.avc420,
+        codecName: "avc420",
+        pixelFormat: RDPGFXPixelFormat.xrgb8888,
+        destinationRect: RDPFrameRect(left: 0, top: 0, right: width, bottom: height),
+        regionRects: [RDPFrameRect(left: 0, top: 0, right: width, bottom: height)],
+        encodedVideoData: Data([0x00, 0x00, 0x01, 0x65])
+    )
 }
 
 private func createSurfaceMessage(
@@ -1785,36 +2482,7 @@ private func resetGraphicsMessage(width: UInt32, height: UInt32) throws -> RDPGF
 }
 
 private func makeGraphicsMessage(commandID: UInt16, payload: Data) throws -> RDPGFXHeader {
-    var data = Data()
-    data.appendLittleEndianUInt16(commandID)
-    data.appendLittleEndianUInt16(0)
-    data.appendLittleEndianUInt32(UInt32(8 + payload.count))
-    data.append(payload)
-    return try RDPGFXHeader.parse(from: data)
-}
-
-private func rectangleData(_ rect: RDPGFXRect16) -> Data {
-    var data = Data()
-    data.appendLittleEndianUInt16(rect.left)
-    data.appendLittleEndianUInt16(rect.top)
-    data.appendLittleEndianUInt16(rect.right)
-    data.appendLittleEndianUInt16(rect.bottom)
-    return data
-}
-
-private func clearCodecRawRegionStream(width: UInt16, height: UInt16, pixels: [UInt8]) -> Data {
-    var stream = Data([0x00, 0x00])
-    stream.appendLittleEndianUInt32(0)
-    stream.appendLittleEndianUInt32(0)
-    stream.appendLittleEndianUInt32(UInt32(13 + pixels.count))
-    stream.appendLittleEndianUInt16(0)
-    stream.appendLittleEndianUInt16(0)
-    stream.appendLittleEndianUInt16(width)
-    stream.appendLittleEndianUInt16(height)
-    stream.appendLittleEndianUInt32(UInt32(pixels.count))
-    stream.appendUInt8(0)
-    stream.append(contentsOf: pixels)
-    return stream
+    try RDPGFXHeader.parse(from: graphicsMessage(commandID: commandID, payload: payload))
 }
 
 private func alphaBitmapStream(compressed: UInt16, payload: Data) -> Data {
@@ -1823,9 +2491,4 @@ private func alphaBitmapStream(compressed: UInt16, payload: Data) -> Data {
     data.appendLittleEndianUInt16(compressed)
     data.append(payload)
     return data
-}
-
-private func pixel(atX x: Int, y: Int, data: Data, bytesPerRow: Int) -> [UInt8] {
-    let offset = y * bytesPerRow + x * 4
-    return Array(data[offset ..< offset + 4])
 }

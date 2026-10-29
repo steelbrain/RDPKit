@@ -17,55 +17,26 @@ struct ConnectionProfile: Codable, Equatable, Identifiable, Sendable {
     var rememberPassword: Bool
     var updatedAt: Date
 
-    enum CodingKeys: String, CodingKey {
-        case id
-        case host
-        case port
-        case username
-        case domain
-        case desktopWidth
-        case desktopHeight
-        case hideCertificateWarnings
-        case timeoutSeconds
-        case graphicsCapabilityProfile
-        case clipboardSharingEnabled
-        case audioPlaybackEnabled
-        case rememberPassword
-        case updatedAt
+    var identity: RDPConnectionIdentity {
+        RDPConnectionIdentity(
+            host: host,
+            port: port,
+            username: username,
+            domain: domain
+        )
     }
 
-    init(
-        id: UUID,
-        host: String,
-        port: UInt16,
-        username: String,
-        domain: String,
-        desktopWidth: UInt16,
-        desktopHeight: UInt16,
-        hideCertificateWarnings: Bool,
-        timeoutSeconds: Int,
-        graphicsCapabilityProfile: RDPGraphicsCapabilityProfile = .automatic,
-        clipboardSharingEnabled: Bool,
-        audioPlaybackEnabled: Bool,
-        rememberPassword: Bool,
-        updatedAt: Date
-    ) {
-        self.id = id
-        self.host = host
-        self.port = port
-        self.username = username
-        self.domain = domain
-        self.desktopWidth = desktopWidth
-        self.desktopHeight = desktopHeight
-        self.hideCertificateWarnings = hideCertificateWarnings
-        self.timeoutSeconds = timeoutSeconds
-        self.graphicsCapabilityProfile = graphicsCapabilityProfile
-        self.clipboardSharingEnabled = clipboardSharingEnabled
-        self.audioPlaybackEnabled = audioPlaybackEnabled
-        self.rememberPassword = rememberPassword
-        self.updatedAt = updatedAt
+    var displayName: String {
+        identity.displayName
     }
 
+    func hasSameIdentity(as other: ConnectionProfile) -> Bool {
+        identity.hasSameConnectionIdentity(as: other.identity)
+    }
+}
+
+extension ConnectionProfile {
+    /// Decodes profiles saved before the graphics, clipboard, and audio options existed.
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(UUID.self, forKey: .id)
@@ -91,23 +62,6 @@ struct ConnectionProfile: Codable, Equatable, Identifiable, Sendable {
         ) ?? false
         rememberPassword = try container.decode(Bool.self, forKey: .rememberPassword)
         updatedAt = try container.decode(Date.self, forKey: .updatedAt)
-    }
-
-    var identity: RDPConnectionIdentity {
-        RDPConnectionIdentity(
-            host: host,
-            port: port,
-            username: username,
-            domain: domain
-        )
-    }
-
-    var displayName: String {
-        identity.displayName
-    }
-
-    func hasSameIdentity(as other: ConnectionProfile) -> Bool {
-        identity.hasSameConnectionIdentity(as: other.identity)
     }
 }
 

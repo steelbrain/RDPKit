@@ -1,18 +1,10 @@
 import Foundation
+import RDPCommandLineSupport
 import RDPKit
 
 struct Arguments {
-    var host: String?
-    var port: UInt16 = 3389
-    var username: String?
-    var domain: String?
-    var passwordEnv: String?
-    var timeoutSeconds: Int = 10
-    var graphicsFrames: Int = 1
-    var desktopWidth: UInt16 = 1280
-    var desktopHeight: UInt16 = 720
-    var graphicsCapabilityProfile: RDPGraphicsCapabilityProfile = .automatic
-    var hideCertificateWarnings = false
+    var connection = RDPCommandLineConnectionOptions()
+    var graphicsFrames = 1
     var audioPlaybackEnabled = false
     var earlyUserAuthorizationEnabled = false
     var probeClipboardText: String?
@@ -24,50 +16,6 @@ struct Arguments {
     var probeWindowsAudio = false
     var dryRun = false
     var json = false
-}
-
-enum CLIError: Error, CustomStringConvertible {
-    case missingValue(String)
-    case missingHost
-    case missingCredential(String)
-    case missingPasswordEnv(String)
-    case invalidPort(String)
-    case invalidTimeout(String)
-    case invalidGraphicsFrames(String)
-    case invalidDesktopWidth(String)
-    case invalidDesktopHeight(String)
-    case invalidGraphicsProfile(String)
-    case invalidProbeClipboardText
-    case invalidProbeWindowsClipboardText
-
-    var description: String {
-        switch self {
-        case let .missingValue(option):
-            "missing value for \(option)"
-        case .missingHost:
-            "missing required --host"
-        case let .missingCredential(message):
-            message
-        case let .missingPasswordEnv(name):
-            "password environment variable \(name) is not set or is empty"
-        case let .invalidPort(value):
-            "invalid --port \(value)"
-        case let .invalidTimeout(value):
-            "invalid --timeout-seconds \(value)"
-        case let .invalidGraphicsFrames(value):
-            "invalid --graphics-frames \(value)"
-        case let .invalidDesktopWidth(value):
-            "invalid --desktop-width \(value); expected 640...8192"
-        case let .invalidDesktopHeight(value):
-            "invalid --desktop-height \(value); expected 480...8192"
-        case let .invalidGraphicsProfile(value):
-            "invalid --graphics-profile \(value)"
-        case .invalidProbeClipboardText:
-            "--probe-clipboard-text exceeds the CLIPRDR single-message text limit"
-        case .invalidProbeWindowsClipboardText:
-            "--probe-windows-clipboard-text must be non-empty ASCII text up to 96 code units"
-        }
-    }
 }
 
 final class PreflightProbeRecorder: @unchecked Sendable {
@@ -109,7 +57,7 @@ final class PreflightProbeRecorder: @unchecked Sendable {
 
     func sendInputProbeAfterFirstFrame(
         text: String?,
-        movePointerToCenter: Bool,
+        pointerLocation: RDPRemotePoint?,
         toggleWindowsStart: Bool,
         pasteClipboardOnWindows: Bool,
         windowsClipboardText: String?,
@@ -128,9 +76,9 @@ final class PreflightProbeRecorder: @unchecked Sendable {
         var events: [RDPSlowPathInputEvent] = []
         var eventNames: [String] = []
 
-        if movePointerToCenter {
-            events.append(.pointerMove(x: 640, y: 360))
-            eventNames.append("pointer-move:640x360")
+        if let pointerLocation {
+            events.append(.pointerMove(x: pointerLocation.x, y: pointerLocation.y))
+            eventNames.append("pointer-move:\(pointerLocation.x)x\(pointerLocation.y)")
         }
 
         if let text, text.isEmpty == false {
@@ -266,110 +214,65 @@ final class PreflightProbeRecorder: @unchecked Sendable {
         "cmd /c <nul set /p \"=\(text)\"|clip"
     }
 
-    func apply(to report: inout RDPPreflightReport) {
+    var results: PreflightProbeResults {
         lock.lock()
-        let clipboardProbeTextUTF16CodeUnitCount = clipboardProbeTextUTF16CodeUnitCount
-        let clipboardReceivedTextUTF16CodeUnitCount = clipboardReceivedTextUTF16CodeUnitCount
-        let clipboardReceivedTextMatchesProbe = clipboardReceivedTextMatchesProbe
-        let inputProbeEvents = inputProbeEvents
-        lock.unlock()
+        defer { lock.unlock() }
+        return PreflightProbeResults(
+            rdpClipboardProbeTextUTF16CodeUnitCount: clipboardProbeTextUTF16CodeUnitCount,
+            rdpClipboardReceivedTextUTF16CodeUnitCount: clipboardReceivedTextUTF16CodeUnitCount,
+            rdpClipboardReceivedTextMatchesProbe: clipboardReceivedTextMatchesProbe,
+            rdpInputProbeEvents: inputProbeEvents.isEmpty ? nil : inputProbeEvents
+        )
+    }
+}
 
-        report.rdpClipboardProbeTextUTF16CodeUnitCount = clipboardProbeTextUTF16CodeUnitCount
-        report.rdpClipboardReceivedTextUTF16CodeUnitCount = clipboardReceivedTextUTF16CodeUnitCount
-        report.rdpClipboardReceivedTextMatchesProbe = clipboardReceivedTextMatchesProbe
-        report.rdpInputProbeEvents = inputProbeEvents.isEmpty ? nil : inputProbeEvents
+/// What the command-line probes observed, printed alongside the library's report.
+struct PreflightProbeResults: Encodable {
+    var rdpClipboardProbeTextUTF16CodeUnitCount: Int?
+    var rdpClipboardReceivedTextUTF16CodeUnitCount: Int?
+    var rdpClipboardReceivedTextMatchesProbe: Bool?
+    var rdpInputProbeEvents: [String]?
+}
+
+/// Encodes the report and the probe results as one flat JSON object.
+private struct PreflightOutput: Encodable {
+    var report: RDPConnectionReport
+    var probes: PreflightProbeResults
+
+    func encode(to encoder: Encoder) throws {
+        try report.encode(to: encoder)
+        try probes.encode(to: encoder)
     }
 }
 
 func parseArguments(_ values: [String]) throws -> Arguments {
     var args = Arguments()
-    var index = 1
-
-    while index < values.count {
-        let value = values[index]
-        switch value {
-        case "--host":
-            index += 1
-            guard index < values.count else { throw CLIError.missingValue(value) }
-            args.host = values[index]
-        case "--port":
-            index += 1
-            guard index < values.count else { throw CLIError.missingValue(value) }
-            guard let port = UInt16(values[index]) else { throw CLIError.invalidPort(values[index]) }
-            args.port = port
-        case "--username":
-            index += 1
-            guard index < values.count else { throw CLIError.missingValue(value) }
-            args.username = values[index]
-        case "--domain":
-            index += 1
-            guard index < values.count else { throw CLIError.missingValue(value) }
-            args.domain = values[index]
-        case "--password-env":
-            index += 1
-            guard index < values.count else { throw CLIError.missingValue(value) }
-            args.passwordEnv = values[index]
-        case "--timeout-seconds":
-            index += 1
-            guard index < values.count else { throw CLIError.missingValue(value) }
-            guard let timeout = Int(values[index]), timeout > 0 else {
-                throw CLIError.invalidTimeout(values[index])
-            }
-            args.timeoutSeconds = timeout
+    var cursor = RDPCommandLineArguments(values)
+    while let option = cursor.nextOption() {
+        if try args.connection.parse(option, from: &cursor) {
+            continue
+        }
+        switch option {
         case "--graphics-frames":
-            index += 1
-            guard index < values.count else { throw CLIError.missingValue(value) }
-            guard let frames = Int(values[index]), frames > 0 else {
-                throw CLIError.invalidGraphicsFrames(values[index])
-            }
-            args.graphicsFrames = frames
-        case "--desktop-width":
-            index += 1
-            guard index < values.count else { throw CLIError.missingValue(value) }
-            guard let width = UInt16(values[index]), (640 ... 8192).contains(width) else {
-                throw CLIError.invalidDesktopWidth(values[index])
-            }
-            args.desktopWidth = width
-        case "--desktop-height":
-            index += 1
-            guard index < values.count else { throw CLIError.missingValue(value) }
-            guard let height = UInt16(values[index]), (480 ... 8192).contains(height) else {
-                throw CLIError.invalidDesktopHeight(values[index])
-            }
-            args.desktopHeight = height
-        case "--graphics-profile":
-            index += 1
-            guard index < values.count else { throw CLIError.missingValue(value) }
-            guard let profile = RDPGraphicsCapabilityProfile(rawValue: values[index]) else {
-                throw CLIError.invalidGraphicsProfile(values[index])
-            }
-            args.graphicsCapabilityProfile = profile
-        case "--hide-certificate-warnings":
-            args.hideCertificateWarnings = true
+            args.graphicsFrames = try cursor.graphicsFrameCount(for: option)
         case "--early-user-authorization":
             args.earlyUserAuthorizationEnabled = true
         case "--audio":
             args.audioPlaybackEnabled = true
         case "--probe-clipboard-text":
-            index += 1
-            guard index < values.count else { throw CLIError.missingValue(value) }
-            guard RDPClipboardLimits.canPublishUnicodeText(values[index]) else {
-                throw CLIError.invalidProbeClipboardText
-            }
-            args.probeClipboardText = values[index]
+            args.probeClipboardText = try cursor.value(
+                for: option,
+                expected: "text within the CLIPRDR single-message limit"
+            ) { RDPClipboardLimits.canPublishUnicodeText($0) ? $0 : nil }
         case "--probe-windows-clipboard-text":
-            index += 1
-            guard index < values.count else { throw CLIError.missingValue(value) }
-            guard isValidWindowsClipboardProbeText(values[index]) else {
-                throw CLIError.invalidProbeWindowsClipboardText
-            }
-            args.probeWindowsClipboardText = values[index]
+            args.probeWindowsClipboardText = try cursor.value(
+                for: option,
+                expected: "1...96 ASCII letters, digits, or \" -_:.\", not starting with a space"
+            ) { isValidWindowsClipboardProbeText($0) ? $0 : nil }
         case "--probe-windows-paste-clipboard":
             args.probeWindowsPasteClipboard = true
         case "--probe-input-text":
-            index += 1
-            guard index < values.count else { throw CLIError.missingValue(value) }
-            args.probeInputText = values[index]
+            args.probeInputText = try cursor.value(for: option)
         case "--probe-input-pointer":
             args.probeInputPointer = true
         case "--probe-windows-key":
@@ -381,22 +284,18 @@ func parseArguments(_ values: [String]) throws -> Arguments {
             args.dryRun = true
         case "--json":
             args.json = true
-        case "-h", "--help":
-            printUsage()
-            exit(0)
         default:
-            throw CLIError.missingValue("unknown option \(value)")
+            throw RDPCommandLineError.unknownOption(option)
         }
-        index += 1
     }
-
-    guard args.host != nil else { throw CLIError.missingHost }
     return args
 }
 
+/// The text goes through `set /p`, which drops leading spaces, so it could never come back equal.
 func isValidWindowsClipboardProbeText(_ text: String) -> Bool {
     let allowedPunctuation = " -_:."
     return text.isEmpty == false
+        && text.first != " "
         && text.count <= 96
         && text.allSatisfy { character in
             character.isASCII
@@ -404,46 +303,27 @@ func isValidWindowsClipboardProbeText(_ text: String) -> Bool {
         }
 }
 
-func loadCredentials(from args: Arguments) throws -> RDPCredentials? {
-    let hasAnyCredentialInput = args.username != nil || args.domain != nil || args.passwordEnv != nil
-    guard hasAnyCredentialInput else {
-        return nil
-    }
-
-    guard let username = args.username, !username.isEmpty else {
-        throw CLIError.missingCredential("--username is required when credentials are provided")
-    }
-    guard let passwordEnv = args.passwordEnv, !passwordEnv.isEmpty else {
-        throw CLIError.missingCredential("--password-env is required when credentials are provided")
-    }
-    guard let password = ProcessInfo.processInfo.environment[passwordEnv], !password.isEmpty else {
-        throw CLIError.missingPasswordEnv(passwordEnv)
-    }
-
-    return RDPCredentials(username: username, domain: args.domain, password: password)
-}
-
-func passwordIsConfigured(in args: Arguments?) -> Bool {
-    guard let passwordEnv = args?.passwordEnv else {
-        return false
-    }
-    return ProcessInfo.processInfo.environment[passwordEnv]?.isEmpty == false
-}
-
 func printUsage() {
     print("""
     Usage: RDPPreflight --host <host> [--port 3389] [--username <name>] [--domain <domain>] [--password-env <env>] [--timeout-seconds 10] [--graphics-frames 1] [--desktop-width 1280] [--desktop-height 720] [--graphics-profile automatic|avcThinClient|avc420|legacy] [--hide-certificate-warnings] [--early-user-authorization] [--audio] [--probe-clipboard-text <text>] [--probe-windows-key] [--probe-windows-paste-clipboard] [--probe-windows-clipboard-text <text>] [--probe-input-text <text>] [--probe-input-pointer] [--probe-windows-audio] [--dry-run] [--json]
 
-    Sends X.224/RDP negotiation, upgrades to TLS when selected, joins MCS channels, and sends Client Info.
-    Credentials are validated now and used by later authentication stages; passwords are never printed.
+    Connects to an RDP host, runs the session until --graphics-frames graphics frames have
+    arrived, and reports what every connection stage sent and received.
+    --dry-run prints the negotiation request without connecting. The password is read from the
+    environment variable named by --password-env and is never printed.
+
+    Input probes send real input after the first graphics frame; the session ends after
+    --graphics-frames frames, so raise it to see what a probe changed. The --probe-windows-*
+    probes drive the Windows shell (Start menu, Win+R, cmd, PowerShell): use them only on
+    Windows hosts.
     """)
 }
 
-func printReport(_ report: RDPPreflightReport, json: Bool) throws {
+func printReport(_ report: RDPConnectionReport, probes: PreflightProbeResults = PreflightProbeResults(), json: Bool) throws {
     if json {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        let encodedReport = try encoder.encode(report)
+        let encodedReport = try encoder.encode(PreflightOutput(report: report, probes: probes))
         if let encodedText = String(data: encodedReport, encoding: .utf8) {
             print(encodedText)
         } else {
@@ -477,9 +357,6 @@ func printReport(_ report: RDPPreflightReport, json: Bool) throws {
         }
         if let tlsProtocol = report.tlsProtocol {
             print("tls protocol: \(tlsProtocol)")
-        }
-        if let tlsCipherSuite = report.tlsCipherSuite {
-            print("tls cipher suite: \(tlsCipherSuite)")
         }
         if let certificateTrusted = report.certificateTrusted {
             print("certificate trusted: \(certificateTrusted)")
@@ -652,7 +529,7 @@ func printReport(_ report: RDPPreflightReport, json: Bool) throws {
             print("rdp display control caps: \(capsSummary)")
         }
         if let rdpDisplayControlCapsHex = report.rdpDisplayControlCapsHex {
-            print("rdp display control caps: \(rdpDisplayControlCapsHex)")
+            print("rdp display control caps pdu: \(rdpDisplayControlCapsHex)")
         }
         if let rdpClipboardChannelID = report.rdpClipboardChannelID {
             print("rdp clipboard channel id: \(rdpClipboardChannelID)")
@@ -669,27 +546,17 @@ func printReport(_ report: RDPPreflightReport, json: Bool) throws {
                 .joined(separator: ", ")
             print("rdp clipboard sent messages: \(messages)")
         }
-        if let rdpClipboardMessageHexes = report.rdpClipboardMessageHexes {
-            for (index, messageHex) in rdpClipboardMessageHexes.enumerated() {
-                print("rdp clipboard message \(index + 1): \(messageHex)")
-            }
+        if let count = probes.rdpClipboardProbeTextUTF16CodeUnitCount {
+            print("rdp clipboard probe text code units: \(count)")
         }
-        if let rdpClipboardSentMessageHexes = report.rdpClipboardSentMessageHexes {
-            for (index, messageHex) in rdpClipboardSentMessageHexes.enumerated() {
-                print("rdp clipboard sent message \(index + 1): \(messageHex)")
-            }
+        if let count = probes.rdpClipboardReceivedTextUTF16CodeUnitCount {
+            print("rdp clipboard received text code units: \(count)")
         }
-        if let rdpClipboardProbeTextUTF16CodeUnitCount = report.rdpClipboardProbeTextUTF16CodeUnitCount {
-            print("rdp clipboard probe text code units: \(rdpClipboardProbeTextUTF16CodeUnitCount)")
+        if let matches = probes.rdpClipboardReceivedTextMatchesProbe {
+            print("rdp clipboard received text matches probe: \(matches)")
         }
-        if let rdpClipboardReceivedTextUTF16CodeUnitCount = report.rdpClipboardReceivedTextUTF16CodeUnitCount {
-            print("rdp clipboard received text code units: \(rdpClipboardReceivedTextUTF16CodeUnitCount)")
-        }
-        if let rdpClipboardReceivedTextMatchesProbe = report.rdpClipboardReceivedTextMatchesProbe {
-            print("rdp clipboard received text matches probe: \(rdpClipboardReceivedTextMatchesProbe)")
-        }
-        if let rdpInputProbeEvents = report.rdpInputProbeEvents, !rdpInputProbeEvents.isEmpty {
-            print("rdp input probe events: \(rdpInputProbeEvents.joined(separator: ", "))")
+        if let events = probes.rdpInputProbeEvents, !events.isEmpty {
+            print("rdp input probe events: \(events.joined(separator: ", "))")
         }
         if let rdpAudioChannelID = report.rdpAudioChannelID {
             print("rdp audio channel id: \(rdpAudioChannelID)")
@@ -699,11 +566,6 @@ func printReport(_ report: RDPPreflightReport, json: Bool) throws {
                 .map { "\($0.typeName):bytes=\($0.bodySize)" }
                 .joined(separator: ", ")
             print("rdp audio messages: \(messages)")
-        }
-        if let rdpAudioMessageHexes = report.rdpAudioMessageHexes {
-            for (index, messageHex) in rdpAudioMessageHexes.enumerated() {
-                print("rdp audio message \(index + 1): \(messageHex)")
-            }
         }
         if let rdpGraphicsResponseHex = report.rdpGraphicsResponseHex {
             print("rdp graphics response: \(rdpGraphicsResponseHex)")
@@ -870,55 +732,45 @@ func graphicsFrameSummary(_ frame: RDPGraphicsFrameSnapshot) -> String {
     return parts.joined(separator: ":")
 }
 
-func failureReport(args: Arguments?, error: Error) -> RDPPreflightReport {
-    let host = args?.host ?? "unconfigured"
-    let port = args?.port ?? 3389
-    let passwordConfigured = passwordIsConfigured(in: args)
-    let credentials = args?.username.map {
-        RDPCredentials(
-            username: $0,
-            domain: args?.domain,
-            password: ""
-        )
-    }
+func failureReport(args: Arguments?, error: Error) -> RDPConnectionReport {
+    let connection = args?.connection ?? RDPCommandLineConnectionOptions()
     let configuration = RDPConnectionConfiguration(
-        host: host,
-        port: port,
-        credentials: credentials,
-        desktopWidth: args?.desktopWidth ?? 1280,
-        desktopHeight: args?.desktopHeight ?? 720,
-        graphicsCapabilityProfile: args?.graphicsCapabilityProfile ?? .automatic
+        host: connection.host ?? "unconfigured",
+        port: connection.port,
+        credentials: connection.username.map { RDPCredentials(username: $0, domain: connection.domain, password: "") },
+        desktopWidth: connection.desktopWidth,
+        desktopHeight: connection.desktopHeight,
+        graphicsCapabilityProfile: connection.graphicsCapabilityProfile
     )
-    var report = RDPPreflightClient().dryRun(configuration: configuration)
+    var report = RDPSessionClient().dryRun(configuration: configuration)
     report.status = "failure"
     report.stage = "x224-rdp-negotiation"
-    report.passwordConfigured = passwordConfigured
+    report.passwordConfigured = connection.passwordEnv
+        .flatMap { ProcessInfo.processInfo.environment[$0] }?.isEmpty == false
     report.nextStage = nil
     report.error = String(describing: error)
     return report
 }
 
+if RDPCommandLineArguments.requestsHelp(CommandLine.arguments) {
+    printUsage()
+    exit(0)
+}
+
+var parsedArguments: Arguments?
 do {
     let args = try parseArguments(CommandLine.arguments)
-    guard let host = args.host else {
-        printUsage()
-        Foundation.exit(2)
-    }
-    let credentials = try loadCredentials(from: args)
-    let configuration = RDPConnectionConfiguration(
-        host: host,
-        port: args.port,
-        credentials: credentials,
-        timeoutSeconds: args.timeoutSeconds,
-        hideCertificateWarnings: args.hideCertificateWarnings,
+    parsedArguments = args
+    let configuration = try args.connection.configuration(
+        credentials: args.connection.credentials(),
         graphicsFrameCaptureLimit: args.graphicsFrames,
-        desktopWidth: args.desktopWidth,
-        desktopHeight: args.desktopHeight,
         audioPlaybackEnabled: args.audioPlaybackEnabled,
-        earlyUserAuthorizationEnabled: args.earlyUserAuthorizationEnabled,
-        graphicsCapabilityProfile: args.graphicsCapabilityProfile
+        earlyUserAuthorizationEnabled: args.earlyUserAuthorizationEnabled
     )
-    let client = RDPPreflightClient()
+    let pointerProbeLocation = args.probeInputPointer
+        ? RDPRemotePoint(x: configuration.desktopWidth / 2, y: configuration.desktopHeight / 2)
+        : nil
+    let client = RDPSessionClient()
     let probeRecorder = PreflightProbeRecorder(windowsClipboardProbeText: args.probeWindowsClipboardText)
     let report = args.dryRun
         ? client.dryRun(configuration: configuration)
@@ -927,7 +779,7 @@ do {
             onGraphicsFrame: { _ in
                 probeRecorder.sendInputProbeAfterFirstFrame(
                     text: args.probeInputText,
-                    movePointerToCenter: args.probeInputPointer,
+                    pointerLocation: pointerProbeLocation,
                     toggleWindowsStart: args.probeWindowsKey,
                     pasteClipboardOnWindows: args.probeWindowsPasteClipboard,
                     windowsClipboardText: args.probeWindowsClipboardText,
@@ -946,20 +798,17 @@ do {
                 probeRecorder.recordClipboardText(text)
             }
         )
-    var annotatedReport = report
-    probeRecorder.apply(to: &annotatedReport)
-
-    try printReport(annotatedReport, json: args.json)
-    if annotatedReport.status == "failure" {
+    try printReport(report, probes: probeRecorder.results, json: args.json)
+    if report.status == "failure" {
         exit(1)
     }
 } catch {
-    let parsedArgs = try? parseArguments(CommandLine.arguments)
-    let report = failureReport(args: parsedArgs, error: error)
-    let json = CommandLine.arguments.contains("--json")
+    let report = failureReport(args: parsedArguments, error: error)
+    let json = parsedArguments?.json ?? CommandLine.arguments.contains("--json")
     try? printReport(report, json: json)
     if !json {
         printUsage()
     }
     exit(1)
 }
+

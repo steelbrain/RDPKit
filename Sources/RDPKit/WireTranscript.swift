@@ -60,31 +60,57 @@ public struct RDPWireEvent: Codable, Equatable, Sendable {
 /// Collects the ordered wire exchange of an RDP connection so it can be dumped
 /// and replayed as a deterministic regression fixture.
 ///
-/// Pass an instance to `RDPPreflightClient.run(...)` / `connect(...)` via the
+/// Pass an instance to `RDPSessionClient.run(...)` / `connect(...)` via the
 /// `wireTranscript:` parameter, then read ``events`` once the call returns. Call
 /// ``stop()`` to freeze recording at a boundary — e.g. when the first video
 /// frame arrives — so the transcript captures everything up to, but not beyond,
 /// where pixels start flowing.
+///
+/// A transcript is session data: server PDUs are kept in full, so it holds what
+/// the server sent, such as screen contents, clipboard data, user and domain
+/// names. Store and share it as you would the session itself. The secrets a
+/// server sends in the clear are zeroed in ``events``: a Server Redirection
+/// PDU's Password field and a Save Session Info PDU's auto-reconnect cookie.
 public final class RDPWireTranscript: @unchecked Sendable {
-    private let lock = NSLock()
-    private var storage: [RDPWireEvent] = []
-    private var stopped = false
+    private struct Record {
+        var direction: RDPWireDirection
+        var layer: RDPWireLayer
+        var byteCount: Int
+        var payload: Data?
+    }
 
-    public init() {}
+    private let lock = NSLock()
+    private var storage: [Record] = []
+    private var stopped = false
+    private let maximumPayloadByteCount: Int?
+    private var payloadByteCount = 0
+
+    /// `maximumPayloadByteCount` bounds the bytes kept: recording stops, as
+    /// with ``stop()``, before the first payload that would exceed it.
+    public init(maximumPayloadByteCount: Int? = nil) {
+        self.maximumPayloadByteCount = maximumPayloadByteCount
+    }
 
     /// The captured events in wire order.
     public var events: [RDPWireEvent] {
-        lock.lock()
-        defer { lock.unlock() }
-        return storage
+        let records = lock.withLock { storage }
+        return records.enumerated().map { sequence, record in
+            RDPWireEvent(
+                sequence: sequence,
+                direction: record.direction,
+                layer: record.layer,
+                byteCount: record.byteCount,
+                hex: record.payload.map {
+                    (record.direction == .serverToClient ? $0.redactingServerSecrets : $0).rdpHexString
+                }
+            )
+        }
     }
 
     /// Freezes recording. Subsequent ``record(direction:layer:bytes:capturePayload:)``
     /// calls are ignored. Idempotent.
     public func stop() {
-        lock.lock()
-        defer { lock.unlock() }
-        stopped = true
+        lock.withLock { stopped = true }
     }
 
     func record(
@@ -93,29 +119,65 @@ public final class RDPWireTranscript: @unchecked Sendable {
         bytes: Data,
         capturePayload: Bool
     ) {
-        lock.lock()
-        defer { lock.unlock() }
-        guard !stopped else { return }
-        storage.append(RDPWireEvent(
-            sequence: storage.count,
-            direction: direction,
-            layer: layer,
-            byteCount: bytes.count,
-            hex: capturePayload ? bytes.rdpHexString : nil
-        ))
+        lock.withLock {
+            guard !stopped else { return }
+            if capturePayload {
+                payloadByteCount += bytes.count
+                if let maximumPayloadByteCount, payloadByteCount > maximumPayloadByteCount {
+                    stopped = true
+                    return
+                }
+            }
+            storage.append(Record(
+                direction: direction,
+                layer: layer,
+                byteCount: bytes.count,
+                payload: capturePayload ? bytes : nil
+            ))
+        }
     }
 
     /// Records a layer marker with no payload (e.g. the NLA handshake).
     func recordMarker(direction: RDPWireDirection, layer: RDPWireLayer, byteCount: Int = 0) {
-        lock.lock()
-        defer { lock.unlock() }
-        guard !stopped else { return }
-        storage.append(RDPWireEvent(
-            sequence: storage.count,
-            direction: direction,
-            layer: layer,
-            byteCount: byteCount,
-            hex: nil
-        ))
+        lock.withLock {
+            guard !stopped else { return }
+            storage.append(Record(direction: direction, layer: layer, byteCount: byteCount, payload: nil))
+        }
+    }
+}
+
+extension Data {
+    /// This server packet with the secrets servers send in the clear zeroed,
+    /// lengths kept: a Server Redirection PDU's Password field, a cleartext
+    /// password unless PK-encrypted ([MS-RDPBCGR] 2.2.13.1), and the
+    /// auto-reconnect cookie of a Save Session Info PDU, which reconnects to
+    /// the session without a password ([MS-RDPBCGR] 2.2.4.2, 5.5).
+    var redactingServerSecrets: Data {
+        guard first == TPKT.version, let indication = try? MCSSendDataIndicationPDU.parse(fromTPKT: self) else {
+            return self
+        }
+        func littleEndian(_ value: UInt32) -> Data {
+            var data = Data()
+            data.appendLittleEndianUInt32(value)
+            return data
+        }
+        // Each secret is found with the field just before it, so a short one
+        // cannot match a header.
+        let secret: (prefix: Data, bytes: Data)?
+        if let redirection = try? RDPServerRedirectionPDU.parseIfPresent(from: indication) {
+            secret = redirection.passwordCookie.map { (littleEndian(UInt32($0.count)), $0) }
+        } else if let reconnect = (try? RDPShareDataPDU.parseIfPresent(from: indication))?
+            .saveSessionInfo?.autoReconnectPacket
+        {
+            secret = (littleEndian(reconnect.logonID), reconnect.arcRandomBits)
+        } else {
+            secret = nil
+        }
+        guard let secret, !secret.bytes.isEmpty, let range = range(of: secret.prefix + secret.bytes) else {
+            return self
+        }
+        var redacted = self
+        redacted.resetBytes(in: range.lowerBound + secret.prefix.count ..< range.upperBound)
+        return redacted
     }
 }

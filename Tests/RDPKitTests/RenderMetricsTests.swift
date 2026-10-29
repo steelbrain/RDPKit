@@ -27,7 +27,6 @@ import Testing
             samplePreparationMilliseconds: 0.2,
             videoToolboxMilliseconds: 4.0,
             imageConversionMilliseconds: 0,
-            cropMilliseconds: 0,
             totalMilliseconds: 4.2,
             decodedPixelFormat: 0x3432_3076,
             usesHardwareAcceleration: true
@@ -71,4 +70,49 @@ import Testing
 
     #expect(frame.videoByteCount == 8)
     #expect(frame.videoNalUnitTypes == [5, 1])
+}
+
+@Test func renderMetricsStoreIsSafeForConcurrentRecording() {
+    let store = RDPRenderMetricsStore()
+    let start = Date(timeIntervalSince1970: 300)
+
+    DispatchQueue.concurrentPerform(iterations: 1000) { index in
+        store.recordWireReceive(RDPWireReceiveSample(byteCount: 1, receivedAt: start.addingTimeInterval(Double(index) / 1000)))
+        _ = store.snapshotIfNeeded(at: start)
+    }
+
+    #expect(store.metrics.wireByteCount == 1000)
+}
+
+@Test func renderMetricsRollingFramesPerSecondUsesRecentFrames() {
+    let start = Date(timeIntervalSince1970: 400)
+    var metrics = RDPRenderMetrics(connectionStartedAt: start)
+    let frame = RDPGraphicsFrameSnapshot(
+        frameID: 1,
+        surfaceID: 2,
+        codecID: RDPGFXCodecID.avc420,
+        codecName: "avc420",
+        pixelFormat: 32,
+        destinationRect: RDPFrameRect(left: 0, top: 0, right: 16, bottom: 16),
+        regionRects: [],
+        encodedVideoData: Data([0x00, 0x00, 0x01, 0x65])
+    )
+    let timing = RDPFrameDecodeTiming(
+        samplePreparationMilliseconds: 0,
+        videoToolboxMilliseconds: 0,
+        imageConversionMilliseconds: 0,
+        totalMilliseconds: 1,
+        decodedPixelFormat: nil,
+        usesHardwareAcceleration: nil
+    )
+
+    // 30 s at 10 fps, then 5 s at 60 fps: only the recent 60 fps frames count.
+    for index in 0 ..< 600 {
+        let seconds = index < 300 ? Double(index) / 10 : 30 + Double(index - 300) / 60
+        let decodedAt = start.addingTimeInterval(seconds)
+        metrics.recordDecodedFrame(frame, receivedAt: decodedAt, decodedAt: decodedAt, timing: timing)
+    }
+
+    #expect(metrics.decodedFrameCount == 600)
+    #expect(abs((metrics.rollingFramesPerSecond ?? 0) - 60) < 0.001)
 }

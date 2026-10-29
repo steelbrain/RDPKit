@@ -26,28 +26,34 @@ struct MCSAttachUserConfirm: Equatable, Sendable {
 
     static func parse(fromTPKT packet: Data) throws -> MCSAttachUserConfirm {
         var cursor = try ByteCursor(X224DataTPDU.unwrap(packet))
-        let header = try cursor.readUInt8()
-        guard header == 0x2E else {
-            throw RDPDecodeError.invalidMCSAttachUserConfirm
-        }
-
-        let result = try cursor.readUInt8()
-        if result == 0, cursor.remaining == 0 {
-            throw RDPDecodeError.invalidMCSAttachUserConfirm
-        }
-        guard cursor.remaining == 2 else {
-            guard cursor.remaining == 0 else {
-                throw RDPDecodeError.invalidMCSAttachUserConfirm
-            }
-            return MCSAttachUserConfirm(result: result, userChannelID: nil)
-        }
-
-        let userIDOffset = try cursor.readBigEndianUInt16()
-        return try MCSAttachUserConfirm(
-            result: result,
-            userChannelID: mcsUserID(fromOffset: userIDOffset)
+        let (initiatorPresent, result) = try readMCSConfirmHeader(
+            &cursor,
+            choice: 11,
+            error: .invalidMCSAttachUserConfirm
         )
+        let userChannelID = initiatorPresent ? try mcsUserID(fromOffset: cursor.readBigEndianUInt16()) : nil
+        guard cursor.remaining == 0, result != 0 || userChannelID != nil else {
+            throw RDPDecodeError.invalidMCSAttachUserConfirm
+        }
+        return MCSAttachUserConfirm(result: result, userChannelID: userChannelID)
     }
+}
+
+/// Reads the T.125 PER header shared by Attach User and Channel Join Confirm: a 6-bit
+/// DomainMCSPDU choice, the bit flagging the trailing OPTIONAL field, then Result.
+/// PER packs Result's top bit into the header and the rest into the next byte's high
+/// bits; FreeRDP-based servers (KRdp, GRD) write it as that whole byte instead, so the
+/// returned result is only exact for 0, and any nonzero value means failure.
+private func readMCSConfirmHeader(
+    _ cursor: inout ByteCursor,
+    choice: UInt8,
+    error: RDPDecodeError
+) throws -> (optionalFieldPresent: Bool, result: UInt8) {
+    let header = try cursor.readUInt8()
+    guard header >> 2 == choice else {
+        throw error
+    }
+    return try (header & 0x02 != 0, cursor.readUInt8() | (header & 0x01) << 7)
 }
 
 struct MCSChannelJoinRequestPDU: Equatable, Sendable {
@@ -74,6 +80,7 @@ struct MCSChannelJoinConfirm: Equatable, Sendable {
     var result: UInt8
     var initiator: UInt16
     var requestedChannelID: UInt16
+    /// 0 when the server omitted the OPTIONAL channelId, which only a failed join may do.
     var channelID: UInt16
 
     var resultName: String {
@@ -87,36 +94,25 @@ struct MCSChannelJoinConfirm: Equatable, Sendable {
 
     static func parse(fromTPKT packet: Data) throws -> MCSChannelJoinConfirm {
         var cursor = try ByteCursor(X224DataTPDU.unwrap(packet))
-        let header = try cursor.readUInt8()
-        guard header == 0x3E else {
-            throw RDPDecodeError.invalidMCSChannelJoinConfirm
-        }
-        guard cursor.remaining == 7 else {
-            throw RDPDecodeError.invalidMCSChannelJoinConfirm
-        }
-
-        let result = try cursor.readUInt8()
-        let initiatorOffset = try cursor.readBigEndianUInt16()
+        let (channelIDPresent, result) = try readMCSConfirmHeader(
+            &cursor,
+            choice: 15,
+            error: .invalidMCSChannelJoinConfirm
+        )
+        let initiator = try mcsUserID(fromOffset: cursor.readBigEndianUInt16())
         let requestedChannelID = try cursor.readBigEndianUInt16()
-        let channelID = try cursor.readBigEndianUInt16()
-        guard cursor.remaining == 0 else {
+        let channelID = channelIDPresent ? try cursor.readBigEndianUInt16() : nil
+        guard cursor.remaining == 0, result != 0 || channelID != nil else {
             throw RDPDecodeError.invalidMCSChannelJoinConfirm
         }
 
-        return try MCSChannelJoinConfirm(
+        return MCSChannelJoinConfirm(
             result: result,
-            initiator: mcsUserID(fromOffset: initiatorOffset),
+            initiator: initiator,
             requestedChannelID: requestedChannelID,
-            channelID: channelID
+            channelID: channelID ?? 0
         )
     }
-}
-
-private func mcsUserID(fromOffset offset: UInt16) throws -> UInt16 {
-    guard offset <= UInt16.max - 1001 else {
-        throw RDPDecodeError.invalidBERLength
-    }
-    return 1001 + offset
 }
 
 public struct RDPChannelJoinReport: Encodable, Equatable, Sendable {

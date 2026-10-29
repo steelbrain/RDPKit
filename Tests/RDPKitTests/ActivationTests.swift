@@ -31,6 +31,18 @@ import Testing
     }
 }
 
+@Test func rejectsDemandActiveWhoseTotalLengthIsTheFlowMarker() {
+    // 0x8000 marks a Flow PDU (2.2.8.1.1.1.1), never a Demand Active length.
+    #expect(throws: RDPDecodeError.invalidDemandActivePDU) {
+        try RDPDemandActivePDU.parseIfPresent(fromTPKT: hexData("""
+        03 00 00 3d 02 f0 80 68 00 05 03 eb 70 2f
+        00 80 11 00 ee 03 ee 03 01 00 04 00 19 00 52 44 50 00
+        03 00 00 00 01 00 04 00 1c 00 0c 00 52 00 00 00 00 00 00 00 1d 00 05 00 00
+        00 00 00 00
+        """))
+    }
+}
+
 @Test func parsesDemandActiveServerVirtualChannelChunkSize() throws {
     let demandActive = try #require(try RDPDemandActivePDU.parseIfPresent(
         fromTPKT: demandActivePacket(capabilitySets: [
@@ -123,7 +135,7 @@ import Testing
     ]))
     #expect(packet.containsSubsequence(Data([
         0xEE, 0x03, 0x01, 0x00,
-        0xEA, 0x03, 0x09, 0x00,
+        0xEA, 0x03, 0x06, 0x00,
     ])))
     #expect(confirmActive.capabilitySets.map(\.name) == [
         "general",
@@ -256,48 +268,21 @@ import Testing
 }
 
 @Test func confirmActiveExposesItsAdvertisedMultifragmentBufferSize() throws {
-    let full = RDPClientConfirmActivePDU(shareID: 1)
-    let compact = RDPClientConfirmActivePDU(
-        shareID: 1,
-        includeActivationControlShareCapabilities: false
-    )
+    let confirmActive = RDPClientConfirmActivePDU(shareID: 1)
 
-    #expect(full.multifragmentUpdateMaxRequestSize == 0x0080_0000)
-    #expect(compact.multifragmentUpdateMaxRequestSize == 0x0001_0000)
-    #expect(try #require(full.capabilityBodies(userChannelID: 1006)[0x001A]).littleEndianUInt32(at: 0)
-        == UInt32(full.multifragmentUpdateMaxRequestSize))
-    #expect(try #require(compact.capabilityBodies(userChannelID: 1006)[0x001A]).littleEndianUInt32(at: 0)
-        == UInt32(compact.multifragmentUpdateMaxRequestSize))
+    #expect(confirmActive.multifragmentUpdateMaxRequestSize == 0x0080_0000)
+    #expect(try #require(confirmActive.capabilityBodies(userChannelID: 1006)[0x001A]).littleEndianUInt32(at: 0)
+        == UInt32(confirmActive.multifragmentUpdateMaxRequestSize))
 }
 
-@Test func confirmActiveCanUseCompactCapabilitySetForKRDPCompatibility() throws {
-    let confirmActive = RDPClientConfirmActivePDU(
-        shareID: 0x0001_03EE,
-        includeActivationControlShareCapabilities: false
-    )
-
-    // Compact Confirm Active retains every mandatory capability set while
-    // omitting optional sets that are not needed by minimal Demand Active servers.
-    #expect(confirmActive.capabilitySets.map(\.name) == [
-        "general",
-        "bitmap",
-        "order",
-        "bitmap-cache",
-        "pointer",
-        "input",
-        "font",
-        "brush",
-        "glyph-cache",
-        "offscreen-cache",
-        "virtual-channel",
-        "multifragment-update",
-        "large-pointer",
-        "surface-commands",
-    ])
+@Test func confirmActiveSendsEveryServerTheMandatoryAndOptionalCapabilitySets() throws {
+    // The list is pinned in confirmActiveUsesDemandShareAndAdvertises... Both
+    // captures show it without Window Activation, Control and Share; those
+    // three are byte-identical to mstsc's (MS-RDPBCGR 4.1.13).
+    let confirmActive = RDPClientConfirmActivePDU(shareID: 0x0001_03EE)
     let userData = confirmActive.encodedPDUData(userChannelID: 1006)
-    let declaredTotalLength = Int(userData.littleEndianUInt16(at: 0))
     // MS-RDPBCGR 2.2.8.1.1.1.1: totalLength includes the Share Control Header.
-    #expect(declaredTotalLength == userData.count)
+    #expect(Int(userData.littleEndianUInt16(at: 0)) == userData.count)
     // originatorID MUST be server channel ID 0x03EA (2.2.1.13.2.1).
     #expect(userData.littleEndianUInt16(at: 10) == RDPServerChannelID.fixed)
 
@@ -305,17 +290,6 @@ import Testing
     let virtualChannel = try #require(capabilities[0x0014])
     // MS-RDPBCGR 2.2.7.1.10: VCChunkSize MUST be in 1,600...16,256.
     #expect(virtualChannel.littleEndianUInt32(at: 4) == UInt32(RDPStaticVirtualChannelPDU.maximumPayloadByteCount))
-}
-
-@Test func confirmActiveTotalLengthMatchesEncodedUserDataForFullAndCompactPaths() {
-    for includeExtras in [true, false] {
-        let confirmActive = RDPClientConfirmActivePDU(
-            shareID: 0x0001_03EE,
-            includeActivationControlShareCapabilities: includeExtras
-        )
-        let userData = confirmActive.encodedPDUData(userChannelID: 1006)
-        #expect(Int(userData.littleEndianUInt16(at: 0)) == userData.count)
-    }
 }
 
 @Test func parsesServerSynchronizeShareData() throws {
@@ -329,11 +303,6 @@ import Testing
     #expect(shareData.pduSource == 1006)
     #expect(shareData.pduType2 == 0x1F)
     #expect(shareData.typeName == "server-synchronize")
-}
-
-private func hexData(_ value: String) -> Data {
-    let bytes = value.split(whereSeparator: { $0.isWhitespace }).compactMap { UInt8($0, radix: 16) }
-    return Data(bytes)
 }
 
 private func demandActivePacket(
@@ -391,23 +360,6 @@ private func inputCapabilityBody(inputFlags: UInt16) -> Data {
     return data
 }
 
-private extension Data {
-    func containsSubsequence(_ needle: Data) -> Bool {
-        range(of: needle) != nil
-    }
-
-    func littleEndianUInt32(at offset: Int) -> UInt32 {
-        UInt32(self[offset])
-            | UInt32(self[offset + 1]) << 8
-            | UInt32(self[offset + 2]) << 16
-            | UInt32(self[offset + 3]) << 24
-    }
-
-    func littleEndianUInt16(at offset: Int) -> UInt16 {
-        UInt16(self[offset]) | UInt16(self[offset + 1]) << 8
-    }
-}
-
 private extension RDPClientConfirmActivePDU {
     func capabilityBodies(userChannelID: UInt16) throws -> [UInt16: Data] {
         let userData = encodedPDUData(userChannelID: userChannelID)
@@ -424,5 +376,15 @@ private extension RDPClientConfirmActivePDU {
             offset += length
         }
         return capabilities
+    }
+}
+
+// TPKT entry point for tests; the client parses the routed indication.
+extension RDPDemandActivePDU {
+    static func parseIfPresent(fromTPKT packet: Data) throws -> RDPDemandActivePDU? {
+        guard let indication = try? MCSSendDataIndicationPDU.parse(fromTPKT: packet) else {
+            return nil
+        }
+        return try parseIfPresent(from: indication)
     }
 }

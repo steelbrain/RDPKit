@@ -64,34 +64,46 @@ enum RDP6BitmapDecoder {
                 throw RDPDecodeError.invalidGraphicsUpdatePDU
             }
 
-            var result = Data(capacity: fullPlaneSize * 4)
-            for row in 0 ..< height {
-                for column in 0 ..< width {
-                    let pixelIndex = row * width + column
-                    let chromaIndex = usesChromaSubsampling
-                        ? (row / 2) * chromaWidth + column / 2
-                        : pixelIndex
-                    let alphaValue = alpha?[pixelIndex] ?? 0xFF
+            // Bytes are written in place: appending them to Data one at a time costs more than
+            // the decoding.
+            var result = Data(count: fullPlaneSize * 4)
+            result.withUnsafeMutableBytes { bytes in
+                for row in 0 ..< height {
+                    for column in 0 ..< width {
+                        let pixelIndex = row * width + column
+                        let chromaIndex = usesChromaSubsampling
+                            ? (row / 2) * chromaWidth + column / 2
+                            : pixelIndex
+                        let alphaValue = alpha?[pixelIndex] ?? 0xFF
+                        let offset = pixelIndex * 4
 
-                    if colorLossLevel == 0 {
-                        result.append(greenOrBlue[chromaIndex])
-                        result.append(orangeOrGreen[chromaIndex])
-                        result.append(lumaOrRed[pixelIndex])
-                        result.append(alphaValue)
-                    } else {
-                        let y = Int(lumaOrRed[pixelIndex])
-                        let co = Int(Int8(bitPattern: orangeOrGreen[chromaIndex])) << colorLossLevel
-                        let cg = Int(Int8(bitPattern: greenOrBlue[chromaIndex])) << colorLossLevel
-                        var red = clamp(y + (co >> 1) - (cg >> 1))
-                        let green = clamp(y + (cg >> 1))
-                        var blue = clamp(y - (co >> 1) - (cg >> 1))
-                        if !hasAlpha {
-                            swap(&red, &blue)
+                        if colorLossLevel == 0 {
+                            bytes[offset] = greenOrBlue[chromaIndex]
+                            bytes[offset + 1] = orangeOrGreen[chromaIndex]
+                            bytes[offset + 2] = lumaOrRed[pixelIndex]
+                            bytes[offset + 3] = alphaValue
+                        } else {
+                            // Color loss reduction shifts Co and Cg right with zeros entering at the top
+                            // (MS-RDPEGDI 3.1.9.1.4), so they are shifted back within the byte, less the
+                            // inverse transform's halving, before their sign is read.
+                            let y = Int(lumaOrRed[pixelIndex])
+                            let co = Int(Int8(bitPattern: orangeOrGreen[chromaIndex] << (colorLossLevel - 1)))
+                            let cg = Int(Int8(bitPattern: greenOrBlue[chromaIndex] << (colorLossLevel - 1)))
+                            var red = clamp(y + co - cg)
+                            let green = clamp(y + cg)
+                            var blue = clamp(y - co - cg)
+                            // MS-RDPEGDI 3.1.9.1.2: Windows servers convert 24 bpp bitmaps with color
+                            // loss incorrectly, so decoders MUST swap red and blue. 24 bpp is read here as
+                            // "no alpha plane"; FreeRDP also swaps when an alpha plane is present, and no
+                            // capture shows which Windows needs.
+                            if !hasAlpha {
+                                swap(&red, &blue)
+                            }
+                            bytes[offset] = UInt8(blue)
+                            bytes[offset + 1] = UInt8(green)
+                            bytes[offset + 2] = UInt8(red)
+                            bytes[offset + 3] = alphaValue
                         }
-                        result.append(UInt8(blue))
-                        result.append(UInt8(green))
-                        result.append(UInt8(red))
-                        result.append(alphaValue)
                     }
                 }
             }

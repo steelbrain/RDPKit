@@ -1,6 +1,5 @@
 import Foundation
 import NIOCore
-import NIOPosix
 @preconcurrency import NIOSSL
 @testable import RDPKit
 
@@ -14,7 +13,7 @@ import NIOPosix
 /// inbound socket, so a recorded server-redirection reconnect is reproduced:
 /// segment 0 plays on the first connection (ending in the redirect PDU) and
 /// segment 1 plays on the client's reconnect (through to the first video frame).
-final class RDPTranscriptReplayServer {
+final class RDPTranscriptReplayServer: LoopbackTestServer {
     struct ConnectionSegment {
         /// The server→client X.224 Connection Confirm bytes (plaintext).
         var x224Response: Data
@@ -24,53 +23,34 @@ final class RDPTranscriptReplayServer {
         var appEvents: [RDPWireEvent]
     }
 
-    let port: UInt16
-    private let group: MultiThreadedEventLoopGroup
-    private let channel: Channel
+    /// Application-layer packets the client sent, in order, across connections.
+    let clientPackets: Locked<[Data]>
 
-    private init(port: UInt16, group: MultiThreadedEventLoopGroup, channel: Channel) {
-        self.port = port
-        self.group = group
-        self.channel = channel
-    }
-
-    static func start(
+    /// `onSegmentEnd` runs on the event loop once a connection's recorded
+    /// server events are all sent, so a test can script what follows, and
+    /// `onTrailingClientPacket` for each packet the client sends after that.
+    init(
         transcript: [RDPWireEvent],
-        credentials: RDPCredentials
-    ) throws -> RDPTranscriptReplayServer {
-        let segments = segment(transcript)
-        let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
-        do {
-            let tlsContext = try NIOSSLContext(configuration: MockKRDPTLS.configuration())
-            let connectionLog = MockKRDPConnectionLog()
-            let channel = try ServerBootstrap(group: group)
-                .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
-                .childChannelInitializer { channel in
-                    channel.pipeline.addHandler(RDPTranscriptReplayHandler(
-                        tlsContext: tlsContext,
-                        credentials: credentials,
-                        segments: segments,
-                        connectionLog: connectionLog
-                    ))
-                }
-                .bind(host: "127.0.0.1", port: 0)
-                .wait()
-
-            guard let port = channel.localAddress?.port,
-                  let serverPort = UInt16(exactly: port)
-            else {
-                throw MockKRDPServerError.missingPort
-            }
-            return RDPTranscriptReplayServer(port: serverPort, group: group, channel: channel)
-        } catch {
-            try? group.syncShutdownGracefully()
-            throw error
+        credentials: RDPCredentials,
+        onSegmentEnd: (@Sendable (Channel) -> Void)? = nil,
+        onTrailingClientPacket: (@Sendable (Channel, Data) -> Void)? = nil
+    ) throws {
+        let segments = Self.segment(transcript)
+        let tlsContext = try NIOSSLContext(configuration: MockKRDPTLS.configuration())
+        let connectionCount = Locked(0)
+        let clientPackets = Locked<[Data]>([])
+        self.clientPackets = clientPackets
+        try super.init {
+            RDPTranscriptReplayHandler(
+                tlsContext: tlsContext,
+                credentials: credentials,
+                segments: segments,
+                connectionCount: connectionCount,
+                clientPackets: clientPackets,
+                onSegmentEnd: onSegmentEnd,
+                onTrailingClientPacket: onTrailingClientPacket
+            )
         }
-    }
-
-    func stop() {
-        try? channel.close().wait()
-        try? group.syncShutdownGracefully()
     }
 
     /// Splits a flat transcript into per-TCP-connection segments. A new segment
@@ -128,31 +108,52 @@ private final class RDPTranscriptReplayHandler: ChannelInboundHandler {
     private let tlsContext: NIOSSLContext
     private let credentials: RDPCredentials
     private let segments: [RDPTranscriptReplayServer.ConnectionSegment]
-    private let connectionLog: MockKRDPConnectionLog
+    private let connectionCount: Locked<Int>
+    private let clientPackets: Locked<[Data]>
+    private let onSegmentEnd: (@Sendable (Channel) -> Void)?
+    private let onTrailingClientPacket: (@Sendable (Channel, Data) -> Void)?
 
     private var segment: RDPTranscriptReplayServer.ConnectionSegment?
     private var stage = Stage.x224
-    private var received = Data()
+    private var received = ClientByteStream()
     private var credSSPServer: MockCredSSPServer?
     /// Cursor into the active segment's application events.
     private var appIndex = 0
+    /// Connect-time Bandwidth Measure Start and Network Characteristics Result
+    /// requests have no client response (MS-RDPBCGR 2.2.14.1.2, 2.2.14.1.5), but
+    /// the client build that captured the GNOME transcript answered them, so the
+    /// next recorded client event after each one is not a barrier.
+    private var unansweredAutoDetectRequests = 0
+
+    private static func isUnansweredConnectTimeAutoDetectRequest(_ bytes: Data) -> Bool {
+        guard let request = try? RDPServerAutoDetectRequest.parseIfPresent(fromTPKT: bytes) else {
+            return false
+        }
+        return [0x1014, 0x0840, 0x0880, 0x08C0].contains(request.requestType)
+    }
 
     init(
         tlsContext: NIOSSLContext,
         credentials: RDPCredentials,
         segments: [RDPTranscriptReplayServer.ConnectionSegment],
-        connectionLog: MockKRDPConnectionLog
+        connectionCount: Locked<Int>,
+        clientPackets: Locked<[Data]>,
+        onSegmentEnd: (@Sendable (Channel) -> Void)?,
+        onTrailingClientPacket: (@Sendable (Channel, Data) -> Void)?
     ) {
         self.tlsContext = tlsContext
         self.credentials = credentials
         self.segments = segments
-        self.connectionLog = connectionLog
+        self.connectionCount = connectionCount
+        self.clientPackets = clientPackets
+        self.onSegmentEnd = onSegmentEnd
+        self.onTrailingClientPacket = onTrailingClientPacket
     }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
         var buffer = unwrapInboundIn(data)
         if let bytes = buffer.readBytes(length: buffer.readableBytes) {
-            received.append(contentsOf: bytes)
+            received.append(bytes)
         }
         do {
             try process(context: context)
@@ -170,25 +171,31 @@ private final class RDPTranscriptReplayHandler: ChannelInboundHandler {
         while true {
             switch stage {
             case .x224:
-                guard let packet = nextTPKT() else { return }
+                guard let packet = try received.nextPacket() else { return }
                 try handleX224(packet, context: context)
             case .credSSP:
-                guard let message = try nextASN1Message() else { return }
+                guard let message = try received.nextCredSSPMessage() else { return }
                 try handleCredSSP(message, context: context)
             case .application:
-                guard nextTPKT() != nil else { return }
+                guard let packet = try received.nextPacket() else { return }
+                clientPackets.withLock { $0.append(packet) }
                 advanceClientBarrier()
                 pumpServerEvents(context: context)
             case .done:
-                // Drain and ignore any trailing client packets.
-                guard nextTPKT() != nil else { return }
+                // Record, but do not answer, trailing client packets.
+                guard let packet = try received.nextPacket() else { return }
+                clientPackets.withLock { $0.append(packet) }
+                onTrailingClientPacket?(context.channel, packet)
             }
         }
     }
 
     private func handleX224(_ packet: Data, context: ChannelHandlerContext) throws {
         _ = try TPKT.unwrap(packet)
-        let index = connectionLog.registerConnection() - 1
+        let index = connectionCount.withLock { count in
+            count += 1
+            return count - 1
+        }
         guard index < segments.count else {
             throw MockKRDPServerError.invalidClientPDU
         }
@@ -201,7 +208,7 @@ private final class RDPTranscriptReplayHandler: ChannelInboundHandler {
         try context.channel.pipeline.syncOperations.addHandler(tlsHandler, position: .first)
 
         if segment.usesCredSSP {
-            credSSPServer = try MockCredSSPServer(credentials: credentials, transcript: MockKRDPServerTranscript())
+            credSSPServer = try MockCredSSPServer(credentials: credentials)
             stage = .credSSP
         } else {
             stage = .application
@@ -238,57 +245,24 @@ private final class RDPTranscriptReplayHandler: ChannelInboundHandler {
         guard let segment else { return }
         while appIndex < segment.appEvents.count {
             let event = segment.appEvents[appIndex]
-            guard event.direction == .serverToClient else { break }
+            if event.direction == .clientToServer {
+                guard unansweredAutoDetectRequests > 0 else { break }
+                unansweredAutoDetectRequests -= 1
+                appIndex += 1
+                continue
+            }
             if let bytes = event.bytes {
                 writeRaw(bytes, context: context)
+                if Self.isUnansweredConnectTimeAutoDetectRequest(bytes) {
+                    unansweredAutoDetectRequests += 1
+                }
             }
             appIndex += 1
         }
         if appIndex >= segment.appEvents.count {
             stage = .done
+            onSegmentEnd?(context.channel)
         }
-    }
-
-    private func nextTPKT() -> Data? {
-        guard received.count >= 4 else { return nil }
-        let length = Int(received[received.index(received.startIndex, offsetBy: 2)]) << 8
-            | Int(received[received.index(received.startIndex, offsetBy: 3)])
-        guard length >= 4, received.count >= length else { return nil }
-        let packet = Data(received.prefix(length))
-        received.removeFirst(length)
-        return packet
-    }
-
-    private func nextASN1Message() throws -> Data? {
-        guard received.count >= 2 else { return nil }
-        guard received[received.startIndex] == 0x30 else {
-            throw MockKRDPServerError.invalidClientPDU
-        }
-        let firstLengthByte = received[received.index(after: received.startIndex)]
-        let headerLength: Int
-        let payloadLength: Int
-        if firstLengthByte & 0x80 == 0 {
-            headerLength = 2
-            payloadLength = Int(firstLengthByte)
-        } else {
-            let lengthByteCount = Int(firstLengthByte & 0x7F)
-            guard lengthByteCount > 0, lengthByteCount <= 4 else {
-                throw MockKRDPServerError.invalidClientPDU
-            }
-            headerLength = 2 + lengthByteCount
-            guard received.count >= headerLength else { return nil }
-            var length = 0
-            for offset in 0 ..< lengthByteCount {
-                let byte = received[received.index(received.startIndex, offsetBy: 2 + offset)]
-                length = (length << 8) | Int(byte)
-            }
-            payloadLength = length
-        }
-        let totalLength = headerLength + payloadLength
-        guard received.count >= totalLength else { return nil }
-        let message = Data(received.prefix(totalLength))
-        received.removeFirst(totalLength)
-        return message
     }
 
     @discardableResult

@@ -19,11 +19,6 @@ struct RDPDisplayControlHeader: Equatable, Sendable {
     var type: UInt32
     var length: UInt32
 
-    init(type: UInt32, length: UInt32) {
-        self.type = type
-        self.length = length
-    }
-
     static func parse(from cursor: inout ByteCursor) throws -> RDPDisplayControlHeader {
         try RDPDisplayControlHeader(
             type: cursor.readLittleEndianUInt32(),
@@ -55,18 +50,8 @@ public struct RDPDisplayControlCapabilities: Encodable, Equatable, Sendable {
     }
 }
 
-struct RDPDisplayControlCapsPDU: Encodable, Equatable, Sendable {
-    var maxNumMonitors: UInt32
-    var maxMonitorAreaFactorA: UInt32
-    var maxMonitorAreaFactorB: UInt32
-
-    var capabilities: RDPDisplayControlCapabilities {
-        RDPDisplayControlCapabilities(
-            maxNumMonitors: maxNumMonitors,
-            maxMonitorAreaFactorA: maxMonitorAreaFactorA,
-            maxMonitorAreaFactorB: maxMonitorAreaFactorB
-        )
-    }
+struct RDPDisplayControlCapsPDU: Equatable, Sendable {
+    var capabilities: RDPDisplayControlCapabilities
 
     static func parseIfPresent(from data: Data) throws -> RDPDisplayControlCapsPDU? {
         guard data.count >= 8 else {
@@ -84,11 +69,11 @@ struct RDPDisplayControlCapsPDU: Encodable, Equatable, Sendable {
             throw RDPDecodeError.invalidDynamicVirtualChannelPDU
         }
 
-        return try RDPDisplayControlCapsPDU(
+        return try RDPDisplayControlCapsPDU(capabilities: RDPDisplayControlCapabilities(
             maxNumMonitors: cursor.readLittleEndianUInt32(),
             maxMonitorAreaFactorA: cursor.readLittleEndianUInt32(),
             maxMonitorAreaFactorB: cursor.readLittleEndianUInt32()
-        )
+        ))
     }
 }
 
@@ -364,12 +349,13 @@ private func cappedAreaProduct(_ lhs: UInt32, _ rhs: UInt32, _ other: UInt32) ->
     return second.overflow ? UInt64.max : second.partialValue
 }
 
-public final class RDPDisplayControlSession: @unchecked Sendable {
+public final class RDPDisplayControlSession: Sendable {
     public let dynamicChannelID: UInt32
     public let capabilities: RDPDisplayControlCapabilities
     private let userChannelID: UInt16
     private let staticChannelID: UInt16
     private let channel: Channel
+    private let cutoff = RDPSendCutoff()
 
     init(
         dynamicChannelID: UInt32,
@@ -403,8 +389,10 @@ public final class RDPDisplayControlSession: @unchecked Sendable {
         send(request.monitorLayoutPDU)
     }
 
+    /// Sends nothing once the server has closed this session's channel or opened another
+    /// DisplayControl channel, whose session `onDisplayControlReady` hands out.
     func send(_ layout: RDPDisplayControlMonitorLayoutPDU) {
-        guard layout.isValid(for: capabilities) else {
+        guard !cutoff.isCutOff, layout.isValid(for: capabilities) else {
             return
         }
 
@@ -426,6 +414,10 @@ public final class RDPDisplayControlSession: @unchecked Sendable {
             self.channel.writeAndFlush(buffer, promise: nil)
         }
     }
+
+    func end() {
+        cutoff.cut()
+    }
 }
 
 private func clampedDisplayDimension(_ value: UInt32) -> UInt32 {
@@ -441,7 +433,7 @@ private func clampedDesktopScaleFactor(_ value: UInt32) -> UInt32 {
     min(500, max(100, value))
 }
 
-private func nearestDeviceScaleFactor(_ value: UInt32) -> UInt32 {
+func nearestDeviceScaleFactor(_ value: UInt32) -> UInt32 {
     if value < 120 {
         return 100
     }

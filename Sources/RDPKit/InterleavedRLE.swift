@@ -29,10 +29,14 @@ enum RDPInterleavedBitmapDecoder {
         guard expectedPixelCount <= Int.max / pixelByteCount else {
             throw RDPDecodeError.invalidGraphicsUpdatePDU
         }
-        var result = Data(capacity: expectedPixelCount * pixelByteCount)
-        for pixel in pixels {
-            for byteIndex in 0 ..< pixelByteCount {
-                result.append(UInt8(truncatingIfNeeded: pixel >> UInt32(byteIndex * 8)))
+        // Bytes are written in place: appending them to Data one at a time costs more than
+        // the decoding.
+        var result = Data(count: expectedPixelCount * pixelByteCount)
+        result.withUnsafeMutableBytes { bytes in
+            for (index, pixel) in pixels.enumerated() {
+                for byteIndex in 0 ..< pixelByteCount {
+                    bytes[index * pixelByteCount + byteIndex] = UInt8(truncatingIfNeeded: pixel >> UInt32(byteIndex * 8))
+                }
             }
         }
         return result
@@ -67,12 +71,12 @@ enum RDPInterleavedBitmapDecoder {
     }
 
     private struct Decoder {
-        var source: [UInt8]
+        let source: [UInt8]
         var sourceIndex = 0
-        var width: Int
-        var expectedPixelCount: Int
-        var pixelByteCount: Int
-        var whitePixel: UInt32
+        let width: Int
+        let expectedPixelCount: Int
+        let pixelByteCount: Int
+        let whitePixel: UInt32
         var foregroundPixel: UInt32
         var pixels: [UInt32] = []
         var insertForegroundPixel = false
@@ -198,10 +202,8 @@ enum RDPInterleavedBitmapDecoder {
 
         private mutating func decodeBackgroundRun(length: Int) throws {
             var remaining = length
+            // Consecutive background runs are separated by one foreground pixel (MS-RDPBCGR 3.1.9).
             if insertForegroundPixel {
-                guard remaining > 0 else {
-                    throw RDPDecodeError.invalidGraphicsUpdatePDU
-                }
                 try append(isFirstLine ? foregroundPixel : previousLinePixel() ^ foregroundPixel)
                 remaining -= 1
             }

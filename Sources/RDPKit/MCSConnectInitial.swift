@@ -42,15 +42,7 @@ struct RDPStaticVirtualChannel: Equatable, Sendable {
 enum ChannelOptions {
     static let initialized: UInt32 = 0x8000_0000
     static let encryptRDP: UInt32 = 0x4000_0000
-    static let encryptServerToClient: UInt32 = 0x2000_0000
-    static let encryptClientToServer: UInt32 = 0x1000_0000
-    static let highPriority: UInt32 = 0x0800_0000
-    static let mediumPriority: UInt32 = 0x0400_0000
-    static let lowPriority: UInt32 = 0x0200_0000
     static let compressRDP: UInt32 = 0x0080_0000
-    static let compress: UInt32 = 0x0040_0000
-    static let showProtocol: UInt32 = 0x0020_0000
-    static let remoteControlPersistent: UInt32 = 0x0010_0000
 }
 
 private enum ClientEarlyCapabilityFlags {
@@ -105,21 +97,17 @@ struct MCSConnectInitialConfiguration: Equatable, Sendable {
     var requestedProtocols: RDPSecurityProtocols
     var channels: [RDPStaticVirtualChannel]
     var advertiseMessageChannel: Bool
-    var audioPlaybackEnabled: Bool
     var redirectedSessionID: UInt32?
-    var storedClientLicense: RDPStoredClientLicense?
 
     init(
         desktopWidth: UInt16 = 1280,
         desktopHeight: UInt16 = 720,
-        clientName: String = "KRDPSWIFT",
+        clientName: String = "RDPKIT",
         selectedProtocol: RDPSecurityProtocols = .tls,
         requestedProtocols: RDPSecurityProtocols = [.tls, .credSSP],
         channels: [RDPStaticVirtualChannel] = [.drdynvc],
         advertiseMessageChannel: Bool = false,
-        audioPlaybackEnabled: Bool = false,
-        redirectedSessionID: UInt32? = nil,
-        storedClientLicense: RDPStoredClientLicense? = nil
+        redirectedSessionID: UInt32? = nil
     ) {
         precondition(!channels.isEmpty)
         precondition(channels.count <= 31)
@@ -133,9 +121,7 @@ struct MCSConnectInitialConfiguration: Equatable, Sendable {
         self.requestedProtocols = requestedProtocols
         self.channels = channels
         self.advertiseMessageChannel = advertiseMessageChannel
-        self.audioPlaybackEnabled = audioPlaybackEnabled
         self.redirectedSessionID = redirectedSessionID
-        self.storedClientLicense = storedClientLicense
     }
 }
 
@@ -217,7 +203,7 @@ struct MCSConnectInitialPDU: Equatable, Sendable {
         body.appendLittleEndianUInt16(0xAA03)
         body.appendLittleEndianUInt32(0x0000_0409)
         body.appendLittleEndianUInt32(3790)
-        body.append(fixedUTF16LE(configuration.clientName, codeUnitCount: 16))
+        body.append(Data(fixedUTF16LittleEndian: configuration.clientName, codeUnitCount: 16))
         body.appendLittleEndianUInt32(4)
         body.appendLittleEndianUInt32(0)
         body.appendLittleEndianUInt32(12)
@@ -229,7 +215,7 @@ struct MCSConnectInitialPDU: Equatable, Sendable {
         body.appendLittleEndianUInt16(0x000F)
         let earlyFlags = ClientEarlyCapabilityFlags.flags(for: configuration)
         body.appendLittleEndianUInt16(earlyFlags)
-        body.append(fixedUTF16LE("00000-000-0000000-00000", codeUnitCount: 32))
+        body.append(Data(fixedUTF16LittleEndian: "00000-000-0000000-00000", codeUnitCount: 32))
         // MS-RDPBCGR 2.2.1.3.2: when RNS_UD_CS_VALID_CONNECTION_TYPE is set,
         // connectionType is meaningful. With RNS_UD_CS_SUPPORT_NETCHAR_AUTODETECT,
         // CONNECTION_TYPE_AUTODETECT (0x07) is the consistent choice.
@@ -365,28 +351,9 @@ private func berBoolean(_ value: Bool) -> Data {
 }
 
 private func fixedASCII(_ string: String, byteCount: Int) -> Data {
-    let bytes = Array(string.utf8)
+    let bytes = Data(string.utf8)
     precondition(bytes.count <= byteCount)
-    precondition(bytes.allSatisfy { $0 < 0x80 })
-
-    var data = Data(bytes)
-    while data.count < byteCount {
-        data.appendUInt8(0)
-    }
-    return data
-}
-
-private func fixedUTF16LE(_ string: String, codeUnitCount: Int) -> Data {
-    precondition(codeUnitCount > 0)
-
-    var data = Data()
-    for codeUnit in string.utf16.prefix(codeUnitCount - 1) {
-        data.appendLittleEndianUInt16(codeUnit)
-    }
-    while data.count < codeUnitCount * 2 {
-        data.appendUInt8(0)
-    }
-    return data
+    return bytes + Data(count: byteCount - bytes.count)
 }
 
 private extension Data {

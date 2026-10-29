@@ -7,6 +7,7 @@ struct RDPNTLMStep {
     var isComplete: Bool
 }
 
+/// NTLMv2 client with extended session security, as CredSSP uses it (MS-NLMP).
 final class RDPCredSSPNTLMContext {
     private enum State {
         case negotiate
@@ -18,9 +19,13 @@ final class RDPCredSSPNTLMContext {
         var message: Data
         var flags: UInt32
         var serverChallenge: Data
-        var targetInfo: Data
-        var timestamp: UInt64
-        var hasTimestamp: Bool
+        var targetInfo: [AVPair]
+        var timestamp: UInt64?
+    }
+
+    private struct AVPair {
+        var id: UInt16
+        var value: Data
     }
 
     private struct MessageField {
@@ -28,35 +33,34 @@ final class RDPCredSSPNTLMContext {
         var offset: Int
     }
 
-    private struct TargetInfoMetadata {
-        var timestamp: UInt64?
-    }
-
-    private enum TargetInfoAVID {
+    /// MS-NLMP 2.2.2.1 AvId values.
+    private enum AVID {
         static let eol: UInt16 = 0x0000
         static let flags: UInt16 = 0x0006
         static let timestamp: UInt16 = 0x0007
         static let channelBindings: UInt16 = 0x000A
     }
 
-    private let credentials: RDPCredentials
+    private let username: String
+    private let domain: String
+    private let responseKey: Data
     private let workstationName: String
     private let channelBindingsHash: Data?
     private let randomBytes: (Int) throws -> Data
     private let currentFileTime: () -> UInt64
     private var state: State = .negotiate
     private var negotiateMessage = Data()
+    private var negotiatedFlags: UInt32 = 0
     private var sendSigningKey = Data()
     private var receiveSigningKey = Data()
-    private var sendSealingKey: RDPNTLMRC4?
-    private var receiveSealingKey: RDPNTLMRC4?
+    private var sendSealingKey: RDPRC4?
+    private var receiveSealingKey: RDPRC4?
     private var sendSequenceNumber: UInt32 = 0
     private var receiveSequenceNumber: UInt32 = 0
-    private var negotiatedFlags: UInt32 = 0
 
     init(
         credentials: RDPCredentials,
-        workstationName: String = "KRDPSWIFT",
+        workstationName: String = "RDPKIT",
         channelBindingsHash: Data? = nil,
         randomBytes: @escaping (Int) throws -> Data = RDPCredSSPNTLMContext.secureRandomData(count:),
         currentFileTime: @escaping () -> UInt64 = RDPCredSSPNTLMContext.nowFileTime
@@ -64,7 +68,13 @@ final class RDPCredSSPNTLMContext {
         if let channelBindingsHash {
             precondition(channelBindingsHash.count == Self.hashSize)
         }
-        self.credentials = credentials
+        username = credentials.username
+        domain = credentials.domain ?? ""
+        responseKey = Self.ntowfV2(
+            password: credentials.password,
+            username: credentials.username,
+            domain: credentials.domain ?? ""
+        )
         self.workstationName = workstationName
         self.channelBindingsHash = channelBindingsHash
         self.randomBytes = randomBytes
@@ -77,17 +87,15 @@ final class RDPCredSSPNTLMContext {
             guard inputToken?.isEmpty != false else {
                 throw RDPCredSSPError.ntlm("received a server token before sending NTLM negotiate")
             }
-            let token = Self.makeNegotiateMessage()
-            negotiateMessage = token
+            negotiateMessage = Self.makeNegotiateMessage()
             state = .authenticate
-            return RDPNTLMStep(outputToken: token, isComplete: false)
+            return RDPNTLMStep(outputToken: negotiateMessage, isComplete: false)
 
         case .authenticate:
             guard let inputToken, !inputToken.isEmpty else {
                 throw RDPCredSSPError.missingToken
             }
-            let parsedChallenge = try Self.parseChallengeMessage(inputToken, fallbackFileTime: currentFileTime)
-            let token = try makeAuthenticateMessage(for: parsedChallenge)
+            let token = try makeAuthenticateMessage(for: Self.parseChallengeMessage(inputToken))
             state = .final
             return RDPNTLMStep(outputToken: token, isComplete: true)
 
@@ -96,111 +104,116 @@ final class RDPCredSSPNTLMContext {
         }
     }
 
+    /// MS-NLMP 3.4.3 SEAL: the signature followed by the sealed message.
     func wrap(_ message: Data) throws -> Data {
-        guard state == .final,
-              !sendSigningKey.isEmpty,
-              let sendSealingKey
-        else {
+        guard let sendSealingKey else {
             throw RDPCredSSPError.ntlm("NTLM security context is not complete")
         }
-
-        let sequenceNumber = sendSequenceNumber
-        let digest = Self.hmacMD5(
-            key: sendSigningKey,
-            data: Self.sequenceInput(sequenceNumber: sequenceNumber, data: message)
+        let sealedMessage = sendSealingKey.process(message)
+        let signature = messageSignature(
+            for: message,
+            sequenceNumber: sendSequenceNumber,
+            signingKey: sendSigningKey,
+            sealingKey: sendSealingKey
         )
-        let encryptedMessage = sendSealingKey.process(message)
-        let checksum = negotiatedFlags & Self.negotiateKeyExchange != 0
-            ? sendSealingKey.process(Data(digest.prefix(8)))
-            : Data(digest.prefix(8))
-        let signature = Self.signature(checksum: checksum, sequenceNumber: sequenceNumber)
         sendSequenceNumber &+= 1
-        return signature + encryptedMessage
+        return signature + sealedMessage
     }
 
     func unwrap(_ message: Data) throws -> Data {
-        guard state == .final,
-              !receiveSigningKey.isEmpty,
-              let receiveSealingKey
-        else {
+        guard let receiveSealingKey else {
             throw RDPCredSSPError.ntlm("NTLM security context is not complete")
         }
         guard message.count >= Self.signatureSize else {
             throw RDPCredSSPError.ntlm("NTLM sealed message is too short")
         }
-
-        let signature = Data(message.prefix(Self.signatureSize))
-        let sequenceNumber = try Self.readLittleEndianUInt32(signature, at: 12)
-        guard sequenceNumber == receiveSequenceNumber else {
-            throw RDPCredSSPError.ntlm(
-                "unexpected NTLM sequence number \(sequenceNumber), expected \(receiveSequenceNumber)"
-            )
-        }
-
-        let encryptedMessage = Data(message.dropFirst(Self.signatureSize))
-        let decryptedMessage = receiveSealingKey.process(encryptedMessage)
-        let digest = Self.hmacMD5(
-            key: receiveSigningKey,
-            data: Self.sequenceInput(sequenceNumber: sequenceNumber, data: decryptedMessage)
+        let decryptedMessage = receiveSealingKey.process(message.dropFirst(Self.signatureSize))
+        let expectedSignature = messageSignature(
+            for: decryptedMessage,
+            sequenceNumber: receiveSequenceNumber,
+            signingKey: receiveSigningKey,
+            sealingKey: receiveSealingKey
         )
-        let checksum = negotiatedFlags & Self.negotiateKeyExchange != 0
-            ? receiveSealingKey.process(Data(digest.prefix(8)))
-            : Data(digest.prefix(8))
-        let expectedSignature = Self.signature(checksum: checksum, sequenceNumber: sequenceNumber)
-        guard signature == expectedSignature else {
-            throw RDPCredSSPError.serverBindingMismatch
+        guard message.prefix(Self.signatureSize) == expectedSignature else {
+            throw RDPCredSSPError.ntlm("NTLM message signature did not verify")
         }
-
         receiveSequenceNumber &+= 1
         return decryptedMessage
     }
 
-    private func makeAuthenticateMessage(for challenge: Challenge) throws -> Data {
-        let clientChallenge = try randomBytes(Self.challengeSize)
-        let ntlmV2Hash = Self.ntlmV2Hash(credentials: credentials)
-        let authenticateTargetInfo = try Self.authenticateTargetInfo(
-            from: challenge.targetInfo,
-            channelBindingsHash: channelBindingsHash
-        )
-        let lmChallengeResponse = Self.lmV2Response(
-            serverChallenge: challenge.serverChallenge,
-            clientChallenge: clientChallenge,
-            ntlmV2Hash: ntlmV2Hash
-        )
-        let ntChallenge = Self.ntlmV2Response(
-            serverChallenge: challenge.serverChallenge,
-            clientChallenge: clientChallenge,
-            targetInfo: authenticateTargetInfo,
-            timestamp: challenge.timestamp,
-            ntlmV2Hash: ntlmV2Hash
-        )
+    /// MS-NLMP 3.4.4.2 MAC with extended session security.
+    private func messageSignature(
+        for message: Data,
+        sequenceNumber: UInt32,
+        signingKey: Data,
+        sealingKey: RDPRC4
+    ) -> Data {
+        var input = Data()
+        input.appendLittleEndianUInt32(sequenceNumber)
+        input.append(message)
+        var checksum = Self.hmacMD5(key: signingKey, data: input).prefix(8)
+        if negotiatedFlags & Self.negotiateKeyExchange != 0 {
+            checksum = sealingKey.process(checksum)
+        }
+        var signature = Data()
+        signature.appendLittleEndianUInt32(1)
+        signature.append(checksum)
+        signature.appendLittleEndianUInt32(sequenceNumber)
+        return signature
+    }
 
-        negotiatedFlags = try Self.authenticateFlags(from: challenge.flags, credentials: credentials)
+    /// MS-NLMP 3.1.5.1.2: builds the AUTHENTICATE_MESSAGE and installs the session keys.
+    private func makeAuthenticateMessage(for challenge: Challenge) throws -> Data {
+        negotiatedFlags = try Self.authenticateFlags(from: challenge.flags, domainSupplied: !domain.isEmpty)
+        let clientChallenge = try randomBytes(Self.challengeSize)
+        let ntChallenge = Self.ntlmV2Response(
+            responseKey: responseKey,
+            serverChallenge: challenge.serverChallenge,
+            clientChallenge: clientChallenge,
+            time: challenge.timestamp ?? currentFileTime(),
+            serverName: Self.authenticateTargetInfo(from: challenge.targetInfo, channelBindingsHash: channelBindingsHash)
+        )
+        // With MsvAvTimestamp the client sends Z(24) instead of the LMv2 response.
+        let lmChallengeResponse = challenge.timestamp == nil
+            ? Self.hmacMD5(key: responseKey, data: challenge.serverChallenge + clientChallenge) + clientChallenge
+            : Data(count: 24)
+
         let exportedSessionKey: Data
         let encryptedRandomSessionKey: Data
         if negotiatedFlags & Self.negotiateKeyExchange != 0 {
             exportedSessionKey = try randomBytes(Self.hashSize)
-            encryptedRandomSessionKey = RDPNTLMRC4(key: ntChallenge.keyExchangeKey).process(exportedSessionKey)
+            encryptedRandomSessionKey = RDPRC4(key: ntChallenge.sessionBaseKey).process(exportedSessionKey)
         } else {
-            exportedSessionKey = ntChallenge.keyExchangeKey
+            exportedSessionKey = ntChallenge.sessionBaseKey
             encryptedRandomSessionKey = Data()
         }
 
-        let domain = Self.utf16LittleEndian(credentials.domain ?? "")
-        let username = Self.utf16LittleEndian(credentials.username)
+        let domainName = Data(utf16LittleEndian: domain)
+        let userName = Data(utf16LittleEndian: username)
         let workstation = negotiatedFlags & Self.negotiateVersion != 0
-            ? Self.utf16LittleEndian(workstationName)
+            ? Data(utf16LittleEndian: workstationName)
             : Data()
+        // Payload in Windows order; the header below lists the fields in MS-NLMP 2.2.1.3 order.
+        let payload = [
+            domainName,
+            userName,
+            workstation,
+            lmChallengeResponse,
+            ntChallenge.response,
+            encryptedRandomSessionKey,
+        ]
+        guard payload.allSatisfy({ $0.count <= UInt16.max }) else {
+            throw RDPCredSSPError.ntlm("NTLM authenticate message field is too long")
+        }
         var payloadOffset = Self.authenticatePayloadOffset
-        let domainField = Self.messageField(for: domain, offset: &payloadOffset)
-        let usernameField = Self.messageField(for: username, offset: &payloadOffset)
+        let domainField = Self.messageField(for: domainName, offset: &payloadOffset)
+        let usernameField = Self.messageField(for: userName, offset: &payloadOffset)
         let workstationField = Self.messageField(for: workstation, offset: &payloadOffset)
         let lmField = Self.messageField(for: lmChallengeResponse, offset: &payloadOffset)
         let ntField = Self.messageField(for: ntChallenge.response, offset: &payloadOffset)
         let encryptedKeyField = Self.messageField(for: encryptedRandomSessionKey, offset: &payloadOffset)
 
-        var message = Data()
-        message.append(Self.signatureBytes)
+        var message = Self.signatureBytes
         message.appendLittleEndianUInt32(3)
         Self.append(field: lmField, to: &message)
         Self.append(field: ntField, to: &message)
@@ -211,14 +224,11 @@ final class RDPCredSSPNTLMContext {
         message.appendLittleEndianUInt32(negotiatedFlags)
         message.append(negotiatedFlags & Self.negotiateVersion != 0
             ? Self.version
-            : Data(repeating: 0, count: Self.version.count))
-        message.append(Data(repeating: 0, count: Self.micSize))
-        message.append(domain)
-        message.append(username)
-        message.append(workstation)
-        message.append(lmChallengeResponse)
-        message.append(ntChallenge.response)
-        message.append(encryptedRandomSessionKey)
+            : Data(count: Self.version.count))
+        message.append(Data(count: Self.micSize))
+        for field in payload {
+            message.append(field)
+        }
 
         let mic = Self.hmacMD5(key: exportedSessionKey, data: negotiateMessage + challenge.message + message)
         message.replaceSubrange(Self.micRange, with: mic)
@@ -226,192 +236,174 @@ final class RDPCredSSPNTLMContext {
         return message
     }
 
+    /// MS-NLMP 3.4.5.2 SIGNKEY and 3.4.5.3 SEALKEY.
     private func installKeys(exportedSessionKey: Data) {
         sendSigningKey = Self.md5(exportedSessionKey + Self.clientSigningMagic)
         receiveSigningKey = Self.md5(exportedSessionKey + Self.serverSigningMagic)
-        sendSealingKey = RDPNTLMRC4(key: Self.sealingKey(
-            exportedSessionKey: exportedSessionKey,
-            flags: negotiatedFlags,
-            magic: Self.clientSealingMagic
-        ))
-        receiveSealingKey = RDPNTLMRC4(key: Self.sealingKey(
-            exportedSessionKey: exportedSessionKey,
-            flags: negotiatedFlags,
-            magic: Self.serverSealingMagic
-        ))
+        let sealingMaterial: Data
+        if negotiatedFlags & Self.negotiate128 != 0 {
+            sealingMaterial = exportedSessionKey
+        } else if negotiatedFlags & Self.negotiate56 != 0 {
+            sealingMaterial = exportedSessionKey.prefix(7)
+        } else {
+            sealingMaterial = exportedSessionKey.prefix(5)
+        }
+        sendSealingKey = RDPRC4(key: Self.md5(sealingMaterial + Self.clientSealingMagic))
+        receiveSealingKey = RDPRC4(key: Self.md5(sealingMaterial + Self.serverSealingMagic))
     }
 
     private static func makeNegotiateMessage() -> Data {
-        var message = Data()
-        message.append(signatureBytes)
+        var message = signatureBytes
         message.appendLittleEndianUInt32(1)
         message.appendLittleEndianUInt32(negotiateFlags)
-        append(field: MessageField(length: 0, offset: negotiatePayloadOffset), to: &message)
-        append(field: MessageField(length: 0, offset: negotiatePayloadOffset), to: &message)
+        append(field: MessageField(length: 0, offset: 0), to: &message)
+        append(field: MessageField(length: 0, offset: 0), to: &message)
         message.append(version)
         return message
     }
 
-    private static func parseChallengeMessage(
-        _ message: Data,
-        fallbackFileTime: () -> UInt64
-    ) throws -> Challenge {
+    /// MS-NLMP 2.2.1.2 CHALLENGE_MESSAGE.
+    private static func parseChallengeMessage(_ message: Data) throws -> Challenge {
+        var cursor = ByteCursor(message)
         guard message.count >= 48,
-              message.prefix(signatureBytes.count) == signatureBytes,
-              try readLittleEndianUInt32(message, at: 8) == 2
+              try cursor.readData(count: signatureBytes.count) == signatureBytes,
+              try cursor.readLittleEndianUInt32() == 2
         else {
             throw RDPCredSSPError.ntlm("invalid NTLM challenge message")
         }
-
-        let flags = try readLittleEndianUInt32(message, at: 20)
-        let serverChallenge = try readData(message, at: 24, count: challengeSize)
-        let targetInfo = try readSecurityBuffer(message, at: 40)
-        let metadata = try targetInfoMetadata(from: targetInfo)
+        _ = try cursor.readData(count: 8)
+        let flags = try cursor.readLittleEndianUInt32()
+        let serverChallenge = try cursor.readData(count: challengeSize)
+        _ = try cursor.readData(count: 8)
+        let targetInfoLength = Int(try cursor.readLittleEndianUInt16())
+        _ = try cursor.readLittleEndianUInt16()
+        let targetInfoOffset = Int(try cursor.readLittleEndianUInt32())
+        let targetInfo = try parseTargetInfo(readData(message, at: targetInfoOffset, count: targetInfoLength))
+        let timestamp = try targetInfo.first(where: { $0.id == AVID.timestamp }).map { pair in
+            var cursor = ByteCursor(pair.value)
+            return try cursor.readLittleEndianUInt64()
+        }
         return Challenge(
             message: message,
             flags: flags,
             serverChallenge: serverChallenge,
             targetInfo: targetInfo,
-            timestamp: metadata.timestamp ?? fallbackFileTime(),
-            hasTimestamp: metadata.timestamp != nil
+            timestamp: timestamp
         )
     }
 
-    private static func targetInfoMetadata(from targetInfo: Data) throws -> TargetInfoMetadata {
+    private static func parseTargetInfo(_ targetInfo: Data) throws -> [AVPair] {
         var cursor = ByteCursor(targetInfo)
-        var timestamp: UInt64?
-
+        var pairs: [AVPair] = []
         while cursor.remaining >= 4 {
-            let avID = try cursor.readLittleEndianUInt16()
+            let id = try cursor.readLittleEndianUInt16()
             let length = Int(try cursor.readLittleEndianUInt16())
-            if avID == 0 {
+            if id == AVID.eol {
                 guard length == 0, cursor.remaining == 0 else {
                     throw RDPCredSSPError.ntlm("invalid NTLM target info terminator")
                 }
-                return TargetInfoMetadata(timestamp: timestamp)
+                return pairs
             }
-            let value = try cursor.readData(count: length)
-            switch avID {
-            case TargetInfoAVID.timestamp:
-                guard value.count == 8 else {
-                    throw RDPCredSSPError.ntlm("invalid NTLM timestamp AV pair")
-                }
-                timestamp = try readLittleEndianUInt64(value, at: 0)
+            switch id {
+            case AVID.flags where length != 4:
+                throw RDPCredSSPError.ntlm("invalid NTLM flags AV pair")
+            case AVID.timestamp where length != 8:
+                throw RDPCredSSPError.ntlm("invalid NTLM timestamp AV pair")
             default:
-                break
+                pairs.append(AVPair(id: id, value: try cursor.readData(count: length)))
             }
         }
-        guard cursor.remaining == 0 else {
-            throw RDPCredSSPError.ntlm("truncated NTLM target info")
-        }
-        throw RDPCredSSPError.ntlm("missing NTLM target info terminator")
-    }
-
-    private static func authenticateTargetInfo(from targetInfo: Data, channelBindingsHash: Data?) throws -> Data {
-        var cursor = ByteCursor(targetInfo)
-        var output = Data()
-        var containsFlags = false
-        var containsChannelBindings = false
-        var didReadTerminator = false
-
-        while cursor.remaining >= 4 {
-            let avID = try cursor.readLittleEndianUInt16()
-            let length = Int(try cursor.readLittleEndianUInt16())
-            if avID == TargetInfoAVID.eol {
-                guard length == 0 else {
-                    throw RDPCredSSPError.ntlm("invalid NTLM target info terminator")
-                }
-                guard cursor.remaining == 0 else {
-                    throw RDPCredSSPError.ntlm("invalid NTLM target info terminator")
-                }
-                didReadTerminator = true
-                break
-            }
-            let value = try cursor.readData(count: length)
-            output.appendLittleEndianUInt16(avID)
-            if avID == TargetInfoAVID.flags {
-                guard value.count == 4 else {
-                    throw RDPCredSSPError.ntlm("invalid NTLM flags AV pair")
-                }
-                containsFlags = true
-                output.appendLittleEndianUInt16(4)
-                output.appendLittleEndianUInt32(try readLittleEndianUInt32(value, at: 0) | 0x0000_0002)
-            } else {
-                if avID == TargetInfoAVID.channelBindings {
-                    containsChannelBindings = true
-                }
-                output.appendLittleEndianUInt16(UInt16(length))
-                output.append(value)
-            }
-        }
-        guard cursor.remaining == 0 else {
-            throw RDPCredSSPError.ntlm("truncated NTLM target info")
-        }
-        guard didReadTerminator else {
-            throw RDPCredSSPError.ntlm("missing NTLM target info terminator")
-        }
-        if !containsFlags {
-            output.appendLittleEndianUInt16(6)
-            output.appendLittleEndianUInt16(4)
-            output.appendLittleEndianUInt32(0x0000_0002)
-        }
-        if !containsChannelBindings, let channelBindingsHash {
-            output.appendLittleEndianUInt16(TargetInfoAVID.channelBindings)
-            output.appendLittleEndianUInt16(UInt16(channelBindingsHash.count))
-            output.append(channelBindingsHash)
-        }
-        output.appendLittleEndianUInt16(0)
-        output.appendLittleEndianUInt16(0)
-        output.appendLittleEndianUInt32(0)
-        return output
-    }
-
-    private static func ntlmV2Hash(credentials: RDPCredentials) -> Data {
-        let ntHash = md4(utf16LittleEndian(credentials.password))
-        let identity = utf16LittleEndian(credentials.username.uppercased() + (credentials.domain ?? ""))
-        return hmacMD5(key: ntHash, data: identity)
-    }
-
-    private static func lmV2Response(
-        serverChallenge: Data,
-        clientChallenge: Data,
-        ntlmV2Hash: Data
-    ) -> Data {
-        let proof = hmacMD5(key: ntlmV2Hash, data: serverChallenge + clientChallenge)
-        return proof + clientChallenge
-    }
-
-    private static func ntlmV2Response(
-        serverChallenge: Data,
-        clientChallenge: Data,
-        targetInfo: Data,
-        timestamp: UInt64,
-        ntlmV2Hash: Data
-    ) -> (response: Data, keyExchangeKey: Data) {
-        var temp = Data()
-        temp.append(0x01)
-        temp.append(0x01)
-        temp.appendLittleEndianUInt16(0)
-        temp.appendLittleEndianUInt32(0)
-        temp.appendLittleEndianUInt64(timestamp)
-        temp.append(clientChallenge)
-        temp.appendLittleEndianUInt32(0)
-        temp.append(targetInfo)
-
-        let proof = hmacMD5(key: ntlmV2Hash, data: serverChallenge + temp)
-        return (
-            response: proof + temp,
-            keyExchangeKey: hmacMD5(key: ntlmV2Hash, data: proof)
+        throw RDPCredSSPError.ntlm(
+            cursor.remaining == 0 ? "missing NTLM target info terminator" : "truncated NTLM target info"
         )
     }
 
-    private static func authenticateFlags(from challengeFlags: UInt32, credentials: RDPCredentials) throws -> UInt32 {
+    /// The server's AV pairs with the MIC bit set in MsvAvFlags and this client's channel bindings,
+    /// as MS-NLMP 3.1.5.1.2 requires.
+    private static func authenticateTargetInfo(from pairs: [AVPair], channelBindingsHash: Data?) -> Data {
+        let micPresent: UInt8 = 0x02
+        var output = Data()
+        func append(_ id: UInt16, _ value: Data) {
+            output.appendLittleEndianUInt16(id)
+            output.appendLittleEndianUInt16(UInt16(value.count))
+            output.append(value)
+        }
+
+        var hasFlags = false
+        for pair in pairs {
+            switch pair.id {
+            case AVID.flags:
+                var flags = pair.value
+                flags[flags.startIndex] |= micPresent
+                append(AVID.flags, flags)
+                hasFlags = true
+            case AVID.channelBindings where channelBindingsHash != nil:
+                continue
+            default:
+                append(pair.id, pair.value)
+            }
+        }
+        if !hasFlags {
+            append(AVID.flags, Data([micPresent, 0, 0, 0]))
+        }
+        if let channelBindingsHash {
+            append(AVID.channelBindings, channelBindingsHash)
+        }
+        append(AVID.eol, Data())
+        return output
+    }
+
+    /// MS-NLMP 3.3.2 NTOWFv2. Windows upper-cases the user name code point by code point
+    /// (RtlUpcaseUnicodeString), so "ß" stays "ß" instead of expanding to "SS".
+    static func ntowfV2(password: String, username: String, domain: String) -> Data {
+        var uppercasedUsername = String.UnicodeScalarView()
+        for scalar in username.unicodeScalars {
+            let mapping = scalar.properties.uppercaseMapping.unicodeScalars
+            if mapping.count == 1, let uppercased = mapping.first {
+                uppercasedUsername.append(uppercased)
+            } else {
+                uppercasedUsername.append(scalar)
+            }
+        }
+        return hmacMD5(
+            key: md4(Data(utf16LittleEndian: password)),
+            data: Data(utf16LittleEndian: String(uppercasedUsername) + domain)
+        )
+    }
+
+    /// MS-NLMP 3.3.2 NTLMv2 ComputeResponse.
+    private static func ntlmV2Response(
+        responseKey: Data,
+        serverChallenge: Data,
+        clientChallenge: Data,
+        time: UInt64,
+        serverName: Data
+    ) -> (response: Data, sessionBaseKey: Data) {
+        var temp = Data([0x01, 0x01])
+        temp.append(Data(count: 6))
+        temp.appendLittleEndianUInt64(time)
+        temp.append(clientChallenge)
+        temp.append(Data(count: 4))
+        temp.append(serverName)
+        temp.append(Data(count: 4))
+
+        let proof = hmacMD5(key: responseKey, data: serverChallenge + temp)
+        return (proof + temp, hmacMD5(key: responseKey, data: proof))
+    }
+
+    private static func authenticateFlags(from challengeFlags: UInt32, domainSupplied: Bool) throws -> UInt32 {
         guard challengeFlags & negotiateUnicode != 0 else {
             throw RDPCredSSPError.ntlm("server did not negotiate NTLM Unicode encoding")
         }
+        // wrap/unwrap implement only extended session security sealing (MS-NLMP 3.4.4.2),
+        // which CredSSP needs for pubKeyAuth and authInfo.
+        let requiredFlags = negotiateExtendedSessionSecurity | negotiateSeal
+        guard challengeFlags & requiredFlags == requiredFlags else {
+            throw RDPCredSSPError.ntlm("server did not negotiate NTLM extended session security and sealing")
+        }
 
         var flags = challengeFlags & authenticateSupportedFlags
-        if credentials.domain?.isEmpty == false {
+        if domainSupplied {
             flags |= negotiateDomainSupplied
         }
         return flags
@@ -429,84 +421,16 @@ final class RDPCredSSPNTLMContext {
         data.appendLittleEndianUInt32(UInt32(field.offset))
     }
 
-    private static func readSecurityBuffer(_ data: Data, at offset: Int) throws -> Data {
-        let length = Int(try readLittleEndianUInt16(data, at: offset))
-        let bufferOffset = Int(try readLittleEndianUInt32(data, at: offset + 4))
-        return try readData(data, at: bufferOffset, count: length)
-    }
-
     private static func readData(_ data: Data, at offset: Int, count: Int) throws -> Data {
-        guard offset >= 0,
-              count >= 0,
-              offset <= data.count,
-              count <= data.count - offset
-        else {
+        guard offset <= data.count, count <= data.count - offset else {
             throw RDPCredSSPError.ntlm("truncated NTLM message")
         }
         let start = data.index(data.startIndex, offsetBy: offset)
         return data.subdata(in: start ..< data.index(start, offsetBy: count))
     }
 
-    private static func readLittleEndianUInt16(_ data: Data, at offset: Int) throws -> UInt16 {
-        guard offset >= 0, offset <= data.count - 2 else {
-            throw RDPCredSSPError.ntlm("truncated NTLM message")
-        }
-        return UInt16(data[data.index(data.startIndex, offsetBy: offset)])
-            | UInt16(data[data.index(data.startIndex, offsetBy: offset + 1)]) << 8
-    }
-
-    private static func readLittleEndianUInt32(_ data: Data, at offset: Int) throws -> UInt32 {
-        guard offset >= 0, offset <= data.count - 4 else {
-            throw RDPCredSSPError.ntlm("truncated NTLM message")
-        }
-        return UInt32(data[data.index(data.startIndex, offsetBy: offset)])
-            | UInt32(data[data.index(data.startIndex, offsetBy: offset + 1)]) << 8
-            | UInt32(data[data.index(data.startIndex, offsetBy: offset + 2)]) << 16
-            | UInt32(data[data.index(data.startIndex, offsetBy: offset + 3)]) << 24
-    }
-
-    private static func readLittleEndianUInt64(_ data: Data, at offset: Int) throws -> UInt64 {
-        let low = UInt64(try readLittleEndianUInt32(data, at: offset))
-        let high = UInt64(try readLittleEndianUInt32(data, at: offset + 4))
-        return low | high << 32
-    }
-
-    private static func sequenceInput(sequenceNumber: UInt32, data: Data) -> Data {
-        var input = Data()
-        input.appendLittleEndianUInt32(sequenceNumber)
-        input.append(data)
-        return input
-    }
-
-    private static func signature(checksum: Data, sequenceNumber: UInt32) -> Data {
-        var signature = Data()
-        signature.appendLittleEndianUInt32(1)
-        signature.append(checksum.prefix(8))
-        signature.appendLittleEndianUInt32(sequenceNumber)
-        return signature
-    }
-
-    private static func sealingKey(exportedSessionKey: Data, flags: UInt32, magic: Data) -> Data {
-        let material: Data
-        if flags & negotiate128 != 0 {
-            material = exportedSessionKey
-        } else if flags & negotiate56 != 0 {
-            material = exportedSessionKey.prefix(7)
-        } else {
-            material = exportedSessionKey.prefix(5)
-        }
-        return md5(material + magic)
-    }
-
-    private static func utf16LittleEndian(_ value: String) -> Data {
-        var data = Data()
-        for codeUnit in value.utf16 {
-            data.appendLittleEndianUInt16(codeUnit)
-        }
-        return data
-    }
-
-    private static func md4(_ data: Data) -> Data {
+    /// RFC 1320 MD4, which NTOWFv2 needs and CryptoKit does not provide.
+    static func md4(_ data: Data) -> Data {
         var message = [UInt8](data)
         let bitLength = UInt64(message.count) * 8
         message.append(0x80)
@@ -514,87 +438,71 @@ final class RDPCredSSPNTLMContext {
             message.append(0)
         }
         for shift in stride(from: 0, to: 64, by: 8) {
-            message.append(UInt8((bitLength >> UInt64(shift)) & 0xFF))
+            message.append(UInt8(truncatingIfNeeded: bitLength >> shift))
         }
 
-        var a: UInt32 = 0x6745_2301
-        var b: UInt32 = 0xEFCD_AB89
-        var c: UInt32 = 0x98BA_DCFE
-        var d: UInt32 = 0x1032_5476
-
+        var state: [UInt32] = [0x6745_2301, 0xEFCD_AB89, 0x98BA_DCFE, 0x1032_5476]
         for chunkStart in stride(from: 0, to: message.count, by: 64) {
-            var words = [UInt32](repeating: 0, count: 16)
-            for index in 0 ..< 16 {
+            let words = (0 ..< 16).map { index in
                 let offset = chunkStart + index * 4
-                words[index] = UInt32(message[offset])
+                return UInt32(message[offset])
                     | UInt32(message[offset + 1]) << 8
                     | UInt32(message[offset + 2]) << 16
                     | UInt32(message[offset + 3]) << 24
             }
-
-            let originalA = a
-            let originalB = b
-            let originalC = c
-            let originalD = d
-
-            for index in 0 ..< 16 {
-                let shift = [3, 7, 11, 19][index % 4]
-                switch index % 4 {
-                case 0:
-                    a = rotateLeft(a &+ f(b, c, d) &+ words[index], by: shift)
-                case 1:
-                    d = rotateLeft(d &+ f(a, b, c) &+ words[index], by: shift)
-                case 2:
-                    c = rotateLeft(c &+ f(d, a, b) &+ words[index], by: shift)
-                default:
-                    b = rotateLeft(b &+ f(c, d, a) &+ words[index], by: shift)
+            var working = state
+            for round in MD4Round.all {
+                for step in 0 ..< 16 {
+                    // Steps update A, D, C, B in turn; the other three words follow in that cycle.
+                    let target = (4 - step % 4) % 4
+                    let mixed = round.function(
+                        working[(target + 1) % 4],
+                        working[(target + 2) % 4],
+                        working[(target + 3) % 4]
+                    )
+                    let sum = working[target] &+ mixed &+ words[round.wordOrder[step]] &+ round.constant
+                    let shift = round.shifts[step % 4]
+                    working[target] = sum << shift | sum >> (32 - shift)
                 }
             }
-
-            let round2Order = [0, 4, 8, 12, 1, 5, 9, 13, 2, 6, 10, 14, 3, 7, 11, 15]
-            for index in 0 ..< 16 {
-                let shift = [3, 5, 9, 13][index % 4]
-                let word = words[round2Order[index]]
-                switch index % 4 {
-                case 0:
-                    a = rotateLeft(a &+ g(b, c, d) &+ word &+ 0x5A82_7999, by: shift)
-                case 1:
-                    d = rotateLeft(d &+ g(a, b, c) &+ word &+ 0x5A82_7999, by: shift)
-                case 2:
-                    c = rotateLeft(c &+ g(d, a, b) &+ word &+ 0x5A82_7999, by: shift)
-                default:
-                    b = rotateLeft(b &+ g(c, d, a) &+ word &+ 0x5A82_7999, by: shift)
-                }
+            for index in 0 ..< 4 {
+                state[index] &+= working[index]
             }
-
-            let round3Order = [0, 8, 4, 12, 2, 10, 6, 14, 1, 9, 5, 13, 3, 11, 7, 15]
-            for index in 0 ..< 16 {
-                let shift = [3, 9, 11, 15][index % 4]
-                let word = words[round3Order[index]]
-                switch index % 4 {
-                case 0:
-                    a = rotateLeft(a &+ h(b, c, d) &+ word &+ 0x6ED9_EBA1, by: shift)
-                case 1:
-                    d = rotateLeft(d &+ h(a, b, c) &+ word &+ 0x6ED9_EBA1, by: shift)
-                case 2:
-                    c = rotateLeft(c &+ h(d, a, b) &+ word &+ 0x6ED9_EBA1, by: shift)
-                default:
-                    b = rotateLeft(b &+ h(c, d, a) &+ word &+ 0x6ED9_EBA1, by: shift)
-                }
-            }
-
-            a &+= originalA
-            b &+= originalB
-            c &+= originalC
-            d &+= originalD
         }
 
         var digest = Data()
-        digest.appendLittleEndianUInt32(a)
-        digest.appendLittleEndianUInt32(b)
-        digest.appendLittleEndianUInt32(c)
-        digest.appendLittleEndianUInt32(d)
+        for word in state {
+            digest.appendLittleEndianUInt32(word)
+        }
         return digest
+    }
+
+    private struct MD4Round {
+        var function: @Sendable (UInt32, UInt32, UInt32) -> UInt32
+        var constant: UInt32
+        var wordOrder: [Int]
+        var shifts: [Int]
+
+        static let all = [
+            MD4Round(
+                function: { x, y, z in (x & y) | (~x & z) },
+                constant: 0,
+                wordOrder: Array(0 ..< 16),
+                shifts: [3, 7, 11, 19]
+            ),
+            MD4Round(
+                function: { x, y, z in (x & y) | (x & z) | (y & z) },
+                constant: 0x5A82_7999,
+                wordOrder: [0, 4, 8, 12, 1, 5, 9, 13, 2, 6, 10, 14, 3, 7, 11, 15],
+                shifts: [3, 5, 9, 13]
+            ),
+            MD4Round(
+                function: { x, y, z in x ^ y ^ z },
+                constant: 0x6ED9_EBA1,
+                wordOrder: [0, 8, 4, 12, 2, 10, 6, 14, 1, 9, 5, 13, 3, 11, 7, 15],
+                shifts: [3, 9, 11, 15]
+            ),
+        ]
     }
 
     private static func md5(_ data: Data) -> Data {
@@ -602,41 +510,16 @@ final class RDPCredSSPNTLMContext {
     }
 
     private static func hmacMD5(key: Data, data: Data) -> Data {
-        let key = SymmetricKey(data: key)
-        return Data(HMAC<Insecure.MD5>.authenticationCode(for: data, using: key))
+        Data(HMAC<Insecure.MD5>.authenticationCode(for: data, using: SymmetricKey(data: key)))
     }
 
-    private static func f(_ x: UInt32, _ y: UInt32, _ z: UInt32) -> UInt32 {
-        (x & y) | (~x & z)
-    }
-
-    private static func g(_ x: UInt32, _ y: UInt32, _ z: UInt32) -> UInt32 {
-        (x & y) | (x & z) | (y & z)
-    }
-
-    private static func h(_ x: UInt32, _ y: UInt32, _ z: UInt32) -> UInt32 {
-        x ^ y ^ z
-    }
-
-    private static func rotateLeft(_ value: UInt32, by shift: Int) -> UInt32 {
-        (value << UInt32(shift)) | (value >> UInt32(32 - shift))
-    }
-
-    private static func secureRandomData(count: Int) throws -> Data {
-        guard count > 0 else {
-            return Data()
-        }
-        var data = Data(repeating: 0, count: count)
-        let status = try data.withUnsafeMutableBytes { buffer in
-            guard let baseAddress = buffer.baseAddress else {
-                throw RDPCredSSPError.ntlm("failed to allocate random byte buffer")
-            }
-            return SecRandomCopyBytes(kSecRandomDefault, count, baseAddress)
-        }
+    static func secureRandomData(count: Int) throws -> Data {
+        var bytes = [UInt8](repeating: 0, count: count)
+        let status = SecRandomCopyBytes(kSecRandomDefault, count, &bytes)
         guard status == errSecSuccess else {
             throw RDPCredSSPError.ntlm("failed to generate random bytes: \(status)")
         }
-        return data
+        return Data(bytes)
     }
 
     private static func nowFileTime() -> UInt64 {
@@ -647,10 +530,8 @@ final class RDPCredSSPNTLMContext {
     private static let signatureBytes = Data("NTLMSSP\u{0}".utf8)
     private static let challengeSize = 8
     private static let hashSize = 16
-    private static let lmV2ResponseSize = 24
     private static let signatureSize = 16
     private static let micSize = 16
-    private static let negotiatePayloadOffset = 0
     private static let authenticatePayloadOffset = 88
     private static let micRange = 72 ..< 88
     private static let version = Data([0x06, 0x01, 0xB1, 0x1D, 0x00, 0x00, 0x00, 0x0F])
@@ -701,33 +582,4 @@ final class RDPCredSSPNTLMContext {
         | negotiateSeal
         | negotiateKeyExchange
         | negotiateSign
-}
-
-private final class RDPNTLMRC4 {
-    private var i = 0
-    private var j = 0
-    private var state = [UInt8](0 ... 255)
-
-    init(key: Data) {
-        precondition(key.isEmpty == false)
-        var j = 0
-        let keyBytes = [UInt8](key)
-        for i in 0 ..< 256 {
-            j = (j + Int(state[i]) + Int(keyBytes[i % keyBytes.count])) & 0xFF
-            state.swapAt(i, j)
-        }
-    }
-
-    func process(_ input: Data) -> Data {
-        var output = Data()
-        output.reserveCapacity(input.count)
-        for byte in input {
-            i = (i + 1) & 0xFF
-            j = (j + Int(state[i])) & 0xFF
-            state.swapAt(i, j)
-            let keyIndex = (Int(state[i]) + Int(state[j])) & 0xFF
-            output.append(byte ^ state[keyIndex])
-        }
-        return output
-    }
 }

@@ -1,11 +1,6 @@
 import AppKit
 import Foundation
 import RDPKit
-import SwiftUI
-
-enum RDPWindowID {
-    static let sessionDiagnostics = "session-diagnostics"
-}
 
 struct RDPConnectionDraft: Equatable, Sendable {
     var host: String
@@ -22,40 +17,17 @@ struct RDPConnectionDraft: Equatable, Sendable {
     var audioPlaybackEnabled: Bool
     var rememberPassword: Bool
 
-    var configuration: RDPConnectionConfiguration {
-        RDPConnectionConfiguration(
-            host: host,
-            port: port,
-            credentials: try? RDPCredentials.validated(
-                username: username,
-                domain: domain,
-                password: password
-            ),
-            timeoutSeconds: timeoutSeconds,
-            hideCertificateWarnings: hideCertificateWarnings,
-            graphicsFrameCaptureLimit: nil,
-            desktopWidth: desktopWidth,
-            desktopHeight: desktopHeight,
-            clipboardEnabled: clipboardSharingEnabled,
-            audioPlaybackEnabled: audioPlaybackEnabled,
-            graphicsCapabilityProfile: graphicsCapabilityProfile
-        )
-    }
-
-    var identity: RDPConnectionIdentity {
-        configuration.identity
-    }
-
     var displayName: String {
-        configuration.displayName
+        RDPConnectionIdentity(host: host, port: port, username: username, domain: domain).displayName
     }
 }
 
 @MainActor
 final class RDPConnectionLaunchStore: ObservableObject {
+    let sessionCommands = RDPSessionCommandCenter()
     private var sessionWindowControllers: [UUID: RDPRemoteSessionWindowController] = [:]
     private var diagnosticsWindowControllers: [UUID: RDPRemoteSessionDiagnosticsWindowController] = [:]
-    @Published private var diagnosticsModels: [UUID: RemoteSessionDiagnosticsModel] = [:]
+    private var diagnosticsModels: [UUID: RemoteSessionDiagnosticsModel] = [:]
 
     @discardableResult
     func openRemoteSession(_ draft: RDPConnectionDraft) -> UUID {
@@ -77,10 +49,6 @@ final class RDPConnectionLaunchStore: ObservableObject {
 
     func registerDiagnostics(_ model: RemoteSessionDiagnosticsModel, for id: UUID) {
         diagnosticsModels[id] = model
-    }
-
-    func diagnosticsModel(for id: UUID) -> RemoteSessionDiagnosticsModel? {
-        diagnosticsModels[id]
     }
 
     func openDiagnostics(for id: UUID) {

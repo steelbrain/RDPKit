@@ -35,6 +35,10 @@ import Testing
             domain: "LAB"
         ).credentialAccountName == "LAB\\anees@server.local:3390"
     )
+    #expect(
+        RDPConnectionIdentity(host: "Server.Local", username: "Anees").credentialAccountName
+            == RDPConnectionIdentity(host: "server.local", username: "Anees").credentialAccountName
+    )
 }
 
 @Test func connectionIdentityTrimsComponents() {
@@ -93,6 +97,12 @@ import Testing
         throws: RDPConnectionValidationError.invalidPort,
         performing: {
             _ = try RDPConnectionTarget(host: "server.local", portText: "99999")
+        }
+    )
+    #expect(
+        throws: RDPConnectionValidationError.invalidPort,
+        performing: {
+            _ = try RDPConnectionTarget(host: "server.local", portText: "0")
         }
     )
 }

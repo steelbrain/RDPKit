@@ -42,20 +42,8 @@ import Testing
     #expect(RDPSecurityProtocols.rdsAAD.rawValue == 0x0000_0010)
 }
 
-@Test func rdpNegotiationRequestFlagConstantsMatchSpecValues() {
-    #expect(RDPNegotiationRequestFlags.restrictedAdminModeRequired == 0x01)
-    #expect(RDPNegotiationRequestFlags.redirectedAuthenticationModeRequired == 0x02)
-    #expect(RDPNegotiationRequestFlags.correlationInfoPresent == 0x08)
-    #expect(RDPNegotiationRequestFlags.supportedMask == 0x0B)
-}
-
 @Test func rdpNegotiationResponseFlagConstantsMatchSpecValues() {
     #expect(RDPNegotiationResponseFlags.extendedClientDataSupported == 0x01)
-    #expect(RDPNegotiationResponseFlags.dynamicVirtualChannelGraphicsSupported == 0x02)
-    #expect(RDPNegotiationResponseFlags.reserved == 0x04)
-    #expect(RDPNegotiationResponseFlags.restrictedAdminModeSupported == 0x08)
-    #expect(RDPNegotiationResponseFlags.redirectedAuthenticationModeSupported == 0x10)
-    #expect(RDPNegotiationResponseFlags.supportedMask == 0x1F)
 }
 
 @Test func rdpNegotiationRequestEncodesRDSTLSWithSpecValue() {
@@ -163,32 +151,6 @@ import Testing
     ]))
 }
 
-@Test func x224ConnectionRequestCanCarryCorrelationInfo() {
-    let correlationID = Data(0x10 ..< 0x20)
-    let request = X224ConnectionRequest(
-        negotiationRequest: RDPNegotiationRequest(requestedProtocols: [.tls]),
-        correlationID: correlationID
-    )
-    let packet = request.encodedTPKT()
-
-    #expect(packet.prefix(11) == Data([
-        0x03, 0x00, 0x00, 0x37,
-        0x32, 0xE0, 0x00, 0x00, 0x00, 0x00, 0x00,
-    ]))
-    #expect(packet.dropFirst(11).prefix(8) == Data([
-        0x01, 0x08, 0x08, 0x00,
-        0x01, 0x00, 0x00, 0x00,
-    ]))
-    #expect(packet.dropFirst(19).prefix(20) == Data([
-        0x06, 0x00, 0x24, 0x00,
-        0x10, 0x11, 0x12, 0x13,
-        0x14, 0x15, 0x16, 0x17,
-        0x18, 0x19, 0x1A, 0x1B,
-        0x1C, 0x1D, 0x1E, 0x1F,
-    ]))
-    #expect(packet.suffix(16) == Data(repeating: 0, count: 16))
-}
-
 @Test func parsesX224ConnectionConfirmWithTlsSelection() throws {
     let packet = Data([
         0x03, 0x00, 0x00, 0x13,
@@ -231,7 +193,7 @@ import Testing
 
     #expect(confirm.negotiationFlags == 0)
     #expect(confirm.negotiationResult == .selected(.rdsAAD))
-    #expect(confirm.negotiationResult?.selectedProtocolNames == ["rds-aad"])
+    #expect(RDPSecurityProtocols.rdsAAD.names == ["rds-aad"])
 }
 
 @Test func parsesNegotiationFailureCode() throws {
@@ -260,7 +222,7 @@ import Testing
 
     #expect(confirm.negotiationFlags == 0)
     #expect(confirm.negotiationResult == .selected(RDPSecurityProtocols(rawValue: 0)))
-    #expect(confirm.negotiationResult?.selectedProtocolNames == ["standard-rdp-security"])
+    #expect(RDPSecurityProtocols(rawValue: 0).names == ["standard-rdp-security"])
 }
 
 @Test func preservesNegotiationResponseFlags() throws {
@@ -287,7 +249,7 @@ import Testing
 
     let confirm = try X224ConnectionConfirm.parse(fromTPKT: packet)
 
-    #expect(confirm.negotiationFlags == RDPNegotiationResponseFlags.reserved)
+    #expect(confirm.negotiationFlags == 0x04)
     #expect(confirm.negotiationResult == .selected(.tls))
 }
 
@@ -301,7 +263,7 @@ import Testing
 
     let confirm = try X224ConnectionConfirm.parse(fromTPKT: packet)
 
-    #expect(confirm.negotiationFlags == RDPNegotiationResponseFlags.supportedMask)
+    #expect(confirm.negotiationFlags == 0x1F)
     #expect(confirm.negotiationResult == .selected(.tls))
 }
 
@@ -392,7 +354,7 @@ import Testing
     }
 }
 
-@Test func rejectsNegotiationFailureWithNonzeroFlags() throws {
+@Test func reportsNegotiationFailureCodeDespiteNonzeroFlags() throws {
     let packet = Data([
         0x03, 0x00, 0x00, 0x13,
         0x0E, 0xD0, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -400,12 +362,11 @@ import Testing
         0x02, 0x00, 0x00, 0x00,
     ])
 
-    #expect(throws: RDPDecodeError.invalidNegotiationFlags(0x01)) {
-        try X224ConnectionConfirm.parse(fromTPKT: packet)
-    }
+    #expect(try X224ConnectionConfirm.parse(fromTPKT: packet).negotiationResult == .failure(2))
 }
 
-@Test func rejectsNegotiationFailureWithUnknownFailureCode() throws {
+@Test func preservesUnlistedNegotiationFailureCode() throws {
+    // failureCode 0x07 was added to MS-RDPBCGR recently; later codes must still surface.
     let packet = Data([
         0x03, 0x00, 0x00, 0x13,
         0x0E, 0xD0, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -413,7 +374,40 @@ import Testing
         0x08, 0x00, 0x00, 0x00,
     ])
 
-    #expect(throws: RDPDecodeError.invalidNegotiationFailureCode(0x0000_0008)) {
-        try X224ConnectionConfirm.parse(fromTPKT: packet)
+    #expect(try X224ConnectionConfirm.parse(fromTPKT: packet).negotiationResult == .failure(8))
+}
+
+@Test func parsesX224ConnectionConfirmWithoutNegotiationResponse() throws {
+    let confirm = try X224ConnectionConfirm.parse(fromTPKT: Data([
+        0x03, 0x00, 0x00, 0x0B,
+        0x06, 0xD0, 0x00, 0x00, 0x12, 0x34, 0x00,
+    ]))
+
+    #expect(confirm.sourceReference == 0x1234)
+    #expect(confirm.negotiationFlags == nil)
+    #expect(confirm.negotiationResult == nil)
+}
+
+@Test func rdpHexStringFormatsAndRoundTripsDataSlices() {
+    let data = Data([0xFF, 0x00, 0x0A, 0xB7])
+
+    #expect(data.dropFirst().rdpHexString == "00 0a b7")
+    #expect(Data().rdpHexString == "")
+    #expect(Data(rdpHexString: "00 0A\nb7") == Data([0x00, 0x0A, 0xB7]))
+}
+
+@Test func rdpHexStringRejectsWhatIsNotHexDigits() {
+    #expect(Data(rdpHexString: "+f") == nil)
+    #expect(Data(rdpHexString: "-0 01") == nil)
+    #expect(Data(rdpHexString: "0g") == nil)
+    #expect(Data(rdpHexString: "0") == nil)
+    #expect(Data(rdpHexString: "\u{FF10}\u{FF11}") == nil)
+}
+
+@Test func byteCursorRejectsNegativeReadCount() {
+    var cursor = ByteCursor(Data([0x01, 0x02]))
+
+    #expect(throws: RDPDecodeError.truncated(needed: -1, remaining: 2)) {
+        try cursor.readData(count: -1)
     }
 }

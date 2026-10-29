@@ -19,13 +19,13 @@ import Testing
     ])
     #expect(advertise.capabilitySets.map(\.flags) == [
         RDPGFXCapabilityFlags.defaultVersion107,
-        RDPGFXCapabilityFlags.defaultVersion104Through107,
-        RDPGFXCapabilityFlags.defaultVersion104Through107,
-        RDPGFXCapabilityFlags.defaultVersion104Through107,
-        RDPGFXCapabilityFlags.defaultVersion103,
-        RDPGFXCapabilityFlags.defaultVersion102,
-        0,
-        RDPGFXCapabilityFlags.defaultVersion10,
+        RDPGFXCapabilityFlags.defaultVersion107,
+        RDPGFXCapabilityFlags.defaultVersion107,
+        RDPGFXCapabilityFlags.defaultVersion107,
+        RDPGFXCapabilityFlags.avcThinClient,
+        RDPGFXCapabilityFlags.smallCache,
+        nil,
+        RDPGFXCapabilityFlags.smallCache,
         RDPGFXCapabilityFlags.defaultVersion81,
         RDPGFXCapabilityFlags.defaultVersion8,
     ])
@@ -84,31 +84,24 @@ import Testing
 @Test func logicalFrameTrackerAcceptsFramedGraphicsCommands() throws {
     var tracker = RDPGFXLogicalFrameTracker()
 
-    #expect(try tracker.shouldProcess(RDPGFXHeader.parse(from: startFrameMessage(frameID: 42))))
+    try tracker.track(RDPGFXHeader.parse(from: startFrameMessage(frameID: 42)))
     #expect(tracker.activeFrameID == 42)
-    #expect(try tracker.shouldProcess(RDPGFXHeader.parse(from: solidFillMessage())))
+    try tracker.track(RDPGFXHeader.parse(from: solidFillMessage()))
     #expect(tracker.activeFrameID == 42)
-    #expect(try tracker.shouldProcess(RDPGFXHeader.parse(from: endFrameMessage(frameID: 42))))
+    try tracker.track(RDPGFXHeader.parse(from: endFrameMessage(frameID: 42)))
     #expect(tracker.activeFrameID == nil)
 }
 
-@Test func logicalFrameTrackerIgnoresUnexpectedGraphicsSequences() throws {
-    let start = try RDPGFXHeader.parse(from: startFrameMessage(frameID: 42))
-    let mismatchedEnd = try RDPGFXHeader.parse(from: endFrameMessage(frameID: 43))
-    let fill = try RDPGFXHeader.parse(from: solidFillMessage())
+@Test func logicalFrameTrackerKeepsEveryMessageAndAdoptsNestedFrames() throws {
+    var tracker = RDPGFXLogicalFrameTracker()
 
-    var outsideFrame = RDPGFXLogicalFrameTracker()
-    #expect(try !outsideFrame.shouldProcess(fill))
-
-    var nestedFrame = RDPGFXLogicalFrameTracker()
-    #expect(try nestedFrame.shouldProcess(start))
-    #expect(try !nestedFrame.shouldProcess(start))
-    #expect(nestedFrame.activeFrameID == 42)
-
-    var wrongEnd = RDPGFXLogicalFrameTracker()
-    #expect(try wrongEnd.shouldProcess(start))
-    #expect(try !wrongEnd.shouldProcess(mismatchedEnd))
-    #expect(wrongEnd.activeFrameID == 42)
+    try tracker.track(RDPGFXHeader.parse(from: solidFillMessage()))
+    #expect(tracker.activeFrameID == nil)
+    try tracker.track(RDPGFXHeader.parse(from: startFrameMessage(frameID: 42)))
+    try tracker.track(RDPGFXHeader.parse(from: startFrameMessage(frameID: 43)))
+    #expect(tracker.activeFrameID == 43)
+    try tracker.track(RDPGFXHeader.parse(from: endFrameMessage(frameID: 42)))
+    #expect(tracker.activeFrameID == nil)
 }
 
 @Test func parsesRDPGFXHeaderAndCapsConfirm() throws {
@@ -121,7 +114,7 @@ import Testing
     ])
 
     let header = try RDPGFXHeader.parse(from: bytes)
-    let confirm = try #require(try RDPGFXCapsConfirmPDU.parseIfPresent(from: bytes))
+    let confirm = try #require(try RDPGFXCapsConfirmPDU.parse(from: header))
 
     #expect(header.commandID == RDPGFXCommandID.capsConfirm)
     #expect(header.typeName == "rdpgfx-caps-confirm")
@@ -144,7 +137,7 @@ import Testing
     }
 }
 
-@Test func rejectsRDPGFXHeaderWithNonzeroFlags() {
+@Test func ignoresRDPGFXHeaderFlags() throws {
     let bytes = Data([
         0x13, 0x00, 0x01, 0x00,
         0x14, 0x00, 0x00, 0x00,
@@ -153,9 +146,7 @@ import Testing
         0x12, 0x00, 0x00, 0x00,
     ])
 
-    #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
-        try RDPGFXHeader.parse(from: bytes)
-    }
+    #expect(try RDPGFXHeader.parse(from: bytes).commandID == RDPGFXCommandID.capsConfirm)
 }
 
 @Test func rejectsCapsConfirmCapabilitySetWithTrailingBytes() {
@@ -169,7 +160,7 @@ import Testing
     ])
 
     #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
-        try RDPGFXCapsConfirmPDU.parseIfPresent(from: bytes)
+        try RDPGFXCapsConfirmPDU.parse(from: RDPGFXHeader.parse(from: bytes))
     }
 }
 
@@ -184,19 +175,20 @@ import Testing
     ])
 
     #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
-        try RDPGFXCapsConfirmPDU.parseIfPresent(from: bytes)
+        try RDPGFXCapsConfirmPDU.parse(from: RDPGFXHeader.parse(from: bytes))
     }
 }
 
-@Test func ignoresCapsConfirmWithUnknownCapabilityVersion() throws {
+@Test func returnsCapsConfirmWithUnknownCapabilityVersionForCallerToReject() throws {
     let bytes = graphicsMessage(
         commandID: RDPGFXCommandID.capsConfirm,
         payload: capabilitySetBytes(version: 0xCAFE_BABE, data: Data([0x01, 0x02, 0x03, 0x04]))
     )
 
-    let confirm = try RDPGFXCapsConfirmPDU.parseIfPresent(from: bytes)
+    let confirm = try #require(try RDPGFXCapsConfirmPDU.parse(from: RDPGFXHeader.parse(from: bytes)))
 
-    #expect(confirm == nil)
+    #expect(confirm.capabilitySet.version == 0xCAFE_BABE)
+    #expect(confirm.capabilitySet.data == Data([0x01, 0x02, 0x03, 0x04]))
 }
 
 @Test func rejectsCapsAdvertiseWithDuplicateCapabilityVersions() {
@@ -213,7 +205,7 @@ import Testing
     }
 }
 
-@Test func rejectsCapsAdvertiseWithUnknownCapabilityVersion() {
+@Test func rejectsCapsAdvertiseWithOnlyUnknownCapabilityVersions() {
     var payload = Data()
     payload.appendLittleEndianUInt16(1)
     payload.append(capabilitySetBytes(version: 0xCAFE_BABE, data: Data([0x01, 0x02, 0x03, 0x04])))
@@ -226,16 +218,30 @@ import Testing
     }
 }
 
-@Test func rejectsVersion101CapabilitySetWithNonzeroReservedBytes() {
+@Test func skipsUnknownCapabilitySetsInCapsAdvertise() throws {
+    var payload = Data()
+    payload.appendLittleEndianUInt16(2)
+    payload.append(capabilitySetBytes(version: 0xCAFE_BABE, data: Data([0x01, 0x02])))
+    payload.append(RDPGFXCapabilitySet.version81(flags: RDPGFXCapabilityFlags.defaultVersion81).encoded)
+
+    let advertise = try RDPGFXCapsAdvertisePDU.parseIfPresent(from: graphicsMessage(
+        commandID: RDPGFXCommandID.capsAdvertise,
+        payload: payload
+    ))
+
+    #expect(advertise?.capabilitySets == [.version81(flags: RDPGFXCapabilityFlags.defaultVersion81)])
+}
+
+@Test func ignoresVersion101CapabilitySetReservedBytes() throws {
     var bytes = Data()
     bytes.appendLittleEndianUInt32(RDPGFXCapabilityVersion.version101)
     bytes.appendLittleEndianUInt32(16)
     bytes.append(Data(repeating: 0, count: 15))
     bytes.appendUInt8(1)
 
-    #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
-        try RDPGFXCapabilitySet.parse(from: bytes)
-    }
+    let capabilitySet = try RDPGFXCapabilitySet.parse(from: bytes)
+    #expect(capabilitySet.version == RDPGFXCapabilityVersion.version101)
+    #expect(capabilitySet.flags == nil)
 }
 
 @Test func rejectsNewerCapabilitySetWithIncompatibleAVCFlags() {
@@ -249,7 +255,7 @@ import Testing
     }
 }
 
-@Test func rejectsKnownCapabilitySetWithUndefinedFlagsForVersion() {
+@Test func ignoresCapabilitySetFlagsUndefinedForVersion() throws {
     let cases: [(version: UInt32, flags: UInt32)] = [
         (RDPGFXCapabilityVersion.version8, RDPGFXCapabilityFlags.avc420Enabled),
         (RDPGFXCapabilityVersion.version81, RDPGFXCapabilityFlags.avcDisabled),
@@ -267,9 +273,7 @@ import Testing
         bytes.appendLittleEndianUInt32(4)
         bytes.appendLittleEndianUInt32(testCase.flags)
 
-        #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
-            try RDPGFXCapabilitySet.parse(from: bytes)
-        }
+        #expect(try RDPGFXCapabilitySet.parse(from: bytes).flags == 0)
     }
 }
 
@@ -283,7 +287,7 @@ import Testing
         0x12, 0x00, 0x00, 0x00,
     ])
 
-    let messages = try RDPGFXServerTransport.decodeGraphicsMessages(from: bytes)
+    let messages = try RDPGFXServerTransportDecoder().decodeGraphicsMessages(from: bytes)
 
     #expect(messages.count == 1)
     #expect(messages.first?.typeName == "rdpgfx-caps-confirm")
@@ -299,7 +303,7 @@ import Testing
         0x63, 0x00, 0x05,
     ])
 
-    let messages = try RDPGFXServerTransport.decodeGraphicsMessages(from: bytes)
+    let messages = try RDPGFXServerTransportDecoder().decodeGraphicsMessages(from: bytes)
 
     #expect(messages.count == 1)
     #expect(messages.first?.typeName == "rdpgfx-caps-confirm")
@@ -317,7 +321,7 @@ import Testing
         0x12, 0x00, 0x00, 0x00,
     ])
 
-    let messages = try RDPGFXServerTransport.decodeGraphicsMessages(from: packet.dropFirst(2))
+    let messages = try RDPGFXServerTransportDecoder().decodeGraphicsMessages(from: packet.dropFirst(2))
 
     #expect(messages.count == 1)
     #expect(messages.first?.typeName == "rdpgfx-caps-confirm")
@@ -343,10 +347,39 @@ import Testing
     bytes.appendUInt8(0x04)
     bytes.append(second)
 
-    let messages = try RDPGFXServerTransport.decodeGraphicsMessages(from: bytes)
+    let messages = try RDPGFXServerTransportDecoder().decodeGraphicsMessages(from: bytes)
 
     #expect(messages.count == 1)
     #expect(messages.first?.typeName == "rdpgfx-caps-confirm")
+}
+
+@Test func rejectsUnsegmentedServerTransport() {
+    let bytes = Data([
+        0x13, 0x00, 0x00, 0x00,
+        0x14, 0x00, 0x00, 0x00,
+        0x05, 0x01, 0x08, 0x00,
+        0x04, 0x00, 0x00, 0x00,
+        0x12, 0x00, 0x00, 0x00,
+    ])
+
+    #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
+        try RDPGFXServerTransportDecoder().decodeGraphicsMessages(from: bytes)
+    }
+}
+
+@Test func decodesEveryGraphicsMessageInSegmentedData() throws {
+    var bytes = Data([0xE0, 0x04])
+    bytes.append(startFrameMessage(frameID: 1))
+    bytes.append(endFrameMessage(frameID: 1))
+    bytes.append(startFrameMessage(frameID: 2))
+
+    let messages = try RDPGFXServerTransportDecoder().decodeGraphicsMessages(from: bytes)
+
+    #expect(messages.map(\.commandID) == [
+        RDPGFXCommandID.startFrame,
+        RDPGFXCommandID.endFrame,
+        RDPGFXCommandID.startFrame,
+    ])
 }
 
 @Test func wrapsRDPGFXCapsAdvertiseInDynamicChannelData() {
@@ -411,7 +444,7 @@ import Testing
     #expect(startFrame.frameID == 42)
 }
 
-@Test func rejectsStartFrameTimestampOutsideSpecLimits() {
+@Test func acceptsStartFrameTimestampOutsideSpecLimits() throws {
     let invalidTimestamps = [
         startFrameTimestamp(milliseconds: 1000, seconds: 0, minutes: 0, hours: 0),
         startFrameTimestamp(milliseconds: 0, seconds: 60, minutes: 0, hours: 0),
@@ -424,12 +457,11 @@ import Testing
         payload.appendLittleEndianUInt32(timestamp)
         payload.appendLittleEndianUInt32(42)
 
-        #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
-            try RDPGFXStartFramePDU.parse(from: RDPGFXHeader.parse(from: graphicsMessage(
-                commandID: RDPGFXCommandID.startFrame,
-                payload: payload
-            )))
-        }
+        let startFrame = try RDPGFXStartFramePDU.parse(from: RDPGFXHeader.parse(from: graphicsMessage(
+            commandID: RDPGFXCommandID.startFrame,
+            payload: payload
+        )))
+        #expect(startFrame.frameID == 42)
     }
 }
 
@@ -524,31 +556,27 @@ import Testing
 
     #expect(reset.width == RDPGFXResetGraphicsPDU.maximumDimension)
     #expect(reset.height == RDPGFXResetGraphicsPDU.maximumDimension)
-    #expect(reset.monitorCount == RDPGFXResetGraphicsPDU.maximumMonitorCount)
-    #expect(reset.monitorDefinitions.count == Int(RDPGFXResetGraphicsPDU.maximumMonitorCount))
 }
 
-@Test func parsesResetGraphicsMonitorDefinitions() throws {
-    let monitor = RDPGFXMonitorDefinition(
-        left: -1440,
-        top: 0,
-        right: 0,
-        bottom: 900,
-        flags: 1
-    )
+@Test func parsesResetGraphicsWithExclusiveMonitorBounds() throws {
+    // KRdp reports right/bottom as exclusive values (3840x2400 output).
+    var monitor = Data()
+    monitor.appendLittleEndianUInt32(0)
+    monitor.appendLittleEndianUInt32(0)
+    monitor.appendLittleEndianUInt32(3_840)
+    monitor.appendLittleEndianUInt32(2_400)
+    monitor.appendLittleEndianUInt32(1)
     let message = try RDPGFXHeader.parse(from: resetGraphicsMessage(
-        width: 1440,
-        height: 900,
+        width: 3_840,
+        height: 2_400,
         monitorCount: 1,
-        monitorDefinitions: [monitor]
+        monitorData: monitor
     ))
-    let reset = try RDPGFXResetGraphicsPDU.parse(from: message)
+
     let summary = try RDPGFXMessageSummary.summarize(message)
 
-    #expect(reset.monitorDefinitions == [monitor])
-    #expect(summary.width == 1440)
-    #expect(summary.height == 900)
-    #expect(summary.monitorCount == 1)
+    #expect(summary.width == 3_840)
+    #expect(summary.height == 2_400)
 }
 
 @Test func rejectsResetGraphicsOutsideSpecLimits() {
@@ -597,65 +625,36 @@ import Testing
         targetWidth: 1920,
         targetHeight: 1080
     )))
-    let window = try RDPGFXMessageSummary.summarize(RDPGFXHeader.parse(from: mapSurfaceToWindowMessage(
+    let window = try RDPGFXMessageSummary.summarize(RDPGFXHeader.parse(from: graphicsMessage(
         commandID: RDPGFXCommandID.mapSurfaceToWindow,
-        surfaceID: 8,
-        windowID: 0x0102_0304_0506_0708,
-        mappedWidth: 800,
-        mappedHeight: 600
-    )))
-    let scaledWindow = try RDPGFXMessageSummary.summarize(RDPGFXHeader.parse(from: mapSurfaceToWindowMessage(
-        commandID: RDPGFXCommandID.mapSurfaceToScaledWindow,
-        surfaceID: 9,
-        windowID: 0x1112_1314_1516_1718,
-        mappedWidth: 1024,
-        mappedHeight: 768,
-        targetWidth: 2048,
-        targetHeight: 1536
+        payload: Data(repeating: 0, count: 18)
     )))
 
     #expect(scaledOutput.typeName == "rdpgfx-map-surface-to-scaled-output")
     #expect(scaledOutput.surfaceID == 7)
-    #expect(scaledOutput.outputOriginX == 10)
-    #expect(scaledOutput.outputOriginY == 20)
-    #expect(scaledOutput.targetWidth == 1920)
-    #expect(scaledOutput.targetHeight == 1080)
-    #expect(window.typeName == "rdpgfx-map-surface-to-window")
-    #expect(window.surfaceID == 8)
-    #expect(window.windowID == 0x0102_0304_0506_0708)
-    #expect(window.mappedWidth == 800)
-    #expect(window.mappedHeight == 600)
-    #expect(scaledWindow.typeName == "rdpgfx-map-surface-to-scaled-window")
-    #expect(scaledWindow.surfaceID == 9)
-    #expect(scaledWindow.windowID == 0x1112_1314_1516_1718)
-    #expect(scaledWindow.mappedWidth == 1024)
-    #expect(scaledWindow.mappedHeight == 768)
-    #expect(scaledWindow.targetWidth == 2048)
-    #expect(scaledWindow.targetHeight == 1536)
+    #expect(window == RDPGFXMessageSummary(typeName: "rdpgfx-map-surface-to-window"))
 }
 
-@Test func rejectsMapSurfaceToOutputWithNonzeroReservedField() {
-    #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
-        try RDPGFXMapSurfaceToOutputPDU.parse(from: RDPGFXHeader.parse(from: mapSurfaceToOutputMessage(
-            surfaceID: 7,
-            reserved: 1,
-            x: 10,
-            y: 20
-        )))
-    }
-}
-
-@Test func rejectsMapSurfaceToScaledOutputWithNonzeroReservedField() {
-    #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
-        try RDPGFXMapSurfaceToScaledOutputPDU.parse(from: RDPGFXHeader.parse(from: mapSurfaceToScaledOutputMessage(
+@Test func ignoresMapSurfaceReservedFields() throws {
+    let map = try RDPGFXMapSurfaceToOutputPDU.parse(from: RDPGFXHeader.parse(from: mapSurfaceToOutputMessage(
+        surfaceID: 7,
+        reserved: 1,
+        x: 10,
+        y: 20
+    )))
+    let scaled = try RDPGFXMapSurfaceToScaledOutputPDU.parse(from: RDPGFXHeader.parse(
+        from: mapSurfaceToScaledOutputMessage(
             surfaceID: 7,
             reserved: 1,
             x: 10,
             y: 20,
             targetWidth: 1920,
             targetHeight: 1080
-        )))
-    }
+        )
+    ))
+
+    #expect(map.outputOriginX == 10)
+    #expect(scaled.targetWidth == 1920)
 }
 
 @Test func summarizesSurfaceCacheAndFillGraphicsMessages() throws {
@@ -694,64 +693,11 @@ import Testing
 
     #expect(solidFill.typeName == "rdpgfx-solid-fill")
     #expect(solidFill.surfaceID == 3)
-    #expect(solidFill.fillColor == "#302010")
-    #expect(solidFill.fillRectCount == 2)
     #expect(surfaceToCache.typeName == "rdpgfx-surface-to-cache")
     #expect(surfaceToCache.surfaceID == 3)
-    #expect(surfaceToCache.cacheKey == 0x0102_0304_0506_0708)
-    #expect(surfaceToCache.cacheSlot == 9)
-    #expect(surfaceToCache.sourceRect == RDPFrameRect(left: 1, top: 2, right: 17, bottom: 18))
     #expect(cacheToSurface.typeName == "rdpgfx-cache-to-surface")
     #expect(cacheToSurface.surfaceID == 3)
-    #expect(cacheToSurface.cacheSlot == 9)
-    #expect(cacheToSurface.destinationPointCount == 2)
-    #expect(evictCache.typeName == "rdpgfx-evict-cache-entry")
-    #expect(evictCache.cacheSlot == 9)
-}
-
-@Test func summarizesCacheImportReply() throws {
-    var payload = Data()
-    payload.appendLittleEndianUInt16(2)
-    payload.appendLittleEndianUInt16(6)
-    payload.appendLittleEndianUInt16(9)
-
-    let reply = try RDPGFXCacheImportReplyPDU.parse(from: RDPGFXHeader.parse(from: graphicsMessage(
-        commandID: RDPGFXCommandID.cacheImportReply,
-        payload: payload
-    )))
-    let summary = try RDPGFXMessageSummary.summarize(RDPGFXHeader.parse(from: graphicsMessage(
-        commandID: RDPGFXCommandID.cacheImportReply,
-        payload: payload
-    )))
-
-    #expect(reply.cacheSlots == [6, 9])
-    #expect(reply.importedEntriesCount == 2)
-    #expect(summary.typeName == "rdpgfx-cache-import-reply")
-    #expect(summary.importedEntriesCount == 2)
-}
-
-@Test func rejectsCacheImportReplyWithInvalidCacheSlotOrLength() {
-    var invalidCacheSlotPayload = Data()
-    invalidCacheSlotPayload.appendLittleEndianUInt16(1)
-    invalidCacheSlotPayload.appendLittleEndianUInt16(0)
-
-    var overlongPayload = Data()
-    overlongPayload.appendLittleEndianUInt16(1)
-    overlongPayload.appendLittleEndianUInt16(6)
-    overlongPayload.appendUInt8(0)
-
-    #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
-        try RDPGFXCacheImportReplyPDU.parse(from: RDPGFXHeader.parse(from: graphicsMessage(
-            commandID: RDPGFXCommandID.cacheImportReply,
-            payload: invalidCacheSlotPayload
-        )))
-    }
-    #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
-        try RDPGFXCacheImportReplyPDU.parse(from: RDPGFXHeader.parse(from: graphicsMessage(
-            commandID: RDPGFXCommandID.cacheImportReply,
-            payload: overlongPayload
-        )))
-    }
+    #expect(evictCache == RDPGFXMessageSummary(typeName: "rdpgfx-evict-cache-entry"))
 }
 
 @Test func summarizesSurfaceToSurfaceGraphicsMessage() throws {
@@ -781,9 +727,6 @@ import Testing
     ])
     #expect(summary.typeName == "rdpgfx-surface-to-surface")
     #expect(summary.surfaceID == 12)
-    #expect(summary.sourceSurfaceID == 11)
-    #expect(summary.sourceRect == RDPFrameRect(left: 1, top: 2, right: 17, bottom: 18))
-    #expect(summary.destinationPointCount == 2)
 }
 
 @Test func parsesSignedRDPGFXDestinationPoints() throws {
@@ -924,35 +867,34 @@ import Testing
 
     let parsed = try RDPGFXAlphaBitmapStream.parse(from: stream, pixelCount: 6)
 
-    #expect(parsed.compressed)
     #expect(parsed.alphaValues == Data([0x7F, 0x7F, 0x80, 0x80, 0x80, 0x81]))
 }
 
-@Test func rejectsMalformedAlphaWireToSurface1BitmapStream() throws {
-    #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
-        try RDPGFXMessageSummary.summarize(RDPGFXHeader.parse(from: wireToSurface1Message(
-            codecID: RDPGFXCodecID.alpha,
-            pixelFormat: RDPGFXPixelFormat.argb8888,
-            destinationRect: rectangleBytes(left: 0, top: 0, right: 2, bottom: 1),
-            bitmapData: Data([0x4C, 0x00, 0x00, 0x00, 0xAA, 0xBB])
-        )))
+@Test func rejectsMalformedAlphaBitmapStream() {
+    let malformedStreams = [
+        Data([0x4C, 0x00, 0x00, 0x00, 0xAA, 0xBB]),
+        alphaBitmapStream(compressed: 0, payload: Data([0xAA])),
+        alphaBitmapStream(compressed: 1, payload: Data([0xAA, 0x01])),
+    ]
+
+    for stream in malformedStreams {
+        #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
+            try RDPGFXAlphaBitmapStream.parse(from: stream, pixelCount: 2)
+        }
     }
-    #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
-        try RDPGFXMessageSummary.summarize(RDPGFXHeader.parse(from: wireToSurface1Message(
-            codecID: RDPGFXCodecID.alpha,
-            pixelFormat: RDPGFXPixelFormat.argb8888,
-            destinationRect: rectangleBytes(left: 0, top: 0, right: 2, bottom: 1),
-            bitmapData: alphaBitmapStream(compressed: 0, payload: Data([0xAA]))
-        )))
-    }
-    #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
-        try RDPGFXMessageSummary.summarize(RDPGFXHeader.parse(from: wireToSurface1Message(
-            codecID: RDPGFXCodecID.alpha,
-            pixelFormat: RDPGFXPixelFormat.argb8888,
-            destinationRect: rectangleBytes(left: 0, top: 0, right: 2, bottom: 1),
-            bitmapData: alphaBitmapStream(compressed: 1, payload: Data([0xAA, 0x01]))
-        )))
-    }
+}
+
+@Test func summaryDoesNotDecodeAlphaBitmapStreamForUnvalidatedRect() throws {
+    // Before the compositor checks the rect against the surface, a full-range rect
+    // and a run covering it must not make the summary allocate the alpha plane.
+    let summary = try RDPGFXMessageSummary.summarize(RDPGFXHeader.parse(from: wireToSurface1Message(
+        codecID: RDPGFXCodecID.alpha,
+        pixelFormat: RDPGFXPixelFormat.argb8888,
+        destinationRect: rectangleBytes(left: 0, top: 0, right: 0xFFFF, bottom: 0xFFFF),
+        bitmapData: alphaBitmapStream(compressed: 1, payload: Data([0xFF, 0xFF, 0xFF, 0xFF, 0x01, 0xFE, 0xFF, 0xFF]))
+    )))
+
+    #expect(summary.codecName == "alpha")
 }
 
 @Test func summarizesCAPROGRESSIVEWireToSurface2Message() throws {
@@ -976,15 +918,11 @@ import Testing
     #expect(summary.codecContextID == 12)
     #expect(summary.pixelFormat == 0x20)
     #expect(summary.bitmapDataLength == UInt32(progressiveStream.count))
-    #expect(summary.progressiveBlockTypes == [0xCCC0, 0xCCC3, 0xCCC1, 0xCCC4, 0xCCC2])
     #expect(summary.progressiveBlockTypeNames == ["sync", "context", "frame-begin", "region", "frame-end"])
-    #expect(summary.progressiveContextIDs == [0])
     #expect(summary.progressiveContextTileSizes == [64])
     #expect(summary.progressiveContextFlags == [1])
     #expect(summary.progressiveFrameIndexes == [5])
     #expect(summary.progressiveFrameRegionCounts == [1])
-    #expect(summary.progressiveRegionCount == 1)
-    #expect(summary.progressiveRegionRectCount == 1)
     #expect(summary.progressiveRegionRects == [
         RDPFrameRect(left: 0, top: 0, right: 64, bottom: 64),
     ])
@@ -1014,7 +952,6 @@ import Testing
     #expect(summary.codecName == "cavideo")
     #expect(summary.pixelFormat == 0x20)
     #expect(summary.bitmapDataLength == UInt32(cavideoStream.count))
-    #expect(summary.cavideoBlockTypes == [0xCCC0, 0xCCC1, 0xCCC2, 0xCCC3, 0xCCC4, 0xCCC6, 0xCCC7, 0xCAC3, 0xCCC5])
     #expect(summary.cavideoBlockTypeNames == [
         "sync",
         "codec-versions",
@@ -1026,22 +963,38 @@ import Testing
         "tile",
         "frame-end",
     ])
-    #expect(summary.cavideoChannelWidths == [64])
-    #expect(summary.cavideoChannelHeights == [64])
-    #expect(summary.cavideoContextEntropyAlgorithms == ["rlgr3"])
     #expect(summary.cavideoTileSetEntropyAlgorithms == ["rlgr3"])
-    #expect(summary.cavideoFrameIndexes == [7])
-    #expect(summary.cavideoFrameRegionCounts == [1])
-    #expect(summary.cavideoRegionCount == 1)
-    #expect(summary.cavideoRegionRectCount == 1)
-    #expect(summary.cavideoRegionRects == [
-        RDPFrameRect(left: 0, top: 0, right: 64, bottom: 64),
-    ])
     #expect(summary.cavideoTileCount == 1)
-    #expect(summary.cavideoTileRects == [
-        RDPFrameRect(left: 0, top: 0, right: 64, bottom: 64),
-    ])
-    #expect(summary.cavideoTileDataByteCount == 0)
+}
+
+/// A tile set holds tiles; one nested in another is listed, not walked, however deep a
+/// server nests them.
+@Test func summarizesCAVideoTileSetsNestedWithoutBound() throws {
+    let depth = 100_000
+    // Each tile set: channel header, subtype, idx, properties (RLGR3), no quant values,
+    // tileSize, numTiles and tilesDataSize, then the next one.
+    let tileSetFields = Data([0x01, 0x00, 0xC2, 0xCA, 0x00, 0x00, 0x51, 0x10, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
+    var stream = Data()
+    for level in 0 ..< depth {
+        stream.appendLittleEndianUInt16(0xCCC7)
+        stream.appendLittleEndianUInt32(UInt32((depth - level) * (6 + tileSetFields.count)))
+        stream.append(tileSetFields)
+    }
+    var payload = Data()
+    payload.appendLittleEndianUInt16(9)
+    payload.appendLittleEndianUInt16(RDPGFXCodecID.cavideo)
+    payload.appendUInt8(0x20)
+    payload.append(rectangleBytes(left: 0, top: 0, right: 64, bottom: 64))
+    payload.appendLittleEndianUInt32(UInt32(stream.count))
+    payload.append(stream)
+
+    let summary = try RDPGFXMessageSummary.summarize(
+        RDPGFXHeader.parse(from: graphicsMessage(commandID: RDPGFXCommandID.wireToSurface1, payload: payload))
+    )
+
+    #expect(summary.cavideoBlockTypeNames == ["tile-set", "tile-set"])
+    #expect(summary.cavideoTileSetEntropyAlgorithms == ["rlgr3"])
+    #expect(summary.cavideoTileCount == 0)
 }
 
 @Test func summarizesCAVideoRemoteFXCompressedTilePayload() throws {
@@ -1070,17 +1023,8 @@ import Testing
 
     #expect(summary.surfaceID == 10)
     #expect(summary.codecName == "cavideo")
-    #expect(summary.cavideoChannelWidths == [192])
-    #expect(summary.cavideoChannelHeights == [192])
-    #expect(summary.cavideoFrameIndexes == [9])
-    #expect(summary.cavideoRegionRects == [
-        RDPFrameRect(left: 64, top: 128, right: 128, bottom: 192),
-    ])
+    #expect(summary.cavideoTileSetEntropyAlgorithms == ["rlgr3"])
     #expect(summary.cavideoTileCount == 1)
-    #expect(summary.cavideoTileRects == [
-        RDPFrameRect(left: 64, top: 128, right: 128, bottom: 192),
-    ])
-    #expect((summary.cavideoTileDataByteCount ?? 0) > 0)
 }
 
 @Test func canSummarizeCAVideoMessageWithoutVideoDetails() throws {
@@ -1101,7 +1045,7 @@ import Testing
     #expect(summary.typeName == "rdpgfx-wire-to-surface-1")
     #expect(summary.codecName == "cavideo")
     #expect(summary.bitmapDataLength == UInt32(cavideoStream.count))
-    #expect(summary.cavideoBlockTypes == nil)
+    #expect(summary.cavideoBlockTypeNames == nil)
     #expect(summary.cavideoTileCount == nil)
 }
 
@@ -1123,11 +1067,10 @@ import Testing
     let stream = try RDPGFXAVC420BitmapStream.parse(from: bitmapData)
 
     #expect(stream.regionRects == [RDPGFXRect16(left: 0, top: 0, right: 64, bottom: 32)])
-    #expect(stream.quantQualityVals == [RDPGFXAVC420QuantQuality(qpVal: 26, qualityVal: 90)])
-    #expect(stream.nalUnitTypes == [7, 8, 5])
+    #expect(RDPH264AnnexB.nalUnitTypes(from: stream.encodedBitstream) == [7, 8, 5])
 }
 
-@Test func parsesAVC420QuantQualityBitfields() throws {
+@Test func acceptsAVC420QuantQualityProgressiveAndReservedBits() throws {
     var bitmapData = Data()
     bitmapData.appendLittleEndianUInt32(1)
     bitmapData.append(rectangleBytes(left: 0, top: 0, right: 64, bottom: 32))
@@ -1137,33 +1080,18 @@ import Testing
 
     let stream = try RDPGFXAVC420BitmapStream.parse(from: bitmapData)
 
-    #expect(stream.quantQualityVals == [
-        RDPGFXAVC420QuantQuality(qpVal: 51, isProgressive: true, qualityVal: 100),
-    ])
+    #expect(stream.encodedBitstream == Data([0x00, 0x00, 0x01, 0x65]))
 }
 
-@Test func rejectsAVC420QuantQualityAboveSpecRange() {
-    var excessiveQP = Data()
-    excessiveQP.appendLittleEndianUInt32(1)
-    excessiveQP.append(rectangleBytes(left: 0, top: 0, right: 64, bottom: 32))
-    excessiveQP.appendUInt8(52)
-    excessiveQP.appendUInt8(100)
-    excessiveQP.append(Data([0x00, 0x00, 0x01, 0x65]))
-
-    #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
-        try RDPGFXAVC420BitmapStream.parse(from: excessiveQP)
-    }
-
+@Test func ignoresAVC420QuantQualityAboveSpecRange() throws {
     var bitmapData = Data()
     bitmapData.appendLittleEndianUInt32(1)
     bitmapData.append(rectangleBytes(left: 0, top: 0, right: 64, bottom: 32))
-    bitmapData.appendUInt8(26)
+    bitmapData.appendUInt8(52)
     bitmapData.appendUInt8(101)
     bitmapData.append(Data([0x00, 0x00, 0x01, 0x65]))
 
-    #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
-        try RDPGFXAVC420BitmapStream.parse(from: bitmapData)
-    }
+    #expect(try RDPGFXAVC420BitmapStream.parse(from: bitmapData).encodedBitstream == Data([0x00, 0x00, 0x01, 0x65]))
 }
 
 @Test func parsesHEVCAnnexBNALUnitTypes() {
@@ -1172,11 +1100,9 @@ import Testing
         0x00, 0x00, 0x01, 0x42, 0x01,
         0x00, 0x00, 0x01, 0x44, 0x01,
         0x00, 0x00, 0x01, 0x26, 0x01,
+        0x00, 0x00, 0x01, 0x26,
     ])
 
-    let units = RDPHEVCAnnexB.nalUnits(from: bitstream)
-
-    #expect(units.map(\.type) == [32, 33, 34, 19])
     #expect(RDPHEVCAnnexB.nalUnitTypes(from: bitstream) == [32, 33, 34, 19])
 }
 
@@ -1210,13 +1136,14 @@ import Testing
         0x00, 0x00, 0x01, 0x65, 0x88, 0x84,
     ])
 
-    let payloads = RDPAnnexB.nalUnitPayloads(from: bitstream)
+    let sample = RDPH264AnnexB.sample(from: bitstream)
 
-    #expect(payloads == [
-        Data([0x67, 0x64]),
-        Data([0x65, 0x88, 0x84]),
-    ])
+    #expect(sample.lengthPrefixedData == Data([
+        0x00, 0x00, 0x00, 0x02, 0x67, 0x64,
+        0x00, 0x00, 0x00, 0x03, 0x65, 0x88, 0x84,
+    ]))
     #expect(RDPH264AnnexB.nalUnitTypes(from: bitstream) == [7, 5])
+    #expect(RDPH264AnnexB.sample(from: Data([0x00, 0x00, 0x01])).isEmpty)
 }
 
 @Test func preparesH264AnnexBSampleWithLengthPrefixesAndParameterSets() {
@@ -1256,10 +1183,8 @@ import Testing
     let stream = try RDPGFXAVC444BitmapStream.parse(from: bitmapData)
 
     #expect(stream.layoutCode == .yuv420AndChroma420)
-    #expect(stream.firstStreamByteCount == UInt32(yuv420.count))
-    #expect(stream.yuv420Stream?.nalUnitTypes == [7, 5])
-    #expect(stream.chroma420Stream?.nalUnitTypes == [8, 1])
-    #expect(stream.nalUnitTypes == [7, 5, 8, 1])
+    #expect(stream.yuv420Stream.map { RDPH264AnnexB.nalUnitTypes(from: $0.encodedBitstream) } == [7, 5])
+    #expect(stream.chroma420Stream.map { RDPH264AnnexB.nalUnitTypes(from: $0.encodedBitstream) } == [8, 1])
 }
 
 @Test func parsesAVC444BitmapStreamWithLumaOnlySubframe() throws {
@@ -1273,7 +1198,7 @@ import Testing
     let stream = try RDPGFXAVC444BitmapStream.parse(from: bitmapData)
 
     #expect(stream.layoutCode == .yuv420Only)
-    #expect(stream.yuv420Stream?.nalUnitTypes == [5])
+    #expect(stream.yuv420Stream.map { RDPH264AnnexB.nalUnitTypes(from: $0.encodedBitstream) } == [5])
     #expect(stream.chroma420Stream == nil)
 }
 
@@ -1289,7 +1214,7 @@ import Testing
 
     #expect(stream.layoutCode == .chroma420Only)
     #expect(stream.yuv420Stream == nil)
-    #expect(stream.chroma420Stream?.nalUnitTypes == [1])
+    #expect(stream.chroma420Stream.map { RDPH264AnnexB.nalUnitTypes(from: $0.encodedBitstream) } == [1])
 }
 
 @Test func rejectsAVC444LumaOnlyStreamWithMismatchedByteCount() {
@@ -1327,43 +1252,6 @@ import Testing
     }
 }
 
-@Test func summarizesAVC420MetadataFromWireToSurface1Message() throws {
-    var bitmapData = Data()
-    bitmapData.appendLittleEndianUInt32(1)
-    bitmapData.appendLittleEndianUInt16(0)
-    bitmapData.appendLittleEndianUInt16(0)
-    bitmapData.appendLittleEndianUInt16(16)
-    bitmapData.appendLittleEndianUInt16(16)
-    bitmapData.appendUInt8(24)
-    bitmapData.appendUInt8(80)
-    bitmapData.append(Data([
-        0x00, 0x00, 0x01, 0x67,
-        0x00, 0x00, 0x01, 0x68,
-        0x00, 0x00, 0x01, 0x41,
-    ]))
-
-    var bytes = Data([
-        0x01, 0x00, 0x00, 0x00,
-    ])
-    bytes.appendLittleEndianUInt32(UInt32(8 + 17 + bitmapData.count))
-    bytes.appendLittleEndianUInt16(3)
-    bytes.appendLittleEndianUInt16(RDPGFXCodecID.avc420)
-    bytes.appendUInt8(0x20)
-    bytes.appendLittleEndianUInt16(0)
-    bytes.appendLittleEndianUInt16(0)
-    bytes.appendLittleEndianUInt16(16)
-    bytes.appendLittleEndianUInt16(16)
-    bytes.appendLittleEndianUInt32(UInt32(bitmapData.count))
-    bytes.append(bitmapData)
-
-    let summary = try RDPGFXMessageSummary.summarize(RDPGFXHeader.parse(from: bytes))
-
-    #expect(summary.typeName == "rdpgfx-wire-to-surface-1")
-    #expect(summary.avc420RegionCount == 1)
-    #expect(summary.avc420EncodedBitstreamLength == 12)
-    #expect(summary.h264NalUnitTypes == [7, 8, 1])
-}
-
 @Test func canSummarizeAVC420MessageWithoutVideoDetails() throws {
     var bitmapData = Data()
     bitmapData.appendLittleEndianUInt32(1)
@@ -1399,11 +1287,9 @@ import Testing
     )
 
     #expect(summary.typeName == "rdpgfx-wire-to-surface-1")
+    #expect(summary.surfaceID == 3)
     #expect(summary.codecName == "avc420")
     #expect(summary.bitmapDataLength == UInt32(bitmapData.count))
-    #expect(summary.avc420RegionCount == nil)
-    #expect(summary.avc420EncodedBitstreamLength == nil)
-    #expect(summary.h264NalUnitTypes == nil)
 }
 
 @Test func summarizesClearCodecSubcodecMetadataFromWireToSurface1Message() throws {
@@ -1441,17 +1327,9 @@ import Testing
 
     #expect(summary.typeName == "rdpgfx-wire-to-surface-1")
     #expect(summary.codecName == "clearcodec")
-    #expect(summary.clearCodecSubcodecIDs == [0x01])
-    #expect(summary.clearCodecSubcodecByteCounts == [UInt32(nsCodec.count)])
-    #expect(summary.clearCodecSubcodecRects == [
-        RDPFrameRect(left: 4, top: 6, right: 12, bottom: 16),
-    ])
-    #expect(summary.clearCodecNSCodecYByteCounts == [1])
-    #expect(summary.clearCodecNSCodecCoByteCounts == [1])
-    #expect(summary.clearCodecNSCodecCgByteCounts == [1])
-    #expect(summary.clearCodecNSCodecAlphaByteCounts == [1])
-    #expect(summary.clearCodecNSCodecColorLossLevels == [3])
-    #expect(summary.clearCodecNSCodecChromaSubsamplingLevels == [0])
+    #expect(summary.clearCodecResidualByteCount == 0)
+    #expect(summary.clearCodecBandsByteCount == 0)
+    #expect(summary.clearCodecSubcodecByteCount == UInt32(subcodec.count))
 }
 
 @Test func summarizesAVC444MetadataFromWireToSurface1Message() throws {
@@ -1487,12 +1365,8 @@ import Testing
     #expect(summary.typeName == "rdpgfx-wire-to-surface-1")
     #expect(summary.codecName == "avc444")
     #expect(summary.avc444Layout == "yuv420+chroma420")
-    #expect(summary.avc444FirstStreamByteCount == UInt32(yuv420.count))
-    #expect(summary.avc444YUV420RegionCount == 1)
     #expect(summary.avc444YUV420EncodedBitstreamLength == 8)
-    #expect(summary.avc444Chroma420RegionCount == 1)
     #expect(summary.avc444Chroma420EncodedBitstreamLength == 8)
-    #expect(summary.h264NalUnitTypes == [7, 5, 8, 1])
 }
 
 @Test func frameAcknowledgeEncodesQueueDepthFrameAndCount() {
@@ -1515,19 +1389,6 @@ import Testing
         commandID: RDPGFXCommandID.qoeFrameAcknowledge,
         payload: Data()
     )).typeName == "rdpgfx-qoe-frame-acknowledge")
-}
-
-@Test func qoeFrameAcknowledgeEncodesFrameAndTimingFields() {
-    let acknowledge = RDPGFXQoEFrameAcknowledgePDU(
-        frameID: 42,
-        timestamp: 1_234,
-        timeDiffSE: 12,
-        timeDiffEDR: 34
-    )
-
-    #expect(acknowledge.encoded().rdpHexString == """
-    16 00 00 00 14 00 00 00 2a 00 00 00 d2 04 00 00 0c 00 22 00
-    """.trimmingCharacters(in: .whitespacesAndNewlines))
 }
 
 private func avc420BitmapStream(nalUnits: [Data]) -> Data {
@@ -1692,15 +1553,6 @@ private func cavideoBitmapStream() -> Data {
     return stream
 }
 
-private func graphicsMessage(commandID: UInt16, payload: Data) -> Data {
-    var data = Data()
-    data.appendLittleEndianUInt16(commandID)
-    data.appendLittleEndianUInt16(0)
-    data.appendLittleEndianUInt32(UInt32(8 + payload.count))
-    data.append(payload)
-    return data
-}
-
 private func littleEndianUInt16Data(_ value: UInt16) -> Data {
     var data = Data()
     data.appendLittleEndianUInt16(value)
@@ -1813,19 +1665,13 @@ private func resetGraphicsMessage(
     width: UInt32,
     height: UInt32,
     monitorCount: UInt32,
-    monitorDefinitions: [RDPGFXMonitorDefinition] = []
+    monitorData: Data = Data()
 ) -> Data {
     var payload = Data()
     payload.appendLittleEndianUInt32(width)
     payload.appendLittleEndianUInt32(height)
     payload.appendLittleEndianUInt32(monitorCount)
-    for monitor in monitorDefinitions {
-        payload.appendLittleEndianUInt32(UInt32(bitPattern: monitor.left))
-        payload.appendLittleEndianUInt32(UInt32(bitPattern: monitor.top))
-        payload.appendLittleEndianUInt32(UInt32(bitPattern: monitor.right))
-        payload.appendLittleEndianUInt32(UInt32(bitPattern: monitor.bottom))
-        payload.appendLittleEndianUInt32(monitor.flags)
-    }
+    payload.append(monitorData)
     if payload.count < 332 {
         payload.append(Data(repeating: 0, count: 332 - payload.count))
     }
@@ -1862,27 +1708,6 @@ private func mapSurfaceToScaledOutputMessage(
     payload.appendLittleEndianUInt32(targetWidth)
     payload.appendLittleEndianUInt32(targetHeight)
     return graphicsMessage(commandID: RDPGFXCommandID.mapSurfaceToScaledOutput, payload: payload)
-}
-
-private func mapSurfaceToWindowMessage(
-    commandID: UInt16,
-    surfaceID: UInt16,
-    windowID: UInt64,
-    mappedWidth: UInt32,
-    mappedHeight: UInt32,
-    targetWidth: UInt32? = nil,
-    targetHeight: UInt32? = nil
-) -> Data {
-    var payload = Data()
-    payload.appendLittleEndianUInt16(surfaceID)
-    payload.appendLittleEndianUInt64(windowID)
-    payload.appendLittleEndianUInt32(mappedWidth)
-    payload.appendLittleEndianUInt32(mappedHeight)
-    if let targetWidth, let targetHeight {
-        payload.appendLittleEndianUInt32(targetWidth)
-        payload.appendLittleEndianUInt32(targetHeight)
-    }
-    return graphicsMessage(commandID: commandID, payload: payload)
 }
 
 private extension Data {

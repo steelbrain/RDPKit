@@ -114,7 +114,7 @@ import Testing
         count: maximumEventsPerPDU + 1
     )
 
-    let chunks = RDPClientInputPDU.eventChunks(events)
+    let chunks = events.chunked(maximumCount: maximumEventsPerPDU)
 
     #expect(chunks.map(\.count) == [maximumEventsPerPDU, 1])
     for chunk in chunks {
@@ -125,7 +125,7 @@ import Testing
 }
 
 @Test func inputPDUChunksEmptyEventBatchesToNoPDUs() {
-    #expect(RDPClientInputPDU.eventChunks([]).isEmpty)
+    #expect([RDPSlowPathInputEvent]().chunked(maximumCount: RDPClientInputPDU.maximumEventsPerPDU).isEmpty)
 }
 
 @Test func pointerButtonInputPDUEncodesDownAndReleaseEvents() {
@@ -190,6 +190,32 @@ import Testing
     """))
 }
 
+@Test func wheelRotationsBeyondOneEventSplitIntoSeveralEvents() {
+    #expect(RDPSlowPathInputEvent.verticalWheel(rotation: -600, x: 1, y: 2).wheelEventsSplit == [
+        .verticalWheel(rotation: -255, x: 1, y: 2),
+        .verticalWheel(rotation: -255, x: 1, y: 2),
+        .verticalWheel(rotation: -90, x: 1, y: 2),
+    ])
+    #expect(RDPSlowPathInputEvent.horizontalWheel(rotation: 255, x: 1, y: 2).wheelEventsSplit == [
+        .horizontalWheel(rotation: 255, x: 1, y: 2),
+    ])
+    #expect(RDPSlowPathInputEvent.verticalWheel(rotation: .max, x: 1, y: 2).wheelEventsSplit.count == 32)
+    #expect(RDPSlowPathInputEvent.pointerMove(x: 1, y: 2).wheelEventsSplit == [.pointerMove(x: 1, y: 2)])
+}
+
+@Test func scrollWheelAccumulatorCarriesFractionalRotations() {
+    var accumulator = RDPScrollWheelAccumulator()
+    let point = RDPRemotePoint(x: 10, y: 20)
+
+    #expect(accumulator.events(vertical: 0.6, horizontal: 0, at: point).isEmpty)
+    #expect(accumulator.events(vertical: 0.6, horizontal: -600, at: point) == [
+        .verticalWheel(rotation: 1, x: 10, y: 20),
+        .horizontalWheel(rotation: -600, x: 10, y: 20),
+    ])
+    #expect(accumulator.events(vertical: .nan, horizontal: .infinity, at: point).isEmpty)
+    #expect(accumulator.events(vertical: 0.8, horizontal: 0, at: point) == [.verticalWheel(rotation: 1, x: 10, y: 20)])
+}
+
 @Test func inputSessionDropsHorizontalWheelWithoutServerCapability() {
     let events: [RDPSlowPathInputEvent] = [
         .verticalWheel(rotation: 120, x: 20, y: 30),
@@ -197,7 +223,7 @@ import Testing
         .pointerMove(x: 21, y: 31),
     ]
 
-    #expect(RDPInputSession.supportedEvents(events, serverInputFlags: nil) == [
+    #expect(RDPInputSession.supportedEvents(events, serverInputFlags: 0) == [
         .verticalWheel(rotation: 120, x: 20, y: 30),
         .pointerMove(x: 21, y: 31),
     ])
@@ -216,7 +242,7 @@ import Testing
         .pointerButton(button: .extended1, isDown: true, x: 20, y: 30),
     ]
 
-    #expect(RDPInputSession.supportedEvents(events, serverInputFlags: nil) == [
+    #expect(RDPInputSession.supportedEvents(events, serverInputFlags: 0) == [
         .keyboard(scancode: RDPKeyboardScancode(code: 0x001C), isReleased: false),
         .pointerButton(button: .left, isDown: true, x: 20, y: 30),
     ])
@@ -289,7 +315,7 @@ import Testing
     var tracker = RDPInputStateTracker()
     let scancode = RDPKeyboardScancode(code: 0x001E)
     _ = tracker.keyboard(scancode: scancode, isReleased: false)
-    let repeatEvent = tracker.keyboard(scancode: scancode, isReleased: false, isRepeat: true)
+    let repeatEvent = tracker.keyboard(scancode: scancode, isReleased: false)
 
     let data = RDPClientInputPDU(
         shareID: 0x0001_03EE,
@@ -299,7 +325,7 @@ import Testing
     #expect(data.suffix(12) == hexData("""
     00 00 00 00 04 00 00 40 1e 00 00 00
     """))
-    #expect(tracker.releasePressedScancodes() == [
+    #expect(tracker.releasePressedInputs() == [
         .keyboard(scancode: scancode, isReleased: true),
     ])
 }
@@ -336,26 +362,29 @@ import Testing
 
     #expect(tracker.releasePressedInputs() == [
         .pointerButton(button: .left, isDown: false, x: 40, y: 50),
-        .pointerButton(button: .middle, isDown: false, x: 40, y: 50),
         .pointerButton(button: .right, isDown: false, x: 40, y: 50),
+        .pointerButton(button: .middle, isDown: false, x: 40, y: 50),
         .keyboard(scancode: RDPKeyboardScancode(code: 0x001C), isReleased: true),
         .keyboard(scancode: RDPKeyboardScancode(code: 0x004B, isExtended: true), isReleased: true),
     ])
     #expect(tracker.releasePressedInputs().isEmpty)
 }
 
-@Test func inputStateTrackerDoesNotTreatKeyboardRepeatsAsNewPresses() {
+@Test func inputStateTrackerFlagsRepeatsAndReleasesTheKeyOnce() {
     var tracker = RDPInputStateTracker()
     let scancode = RDPKeyboardScancode(code: 0x001E)
 
-    _ = tracker.keyboard(scancode: scancode, isReleased: false)
-    _ = tracker.keyboard(scancode: scancode, isReleased: false, isRepeat: true)
-
+    // The first press the server sees may be an auto-repeat, for example after focus returned
+    // mid-hold; it is a plain press, and the key is tracked so its release is sent.
+    #expect(tracker.keyboard(scancode: scancode, isReleased: false) == .keyboard(scancode: scancode, isReleased: false))
+    #expect(
+        tracker.keyboard(scancode: scancode, isReleased: false)
+            == .keyboard(scancode: scancode, isReleased: false, wasDown: true)
+    )
     #expect(tracker.isScancodePressed(scancode))
-    #expect(tracker.releasePressedScancodes() == [
-        .keyboard(scancode: scancode, isReleased: true),
-    ])
+    #expect(tracker.keyboard(scancode: scancode, isReleased: true) == .keyboard(scancode: scancode, isReleased: true))
     #expect(tracker.isScancodePressed(scancode) == false)
+    #expect(tracker.releasePressedInputs().isEmpty)
 }
 
 @Test func inputStateTrackerBuildsSynchronizationSequenceForPressedInputs() {
@@ -376,7 +405,33 @@ import Testing
     ])
 }
 
-private func hexData(_ value: String) -> Data {
-    let bytes = value.split(whereSeparator: { $0.isWhitespace }).compactMap { UInt8($0, radix: 16) }
-    return Data(bytes)
+@Test func fastPathInputPDUEncodesSignedWheelRotation() throws {
+    let packet = try #require(RDPFastPathInputPDU(events: [
+        .verticalWheel(rotation: 120, x: 20, y: 30),
+        .horizontalWheel(rotation: -120, x: 20, y: 30),
+    ]).encoded())
+
+    #expect(packet == hexData("""
+    08 10
+    20 78 02 14 00 1e 00
+    20 88 05 14 00 1e 00
+    """))
+}
+
+@Test func inputSessionFallsBackToSlowPathForEventsWithoutFastPathForm() throws {
+    let channel = EmbeddedChannel()
+    try channel.connect(to: SocketAddress(ipAddress: "127.0.0.1", port: 3389)).wait()
+    let session = RDPInputSession(
+        shareID: 1,
+        userChannelID: 1001,
+        ioChannelID: 1003,
+        channel: channel,
+        serverInputFlags: 0x0008
+    )
+
+    session.send(.scancode(code: 0x0100, flags: 0))
+    channel.embeddedEventLoop.run()
+    var buffer = try #require(try channel.readOutbound(as: ByteBuffer.self))
+
+    #expect(buffer.readInteger(as: UInt8.self) == 0x03)
 }

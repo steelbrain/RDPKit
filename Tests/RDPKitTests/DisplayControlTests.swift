@@ -10,9 +10,11 @@ import Testing
     04 00 00 00 00 20 00 00 00 20 00 00
     """)))
 
-    #expect(caps.maxNumMonitors == 4)
-    #expect(caps.maxMonitorAreaFactorA == 8192)
-    #expect(caps.maxMonitorAreaFactorB == 8192)
+    #expect(caps.capabilities == RDPDisplayControlCapabilities(
+        maxNumMonitors: 4,
+        maxMonitorAreaFactorA: 8192,
+        maxMonitorAreaFactorB: 8192
+    ))
 }
 
 @Test func ignoresNonCapsDisplayControlPDU() throws {
@@ -299,7 +301,7 @@ import Testing
     let outboundBytes = outbound.readBytes(length: outbound.readableBytes)
     let packet = Data(try #require(outboundBytes))
     let request = try mcsSendDataRequest(fromTPKT: packet)
-    let staticPDU = try RDPStaticVirtualChannelPDU.parse(fromUserData: request.userData)
+    let staticPDU = try RDPStaticVirtualChannelPDU.parse(fromUserData: request.userData, maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumPayloadByteCount)
     let dynamicPDU = try #require(try RDPDynamicVirtualChannelDataPDU.parseIfPresent(from: staticPDU.payload))
 
     #expect(request.initiator == 1001)
@@ -310,21 +312,24 @@ import Testing
     #expect(try RDPDisplayControlMonitorLayoutPDU.parseIfPresent(from: dynamicPDU.payload) != nil)
 }
 
-private func mcsSendDataRequest(fromTPKT packet: Data) throws -> (initiator: UInt16, channelID: UInt16, userData: Data) {
-    var cursor = try ByteCursor(X224DataTPDU.unwrap(packet))
-    let header = try cursor.readUInt8()
-    let initiator = try UInt16(1001 + cursor.readBigEndianUInt16())
-    let channelID = try cursor.readBigEndianUInt16()
-    _ = try cursor.readUInt8()
-    let length = try cursor.readPERLength()
-    let userData = try cursor.readData(count: length)
-    guard header == 0x64, cursor.remaining == 0 else {
-        throw RDPDecodeError.invalidMCSSendDataIndication
-    }
-    return (initiator, channelID, userData)
-}
+@Test func endedDisplayControlSessionSendsNothing() throws {
+    let channel = EmbeddedChannel()
+    try channel.connect(to: SocketAddress(ipAddress: "127.0.0.1", port: 3389)).wait()
+    let session = RDPDisplayControlSession(
+        dynamicChannelID: 2,
+        capabilities: RDPDisplayControlCapabilities(maxNumMonitors: 1, maxMonitorAreaFactorA: 3840, maxMonitorAreaFactorB: 2160),
+        userChannelID: 1007,
+        staticChannelID: 1004,
+        channel: channel
+    )
 
-private func hexData(_ value: String) -> Data {
-    let bytes = value.split(whereSeparator: { $0.isWhitespace }).compactMap { UInt8($0, radix: 16) }
-    return Data(bytes)
+    session.sendSingleMonitorLayout(width: 1280, height: 720)
+    channel.embeddedEventLoop.run()
+    #expect(try channel.readOutbound(as: ByteBuffer.self) != nil)
+
+    session.end()
+    session.sendSingleMonitorLayout(width: 1280, height: 720)
+    channel.embeddedEventLoop.run()
+    #expect(try channel.readOutbound(as: ByteBuffer.self) == nil)
+    _ = try channel.finish()
 }

@@ -1,5 +1,4 @@
 import AppKit
-import QuartzCore
 import RDPKit
 
 struct RDPSessionEndReason: Equatable {
@@ -22,7 +21,7 @@ struct RDPSessionEndReason: Equatable {
         message: "Connection cancelled by user."
     )
 
-    init(report: RDPPreflightReport) {
+    init(report: RDPConnectionReport) {
         if report.status == "failure" || report.error != nil {
             kind = .failed
             message = report.error ?? "Connection failed at \(report.stage)."
@@ -38,7 +37,7 @@ struct RDPSessionEndReason: Equatable {
         }
     }
 
-    private static func terminationSuffix(_ report: RDPPreflightReport) -> String {
+    private static func terminationSuffix(_ report: RDPConnectionReport) -> String {
         if let errorInfoName = report.rdpRemoteTerminationErrorInfoName {
             return " (\(errorInfoName))"
         }
@@ -83,34 +82,5 @@ struct RDPSessionEndReason: Equatable {
 
     var diagnosticValue: String {
         "\(statusText): \(message)"
-    }
-}
-
-extension RDPFramePacingState {
-    @MainActor
-    static func current(window: NSWindow?, displayLink: CADisplayLink?, isPaused: Bool) -> RDPFramePacingState {
-        guard let window,
-              let screen = window.screen
-        else {
-            return RDPFramePacingState(
-                screenName: "No window",
-                backingScaleFactor: window?.backingScaleFactor,
-                displayLinkDuration: displayLink?.duration,
-                hasDisplayLink: displayLink != nil,
-                isDisplayLinkPaused: isPaused
-            )
-        }
-
-        return RDPFramePacingState(
-            screenName: screen.localizedName,
-            backingScaleFactor: window.backingScaleFactor,
-            maximumFramesPerSecond: screen.maximumFramesPerSecond,
-            minimumRefreshInterval: screen.minimumRefreshInterval,
-            maximumRefreshInterval: screen.maximumRefreshInterval,
-            displayUpdateGranularity: screen.displayUpdateGranularity,
-            displayLinkDuration: displayLink?.duration,
-            hasDisplayLink: displayLink != nil,
-            isDisplayLinkPaused: isPaused
-        )
     }
 }

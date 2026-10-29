@@ -99,6 +99,16 @@ import Testing
     #expect(core.littleEndianUInt16(at: 54) == 0)
 }
 
+@Test func clientCoreDataDoesNotSplitSurrogatePairWhenTruncatingClientName() {
+    let pdu = MCSConnectInitialPDU(configuration: MCSConnectInitialConfiguration(
+        clientName: "ABCDEFGHIJKLMN\u{1F600}"
+    ))
+    let core = pdu.encodedClientCoreData()
+
+    #expect(core.littleEndianUInt16(at: 50) == 0x004E)
+    #expect(core.littleEndianUInt16(at: 52) == 0)
+}
+
 @Test func clientCoreDataAdvertisesDynamicGraphicsOnlyWithDrdynvcChannel() {
     let defaultCore = MCSConnectInitialPDU().encodedClientCoreData()
     let clipboardOnlyCore = MCSConnectInitialPDU(configuration: MCSConnectInitialConfiguration(
@@ -205,7 +215,7 @@ import Testing
         RDPStaticVirtualChannel.rdpdr,
         RDPStaticVirtualChannel.rdpsnd,
     ] {
-        #expect(channel.options & ChannelOptions.compress == 0)
+        #expect(channel.options & 0x0040_0000 == 0) // CHANNEL_OPTION_COMPRESS
     }
 }
 
@@ -242,23 +252,6 @@ import Testing
         0x06, 0xC0, 0x08, 0x00,
         0x00, 0x00, 0x00, 0x00,
     ])))
-}
-
-private extension Data {
-    func containsSubsequence(_ needle: Data) -> Bool {
-        range(of: needle) != nil
-    }
-
-    func littleEndianUInt16(at offset: Int) -> UInt16 {
-        UInt16(self[offset]) | UInt16(self[offset + 1]) << 8
-    }
-
-    func littleEndianUInt32(at offset: Int) -> UInt32 {
-        UInt32(self[offset])
-            | UInt32(self[offset + 1]) << 8
-            | UInt32(self[offset + 2]) << 16
-            | UInt32(self[offset + 3]) << 24
-    }
 }
 
 private func blockTypes(in data: Data) -> [UInt16] {

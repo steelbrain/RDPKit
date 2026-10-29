@@ -23,27 +23,30 @@ struct RDPServerRedirectionPDU: Equatable, Sendable {
     }
 
     var channelID: UInt16
-    var totalLength: UInt16
-    var pduSource: UInt16
-    var redirectionPacketFlags: UInt16
-    var redirectionLength: UInt16
     var sessionID: UInt32
     var flags: Flags
     var loadBalanceInfo: Data?
     var targetNetAddress: String?
     var username: String?
     var domain: String?
-    var password: String?
-    var encryptedPassword: Data?
+    /// The raw Password field: a null-terminated Unicode password or an opaque cookie
+    /// (encrypted for the target when `passwordIsPKEncrypted` is set) that is passed
+    /// back verbatim in the Client Info PDU.
+    var passwordCookie: Data?
     var targetFQDN: String?
     var targetNetBIOSName: String?
-    var targetNetAddresses: [String]
+    var targetNetAddresses: [String] = []
     var tsvURL: String?
     var redirectionGuid: Data?
     var targetCertificate: Data?
 
+    /// LoadBalanceInfo is replayed as the X.224 routing token only when no
+    /// TargetNetAddress is given, and only if it fits in the Connection Request.
     var routingToken: Data? {
-        guard !flags.contains(.targetNetAddress) else {
+        guard !flags.contains(.targetNetAddress),
+              let loadBalanceInfo,
+              X224ConnectionRequest.canCarry(routingToken: loadBalanceInfo)
+        else {
             return nil
         }
         return loadBalanceInfo
@@ -53,10 +56,17 @@ struct RDPServerRedirectionPDU: Equatable, Sendable {
         targetFQDN ?? targetNetAddress ?? targetNetAddresses.first ?? targetNetBIOSName
     }
 
-    static func parseIfPresent(fromTPKT packet: Data) throws -> RDPServerRedirectionPDU? {
-        guard let indication = try? MCSSendDataIndicationPDU.parse(fromTPKT: packet) else {
+    /// `passwordCookie` read as text; nil when it is PK-encrypted. A binary cookie
+    /// decodes to garbage here, so reconnects should send `passwordCookie` instead.
+    var password: String? {
+        guard !flags.contains(.passwordIsPKEncrypted) else {
             return nil
         }
+        return passwordCookie.map(decodeUTF16LEString)
+    }
+
+    /// Parses a Server Redirection PDU, or returns nil for other PDUs.
+    static func parseIfPresent(from indication: MCSSendDataIndicationPDU) throws -> RDPServerRedirectionPDU? {
         guard indication.userData.count >= 20 else {
             return nil
         }
@@ -64,62 +74,45 @@ struct RDPServerRedirectionPDU: Equatable, Sendable {
         var cursor = ByteCursor(indication.userData)
         let totalLength = try cursor.readLittleEndianUInt16()
         let pduType = try cursor.readLittleEndianUInt16()
-        let pduSource = try cursor.readLittleEndianUInt16()
+        _ = try cursor.readLittleEndianUInt16() // pduSource
         guard pduType & 0x000F == 0x000A else {
             return nil
         }
-        let pduVersion = pduType >> 4
-        guard (pduVersion == 0 || pduVersion == 1),
+        // The version subfield MUST be 0 ([MS-RDPBCGR] 2.2.13.3.1; Windows in
+        // the 4.6 annotated capture). gnome-remote-desktop sends
+        // TS_PROTOCOL_VERSION 1 (Fixtures/gnome-negotiation-transcript.json, sequence 58).
+        guard pduType >> 4 <= 1,
               Int(totalLength) >= 20,
               Int(totalLength) <= indication.userData.count
         else {
             throw RDPDecodeError.invalidShareControlHeader
         }
 
-        _ = try cursor.readLittleEndianUInt16()
+        _ = try cursor.readLittleEndianUInt16() // pad2Octets
         let redirectionPacketFlags = try cursor.readLittleEndianUInt16()
         let redirectionLength = try cursor.readLittleEndianUInt16()
         let availableRedirectionBytes = Int(totalLength) - 12
         let declaredRedirectionBodyBytes = Int(redirectionLength) - 4
+        // The packet may be followed by the optional pad1Octet ([MS-RDPBCGR]
+        // 2.2.13.3.1). gnome-remote-desktop overstates its Length by 2 (sequence 58).
         guard redirectionPacketFlags == 0x0400,
               redirectionLength >= 12,
               availableRedirectionBytes >= 8,
-              declaredRedirectionBodyBytes == availableRedirectionBytes
-                  || declaredRedirectionBodyBytes == availableRedirectionBytes + 2
+              [availableRedirectionBytes, availableRedirectionBytes - 1, availableRedirectionBytes + 2]
+                  .contains(declaredRedirectionBodyBytes)
         else {
             throw RDPDecodeError.invalidShareControlHeader
         }
 
-        var redirectionCursor = ByteCursor(try cursor.readData(count: availableRedirectionBytes))
+        let redirectionBodyBytes = min(declaredRedirectionBodyBytes, availableRedirectionBytes)
+        var redirectionCursor = ByteCursor(try cursor.readData(count: redirectionBodyBytes))
         let sessionID = try redirectionCursor.readLittleEndianUInt32()
         let flags = Flags(rawValue: try redirectionCursor.readLittleEndianUInt32())
-        var pdu = RDPServerRedirectionPDU(
-            channelID: indication.channelID,
-            totalLength: totalLength,
-            pduSource: pduSource,
-            redirectionPacketFlags: redirectionPacketFlags,
-            redirectionLength: redirectionLength,
-            sessionID: sessionID,
-            flags: flags,
-            loadBalanceInfo: nil,
-            targetNetAddress: nil,
-            username: nil,
-            domain: nil,
-            password: nil,
-            encryptedPassword: nil,
-            targetFQDN: nil,
-            targetNetBIOSName: nil,
-            targetNetAddresses: [],
-            tsvURL: nil,
-            redirectionGuid: nil,
-            targetCertificate: nil
-        )
+        var pdu = RDPServerRedirectionPDU(channelID: indication.channelID, sessionID: sessionID, flags: flags)
 
-        // Optional redirection fields appear on the wire in ascending flag-bit
-        // order. If the server set a flag we don't recognize, we can't know the
-        // layout of (or skip past) its field, so parsing any later field risks
-        // misalignment. Bail out before reading optionals rather than follow a
-        // redirection we can't fully interpret.
+        // Optional fields follow in a fixed order (ascending flag bits, except
+        // TargetNetAddresses last). An unknown flag may add a field we cannot
+        // skip, so leave the optionals unread rather than misparse them.
         guard flags.rawValue & ~Flags.knownFieldMask == 0 else {
             return pdu
         }
@@ -137,11 +130,7 @@ struct RDPServerRedirectionPDU: Equatable, Sendable {
             pdu.domain = try redirectionCursor.readLengthPrefixedUTF16String()
         }
         if flags.contains(.password) {
-            if flags.contains(.passwordIsPKEncrypted) {
-                pdu.encryptedPassword = try redirectionCursor.readLengthPrefixedBytes()
-            } else {
-                pdu.password = try redirectionCursor.readLengthPrefixedUTF16String()
-            }
+            pdu.passwordCookie = try redirectionCursor.readLengthPrefixedBytes()
         }
         if flags.contains(.targetFQDN) {
             pdu.targetFQDN = try redirectionCursor.readLengthPrefixedUTF16String()

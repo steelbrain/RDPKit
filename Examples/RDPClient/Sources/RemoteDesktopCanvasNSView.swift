@@ -53,10 +53,15 @@ final class RemoteDesktopCanvasNSView: NSView {
         isConnecting: Bool
     ) {
         let shouldShowDesktop = frame != nil && hasPresentedFrame
+        let isShowingDesktop = !inputView.isHidden
         displayView.isHidden = !shouldShowDesktop
         inputView.isHidden = !shouldShowDesktop
         inputView.rdpFrame = frame
         inputView.inputSession = shouldShowDesktop ? inputSession : nil
+        // Typing goes to a desktop that appears, unless the user is in another control.
+        if shouldShowDesktop, !isShowingDesktop, let window, window.firstResponder === window {
+            window.makeFirstResponder(inputView)
+        }
 
         let shouldShowProgress = !shouldShowDesktop && isConnecting
         progressIndicator.isHidden = !shouldShowProgress
@@ -78,6 +83,8 @@ final class RemoteDesktopCanvasNSView: NSView {
 
         displayView.autoresizingMask = [.width, .height]
         inputView.autoresizingMask = [.width, .height]
+        displayView.isHidden = true
+        inputView.isHidden = true
         addSubview(displayView)
         addSubview(inputView)
 

@@ -4,8 +4,8 @@ import Testing
 
 @Test func parsesServerRedirectionWithLoadBalanceCookie() throws {
     let cookie = Data("Cookie: mststs=1183689379\r\n".utf8)
-    let username = utf16LE("rdp-user")
-    let netbios = utf16LE("ANEES-MSI-LAPTOP")
+    let username = utf16LENullTerminated("rdp-user")
+    let netbios = utf16LENullTerminated("ANEES-MSI-LAPTOP")
     var userData = Data()
     let redirectionLength = UInt16(12 + 4 + cookie.count + 4 + username.count + 4 + netbios.count)
     let totalLength = UInt16(8 + Int(redirectionLength))
@@ -34,8 +34,6 @@ import Testing
     )))
 
     #expect(pdu.channelID == 1003)
-    #expect(pdu.redirectionPacketFlags == 0x0400)
-    #expect(pdu.redirectionLength == redirectionLength)
     #expect(pdu.sessionID == 4)
     #expect(pdu.flags.contains(.loadBalanceInfo))
     #expect(pdu.routingToken == cookie)
@@ -45,11 +43,11 @@ import Testing
 }
 
 @Test func parsesServerRedirectionTargetAndCredentialFields() throws {
-    let netAddress = utf16LE("192.0.2.10")
-    let username = utf16LE("rdp-user")
-    let domain = utf16LE("WORKGROUP")
-    let password = utf16LE("hunter2")
-    let fqdn = utf16LE("desktop.example.test")
+    let netAddress = utf16LENullTerminated("192.0.2.10")
+    let username = utf16LENullTerminated("rdp-user")
+    let domain = utf16LENullTerminated("WORKGROUP")
+    let password = utf16LENullTerminated("hunter2")
+    let fqdn = utf16LENullTerminated("desktop.example.test")
 
     var fields = Data()
     fields.append(lengthPrefixed(netAddress))
@@ -78,7 +76,7 @@ import Testing
 
 @Test func doesNotUseLoadBalanceInfoAsRoutingTokenWhenTargetAddressIsPresent() throws {
     let cookie = Data("Cookie: mststs=load-balanced\r\n".utf8)
-    let netAddress = utf16LE("192.0.2.10")
+    let netAddress = utf16LENullTerminated("192.0.2.10")
     var fields = Data()
     fields.append(lengthPrefixed(netAddress))
     fields.append(lengthPrefixed(cookie))
@@ -95,14 +93,14 @@ import Testing
 }
 
 @Test func parsesServerRedirectionTargetNetAddresses() throws {
-    let netAddress = utf16LE("2001:db8::1")
-    let netbios = utf16LE("RDSHOST")
+    let netAddress = utf16LENullTerminated("2001:db8::1")
+    let netbios = utf16LENullTerminated("RDSHOST")
     var fields = Data()
     fields.append(lengthPrefixed(netAddress))
     fields.append(lengthPrefixed(netbios))
     fields.append(lengthPrefixed(targetNetAddresses([
-        utf16LE("2001:db8::1"),
-        utf16LE("192.0.2.10"),
+        utf16LENullTerminated("2001:db8::1"),
+        utf16LENullTerminated("192.0.2.10"),
     ])))
 
     let pdu = try #require(try RDPServerRedirectionPDU.parseIfPresent(fromTPKT: redirectionIndication(
@@ -119,7 +117,7 @@ import Testing
 }
 
 @Test func parsesServerRedirectionTargetNetAddressesAfterRDSTLSFields() throws {
-    let tsvURL = utf16LE("tsv://collection")
+    let tsvURL = utf16LENullTerminated("tsv://collection")
     let guid = Data("UkRQS2l0LXJlZGlyZWN0LWd1aWQ=".utf8)
     let certificate = Data("UkRQS2l0LWNlcnQ=".utf8)
     var fields = Data()
@@ -127,8 +125,8 @@ import Testing
     fields.append(lengthPrefixed(guid))
     fields.append(lengthPrefixed(certificate))
     fields.append(lengthPrefixed(targetNetAddresses([
-        utf16LE("2001:db8::1"),
-        utf16LE("192.0.2.10"),
+        utf16LENullTerminated("2001:db8::1"),
+        utf16LENullTerminated("192.0.2.10"),
     ])))
 
     let pdu = try #require(try RDPServerRedirectionPDU.parseIfPresent(fromTPKT: redirectionIndication(
@@ -150,33 +148,82 @@ import Testing
     let pdu = try #require(try RDPServerRedirectionPDU.parseIfPresent(fromTPKT: redirectionIndication(
         sessionID: 0x1234_5678,
         flags: RDPServerRedirectionPDU.Flags.targetFQDN.rawValue,
-        fields: lengthPrefixed(utf16LE("desktop.example.test"))
+        fields: lengthPrefixed(utf16LENullTerminated("desktop.example.test"))
     )))
 
-    #expect(pdu.pduSource == 0)
-    #expect(pdu.redirectionPacketFlags == 0x0400)
     #expect(pdu.sessionID == 0x1234_5678)
     #expect(pdu.targetFQDN == "desktop.example.test")
 }
 
-@Test func parsesGnomeEnhancedRedirectionWithVersionOneShareHeader() throws {
-    var packet = redirectionUserData(
-        sessionID: 4,
-        flags: RDPServerRedirectionPDU.Flags.loadBalanceInfo.rawValue,
-        fields: lengthPrefixed(Data("Cookie: mststs=load-balanced\r\n".utf8))
-    )
-    packet.replaceSubrange(2 ..< 4, with: Data([0x1A, 0x00]))
+@Test func parsesCapturedGnomeRedirection() throws {
+    // Fixtures/gnome-negotiation-transcript.json, sequence 58: TS_PROTOCOL_VERSION 1 in
+    // the Share Control header and a redirection Length overstated by 2.
+    let packet = try #require(Data(rdpHexString: """
+    03 00 00 42 02 f0 80 68 00 05 03 eb 70 34 34 00 1a 00 00 00 00 00 00 04 2e 00 00 00
+    04 00 02 00 00 00 1c 00 00 00 43 6f 6f 6b 69 65 3a 20 6d 73 74 73 3d 6c 6f 61 64 2d
+    62 61 6c 61 6e 63 65 64 0d 0a
+    """))
+
+    let pdu = try #require(try RDPServerRedirectionPDU.parseIfPresent(fromTPKT: packet, channelID: 1003))
+    #expect(pdu.routingToken == Data("Cookie: msts=load-balanced\r\n".utf8))
+    #expect(try RDPServerRedirectionPDU.parseIfPresent(fromTPKT: packet, channelID: 1004) == nil)
+}
+
+@Test func acceptsServerRedirectionWithVersionZeroAndVersionOneShareHeaders() throws {
+    // Version 0 is the [MS-RDPBCGR] 2.2.13.3.1 form Windows sends; version 1 is GRD's.
+    for pduType: [UInt8] in [[0x0A, 0x00], [0x1A, 0x00]] {
+        var packet = redirectionUserData(
+            sessionID: 4,
+            flags: RDPServerRedirectionPDU.Flags.loadBalanceInfo.rawValue,
+            fields: lengthPrefixed(Data("Cookie: mststs=load-balanced\r\n".utf8))
+        )
+        packet.replaceSubrange(2 ..< 4, with: Data(pduType))
+
+        let pdu = try #require(try RDPServerRedirectionPDU.parseIfPresent(fromTPKT: mcsSendDataIndication(
+            channelID: 1003,
+            userData: packet
+        )))
+        #expect(pdu.routingToken == Data("Cookie: mststs=load-balanced\r\n".utf8))
+    }
+}
+
+@Test func parsesWindowsServerRedirectionWithTrailingPadOctet() throws {
+    // Shaped like the [MS-RDPBCGR] 4.6 Windows capture: version 0 header, a
+    // load-balance cookie, user name, domain, binary password cookie and FQDN,
+    // then the optional pad1Octet counted only in the Share Control length.
+    let cookie = Data([0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08])
+    var fields = lengthPrefixed(Data("Cookie: msts=3640205228.15629.0000\r\n".utf8))
+    fields.append(lengthPrefixed(utf16LENullTerminated("AdminUser\u{0}")))
+    fields.append(lengthPrefixed(utf16LENullTerminated("NTDEV\u{0}")))
+    fields.append(lengthPrefixed(cookie))
+    fields.append(lengthPrefixed(utf16LENullTerminated("server2.example.test\u{0}")))
+    let flags: RDPServerRedirectionPDU.Flags = [.loadBalanceInfo, .username, .domain, .password, .targetFQDN]
+    var packet = redirectionUserData(sessionID: 2, flags: flags.rawValue, fields: fields)
+    packet.append(0)
+    let totalLength = UInt16(packet.count)
+    packet.replaceSubrange(0 ..< 2, with: Data([UInt8(totalLength & 0xFF), UInt8(totalLength >> 8)]))
 
     let pdu = try #require(try RDPServerRedirectionPDU.parseIfPresent(fromTPKT: mcsSendDataIndication(
         channelID: 1003,
         userData: packet
     )))
+    #expect(pdu.sessionID == 2)
+    #expect(pdu.username == "AdminUser")
+    #expect(pdu.domain == "NTDEV")
+    #expect(pdu.passwordCookie == cookie)
+    #expect(pdu.targetFQDN == "server2.example.test")
+    #expect(pdu.routingToken == Data("Cookie: msts=3640205228.15629.0000\r\n".utf8))
+}
 
-    // MS-RDPBCGR specifies PDUVersion zero for this PDU, but
-    // gnome-remote-desktop has been observed sending the Share Control version
-    // one nibble. Keep following the routing token when the packet body is
-    // otherwise valid.
-    #expect(pdu.routingToken == Data("Cookie: mststs=load-balanced\r\n".utf8))
+@Test func keepsBinaryRedirectionPasswordCookieVerbatim() throws {
+    let cookie = Data([0x01, 0x00, 0x00, 0x00, 0xD8, 0x00, 0xFF, 0xFE, 0x00, 0x00, 0x41])
+
+    let pdu = try #require(try RDPServerRedirectionPDU.parseIfPresent(fromTPKT: redirectionIndication(
+        flags: RDPServerRedirectionPDU.Flags.password.rawValue,
+        fields: lengthPrefixed(cookie)
+    )))
+
+    #expect(pdu.passwordCookie == cookie)
 }
 
 @Test func parsesGnomeRedirectionWithOverstatedEmbeddedLength() throws {
@@ -197,7 +244,6 @@ import Testing
         userData: packet
     )))
 
-    #expect(pdu.redirectionLength == overstatedLength)
     #expect(pdu.routingToken == cookie)
 }
 
@@ -284,7 +330,7 @@ import Testing
     // bits (0x4000/0x8000/0x10000); a wrong bit assignment makes them read as
     // unknown flags, dropping the routing token so the redirect is not followed.
     let cookie = Data("Cookie: msts=lb\r\n".utf8)
-    let username = utf16LE("rdp-user")
+    let username = utf16LENullTerminated("rdp-user")
     let encryptedPassword = Data([0x30, 0x82, 0x01, 0x0A, 0x00, 0xFF])
     let guid = Data((0 ..< 16).map { UInt8($0) })
     let certificate = Data([0x01, 0x02, 0x03, 0x04])
@@ -312,7 +358,7 @@ import Testing
     #expect(pdu.routingToken == cookie)
     #expect(pdu.username == "rdp-user")
     #expect(pdu.password == nil)
-    #expect(pdu.encryptedPassword == encryptedPassword)
+    #expect(pdu.passwordCookie == encryptedPassword)
     #expect(pdu.redirectionGuid == guid)
     #expect(pdu.targetCertificate == certificate)
 }
@@ -333,7 +379,7 @@ import Testing
 }
 
 @Test func rejectsTargetNetAddressesWithTrailingBytes() {
-    var addresses = targetNetAddresses([utf16LE("192.0.2.10")])
+    var addresses = targetNetAddresses([utf16LENullTerminated("192.0.2.10")])
     addresses.append(0xFF)
 
     #expect(throws: RDPDecodeError.invalidShareControlHeader) {
@@ -347,7 +393,7 @@ import Testing
 @Test func rejectsTargetNetAddressesWhenCountExceedsEntries() {
     var addresses = Data()
     addresses.appendLittleEndianUInt32(2)
-    addresses.append(lengthPrefixed(utf16LE("192.0.2.10")))
+    addresses.append(lengthPrefixed(utf16LENullTerminated("192.0.2.10")))
 
     #expect(throws: RDPDecodeError.truncated(needed: 4, remaining: 0)) {
         try RDPServerRedirectionPDU.parseIfPresent(fromTPKT: redirectionIndication(
@@ -355,6 +401,24 @@ import Testing
             fields: lengthPrefixed(addresses)
         ))
     }
+}
+
+@Test func doesNotUseLoadBalanceInfoThatCannotFitInConnectionRequest() throws {
+    // A longer token used to trip the X.224 length precondition when reconnecting.
+    let fitting = Data(repeating: 0x41, count: 238) + Data("\r\n".utf8)
+    let oversized = Data(repeating: 0x41, count: 239) + Data("\r\n".utf8)
+
+    for (cookie, expected) in [(fitting, fitting), (oversized, nil)] {
+        let pdu = try #require(try RDPServerRedirectionPDU.parseIfPresent(fromTPKT: redirectionIndication(
+            flags: RDPServerRedirectionPDU.Flags.loadBalanceInfo.rawValue,
+            fields: lengthPrefixed(cookie)
+        )))
+        #expect(pdu.loadBalanceInfo == cookie)
+        #expect(pdu.routingToken == expected)
+    }
+    let packet = X224ConnectionRequest(routingToken: fitting).encodedTPKT()
+    #expect(packet.count == 4 + 255)
+    #expect(packet[4] == 254)
 }
 
 @Test func ignoresNonRedirectionShareControlPacket() throws {
@@ -417,22 +481,27 @@ private func targetNetAddresses(_ addresses: [Data]) -> Data {
     return out
 }
 
-private func mcsSendDataIndication(channelID: UInt16, userData: Data) -> Data {
-    var data = Data()
-    data.appendUInt8(0x68)
-    data.appendBigEndianUInt16(1007 - 1001)
-    data.appendBigEndianUInt16(channelID)
-    data.appendUInt8(0x70)
-    data.appendPERLength(userData.count)
-    data.append(userData)
-    return X224DataTPDU.wrap(data)
+/// LB_NOREDIRECT marks the PDU informational: nothing to reconnect to
+/// ([MS-RDPBCGR] 2.2.13.1).
+@Test func informationalRedirectionNamesNoReconnectTarget() {
+    let configuration = RDPConnectionConfiguration(host: "broker.example")
+    var redirection = RDPServerRedirectionPDU(channelID: 1003, sessionID: 7, flags: [.loadBalanceInfo, .noRedirect])
+    redirection.loadBalanceInfo = Data("Cookie: msts=1\r\n".utf8)
+    #expect(configuration.redirected(by: redirection) == nil)
+
+    redirection.flags.remove(.noRedirect)
+    #expect(configuration.redirected(by: redirection)?.redirectionRoutingToken == redirection.loadBalanceInfo)
 }
 
-private func utf16LE(_ string: String) -> Data {
-    var data = Data()
-    for codeUnit in string.utf16 {
-        data.appendLittleEndianUInt16(codeUnit)
+// TPKT entry point for tests; the client parses the indication routed from
+// the I/O channel.
+extension RDPServerRedirectionPDU {
+    static func parseIfPresent(fromTPKT packet: Data, channelID: UInt16? = nil) throws -> RDPServerRedirectionPDU? {
+        guard let indication = try? MCSSendDataIndicationPDU.parse(fromTPKT: packet),
+              channelID.map({ indication.channelID == $0 }) ?? true
+        else {
+            return nil
+        }
+        return try parseIfPresent(from: indication)
     }
-    data.appendLittleEndianUInt16(0)
-    return data
 }

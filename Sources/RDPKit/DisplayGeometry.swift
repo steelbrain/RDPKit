@@ -77,15 +77,17 @@ public struct RDPRemoteDisplayViewport: Equatable, Sendable {
             (contentRect.maxY - localPoint.y) / contentRect.height
         }
         return RDPRemotePoint(
-            x: clampedRemoteCoordinate(xRatio * remotePixelSize.width),
-            y: clampedRemoteCoordinate(yRatio * remotePixelSize.height)
+            x: clampedRemoteCoordinate(xRatio * remotePixelSize.width, extent: remotePixelSize.width),
+            y: clampedRemoteCoordinate(yRatio * remotePixelSize.height, extent: remotePixelSize.height)
         )
     }
 }
 
-private func clampedRemoteCoordinate(_ value: CGFloat) -> UInt16 {
+// Keeps the coordinate on a remote pixel: the bottom-left origin maps the content edge to `extent` itself.
+private func clampedRemoteCoordinate(_ value: CGFloat, extent: CGFloat) -> UInt16 {
     guard value.isFinite else {
         return 0
     }
-    return UInt16(min(CGFloat(UInt16.max), max(0, value.rounded(.down))))
+    let lastPixel = min(CGFloat(UInt16.max), max(0, extent.rounded(.up) - 1))
+    return UInt16(min(lastPixel, max(0, value.rounded(.down))))
 }

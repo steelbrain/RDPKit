@@ -1,6 +1,6 @@
 import Foundation
 
-public struct RDPServerCertificateTrustKey: Equatable, Hashable, Sendable {
+public struct RDPServerCertificateTrustKey: Hashable, Sendable {
     public var host: String
     public var port: UInt16
     public var sha256: String

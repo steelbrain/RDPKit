@@ -1,12 +1,13 @@
 import Foundation
 
-public struct RDPRenderMetrics: Equatable {
-    private struct WireReceiveRecord: Equatable {
+public struct RDPRenderMetrics: Equatable, Sendable {
+    private struct WireReceiveRecord: Equatable, Sendable {
         var receivedAt: Date
         var byteCount: Int
     }
 
-    private static let rollingWireWindowSeconds = 5.0
+    private static let rollingWindowSeconds = 5.0
+    private static let rollingFrameLimit = 240
 
     public var connectionStartedAt: Date?
     public var firstFrameReceivedAt: Date?
@@ -14,7 +15,6 @@ public struct RDPRenderMetrics: Equatable {
     public var lastFrameDecodedAt: Date?
     public var decodedFrameCount = 0
     public var failedDecodeCount = 0
-    public var skippedDecodeFrameCount = 0
     public var skippedPresentationFrameCount = 0
     public var decodedByteCount = 0
     public var wireByteCount = 0
@@ -23,21 +23,16 @@ public struct RDPRenderMetrics: Equatable {
     public var maxDecodeMilliseconds: Double?
     public var totalSamplePreparationMilliseconds = 0.0
     public var lastSamplePreparationMilliseconds: Double?
-    public var maxSamplePreparationMilliseconds: Double?
     public var totalVideoToolboxMilliseconds = 0.0
     public var lastVideoToolboxMilliseconds: Double?
-    public var maxVideoToolboxMilliseconds: Double?
     public var totalImageConversionMilliseconds = 0.0
     public var lastImageConversionMilliseconds: Double?
-    public var maxImageConversionMilliseconds: Double?
     public var decodedPixelFormat: UInt32?
     public var usesHardwareAcceleration: Bool?
-    public var totalCropMilliseconds = 0.0
-    public var lastCropMilliseconds: Double?
-    public var maxCropMilliseconds: Double?
     public var lastDecodeError: String?
+    // At most rollingFrameLimit decode times from the last rollingWindowSeconds.
     private var recentFrameDecodedAt: [Date] = []
-    private var firstRecentFrameDecodedAtIndex = 0
+    // Wire records keep a moving start index and compact lazily, so trimming per packet stays amortized O(1).
     private var recentWireReceiveRecords: [WireReceiveRecord] = []
     private var firstRecentWireReceiveRecordIndex = 0
     private var recentWireByteCount = 0
@@ -47,43 +42,10 @@ public struct RDPRenderMetrics: Equatable {
         self.connectionStartedAt = connectionStartedAt
     }
 
-    public static func == (lhs: RDPRenderMetrics, rhs: RDPRenderMetrics) -> Bool {
-        lhs.connectionStartedAt == rhs.connectionStartedAt
-            && lhs.firstFrameReceivedAt == rhs.firstFrameReceivedAt
-            && lhs.lastFrameReceivedAt == rhs.lastFrameReceivedAt
-            && lhs.lastFrameDecodedAt == rhs.lastFrameDecodedAt
-            && lhs.decodedFrameCount == rhs.decodedFrameCount
-            && lhs.failedDecodeCount == rhs.failedDecodeCount
-            && lhs.skippedDecodeFrameCount == rhs.skippedDecodeFrameCount
-            && lhs.skippedPresentationFrameCount == rhs.skippedPresentationFrameCount
-            && lhs.decodedByteCount == rhs.decodedByteCount
-            && lhs.wireByteCount == rhs.wireByteCount
-            && lhs.totalDecodeMilliseconds == rhs.totalDecodeMilliseconds
-            && lhs.lastDecodeMilliseconds == rhs.lastDecodeMilliseconds
-            && lhs.maxDecodeMilliseconds == rhs.maxDecodeMilliseconds
-            && lhs.totalSamplePreparationMilliseconds == rhs.totalSamplePreparationMilliseconds
-            && lhs.lastSamplePreparationMilliseconds == rhs.lastSamplePreparationMilliseconds
-            && lhs.maxSamplePreparationMilliseconds == rhs.maxSamplePreparationMilliseconds
-            && lhs.totalVideoToolboxMilliseconds == rhs.totalVideoToolboxMilliseconds
-            && lhs.lastVideoToolboxMilliseconds == rhs.lastVideoToolboxMilliseconds
-            && lhs.maxVideoToolboxMilliseconds == rhs.maxVideoToolboxMilliseconds
-            && lhs.totalImageConversionMilliseconds == rhs.totalImageConversionMilliseconds
-            && lhs.lastImageConversionMilliseconds == rhs.lastImageConversionMilliseconds
-            && lhs.maxImageConversionMilliseconds == rhs.maxImageConversionMilliseconds
-            && lhs.decodedPixelFormat == rhs.decodedPixelFormat
-            && lhs.usesHardwareAcceleration == rhs.usesHardwareAcceleration
-            && lhs.totalCropMilliseconds == rhs.totalCropMilliseconds
-            && lhs.lastCropMilliseconds == rhs.lastCropMilliseconds
-            && lhs.maxCropMilliseconds == rhs.maxCropMilliseconds
-            && lhs.lastDecodeError == rhs.lastDecodeError
-            && lhs.rollingWireMegabitsPerSecondValue == rhs.rollingWireMegabitsPerSecondValue
-    }
-
     public var hasActivity: Bool {
         connectionStartedAt != nil
             || decodedFrameCount > 0
             || failedDecodeCount > 0
-            || skippedDecodeFrameCount > 0
             || skippedPresentationFrameCount > 0
             || wireByteCount > 0
     }
@@ -98,10 +60,7 @@ public struct RDPRenderMetrics: Equatable {
     }
 
     public var averageDecodeMilliseconds: Double? {
-        guard decodedFrameCount > 0 else {
-            return nil
-        }
-        return totalDecodeMilliseconds / Double(decodedFrameCount)
+        averageComponentMilliseconds(totalDecodeMilliseconds)
     }
 
     public var averageSamplePreparationMilliseconds: Double? {
@@ -114,10 +73,6 @@ public struct RDPRenderMetrics: Equatable {
 
     public var averageImageConversionMilliseconds: Double? {
         averageComponentMilliseconds(totalImageConversionMilliseconds)
-    }
-
-    public var averageCropMilliseconds: Double? {
-        averageComponentMilliseconds(totalCropMilliseconds)
     }
 
     public var averageFramesPerSecond: Double? {
@@ -135,21 +90,17 @@ public struct RDPRenderMetrics: Equatable {
     }
 
     public var rollingFramesPerSecond: Double? {
-        guard firstRecentFrameDecodedAtIndex < recentFrameDecodedAt.count,
+        guard recentFrameDecodedAt.count > 1,
+              let first = recentFrameDecodedAt.first,
               let last = recentFrameDecodedAt.last
         else {
             return nil
         }
-        let visibleFrameCount = recentFrameDecodedAt.count - firstRecentFrameDecodedAtIndex
-        guard visibleFrameCount > 1 else {
-            return nil
-        }
-        let first = recentFrameDecodedAt[firstRecentFrameDecodedAtIndex]
         let elapsed = last.timeIntervalSince(first)
         guard elapsed > 0 else {
             return nil
         }
-        return Double(visibleFrameCount - 1) / elapsed
+        return Double(recentFrameDecodedAt.count - 1) / elapsed
     }
 
     public var rollingWireMegabitsPerSecond: Double? {
@@ -173,7 +124,7 @@ public struct RDPRenderMetrics: Equatable {
             WireReceiveRecord(receivedAt: sample.receivedAt, byteCount: sample.byteCount)
         )
         recentWireByteCount += sample.byteCount
-        let cutoff = sample.receivedAt.addingTimeInterval(-Self.rollingWireWindowSeconds)
+        let cutoff = sample.receivedAt.addingTimeInterval(-Self.rollingWindowSeconds)
         while firstRecentWireReceiveRecordIndex < recentWireReceiveRecords.count,
               recentWireReceiveRecords[firstRecentWireReceiveRecordIndex].receivedAt < cutoff
         {
@@ -192,7 +143,7 @@ public struct RDPRenderMetrics: Equatable {
         }
         let first = recentWireReceiveRecords[firstRecentWireReceiveRecordIndex]
         let elapsed = min(
-            Self.rollingWireWindowSeconds,
+            Self.rollingWindowSeconds,
             max(0.25, sample.receivedAt.timeIntervalSince(first.receivedAt))
         )
         rollingWireMegabitsPerSecondValue = megabitsPerSecond(
@@ -232,51 +183,21 @@ public struct RDPRenderMetrics: Equatable {
         maxDecodeMilliseconds = max(maxDecodeMilliseconds ?? 0, timing.totalMilliseconds)
         totalSamplePreparationMilliseconds += timing.samplePreparationMilliseconds
         lastSamplePreparationMilliseconds = timing.samplePreparationMilliseconds
-        maxSamplePreparationMilliseconds = max(
-            maxSamplePreparationMilliseconds ?? 0,
-            timing.samplePreparationMilliseconds
-        )
         totalVideoToolboxMilliseconds += timing.videoToolboxMilliseconds
         lastVideoToolboxMilliseconds = timing.videoToolboxMilliseconds
-        maxVideoToolboxMilliseconds = max(
-            maxVideoToolboxMilliseconds ?? 0,
-            timing.videoToolboxMilliseconds
-        )
         totalImageConversionMilliseconds += timing.imageConversionMilliseconds
         lastImageConversionMilliseconds = timing.imageConversionMilliseconds
-        maxImageConversionMilliseconds = max(
-            maxImageConversionMilliseconds ?? 0,
-            timing.imageConversionMilliseconds
-        )
         decodedPixelFormat = timing.decodedPixelFormat
         usesHardwareAcceleration = timing.usesHardwareAcceleration
-        totalCropMilliseconds += timing.cropMilliseconds
-        lastCropMilliseconds = timing.cropMilliseconds
-        maxCropMilliseconds = max(maxCropMilliseconds ?? 0, timing.cropMilliseconds)
         lastDecodeError = nil
 
         recentFrameDecodedAt.append(decodedAt)
-        let cutoff = decodedAt.addingTimeInterval(-5)
-        while firstRecentFrameDecodedAtIndex < recentFrameDecodedAt.count,
-              recentFrameDecodedAt[firstRecentFrameDecodedAtIndex] < cutoff
-        {
-            firstRecentFrameDecodedAtIndex += 1
-        }
-        let earliestRetainedIndex = max(firstRecentFrameDecodedAtIndex, recentFrameDecodedAt.count - 240)
-        if earliestRetainedIndex > firstRecentFrameDecodedAtIndex {
-            firstRecentFrameDecodedAtIndex = earliestRetainedIndex
-        }
-        compactRecentFrameTimestampsIfNeeded()
-    }
-
-    private mutating func compactRecentFrameTimestampsIfNeeded() {
-        guard firstRecentFrameDecodedAtIndex > 64,
-              firstRecentFrameDecodedAtIndex * 2 >= recentFrameDecodedAt.count
-        else {
-            return
-        }
-        recentFrameDecodedAt.removeFirst(firstRecentFrameDecodedAtIndex)
-        firstRecentFrameDecodedAtIndex = 0
+        let cutoff = decodedAt.addingTimeInterval(-Self.rollingWindowSeconds)
+        let staleFrameCount = max(
+            recentFrameDecodedAt.prefix { $0 < cutoff }.count,
+            recentFrameDecodedAt.count - Self.rollingFrameLimit
+        )
+        recentFrameDecodedAt.removeFirst(staleFrameCount)
     }
 
     public mutating func recordDecodeFailure(receivedAt: Date, errorDescription: String) {
@@ -289,16 +210,6 @@ public struct RDPRenderMetrics: Equatable {
         lastFrameReceivedAt = receivedAt
         failedDecodeCount += 1
         lastDecodeError = errorDescription
-    }
-
-    public mutating func recordSkippedDecodeFrames(_ count: Int, receivedAt: Date) {
-        guard count > 0 else {
-            return
-        }
-        if connectionStartedAt == nil {
-            connectionStartedAt = receivedAt
-        }
-        skippedDecodeFrameCount += count
     }
 
     public mutating func recordSkippedPresentationFrame(at timestamp: Date) {
@@ -326,18 +237,25 @@ public struct RDPRenderMetrics: Equatable {
 public final class RDPRenderMetricsStore: @unchecked Sendable {
     private static let snapshotIntervalSeconds = 0.5
 
-    public private(set) var metrics = RDPRenderMetrics()
+    private let lock = NSLock()
+    private var storedMetrics = RDPRenderMetrics()
     private var lastSnapshotAt: Date?
 
     public init() {}
 
+    public var metrics: RDPRenderMetrics {
+        lock.withLock { storedMetrics }
+    }
+
     public func reset(connectionStartedAt: Date? = nil) {
-        metrics = RDPRenderMetrics(connectionStartedAt: connectionStartedAt)
-        lastSnapshotAt = nil
+        lock.withLock {
+            storedMetrics = RDPRenderMetrics(connectionStartedAt: connectionStartedAt)
+            lastSnapshotAt = nil
+        }
     }
 
     public func recordWireReceive(_ sample: RDPWireReceiveSample) {
-        metrics.recordWireReceive(sample)
+        lock.withLock { storedMetrics.recordWireReceive(sample) }
     }
 
     public func recordDecodedFrame(
@@ -346,46 +264,31 @@ public final class RDPRenderMetricsStore: @unchecked Sendable {
         decodedAt: Date,
         timing: RDPFrameDecodeTiming
     ) {
-        metrics.recordDecodedFrame(
-            frame,
-            receivedAt: receivedAt,
-            decodedAt: decodedAt,
-            timing: timing
-        )
+        lock.withLock {
+            storedMetrics.recordDecodedFrame(frame, receivedAt: receivedAt, decodedAt: decodedAt, timing: timing)
+        }
     }
 
     public func recordDecodeFailure(receivedAt: Date, errorDescription: String) {
-        metrics.recordDecodeFailure(
-            receivedAt: receivedAt,
-            errorDescription: errorDescription
-        )
-    }
-
-    public func recordSkippedDecodeFrames(_ count: Int, receivedAt: Date) {
-        metrics.recordSkippedDecodeFrames(count, receivedAt: receivedAt)
+        lock.withLock { storedMetrics.recordDecodeFailure(receivedAt: receivedAt, errorDescription: errorDescription) }
     }
 
     public func recordSkippedPresentationFrame(at timestamp: Date) {
-        metrics.recordSkippedPresentationFrame(at: timestamp)
+        lock.withLock { storedMetrics.recordSkippedPresentationFrame(at: timestamp) }
     }
 
+    /// Returns the metrics at most every 0.5 s unless forced.
     public func snapshotIfNeeded(force: Bool = false, at timestamp: Date = Date()) -> RDPRenderMetrics? {
-        if force {
+        lock.withLock {
+            if !force,
+               let lastSnapshotAt,
+               timestamp.timeIntervalSince(lastSnapshotAt) < Self.snapshotIntervalSeconds
+            {
+                return nil
+            }
             lastSnapshotAt = timestamp
-            return metrics
+            return storedMetrics
         }
-
-        guard let lastSnapshotAt else {
-            lastSnapshotAt = timestamp
-            return metrics
-        }
-
-        guard timestamp.timeIntervalSince(lastSnapshotAt) >= Self.snapshotIntervalSeconds else {
-            return nil
-        }
-
-        self.lastSnapshotAt = timestamp
-        return metrics
     }
 }
 
@@ -410,71 +313,53 @@ public final class RDPWireReceiveMetricsCoalescer: @unchecked Sendable {
     }
 
     public func record(_ sample: RDPWireReceiveSample) {
-        let shouldScheduleFlush: Bool
-
-        lock.lock()
-        guard !isCancelled, !shouldCancel() else {
-            lock.unlock()
+        guard !shouldCancel() else {
             return
         }
-
-        pendingByteCount += sample.byteCount
-        pendingReceivedAt = sample.receivedAt
-        shouldScheduleFlush = !isFlushScheduled
-        if shouldScheduleFlush {
+        let shouldScheduleFlush: Bool = lock.withLock {
+            guard !isCancelled else {
+                return false
+            }
+            pendingByteCount += sample.byteCount
+            pendingReceivedAt = sample.receivedAt
+            let shouldScheduleFlush = !isFlushScheduled
             isFlushScheduled = true
+            return shouldScheduleFlush
         }
-        lock.unlock()
 
         if shouldScheduleFlush {
             DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + flushDelay) { [weak self] in
-                self?.flushScheduled()
+                self?.flush()
             }
         }
     }
 
     public func flush() {
-        flushPending()
+        if let sample = takePendingSample() {
+            onFlush(sample)
+        }
     }
 
     public func takePendingSample() -> RDPWireReceiveSample? {
-        let sample: RDPWireReceiveSample?
-
-        lock.lock()
-        isFlushScheduled = false
-        if isCancelled || pendingByteCount == 0 {
-            pendingByteCount = 0
-            pendingReceivedAt = nil
-            sample = nil
-        } else {
-            sample = RDPWireReceiveSample(
-                byteCount: pendingByteCount,
-                receivedAt: pendingReceivedAt ?? Date()
-            )
-            pendingByteCount = 0
-            pendingReceivedAt = nil
+        lock.withLock {
+            defer {
+                pendingByteCount = 0
+                pendingReceivedAt = nil
+                isFlushScheduled = false
+            }
+            guard !isCancelled, pendingByteCount > 0 else {
+                return nil
+            }
+            return RDPWireReceiveSample(byteCount: pendingByteCount, receivedAt: pendingReceivedAt ?? Date())
         }
-        lock.unlock()
-
-        return sample
     }
 
     public func cancel() {
-        lock.lock()
-        isCancelled = true
-        pendingByteCount = 0
-        pendingReceivedAt = nil
-        isFlushScheduled = false
-        lock.unlock()
-    }
-
-    private func flushScheduled() {
-        flushPending()
-    }
-
-    private func flushPending() {
-        if let sample = takePendingSample() {
-            onFlush(sample)
+        lock.withLock {
+            isCancelled = true
+            pendingByteCount = 0
+            pendingReceivedAt = nil
+            isFlushScheduled = false
         }
     }
 }

@@ -3,28 +3,34 @@ import CoreVideo
 import Foundation
 
 public final class RDPFrameSampleBufferFactory {
-    private var lastFormatKey: RDPFrameSampleBufferFormat?
+    private var format: RDPFrameSampleBufferFormat?
     private var formatDescription: CMVideoFormatDescription?
-    private var formatDescriptionKey: RDPFrameSampleBufferFormat?
     private var cleanAperture: CFDictionary?
-    private var cleanApertureKey: RDPFrameSampleBufferFormat?
-    private var imageBuffersClearedForCurrentFormat = Set<ObjectIdentifier>()
     private var nextPresentationTimeValue: CMTimeValue = 0
 
     public init() {}
 
     public func willChangeDisplayFormat(for presentation: RDPDecodedFramePresentation) -> Bool {
-        lastFormatKey != RDPFrameSampleBufferFormat(presentation: presentation)
+        format != RDPFrameSampleBufferFormat(presentation: presentation)
     }
 
     public func makeSampleBuffer(for presentation: RDPDecodedFramePresentation) throws -> CMSampleBuffer {
-        let formatKey = RDPFrameSampleBufferFormat(presentation: presentation)
-        if lastFormatKey != formatKey {
-            resetFormatCaches(for: formatKey)
+        let nextFormat = RDPFrameSampleBufferFormat(presentation: presentation)
+        if format != nextFormat {
+            format = nextFormat
+            formatDescription = nil
+            cleanAperture = nextFormat.cleanAperture
         }
 
-        applyCleanAperture(for: presentation, formatKey: formatKey)
-        let formatDescription = try displayFormatDescription(for: presentation, formatKey: formatKey)
+        // The clean aperture crops the coded picture to the frame's display size and
+        // must be attached before the format description is derived from the buffer.
+        if let cleanAperture {
+            CVBufferSetAttachment(presentation.imageBuffer, kCVImageBufferCleanApertureKey, cleanAperture, .shouldPropagate)
+        } else {
+            CVBufferRemoveAttachment(presentation.imageBuffer, kCVImageBufferCleanApertureKey)
+        }
+        let formatDescription = try formatDescription ?? makeFormatDescription(for: presentation.imageBuffer)
+        self.formatDescription = formatDescription
 
         nextPresentationTimeValue += 1
         var timing = CMSampleTimingInfo(
@@ -52,116 +58,26 @@ public final class RDPFrameSampleBufferFactory {
     }
 
     public func reset() {
-        lastFormatKey = nil
+        format = nil
         formatDescription = nil
-        formatDescriptionKey = nil
         cleanAperture = nil
-        cleanApertureKey = nil
-        imageBuffersClearedForCurrentFormat.removeAll(keepingCapacity: true)
         nextPresentationTimeValue = 0
     }
 
-    private func resetFormatCaches(for formatKey: RDPFrameSampleBufferFormat) {
-        formatDescription = nil
-        formatDescriptionKey = nil
-        cleanAperture = nil
-        cleanApertureKey = nil
-        imageBuffersClearedForCurrentFormat.removeAll(keepingCapacity: true)
-        lastFormatKey = formatKey
-    }
-
-    private func applyCleanAperture(
-        for presentation: RDPDecodedFramePresentation,
-        formatKey: RDPFrameSampleBufferFormat
-    ) {
-        guard let cleanAperture = cleanAperture(for: presentation, formatKey: formatKey) else {
-            removeCleanApertureIfNeeded(from: presentation.imageBuffer)
-            return
-        }
-
-        CVBufferSetAttachment(
-            presentation.imageBuffer,
-            kCVImageBufferCleanApertureKey,
-            cleanAperture,
-            .shouldPropagate
-        )
-    }
-
-    private func cleanAperture(
-        for presentation: RDPDecodedFramePresentation,
-        formatKey: RDPFrameSampleBufferFormat
-    ) -> CFDictionary? {
-        if cleanApertureKey == formatKey {
-            return cleanAperture
-        }
-
-        let displayWidth = Int(presentation.frame.width)
-        let displayHeight = Int(presentation.frame.height)
-        let decodedWidth = CVPixelBufferGetWidth(presentation.imageBuffer)
-        let decodedHeight = CVPixelBufferGetHeight(presentation.imageBuffer)
-
-        guard displayWidth > 0,
-              displayHeight > 0,
-              displayWidth <= decodedWidth,
-              displayHeight <= decodedHeight
-        else {
-            cleanAperture = nil
-            cleanApertureKey = formatKey
-            return nil
-        }
-
-        guard displayWidth != decodedWidth || displayHeight != decodedHeight else {
-            cleanAperture = nil
-            cleanApertureKey = formatKey
-            return nil
-        }
-
-        let nextCleanAperture = [
-            kCVImageBufferCleanApertureWidthKey: Double(displayWidth),
-            kCVImageBufferCleanApertureHeightKey: Double(displayHeight),
-            kCVImageBufferCleanApertureHorizontalOffsetKey: Double(displayWidth - decodedWidth) / 2,
-            kCVImageBufferCleanApertureVerticalOffsetKey: Double(displayHeight - decodedHeight) / 2,
-        ] as CFDictionary
-        cleanAperture = nextCleanAperture
-        cleanApertureKey = formatKey
-        return nextCleanAperture
-    }
-
-    private func removeCleanApertureIfNeeded(from imageBuffer: CVImageBuffer) {
-        let imageBufferID = ObjectIdentifier(imageBuffer)
-        guard imageBuffersClearedForCurrentFormat.insert(imageBufferID).inserted else {
-            return
-        }
-        CVBufferRemoveAttachment(imageBuffer, kCVImageBufferCleanApertureKey)
-    }
-
-    private func displayFormatDescription(
-        for presentation: RDPDecodedFramePresentation,
-        formatKey: RDPFrameSampleBufferFormat
-    ) throws -> CMVideoFormatDescription {
-        if let formatDescription,
-           formatDescriptionKey == formatKey
-        {
-            return formatDescription
-        }
-
-        var nextFormatDescription: CMVideoFormatDescription?
+    private func makeFormatDescription(for imageBuffer: CVImageBuffer) throws -> CMVideoFormatDescription {
+        var formatDescription: CMVideoFormatDescription?
         try check(
             CMVideoFormatDescriptionCreateForImageBuffer(
                 allocator: kCFAllocatorDefault,
-                imageBuffer: presentation.imageBuffer,
-                formatDescriptionOut: &nextFormatDescription
+                imageBuffer: imageBuffer,
+                formatDescriptionOut: &formatDescription
             ),
             operation: "create display format description"
         )
-
-        guard let nextFormatDescription else {
+        guard let formatDescription else {
             throw RDPFrameSampleBufferError.missingFormatDescription
         }
-
-        formatDescription = nextFormatDescription
-        formatDescriptionKey = formatKey
-        return nextFormatDescription
+        return formatDescription
     }
 
     private func markSampleBufferForImmediateDisplay(_ sampleBuffer: CMSampleBuffer) {
@@ -214,11 +130,32 @@ private struct RDPFrameSampleBufferFormat: Equatable {
     var displayHeight: Int
     var decodedWidth: Int
     var decodedHeight: Int
+    // Direct VideoToolbox output (YUV) and composed BGRA frames can share dimensions,
+    // and a format description only matches buffers of its own pixel format.
+    var pixelFormat: OSType
 
     init(presentation: RDPDecodedFramePresentation) {
         displayWidth = Int(presentation.frame.width)
         displayHeight = Int(presentation.frame.height)
         decodedWidth = CVPixelBufferGetWidth(presentation.imageBuffer)
         decodedHeight = CVPixelBufferGetHeight(presentation.imageBuffer)
+        pixelFormat = CVPixelBufferGetPixelFormatType(presentation.imageBuffer)
+    }
+
+    var cleanAperture: CFDictionary? {
+        guard displayWidth > 0,
+              displayHeight > 0,
+              displayWidth <= decodedWidth,
+              displayHeight <= decodedHeight,
+              displayWidth != decodedWidth || displayHeight != decodedHeight
+        else {
+            return nil
+        }
+        return [
+            kCVImageBufferCleanApertureWidthKey: Double(displayWidth),
+            kCVImageBufferCleanApertureHeightKey: Double(displayHeight),
+            kCVImageBufferCleanApertureHorizontalOffsetKey: Double(displayWidth - decodedWidth) / 2,
+            kCVImageBufferCleanApertureVerticalOffsetKey: Double(displayHeight - decodedHeight) / 2,
+        ] as CFDictionary
     }
 }

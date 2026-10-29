@@ -2,65 +2,56 @@ import CoreGraphics
 import CoreImage
 import Foundation
 import ImageIO
-import RDPFirstFrameCaptureSupport
+import RDPCommandLineSupport
 import RDPKit
 import UniformTypeIdentifiers
 
-private struct FirstFrameCapture {
+private struct DecodedFrameSelection {
+    var frame: RDPGraphicsFrameSnapshot
+    var image: CGImage
+}
+
+private enum FirstFrameCapture {
     static func main() {
+        if RDPCommandLineArguments.requestsHelp(CommandLine.arguments) {
+            printUsage()
+            exit(0)
+        }
         do {
-            if CommandLine.arguments.dropFirst().contains(where: { $0 == "-h" || $0 == "--help" }) {
-                printUsage()
-                exit(0)
-            }
-            let arguments = try RDPFirstFrameCaptureArgumentParser.parse(CommandLine.arguments)
-            let credentials = try loadCredentials(from: arguments)
-            let outputPath = try RDPFirstFrameCaptureArgumentParser.requiredOutputPath(arguments)
+            let options = try FirstFrameCaptureOptions.parse(CommandLine.arguments)
+            let outputPath = try options.requiredOutputPath()
+            let configuration = try options.configuration()
 
             let imageContext = CIContext()
-            var decodeFailureCount = 0
-            var lastDecodeError: Error?
-            var latestCapture = RDPLatestCapture<DecodedFrameSelection>()
+            let recorder = LatestDecodedFrameRecorder<DecodedFrameSelection>()
             let cancellation = RDPConnectionCancellation()
-            let decodeQueue = RDPLatestFrameDecodeQueue(
+            let decodeQueue = RDPFrameDecodeQueue(
                 shouldCancel: { cancellation.isCancelled },
                 onDecoded: { presentation, _, _, _ in
                     let image = CIImage(cvImageBuffer: presentation.imageBuffer)
-                    guard let capturedImage = imageContext.createCGImage(image, from: image.extent) else {
-                        decodeFailureCount += 1
-                        lastDecodeError = RDPFirstFrameCaptureError.imageDestinationFailed(outputPath)
+                    // The frame is the top-left of the decoded picture; Core Image counts rows from the bottom.
+                    let height = CGFloat(presentation.frame.height)
+                    let shown = CGRect(
+                        x: image.extent.minX,
+                        y: image.extent.maxY - height,
+                        width: CGFloat(presentation.frame.width),
+                        height: height
+                    ).intersection(image.extent)
+                    guard let capturedImage = imageContext.createCGImage(image, from: shown) else {
+                        recorder.recordFailure("could not convert the decoded frame to an image")
                         return
                     }
-                    latestCapture.record(DecodedFrameSelection(
-                        frame: presentation.frame,
-                        image: capturedImage
-                    ))
+                    recorder.recordDecoded(DecodedFrameSelection(frame: presentation.frame, image: capturedImage))
                 },
                 onDecodeFailed: { _, errorDescription in
-                    decodeFailureCount += 1
-                    lastDecodeError = RDPFirstFrameCaptureError.noDecodableFrames(errorDescription)
+                    recorder.recordFailure(errorDescription)
                     fputs("decode failed: \(errorDescription)\n", stderr)
-                },
-                onSkippedFrames: { _, _ in }
+                }
             )
-            let wireTranscript = arguments.transcriptPath.map { _ in RDPWireTranscript() }
-            scheduleCancellation(
-                cancellation,
-                after: arguments.settleSeconds
-            )
-            let report = RDPPreflightClient().run(
-                configuration: RDPConnectionConfiguration(
-                    host: try RDPFirstFrameCaptureArgumentParser.requiredHost(arguments),
-                    port: arguments.port,
-                    credentials: credentials,
-                    timeoutSeconds: arguments.timeoutSeconds,
-                    hideCertificateWarnings: arguments.hideCertificateWarnings,
-                    graphicsFrameCaptureLimit: RDPFirstFrameCaptureError.maximumFrameCaptureLimit,
-                    desktopWidth: arguments.desktopWidth,
-                    desktopHeight: arguments.desktopHeight,
-                    clipboardEnabled: false,
-                    graphicsCapabilityProfile: arguments.graphicsCapabilityProfile
-                ),
+            let wireTranscript = options.transcriptPath.map { _ in RDPWireTranscript() }
+            scheduleCancellation(cancellation, after: options.settleSeconds)
+            let report = RDPSessionClient().run(
+                configuration: configuration,
                 onGraphicsFrame: { frame in
                     // Freeze the transcript the moment video frames start flowing:
                     // it captures the whole negotiation up to, but not past, here.
@@ -75,28 +66,34 @@ private struct FirstFrameCapture {
                 cancellation: cancellation
             )
             decodeQueue.cancel()
+            // A live session reports graphics decode errors as warnings and keeps going.
+            for warning in report.warnings {
+                fputs("warning[\(warning.code)]: \(warning.message)\n", stderr)
+            }
 
-            if let transcriptPath = arguments.transcriptPath, let wireTranscript {
+            if let transcriptPath = options.transcriptPath, let wireTranscript {
                 try writeTranscript(wireTranscript, to: transcriptPath)
             }
 
-            let selectedFrame = try requireDecodedFrame(
-                latestCapture: latestCapture,
-                report: report,
-                decodeFailureCount: decodeFailureCount,
-                lastDecodeError: lastDecodeError
-            )
+            let capture = recorder.snapshot
+            guard let selectedFrame = capture.latest else {
+                throw FirstFrameCaptureError.noDecodedFrame(
+                    report: report,
+                    lastDecodeFailure: capture.lastFailure,
+                    settleSeconds: cancellation.isCancelled ? options.settleSeconds : nil
+                )
+            }
             try writePNG(selectedFrame.image, to: outputPath)
-            let frameCodecDescription = describeCodec(for: selectedFrame.frame)
+            let frame = selectedFrame.frame
             print("""
             wrote \(outputPath)
-            decoded frames: \(latestCapture.decodedFrameCount)
-            selected frame: latest after \(arguments.settleSeconds)s
-            frame: \(selectedFrame.frame.width)x\(selectedFrame.frame.height) \(frameCodecDescription) \(selectedFrame.frame.payloadByteCount) bytes
-            nal types: \(selectedFrame.frame.videoNalUnitTypes.map(String.init).joined(separator: "/"))
+            decoded frames: \(capture.decodedFrameCount)
+            selected frame: latest after \(options.settleSeconds)s
+            frame: \(frame.width)x\(frame.height) \(describeCodec(for: frame)) \(frame.payloadByteCount) bytes
+            nal types: \(frame.videoNalUnitTypes.map(String.init).joined(separator: "/"))
             """)
             guard report.status == "success" || cancellation.isCancelled else {
-                throw RDPFirstFrameCaptureError.connectionFailed(report.error ?? "RDP preflight failed at \(report.stage)")
+                throw FirstFrameCaptureError.connectionFailed(report.error ?? "RDP connection failed at \(report.stage)")
             }
         } catch {
             fputs("\(String(describing: error))\n", stderr)
@@ -116,79 +113,6 @@ private struct FirstFrameCapture {
             Thread.sleep(forTimeInterval: TimeInterval(seconds))
             cancellation.cancel()
         }
-    }
-
-    private static func requireDecodedFrame(
-        latestCapture: RDPLatestCapture<DecodedFrameSelection>,
-        report: RDPPreflightReport,
-        decodeFailureCount: Int,
-        lastDecodeError: Error?
-    ) throws -> DecodedFrameSelection {
-        if let selected = latestCapture.latest {
-            return selected
-        }
-        try handleMissingDecodedFrame(
-            report: report,
-            decodeFailureCount: decodeFailureCount,
-            lastDecodeError: lastDecodeError
-        )
-    }
-
-    private static func handleMissingDecodedFrame(
-        report: RDPPreflightReport,
-        decodeFailureCount: Int,
-        lastDecodeError: Error?
-    ) throws -> Never {
-        guard report.status == "success" else {
-            throw RDPFirstFrameCaptureError.connectionFailed(report.error ?? "RDP preflight failed at \(report.stage)")
-        }
-        if report.nextStage == "rdp-session-ended", report.rdpGraphicsChannelName == nil {
-            let suffix = remoteTerminationSuffix(report)
-            throw RDPFirstFrameCaptureError.connectionFailed(
-                "remote session ended before opening the RDPGFX dynamic channel\(suffix)"
-            )
-        }
-        if report.nextStage == "rdp-session-ended" {
-            let suffix = remoteTerminationSuffix(report)
-            throw RDPFirstFrameCaptureError.connectionFailed(
-                "remote session ended before producing an RDPGFX video frame\(suffix)"
-            )
-        }
-        if decodeFailureCount > 0,
-           let lastDecodeError
-        {
-            throw RDPFirstFrameCaptureError.noDecodableFrames(String(describing: lastDecodeError))
-        }
-        throw RDPFirstFrameCaptureError.missingFrames
-    }
-
-    private static func remoteTerminationSuffix(_ report: RDPPreflightReport) -> String {
-        if let errorInfoName = report.rdpRemoteTerminationErrorInfoName {
-            return " (\(errorInfoName))"
-        }
-        if let disconnectReasonName = report.rdpRemoteTerminationDisconnectReasonName {
-            return " (\(disconnectReasonName))"
-        }
-        return ""
-    }
-
-    private static func loadCredentials(from args: RDPFirstFrameCaptureArguments) throws -> RDPCredentials? {
-        let hasAnyCredentialInput = args.username != nil || args.domain != nil || args.passwordEnv != nil
-        guard hasAnyCredentialInput else {
-            return nil
-        }
-
-        guard let username = args.username, !username.isEmpty else {
-            throw RDPFirstFrameCaptureError.missingCredential("--username is required when credentials are provided")
-        }
-        guard let passwordEnv = args.passwordEnv, !passwordEnv.isEmpty else {
-            throw RDPFirstFrameCaptureError.missingCredential("--password-env is required when credentials are provided")
-        }
-        guard let password = ProcessInfo.processInfo.environment[passwordEnv], !password.isEmpty else {
-            throw RDPFirstFrameCaptureError.missingPasswordEnv(passwordEnv)
-        }
-
-        return RDPCredentials(username: username, domain: args.domain, password: password)
     }
 
     private static func writeTranscript(_ transcript: RDPWireTranscript, to path: String) throws {
@@ -212,12 +136,12 @@ private struct FirstFrameCapture {
             1,
             nil
         ) else {
-            throw RDPFirstFrameCaptureError.imageDestinationFailed(path)
+            throw FirstFrameCaptureError.imageDestinationFailed(path)
         }
 
         CGImageDestinationAddImage(destination, image, nil)
         guard CGImageDestinationFinalize(destination) else {
-            throw RDPFirstFrameCaptureError.imageWriteFailed(path)
+            throw FirstFrameCaptureError.imageWriteFailed(path)
         }
     }
 
@@ -233,7 +157,7 @@ private struct FirstFrameCapture {
                 withIntermediateDirectories: true
             )
         } catch {
-            throw RDPFirstFrameCaptureError.outputDirectoryFailed(directory.path, String(describing: error))
+            throw FirstFrameCaptureError.outputDirectoryFailed(directory.path, String(describing: error))
         }
     }
 
@@ -247,11 +171,6 @@ private struct FirstFrameCapture {
         first video frame) as JSON for use as a deterministic replay regression fixture.
         """)
     }
-}
-
-private struct DecodedFrameSelection {
-    var frame: RDPGraphicsFrameSnapshot
-    var image: CGImage
 }
 
 FirstFrameCapture.main()

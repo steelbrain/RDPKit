@@ -3,16 +3,12 @@ import Foundation
 
 @MainActor
 public final class RDPAudioPlayer {
-    private struct Configuration: Equatable {
-        var sampleRate: Double
-        var channelCount: UInt32
-    }
-
-    private let engine = AVAudioEngine()
+    let engine = AVAudioEngine()
     private let player = AVAudioPlayerNode()
-    private var configuration: Configuration?
     private var format: AVAudioFormat?
     private var queuedFrameCount: AVAudioFramePosition = 0
+    /// Advanced on every stop so completions of discarded buffers leave the new queue count alone.
+    private var queueGeneration = 0
     private let maximumQueuedSeconds: Double
 
     public init(maximumQueuedSeconds: Double = 0.75) {
@@ -21,92 +17,68 @@ public final class RDPAudioPlayer {
     }
 
     public var statusMessage: String {
-        guard let configuration else {
+        guard let format else {
             return "Ready."
         }
-        let channels = switch configuration.channelCount {
+        let channels = switch format.channelCount {
         case 1:
             "mono"
         case 2:
             "stereo"
         default:
-            "\(configuration.channelCount) channel"
+            "\(format.channelCount) channel"
         }
-        return "Playing PCM \(Int(configuration.sampleRate)) Hz \(channels)."
+        return "Playing PCM \(Int(format.sampleRate)) Hz \(channels)."
     }
 
     public func reset() {
-        player.stop()
-        engine.stop()
-        engine.reset()
-        configuration = nil
+        stop()
         format = nil
-        queuedFrameCount = 0
     }
 
     @discardableResult
     public func enqueue(_ sample: RDPAudioSample) throws -> Bool {
-        guard sample.format.isPCM16Bit else {
+        guard sample.format.isPlayablePCM16Bit else {
             throw RDPAudioPlayerError.unsupportedFormat
         }
 
-        let channelCount = AVAudioChannelCount(sample.format.channelCount)
         let frameCount = sample.data.count / Int(sample.format.blockAlign)
-        guard channelCount > 0, frameCount > 0 else {
+        guard frameCount > 0 else {
             return false
         }
-
-        let nextConfiguration = Configuration(
-            sampleRate: Double(sample.format.samplesPerSecond),
-            channelCount: UInt32(channelCount)
-        )
-        if configuration != nextConfiguration {
-            try configure(nextConfiguration)
-        }
-
-        let maximumQueuedFrames = AVAudioFramePosition(
-            Double(sample.format.samplesPerSecond) * maximumQueuedSeconds
-        )
-        guard queuedFrameCount <= maximumQueuedFrames else {
-            return false
-        }
-
-        guard let format,
-              let buffer = AVAudioPCMBuffer(
-                  pcmFormat: format,
-                  frameCapacity: AVAudioFrameCount(frameCount)
-              )
-        else {
+        guard sample.data.count.isMultiple(of: Int(sample.format.blockAlign)) else {
             throw RDPAudioPlayerError.bufferAllocationFailed
         }
 
+        let format = try playbackFormat(for: sample.format)
+        // Nothing drains while the engine is stopped (a failed start, an audio interruption or
+        // an output device change), so that audio is dropped rather than filling the queue for good.
+        if !engine.isRunning, queuedFrameCount > 0 {
+            stop()
+        }
+        guard queuedFrameCount <= AVAudioFramePosition(format.sampleRate * maximumQueuedSeconds) else {
+            return false
+        }
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frameCount)),
+              let samples = buffer.int16ChannelData?[0]
+        else {
+            throw RDPAudioPlayerError.bufferAllocationFailed
+        }
         buffer.frameLength = AVAudioFrameCount(frameCount)
-        let audioByteCount = frameCount * Int(format.streamDescription.pointee.mBytesPerFrame)
-        guard sample.data.count == audioByteCount else {
-            throw RDPAudioPlayerError.bufferAllocationFailed
-        }
-        let audioBufferList = buffer.mutableAudioBufferList
-        guard audioBufferList.pointee.mNumberBuffers == 1,
-              let destination = audioBufferList.pointee.mBuffers.mData?.assumingMemoryBound(to: UInt8.self)
-        else {
-            throw RDPAudioPlayerError.bufferAllocationFailed
-        }
-        try sample.data.withUnsafeBytes { rawBuffer in
-            guard let source = rawBuffer.bindMemory(to: UInt8.self).baseAddress else {
-                throw RDPAudioPlayerError.bufferAllocationFailed
-            }
-            destination.update(from: source, count: audioByteCount)
-        }
-        audioBufferList.pointee.mBuffers.mDataByteSize = UInt32(audioByteCount)
+        _ = sample.data.copyBytes(to: UnsafeMutableBufferPointer(
+            start: samples,
+            count: frameCount * Int(format.channelCount)
+        ))
 
         let scheduledFrameCount = AVAudioFramePosition(frameCount)
+        let scheduledGeneration = queueGeneration
         queuedFrameCount += scheduledFrameCount
         player.scheduleBuffer(buffer) { [weak self] in
             Task { @MainActor [weak self] in
-                guard let self else {
+                guard let self, self.queueGeneration == scheduledGeneration else {
                     return
                 }
-                self.queuedFrameCount = max(0, self.queuedFrameCount - scheduledFrameCount)
+                self.queuedFrameCount -= scheduledFrameCount
             }
         }
 
@@ -119,26 +91,34 @@ public final class RDPAudioPlayer {
         return true
     }
 
-    private func configure(_ nextConfiguration: Configuration) throws {
-        player.stop()
-        engine.stop()
-        engine.reset()
+    private func playbackFormat(for sampleFormat: RDPAudioFormat) throws -> AVAudioFormat {
+        let sampleRate = Double(sampleFormat.samplesPerSecond)
+        let channelCount = AVAudioChannelCount(sampleFormat.channelCount)
+        if let format, format.sampleRate == sampleRate, format.channelCount == channelCount {
+            return format
+        }
+
+        stop()
         guard let nextFormat = AVAudioFormat(
             commonFormat: .pcmFormatInt16,
-            sampleRate: nextConfiguration.sampleRate,
-            channels: AVAudioChannelCount(nextConfiguration.channelCount),
+            sampleRate: sampleRate,
+            channels: channelCount,
             interleaved: true
         ) else {
             throw RDPAudioPlayerError.unsupportedFormat
         }
-
         engine.connect(player, to: engine.mainMixerNode, format: nextFormat)
         engine.prepare()
-        try engine.start()
-        player.play()
-        configuration = nextConfiguration
         format = nextFormat
+        return nextFormat
+    }
+
+    private func stop() {
+        player.stop()
+        engine.stop()
+        engine.reset()
         queuedFrameCount = 0
+        queueGeneration += 1
     }
 }
 

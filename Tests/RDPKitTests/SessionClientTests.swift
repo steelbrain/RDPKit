@@ -12,7 +12,7 @@ import Testing
         hideCertificateWarnings: true
     )
 
-    let report = RDPPreflightClient().dryRun(configuration: configuration)
+    let report = RDPSessionClient().dryRun(configuration: configuration)
 
     #expect(report.status == "dry-run")
     #expect(report.stage == "x224-rdp-negotiation-request")
@@ -27,7 +27,7 @@ import Testing
 }
 
 @Test func dryRunCanRequestEarlyUserAuthorization() {
-    let report = RDPPreflightClient().dryRun(configuration: RDPConnectionConfiguration(
+    let report = RDPSessionClient().dryRun(configuration: RDPConnectionConfiguration(
         host: "192.0.2.10",
         earlyUserAuthorizationEnabled: true
     ))
@@ -156,11 +156,11 @@ import Testing
     #expect(sample.megabits == 1)
 }
 
-@Test func preflightHonorsPreCancelledConnectionCancellation() {
+@Test func clientHonorsPreCancelledConnectionCancellation() {
     let cancellation = RDPConnectionCancellation()
     cancellation.cancel()
 
-    let report = RDPPreflightClient().run(
+    let report = RDPSessionClient().run(
         configuration: RDPConnectionConfiguration(host: "example.test"),
         cancellation: cancellation
     )
@@ -170,7 +170,7 @@ import Testing
     #expect(report.error == "cancelled")
 }
 
-@Test func preflightReportDerivesFirstFrameFromFrameList() {
+@Test func connectionReportDerivesFirstFrameFromFrameList() {
     let frame = RDPGraphicsFrameSnapshot(
         frameID: 7,
         surfaceID: 1,
@@ -179,10 +179,10 @@ import Testing
         pixelFormat: 32,
         destinationRect: RDPFrameRect(left: 0, top: 0, right: 16, bottom: 16),
         regionRects: [RDPFrameRect(left: 0, top: 0, right: 16, bottom: 16)],
-        h264AnnexBData: Data([0x00, 0x00, 0x01, 0x65])
+        encodedVideoData: Data([0x00, 0x00, 0x01, 0x65])
     )
 
-    let report = RDPPreflightReport(
+    let report = RDPConnectionReport(
         status: "success",
         stage: "rdp-graphics-dynamic-channel",
         target: "example.test:3389",
@@ -208,11 +208,9 @@ import Testing
     #expect(frame.videoCodec == .h264)
     #expect(frame.videoByteCount == 4)
     #expect(frame.videoNalUnitTypes == [5])
-    #expect(frame.h264ByteCount == 4)
-    #expect(frame.h264NalUnitTypes == [5])
 }
 
-@Test func preflightReportCarriesIssuedClientLicenseForPersistence() throws {
+@Test func connectionReportCarriesIssuedClientLicenseForPersistence() throws {
     let license = RDPStoredClientLicense(
         version: 0x0006_0001,
         scope: "localhost",
@@ -220,7 +218,7 @@ import Testing
         productID: "A02",
         licenseInfo: Data([0x30, 0x82, 0x01, 0x02])
     )
-    let report = RDPPreflightReport(
+    let report = RDPConnectionReport(
         status: "success",
         stage: "rdp-server-activation",
         target: "example.test:3389",
@@ -247,7 +245,7 @@ import Testing
         pixelFormat: 32,
         destinationRect: RDPFrameRect(left: 0, top: 0, right: 1280, bottom: 720),
         regionRects: [RDPFrameRect(left: 0, top: 0, right: 1280, bottom: 720)],
-        h264AnnexBData: Data([0x00, 0x00, 0x01, 0x65])
+        encodedVideoData: Data([0x00, 0x00, 0x01, 0x65])
     )
 
     let description = RDPGraphicsPathDescription.describe(
@@ -269,7 +267,7 @@ import Testing
     payload.appendLittleEndianUInt32(1)
     payload.appendUInt8(0x00)
     let message = try RDPGFXHeader.parse(
-        from: preflightGraphicsMessage(commandID: RDPGFXCommandID.wireToSurface2, payload: payload)
+        from: graphicsMessage(commandID: RDPGFXCommandID.wireToSurface2, payload: payload)
     )
     let summary = try RDPGFXMessageSummary.summarize(message)
 
@@ -372,11 +370,9 @@ import Testing
 
     #expect(frame.videoByteCount == 20)
     #expect(frame.videoNalUnitTypes == [32, 33, 34, 19])
-    #expect(frame.h264ByteCount == 0)
-    #expect(frame.h264NalUnitTypes == [])
 }
 
-@Test func copiedVideoFramesRejectsDestinationsOutsideCoordinateRange() {
+@Test func stagedVideoCopyRejectsDestinationsOutsideCoordinateRange() {
     let frame = RDPGraphicsFrameSnapshot(
         frameID: 9,
         surfaceID: 1,
@@ -387,24 +383,65 @@ import Testing
         regionRects: [RDPFrameRect(left: 0, top: 0, right: 40_000, bottom: 10)],
         encodedVideoData: Data([0x00, 0x00, 0x01, 0x65])
     )
-    let copy = RDPGFXSurfaceToSurfacePDU(
-        sourceSurfaceID: 1,
-        destinationSurfaceID: 2,
-        sourceRect: RDPGFXRect16(left: 0, top: 0, right: 40_000, bottom: 10),
-        destinationPoints: [
-            RDPGFXPoint16(x: -1, y: 0),
-            RDPGFXPoint16(x: Int16.max, y: 0),
-        ]
-    )
+    let sourceRect = RDPGFXRect16(left: 0, top: 0, right: 40_000, bottom: 10)
 
-    #expect(copiedVideoFrames([frame], using: copy).isEmpty)
+    for point in [RDPGFXPoint16(x: -1, y: 0), RDPGFXPoint16(x: Int16.max, y: 0)] {
+        #expect(stagedVideoCopy(of: frame, sourceRect: sourceRect, to: point, surfaceID: 2) == nil)
+    }
 }
 
-private func preflightGraphicsMessage(commandID: UInt16, payload: Data) -> Data {
-    var bytes = Data()
-    bytes.appendLittleEndianUInt16(commandID)
-    bytes.appendLittleEndianUInt16(0)
-    bytes.appendLittleEndianUInt32(UInt32(8 + payload.count))
-    bytes.append(payload)
-    return bytes
+/// Regions that would take unbounded work to apply collapse into their bounding box; the
+/// regions servers send, which cover each pixel about once, stay as they are.
+@Test func videoRegionsCollapseWhenTooManyOrCoveringTheUpdateManyTimesOver() {
+    let update = RDPFrameRect(left: 100, top: 0, right: 2148, bottom: 64)
+    let pixels = (0 ..< rdpMaximumVideoRegionCount).map {
+        RDPFrameRect(left: UInt16($0), top: 0, right: UInt16($0 + 1), bottom: 1)
+    }
+    #expect(pixels.boundedVideoRegions(within: update) == pixels)
+    let onePixelMore = pixels + [RDPFrameRect(left: 2000, top: 63, right: 2001, bottom: 64)]
+    #expect(onePixelMore.boundedVideoRegions(within: update) == [RDPFrameRect(left: 0, top: 0, right: 2001, bottom: 64)])
+
+    let whole = RDPFrameRect(left: 100, top: 0, right: 2148, bottom: 64)
+    let fourTimes = Array(repeating: whole, count: 4)
+    #expect(fourTimes.boundedVideoRegions(within: update) == fourTimes)
+    #expect((fourTimes + [RDPFrameRect(left: 100, top: 0, right: 101, bottom: 1)]).boundedVideoRegions(within: update) == [whole])
+    // Only the area inside the update's right and bottom edges counts.
+    let overhanging = Array(repeating: RDPFrameRect(left: 2147, top: 63, right: 65535, bottom: 65535), count: 8)
+    #expect(overhanging.boundedVideoRegions(within: update) == overhanging)
+}
+
+/// gnome-remote-desktop copies each damage rectangle of its staging surface with a
+/// SurfaceToSurface of its own; each copy carries the access unit's part inside it.
+@Test func stagedVideoCopyCarriesTheRegionsInsideTheCopiedRectangle() throws {
+    let frame = RDPGraphicsFrameSnapshot(
+        frameID: 9,
+        surfaceID: 1,
+        codecID: RDPGFXCodecID.avc420,
+        codecName: "avc420",
+        pixelFormat: RDPGFXPixelFormat.xrgb8888,
+        destinationRect: RDPFrameRect(left: 8, top: 4, right: 72, bottom: 36),
+        regionRects: [
+            RDPFrameRect(left: 0, top: 0, right: 16, bottom: 8),
+            RDPFrameRect(left: 32, top: 16, right: 64, bottom: 32),
+        ],
+        encodedVideoData: Data([0x00, 0x00, 0x01, 0x65])
+    )
+
+    let staged = try #require(stagedVideoCopy(
+        of: frame,
+        sourceRect: RDPGFXRect16(left: 40, top: 20, right: 56, bottom: 36),
+        to: RDPGFXPoint16(x: 50, y: 30),
+        surfaceID: 0
+    ))
+    #expect(staged.surfaceID == 0)
+    #expect(staged.destinationRect == RDPFrameRect(left: 18, top: 14, right: 82, bottom: 46))
+    #expect(staged.regionRects == [RDPFrameRect(left: 32, top: 16, right: 48, bottom: 32)])
+    #expect(staged.encodedVideoData == frame.encodedVideoData)
+    // A copy outside every region carries none of the access unit.
+    #expect(stagedVideoCopy(
+        of: frame,
+        sourceRect: RDPGFXRect16(left: 8, top: 20, right: 24, bottom: 36),
+        to: RDPGFXPoint16(x: 8, y: 20),
+        surfaceID: 0
+    ) == nil)
 }

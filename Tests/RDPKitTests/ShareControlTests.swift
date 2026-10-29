@@ -180,26 +180,40 @@ import Testing
     )) == nil)
 }
 
-@Test func shareDataRejectsInvalidStreamIDs() throws {
-    #expect(throws: RDPDecodeError.invalidShareDataHeader) {
-        try RDPShareDataPDU.parseIfPresent(fromTPKT: shareDataPacket(
-            type: 0x28,
-            streamID: 0x00,
-            payload: Data(repeating: 0, count: 8)
-        ))
-    }
-    #expect(throws: RDPDecodeError.invalidShareDataHeader) {
-        try RDPShareDataPDU.parseIfPresent(fromTPKT: shareDataPacket(
-            type: 0x1F,
-            streamID: 0x03,
-            payload: Data([0x01, 0x00, 0xEA, 0x03])
-        ))
-    }
+@Test func shareDataIgnoresStreamIDAndPDUSource() throws {
+    // Cosmetic header fields: a mislabelled stream or source must not end the session.
+    #expect(try RDPShareDataPDU.parseIfPresent(fromTPKT: shareDataPacket(
+        type: 0x28,
+        streamID: 0x00,
+        payload: Data(repeating: 0, count: 8)
+    ))?.typeName == "font-map")
     #expect(try RDPShareDataPDU.parseIfPresent(fromTPKT: shareDataPacket(
         type: 0x1F,
-        streamID: 0x00,
+        streamID: 0x03,
         payload: Data([0x01, 0x00, 0xEA, 0x03])
     ))?.typeName == "server-synchronize")
+    #expect(try RDPShareDataPDU.parseIfPresent(fromTPKT: shareDataPacket(
+        type: 0x2F,
+        payload: Data([0x09, 0x00, 0x00, 0x00])
+    ))?.errorInfo == 9)
+    #expect(try RDPShareDataPDU.parseIfPresent(fromTPKT: shareDataPacket(
+        type: 0x36,
+        payload: Data([0x01, 0x04, 0x00, 0x00])
+    ))?.statusInfo == 0x0000_0401)
+}
+
+@Test func shareControlChannelFilterSkipsStaticVirtualChannelChunks() throws {
+    // A static channel chunk header: totalLength 0x000A0010 reads as a share
+    // control header of type 0x0A when parsed from the wrong channel.
+    let chunk = mcsSendDataIndication(channelID: 1004, userData: Data([
+        0x10, 0x00, 0x0A, 0x00, 0x03, 0x00, 0x00, 0x00,
+    ]))
+
+    #expect(throws: RDPDecodeError.invalidShareControlHeader) {
+        try RDPShareControlPDU.parseIfPresent(fromTPKT: chunk)
+    }
+    #expect(try RDPShareControlPDU.parseIfPresent(fromTPKT: chunk, channelID: 1003) == nil)
+    #expect(try RDPShareDataPDU.parseIfPresent(fromTPKT: chunk, channelID: 1003) == nil)
 }
 
 @Test func shareDataRejectsCompressedPayloadWithoutBulkDecompression() throws {
@@ -380,34 +394,28 @@ import Testing
     payload.append(Data(repeating: 0, count: 32))
     payload.append(0x01)
 
-    #expect(throws: RDPDecodeError.invalidShareDataHeader) {
-        try RDPShareDataPDU.parseIfPresent(fromTPKT: shareDataPacket(
-            type: 0x26,
-            payload: payload
-        ))
+    #expect(throws: (any Error).self) {
+        try RDPSaveSessionInfoPDU.parsePayload(payload)
     }
+    // The Share Data PDU still parses: a malformed Save Session Info is ignored.
+    let pdu = try #require(try RDPShareDataPDU.parseIfPresent(fromTPKT: shareDataPacket(type: 0x26, payload: payload)))
+    #expect(pdu.saveSessionInfo == nil)
 }
 
 @Test func shareDataRejectsSaveSessionInfoLogonStringsWithoutTerminators() throws {
-    #expect(throws: RDPDecodeError.invalidShareDataHeader) {
-        try RDPShareDataPDU.parseIfPresent(fromTPKT: shareDataPacket(
-            type: 0x26,
-            payload: saveSessionInfoLogonVersion1Payload(
-                domain: "LAB",
-                userName: "rdp-user",
-                includeUserNameTerminator: false
-            )
+    #expect(throws: (any Error).self) {
+        try RDPSaveSessionInfoPDU.parsePayload(saveSessionInfoLogonVersion1Payload(
+            domain: "LAB",
+            userName: "rdp-user",
+            includeUserNameTerminator: false
         ))
     }
 
-    #expect(throws: RDPDecodeError.invalidShareDataHeader) {
-        try RDPShareDataPDU.parseIfPresent(fromTPKT: shareDataPacket(
-            type: 0x26,
-            payload: saveSessionInfoLogonVersion2Payload(
-                domain: "LAB",
-                userName: "rdp-user",
-                includeDomainTerminator: false
-            )
+    #expect(throws: (any Error).self) {
+        try RDPSaveSessionInfoPDU.parsePayload(saveSessionInfoLogonVersion2Payload(
+            domain: "LAB",
+            userName: "rdp-user",
+            includeDomainTerminator: false
         ))
     }
 }
@@ -496,12 +504,6 @@ import Testing
     }
     #expect(throws: RDPDecodeError.invalidShareDataHeader) {
         try RDPShareDataPDU.parseIfPresent(fromTPKT: shareDataPacket(
-            type: 0x2F,
-            payload: Data([0x09, 0x00, 0x00, 0x00])
-        ))
-    }
-    #expect(throws: RDPDecodeError.invalidShareDataHeader) {
-        try RDPShareDataPDU.parseIfPresent(fromTPKT: shareDataPacket(
             type: 0x32,
             pduSource: 0,
             payload: Data([0x00, 0x00])
@@ -516,21 +518,9 @@ import Testing
     }
     #expect(throws: RDPDecodeError.invalidShareDataHeader) {
         try RDPShareDataPDU.parseIfPresent(fromTPKT: shareDataPacket(
-            type: 0x32,
-            payload: Data([0x00, 0x00, 0x00, 0x00])
-        ))
-    }
-    #expect(throws: RDPDecodeError.invalidShareDataHeader) {
-        try RDPShareDataPDU.parseIfPresent(fromTPKT: shareDataPacket(
             type: 0x36,
             pduSource: 0,
             payload: Data([0x01, 0x04])
-        ))
-    }
-    #expect(throws: RDPDecodeError.invalidShareDataHeader) {
-        try RDPShareDataPDU.parseIfPresent(fromTPKT: shareDataPacket(
-            type: 0x36,
-            payload: Data([0x01, 0x04, 0x00, 0x00])
         ))
     }
     #expect(throws: RDPDecodeError.invalidShareDataHeader) {
@@ -539,19 +529,14 @@ import Testing
             payload: Data(repeating: 0, count: 6)
         ))
     }
-    #expect(throws: RDPDecodeError.invalidShareDataHeader) {
-        try RDPShareDataPDU.parseIfPresent(fromTPKT: shareDataPacket(
-            type: 0x26,
-            payload: Data()
-        ))
+    // A malformed Save Session Info is rejected by its parser but ignored in the Share Data PDU.
+    #expect(throws: (any Error).self) {
+        try RDPSaveSessionInfoPDU.parsePayload(Data())
     }
-    #expect(throws: RDPDecodeError.invalidShareDataHeader) {
-        try RDPShareDataPDU.parseIfPresent(fromTPKT: shareDataPacket(
-            type: 0x26,
-            payload: Data([0x02, 0x00, 0x00, 0x00])
-        ))
+    #expect(throws: (any Error).self) {
+        try RDPSaveSessionInfoPDU.parsePayload(Data([0x02, 0x00, 0x00, 0x00]))
     }
-    #expect(throws: RDPDecodeError.invalidShareDataHeader) {
+    #expect(throws: (any Error).self) {
         var payload = Data()
         payload.appendLittleEndianUInt32(0x0000_0003)
         payload.appendLittleEndianUInt16(38)
@@ -561,11 +546,10 @@ import Testing
         payload.appendLittleEndianUInt32(1)
         payload.appendLittleEndianUInt32(2)
         payload.append(Data(repeating: 0, count: 16))
-        _ = try RDPShareDataPDU.parseIfPresent(fromTPKT: shareDataPacket(
-            type: 0x26,
-            payload: payload
-        ))
+        _ = try RDPSaveSessionInfoPDU.parsePayload(payload)
     }
+    #expect(try RDPShareDataPDU.parseIfPresent(fromTPKT: shareDataPacket(type: 0x26, payload: Data()))?
+        .saveSessionInfo == nil)
     #expect(throws: RDPDecodeError.invalidShareDataHeader) {
         try RDPShareDataPDU.parseIfPresent(fromTPKT: shareDataPacket(
             type: 0x29,
@@ -595,49 +579,6 @@ import Testing
             payload: payload
         ))
     }
-    #expect(throws: RDPDecodeError.invalidShareDataHeader) {
-        var payload = Data()
-        payload.appendLittleEndianUInt32(1)
-        payload.append(Data(repeating: 0, count: 20))
-        _ = try RDPShareDataPDU.parseIfPresent(fromTPKT: shareDataPacket(
-            type: 0x37,
-            payload: payload
-        ))
-    }
-}
-
-private func mcsSendDataIndication(channelID: UInt16, userData: Data) -> Data {
-    var data = Data()
-    data.appendUInt8(0x68)
-    data.appendBigEndianUInt16(1005 - 1001)
-    data.appendBigEndianUInt16(channelID)
-    data.appendUInt8(0x70)
-    data.appendPERLength(userData.count)
-    data.append(userData)
-    return X224DataTPDU.wrap(data)
-}
-
-private func shareDataPacket(
-    type: UInt8,
-    pduSource: UInt16 = 1005,
-    streamID: UInt8 = 1,
-    compressedType: UInt8 = 0,
-    compressedLength: UInt16 = 0,
-    payload: Data
-) -> Data {
-    var userData = Data()
-    userData.appendLittleEndianUInt16(UInt16(18 + payload.count))
-    userData.appendLittleEndianUInt16(0x0017)
-    userData.appendLittleEndianUInt16(pduSource)
-    userData.appendLittleEndianUInt32(0x0001_0000)
-    userData.appendUInt8(0)
-    userData.appendUInt8(streamID)
-    userData.appendLittleEndianUInt16(UInt16(payload.count + 4))
-    userData.appendUInt8(type)
-    userData.appendUInt8(compressedType)
-    userData.appendLittleEndianUInt16(compressedLength)
-    userData.append(payload)
-    return mcsSendDataIndication(channelID: 1003, userData: userData)
 }
 
 private func controlPayload(action: UInt16, grantID: UInt16, controlID: UInt32) -> Data {
@@ -654,8 +595,8 @@ private func saveSessionInfoLogonVersion1Payload(
     includeDomainTerminator: Bool = true,
     includeUserNameTerminator: Bool = true
 ) -> Data {
-    let domainBytes = utf16LE(domain, nullTerminated: includeDomainTerminator)
-    let userNameBytes = utf16LE(userName, nullTerminated: includeUserNameTerminator)
+    let domainBytes = utf16LittleEndian(domain, nullTerminated: includeDomainTerminator)
+    let userNameBytes = utf16LittleEndian(userName, nullTerminated: includeUserNameTerminator)
     var payload = Data()
     payload.appendLittleEndianUInt32(0x0000_0000)
     payload.appendLittleEndianUInt32(UInt32(domainBytes.count))
@@ -672,8 +613,8 @@ private func saveSessionInfoLogonVersion2Payload(
     includeDomainTerminator: Bool = true,
     includeUserNameTerminator: Bool = true
 ) -> Data {
-    let domainBytes = utf16LE(domain, nullTerminated: includeDomainTerminator)
-    let userNameBytes = utf16LE(userName, nullTerminated: includeUserNameTerminator)
+    let domainBytes = utf16LittleEndian(domain, nullTerminated: includeDomainTerminator)
+    let userNameBytes = utf16LittleEndian(userName, nullTerminated: includeUserNameTerminator)
     var payload = Data()
     payload.appendLittleEndianUInt32(0x0000_0001)
     payload.appendLittleEndianUInt16(1)
@@ -693,13 +634,27 @@ private func padded(_ data: Data, to byteCount: Int) -> Data {
     return paddedData
 }
 
-private func utf16LE(_ value: String, nullTerminated: Bool) -> Data {
-    var data = Data()
-    for codeUnit in value.utf16 {
-        data.appendLittleEndianUInt16(codeUnit)
+// TPKT entry points for tests. The client routes by MCS channel first and
+// parses the indication (SessionDispatch.swift); unfiltered, a static channel
+// chunk can read as a Share Control header.
+extension RDPShareControlPDU {
+    static func parseIfPresent(fromTPKT packet: Data, channelID: UInt16? = nil) throws -> RDPShareControlPDU? {
+        guard let indication = try? MCSSendDataIndicationPDU.parse(fromTPKT: packet),
+              channelID.map({ indication.channelID == $0 }) ?? true
+        else {
+            return nil
+        }
+        return try parseIfPresent(from: indication)
     }
-    if nullTerminated {
-        data.appendLittleEndianUInt16(0)
+}
+
+extension RDPShareDataPDU {
+    static func parseIfPresent(fromTPKT packet: Data, channelID: UInt16? = nil) throws -> RDPShareDataPDU? {
+        guard let indication = try? MCSSendDataIndicationPDU.parse(fromTPKT: packet),
+              channelID.map({ indication.channelID == $0 }) ?? true
+        else {
+            return nil
+        }
+        return try parseIfPresent(from: indication)
     }
-    return data
 }

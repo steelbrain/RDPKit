@@ -110,19 +110,7 @@ import Testing
     let summary = try RDPClearCodecDecoder.summarize(stream)
     let bitmap = try RDPClearCodecDecoder().decode(stream, width: 2, height: 1)
 
-    #expect(summary.subcodecRegions == [
-        RDPClearCodecSubcodecSummary(
-            rect: RDPFrameRect(left: 0, top: 0, right: 2, bottom: 1),
-            byteCount: UInt32(nsCodec.count),
-            codecID: 0x01,
-            nsCodecYByteCount: 2,
-            nsCodecCoByteCount: 2,
-            nsCodecCgByteCount: 2,
-            nsCodecAlphaByteCount: 2,
-            nsCodecColorLossLevel: 1,
-            nsCodecChromaSubsamplingLevel: 0
-        ),
-    ])
+    #expect(summary.subcodecByteCount == UInt32(subcodec.count))
     #expect(bitmap.bgraData == Data([
         0x00, 0x00, 0xFE, 0xFF,
         0x00, 0xFE, 0x00, 0xFF,
@@ -151,10 +139,8 @@ import Testing
     stream.appendLittleEndianUInt32(UInt32(subcodec.count))
     stream.append(subcodec)
 
-    let summary = try RDPClearCodecDecoder.summarize(stream)
     let bitmap = try RDPClearCodecDecoder().decode(stream, width: 2, height: 1)
 
-    #expect(summary.subcodecRegions.first?.nsCodecAlphaByteCount == 0)
     #expect(bitmap.bgraData == Data([
         0x7F, 0x7F, 0x7F, 0xFF,
         0x7F, 0x7F, 0x7F, 0xFF,
@@ -233,7 +219,43 @@ import Testing
 
     let bitmap = try decoder.decode(hit, width: 2, height: 1)
 
-    #expect(bitmap == cached)
+    #expect(bitmap.bgraData == cached.bgraData)
+    #expect(cached.glyph == .stored(glyphIndex))
+    #expect(bitmap.glyph == .hit(glyphIndex))
+    #expect(bitmap.coveredRects == [RDPGFXRect16(left: 0, top: 0, right: 2, bottom: 1)])
+}
+
+/// Pixels no layer covers keep the destination's, which may be ones only a video decoder holds.
+@Test func reportsTheRectanglesClearCodecLayersCover() throws {
+    let residual = try RDPClearCodecDecoder().decode(
+        clearCodecResidualStream(Data([0x10, 0x20, 0x30, 5])),
+        width: 3,
+        height: 3
+    )
+    #expect(residual.coveredRects == [
+        RDPGFXRect16(left: 0, top: 0, right: 3, bottom: 1),
+        RDPGFXRect16(left: 0, top: 1, right: 2, bottom: 2),
+    ])
+    let subcodec = try RDPClearCodecDecoder().decode(
+        clearCodecRawRegionStream(width: 2, height: 1, pixels: [0x10, 0x20, 0x30, 0x40, 0x50, 0x60]),
+        width: 3,
+        height: 3
+    )
+    #expect(subcodec.coveredRects == [RDPGFXRect16(left: 0, top: 0, right: 2, bottom: 1)])
+    let bands = try RDPClearCodecDecoder().decode(clearCodecBandsStream(seqNumber: 0, bandsData: clearCodecTwoColumnBandsData()), width: 3, height: 3)
+    #expect(bands.coveredRects == [RDPGFXRect16(left: 0, top: 0, right: 2, bottom: 3)])
+}
+
+@Test func rejectsClearCodecGlyphCacheHitOfAnotherSize() throws {
+    let decoder = RDPClearCodecDecoder()
+    _ = try decoder.decode(clearCodecGlyphMissStream(glyphIndex: 7), width: 2, height: 1)
+    var hit = Data([0x03, 0x01])
+    hit.appendLittleEndianUInt16(7)
+
+    // A 2x1 glyph drawn into a 1x1 destination would spill out of it.
+    #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
+        try decoder.decode(hit, width: 1, height: 1)
+    }
 }
 
 @Test func rejectsClearCodecGlyphCacheHitWithPayload() throws {
@@ -268,6 +290,20 @@ import Testing
     }
 }
 
+@Test func decodesClearCodecStreamAfterOneThatFailsToDecode() throws {
+    let decoder = RDPClearCodecDecoder()
+    // Stream 0 hits a glyph that was never stored.
+    var hit = Data([0x03, 0x00])
+    hit.appendLittleEndianUInt16(7)
+    #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
+        try decoder.decode(hit, width: 1, height: 1)
+    }
+
+    let bitmap = try decoder.decode(clearCodecBandsStream(seqNumber: 1, bandsData: Data()), width: 1, height: 1)
+
+    #expect(bitmap.width == 1)
+}
+
 @Test func rejectsClearCodecReservedFlagsAndInvalidGlyphIndices() {
     var reservedFlagsStream = clearCodecBandsStream(seqNumber: 0, bandsData: Data())
     reservedFlagsStream[0] = 0x08
@@ -284,14 +320,48 @@ import Testing
     }
 }
 
-@Test func rejectsOversizedClearCodecGlyphsBeforeAllocation() {
+@Test func decodesButDoesNotStoreClearCodecGlyphsOverSpecifiedArea() throws {
+    let decoder = RDPClearCodecDecoder()
+    _ = try decoder.decode(clearCodecGlyphMissStream(glyphIndex: 0), width: 32, height: 32)
+    var hit = Data([0x03, 0x01])
+    hit.appendLittleEndianUInt16(0)
+    #expect(try decoder.decode(hit, width: 32, height: 32).width == 32)
+
+    // A larger glyph also drops what the slot held, so a later hit fails instead of drawing it.
+    var oversized = clearCodecGlyphMissStream(glyphIndex: 0)
+    oversized[1] = 2
+    let bitmap = try decoder.decode(oversized, width: 33, height: 32)
+    #expect(bitmap.width == 33)
+    hit[1] = 3
     #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
-        try RDPClearCodecDecoder().decode(
-            clearCodecGlyphMissStream(glyphIndex: 0),
-            width: 1_025,
-            height: 1_024
-        )
+        try decoder.decode(hit, width: 33, height: 32)
     }
+}
+
+@Test func keepsClearCodecDestinationPixelsThatNoLayerCovers() throws {
+    var stream = Data([0x00, 0x00])
+    stream.appendLittleEndianUInt32(0)
+    stream.appendLittleEndianUInt32(0)
+    stream.appendLittleEndianUInt32(16)
+    stream.appendLittleEndianUInt16(1)
+    stream.appendLittleEndianUInt16(0)
+    stream.appendLittleEndianUInt16(1)
+    stream.appendLittleEndianUInt16(1)
+    stream.appendLittleEndianUInt32(3)
+    stream.appendUInt8(0)
+    stream.append(contentsOf: [0x10, 0x20, 0x30])
+
+    let bitmap = try RDPClearCodecDecoder().decode(
+        stream,
+        width: 2,
+        height: 1,
+        destination: Data([0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08])
+    )
+
+    #expect(bitmap.bgraData == Data([
+        0x01, 0x02, 0x03, 0x04,
+        0x10, 0x20, 0x30, 0xFF,
+    ]))
 }
 
 @Test func decodesClearCodecResidualRuns() throws {
@@ -429,34 +499,6 @@ import Testing
 
     #expect(decoded.decodedPixelFormat == kCVPixelFormatType_32BGRA)
     #expect(decoded.usesHardwareAcceleration == nil)
-}
-
-private func clearCodecBandsStream(seqNumber: UInt8, bandsData: Data) -> Data {
-    var stream = Data([0x00, seqNumber])
-    stream.appendLittleEndianUInt32(0)
-    stream.appendLittleEndianUInt32(UInt32(bandsData.count))
-    stream.appendLittleEndianUInt32(0)
-    stream.append(bandsData)
-    return stream
-}
-
-private func clearCodecTwoColumnBandsData() -> Data {
-    var bandsData = Data()
-    bandsData.appendLittleEndianUInt16(0)
-    bandsData.appendLittleEndianUInt16(1)
-    bandsData.appendLittleEndianUInt16(0)
-    bandsData.appendLittleEndianUInt16(2)
-    bandsData.append(contentsOf: [0x00, 0x00, 0x00])
-    bandsData.appendLittleEndianUInt16(0x0301)
-    bandsData.append(contentsOf: [
-        0x10, 0x20, 0x30,
-        0x40, 0x50, 0x60,
-    ])
-    bandsData.appendLittleEndianUInt16(0x0100)
-    bandsData.append(contentsOf: [
-        0x70, 0x80, 0x90,
-    ])
-    return bandsData
 }
 
 private func nsCodecFrame(

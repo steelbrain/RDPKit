@@ -44,6 +44,24 @@ import Testing
     #expect(credentials.qualifiedUsername == "rdp-user")
 }
 
+@Test func credentialDescriptionsRedactPassword() {
+    let credentials = RDPCredentials(username: "rdp-user", domain: "KDE", password: "hunter2")
+    let configuration = RDPConnectionConfiguration(host: "example.com", credentials: credentials)
+    var dumped = ""
+    dump(configuration, to: &dumped)
+
+    for text in [
+        String(describing: credentials),
+        String(reflecting: credentials),
+        String(describing: configuration),
+        String(reflecting: configuration),
+        dumped,
+    ] {
+        #expect(text.contains("rdp-user"))
+        #expect(!text.contains("hunter2"))
+    }
+}
+
 @Test func credentialValidationRejectsIncompleteCredentials() {
     #expect(
         throws: RDPCredentialValidationError.missingUsernameOrPassword,

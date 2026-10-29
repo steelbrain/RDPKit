@@ -5,103 +5,100 @@ import NIOPosix
 @preconcurrency import NIOSSL
 @testable import RDPKit
 
-final class MockKRDPServer {
+/// A server socket on 127.0.0.1 with an event loop of its own, for the
+/// scripted servers: each accepted connection gets a handler from `makeHandler`.
+class LoopbackTestServer {
     let port: UInt16
-    let transcript: MockKRDPServerTranscript
-    let connectionLog: MockKRDPConnectionLog
-
     private let group: MultiThreadedEventLoopGroup
     private let channel: Channel
+    private let openConnections: DispatchGroup
 
-    var connectionCount: Int {
-        connectionLog.connectionCount
-    }
-
-    private init(
-        port: UInt16,
-        group: MultiThreadedEventLoopGroup,
-        channel: Channel,
-        transcript: MockKRDPServerTranscript,
-        connectionLog: MockKRDPConnectionLog
-    ) {
-        self.port = port
-        self.group = group
-        self.channel = channel
-        self.transcript = transcript
-        self.connectionLog = connectionLog
-    }
-
-    static func start(
-        securityProtocol: MockKRDPSecurityProtocol = .tls,
-        clipboardFiles: [RDPClipboardLocalFile] = [],
-        graphicsBehavior: MockKRDPGraphicsBehavior = .sendFirstFrame,
-        graphicsCapabilitySelection: MockKRDPGraphicsCapabilitySelection = .fixedVersion81,
-        autoDetectBehavior: MockKRDPAutoDetectBehavior = .singleRTT,
-        licensingBehavior: MockKRDPLicensingBehavior = .validClientThenDemandActive,
-        redirectionBehavior: MockKRDPRedirectionBehavior = .none,
-        finalizationBehavior: MockKRDPFinalizationBehavior = .grantBeforeFontList,
-        auxiliaryDynamicChannelBehavior: MockKRDPAuxiliaryDynamicChannelBehavior = .none,
-        dynamicChannelVersion: UInt16 = 2,
-        remoteClipboardText: String? = nil,
-        audioEnabled: Bool = false,
-        waitForCompatibilityTraffic: Bool = false,
-        requireBitmapCodecsCapability: Bool = false,
-        skipChannelJoinSupported: Bool = false
-    ) throws -> MockKRDPServer {
+    init(makeHandler: @escaping @Sendable () -> ChannelHandler & Sendable) throws {
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
-        let transcript = MockKRDPServerTranscript()
-        let connectionLog = MockKRDPConnectionLog()
+        let openConnections = DispatchGroup()
         do {
-            let tlsContext = try NIOSSLContext(configuration: MockKRDPTLS.configuration())
-            let channel = try ServerBootstrap(group: group)
+            channel = try ServerBootstrap(group: group)
                 .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
                 .childChannelInitializer { channel in
-                    channel.pipeline.addHandler(MockKRDPServerHandler(
-                        tlsContext: tlsContext,
-                        securityProtocol: securityProtocol,
-                        graphicsBehavior: graphicsBehavior,
-                        graphicsCapabilitySelection: graphicsCapabilitySelection,
-                        autoDetectBehavior: autoDetectBehavior,
-                        licensingBehavior: licensingBehavior,
-                        redirectionBehavior: redirectionBehavior,
-                        finalizationBehavior: finalizationBehavior,
-                        auxiliaryDynamicChannelBehavior: auxiliaryDynamicChannelBehavior,
-                        dynamicChannelVersion: dynamicChannelVersion,
-                        clipboardFiles: clipboardFiles,
-                        remoteClipboardText: remoteClipboardText,
-                        audioEnabled: audioEnabled,
-                        waitForCompatibilityTraffic: waitForCompatibilityTraffic,
-                        requireBitmapCodecsCapability: requireBitmapCodecsCapability,
-                        skipChannelJoinSupported: skipChannelJoinSupported,
-                        transcript: transcript,
-                        connectionLog: connectionLog
-                    ))
+                    openConnections.enter()
+                    channel.closeFuture.whenComplete { _ in openConnections.leave() }
+                    return channel.pipeline.addHandler(makeHandler())
                 }
                 .bind(host: "127.0.0.1", port: 0)
                 .wait()
-
-            guard let port = channel.localAddress?.port,
-                  let serverPort = UInt16(exactly: port)
-            else {
+            guard let port = channel.localAddress?.port.flatMap(UInt16.init(exactly:)) else {
                 throw MockKRDPServerError.missingPort
             }
-
-            return MockKRDPServer(
-                port: serverPort,
-                group: group,
-                channel: channel,
-                transcript: transcript,
-                connectionLog: connectionLog
-            )
+            self.port = port
         } catch {
             try? group.syncShutdownGracefully()
             throw error
         }
+        self.group = group
+        self.openConnections = openConnections
     }
 
     func stop() {
         try? channel.close().wait()
-        try? group.syncShutdownGracefully()
+        // Not syncShutdownGracefully: it completes on a global queue, which
+        // test threads blocked here can starve of workers.
+        let shutDown = DispatchSemaphore(value: 0)
+        group.shutdownGracefully(queue: Self.shutdownQueue) { _ in
+            shutDown.signal()
+        }
+        shutDown.wait()
+    }
+
+    private static let shutdownQueue = DispatchQueue(label: "LoopbackTestServer.shutdown")
+
+    /// Waits until the server has seen every client close, and so has handled
+    /// everything they sent.
+    func waitForClientsToClose() {
+        _ = openConnections.wait(timeout: .now() + 5)
+    }
+}
+
+/// A local RDP server for client tests. It speaks the KRdp-style flow by
+/// default; `Options` switches individual steps to other server behaviors.
+final class MockKRDPServer: LoopbackTestServer {
+    struct Options {
+        var securityProtocol = MockKRDPSecurityProtocol.tls
+        var clipboardFiles: [RDPClipboardLocalFile] = []
+        var graphicsBehavior = MockKRDPGraphicsBehavior.sendFirstFrame
+        var graphicsCapabilitySelection = MockKRDPGraphicsCapabilitySelection.fixedVersion81
+        var autoDetectBehavior = MockKRDPAutoDetectBehavior.singleRTT
+        var licensingBehavior = MockKRDPLicensingBehavior.validClientThenDemandActive
+        var redirectionBehavior = MockKRDPRedirectionBehavior.none
+        var finalizationBehavior = MockKRDPFinalizationBehavior.grantBeforeFontList
+        var auxiliaryDynamicChannelBehavior = MockKRDPAuxiliaryDynamicChannelBehavior.none
+        var dynamicChannelVersion: UInt16 = 2
+        var remoteClipboardText: String?
+        var audioEnabled = false
+        var waitForCompatibilityTraffic = false
+        var requireBitmapCodecsCapability = false
+    }
+
+    let transcript: Locked<MockKRDPServerTranscript>
+    private let connections: Locked<Int>
+
+    var connectionCount: Int {
+        connections.value
+    }
+
+    init(_ options: Options = Options()) throws {
+        let tlsContext = try NIOSSLContext(configuration: MockKRDPTLS.configuration())
+        let transcript = Locked(MockKRDPServerTranscript())
+        let connections = Locked(0)
+        self.transcript = transcript
+        self.connections = connections
+        try super.init {
+            MockKRDPServerHandler(
+                options: options,
+                tlsContext: tlsContext,
+                transcript: transcript,
+                connections: connections
+            )
+        }
     }
 }
 
@@ -123,20 +120,38 @@ enum MockKRDPGraphicsBehavior: Equatable {
     case sendFragmentedBitmapCompositionFrame
     case sendClearCodecBandsFrame
     case sendCAVideoRemoteFXFrame
-    case sendGnomeRemoteDesktopCAPROGRESSIVEFrame
+    case sendCAProgressiveFrame
     case sendVideoBeforeBitmapCompositionFrame
     case sendMultipleVideoUpdatesInFrame
+    case sendVideoRegionsCoveringTheSurfaceFiveTimes
+    case sendTwoFramesInOnePayload
+    case deleteAndRecreateSurfaceInSecondFrame
+    case copyVideoFromStagingSurfacePerDamageRect
+    case copyDecodedVideoThroughSurfacesAndCache
+    case copyVideoThroughHiddenSurface
+    case deleteSurfacesAfterCopyingOutOfThem
+    case sendAlphaOverVideo
+    case sendHiddenSurfaceVideoBeforeAKeyframe
+    case copyOutOfHiddenSurfaceAfterVideoBeforeAKeyframe
+    case mapSurfaceAfterDeletingAnotherInTheFrame
     case sendMultipleBitmapSurfacesInFrame
     case sendMalformedAVCFrame
     case sendInvalidGraphicsPDU
     case sendCompressedCAVideoRemoteFXFrame
     case sendUnsupportedCompressedDynamicData
+    case sendCompressedDataLargerThanOnePDU
     case sendSoftSyncBeforeFrame
     case sendUnknownCloseBeforeFrame
     case sendEmptyFrameThenStall
+    case sendFastPathEmptyFramesBeforeFirstFrame
     case closeAfterFirstFrame
+    case setErrorInfoThenCloseAfterFirstFrame
+    /// gnome-remote-desktop 51 when its session ends: Set Error Info
+    /// ERRINFO_RPC_INITIATED_DISCONNECT and a user-requested Disconnect Provider
+    /// Ultimatum right behind the frame, then a close that does not wait for the
+    /// frame acknowledgement.
+    case endSessionLikeGnomeAfterFirstFrame
     case setErrorInfoLogoffBeforeFrame
-    case stallAfterCapsConfirm
 }
 
 enum MockKRDPGraphicsCapabilitySelection {
@@ -186,6 +201,9 @@ enum MockKRDPGraphicsCapabilitySelection {
 enum MockKRDPAutoDetectBehavior {
     case singleRTT
     case bandwidthMeasure
+    /// Only a connect-time Bandwidth Measure Start, which has no response
+    /// ([MS-RDPBCGR] 2.2.14.1.2), then licensing.
+    case noReplyRequestOnly
 }
 
 enum MockKRDPLicensingBehavior {
@@ -195,6 +213,8 @@ enum MockKRDPLicensingBehavior {
     case serverLicenseRequest
     case serverLicenseRequestWithStoredClientLicense
     case serverLicenseRequestX509
+    case noLicenseServerError
+    case disconnectInsteadOfLicensing
 }
 
 enum MockKRDPRedirectionBehavior {
@@ -203,6 +223,9 @@ enum MockKRDPRedirectionBehavior {
     /// cookie, no target host) on the first connection only, so the client
     /// reconnects to the same server with the token attached.
     case redirectFirstConnection
+    /// Windows connection brokers redirect right after licensing, in place
+    /// of the Demand Active ([MS-RDPBCGR] 1.3.1.1, 3.1.5.2).
+    case redirectInsteadOfDemandActive
 }
 
 enum MockKRDPFinalizationBehavior: Equatable {
@@ -214,6 +237,7 @@ enum MockKRDPFinalizationBehavior: Equatable {
     case controlCooperateBeforeSynchronize
     case grantControlWithoutFontMap
     case deactivateAfterFontMap
+    case deactivateThenReactivateAfterFontMap
     case deactivateThenUserRequestedDisconnectAfterFontMap
     case setErrorInfoDeniedThenDeactivateAfterFontMap
     case setErrorInfoLogoffThenDeactivateAfterFontMap
@@ -222,41 +246,22 @@ enum MockKRDPFinalizationBehavior: Equatable {
 
 enum MockKRDPAuxiliaryDynamicChannelBehavior {
     case none
-    case windowsInputAndCursor
+    /// Windows-style channels this client does not implement; it must reject them.
+    case unsupportedChannels
     case fragmentedGraphicsCreate
 
     var createRequests: [(channelID: UInt32, channelName: String)] {
         switch self {
         case .none, .fragmentedGraphicsCreate:
             []
-        case .windowsInputAndCursor:
+        case .unsupportedChannels:
             [
-                (1, RDPWindowsAuxiliaryDynamicChannel.inputName),
-                (2, RDPWindowsAuxiliaryDynamicChannel.coreInputName),
-                (3, RDPWindowsAuxiliaryDynamicChannel.audioInputName),
-                (8, RDPWindowsAuxiliaryDynamicChannel.mouseCursorName),
+                (1, "Microsoft::Windows::RDS::Input"),
+                (2, "Microsoft::Windows::RDS::CoreInput"),
+                (3, "AUDIO_INPUT"),
+                (8, "Microsoft::Windows::RDS::MouseCursor"),
             ]
         }
-    }
-}
-
-/// Connection counter shared across the per-connection handler instances so the
-/// mock can behave differently on a reconnect (e.g. after a redirection).
-final class MockKRDPConnectionLog: @unchecked Sendable {
-    private let lock = NSLock()
-    private var count = 0
-
-    func registerConnection() -> Int {
-        lock.lock()
-        defer { lock.unlock() }
-        count += 1
-        return count
-    }
-
-    var connectionCount: Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return count
     }
 }
 
@@ -273,125 +278,23 @@ struct MockDisplayControlLayoutSummary: Equatable, Sendable {
     var primaryDeviceScaleFactor: UInt32
 }
 
-struct MockKRDPServerTranscriptSnapshot: Equatable, Sendable {
-    var inputEvents: [RDPSlowPathInputEvent]
-    var clipboardStaticFlags: [UInt32]
-    var clientClipboardMessages: [RDPClipboardMessageSummary]
+/// What the mock received from the client.
+struct MockKRDPServerTranscript: Equatable, Sendable {
+    var inputEvents: [RDPSlowPathInputEvent] = []
+    var clipboardStaticFlags: [UInt32] = []
+    var clientClipboardMessages: [RDPClipboardMessageSummary] = []
     var receivedLocalClipboardText: String?
-    var audioClientMessages: [RDPAudioMessageSummary]
-    var audioInputClientMessages: [String]
-    var deviceRedirectionClientMessages: [String]
-    var displayControlLayouts: [MockDisplayControlLayoutSummary]
-    var dynamicCreateResponseStaticFlags: [UInt32]
-    var displayControlStaticFlags: [UInt32]
-    var audioDynamicStaticFlags: [UInt32]
-    var credSSPMessages: [String]
-    var credSSPGates: [String]
-}
-
-final class MockKRDPServerTranscript: @unchecked Sendable {
-    private let lock = NSLock()
-    private var recordedInputEvents: [RDPSlowPathInputEvent] = []
-    private var recordedClipboardStaticFlags: [UInt32] = []
-    private var recordedClientClipboardMessages: [RDPClipboardMessageSummary] = []
-    private var recordedReceivedLocalClipboardText: String?
-    private var recordedAudioClientMessages: [RDPAudioMessageSummary] = []
-    private var recordedAudioInputClientMessages: [String] = []
-    private var recordedDeviceRedirectionClientMessages: [String] = []
-    private var recordedDisplayControlLayouts: [MockDisplayControlLayoutSummary] = []
-    private var recordedDynamicCreateResponseStaticFlags: [UInt32] = []
-    private var recordedDisplayControlStaticFlags: [UInt32] = []
-    private var recordedAudioDynamicStaticFlags: [UInt32] = []
-    private var recordedCredSSPMessages: [String] = []
-    private var recordedCredSSPGates: [String] = []
-
-    var snapshot: MockKRDPServerTranscriptSnapshot {
-        lock.lock()
-        defer { lock.unlock() }
-        return MockKRDPServerTranscriptSnapshot(
-            inputEvents: recordedInputEvents,
-            clipboardStaticFlags: recordedClipboardStaticFlags,
-            clientClipboardMessages: recordedClientClipboardMessages,
-            receivedLocalClipboardText: recordedReceivedLocalClipboardText,
-            audioClientMessages: recordedAudioClientMessages,
-            audioInputClientMessages: recordedAudioInputClientMessages,
-            deviceRedirectionClientMessages: recordedDeviceRedirectionClientMessages,
-            displayControlLayouts: recordedDisplayControlLayouts,
-            dynamicCreateResponseStaticFlags: recordedDynamicCreateResponseStaticFlags,
-            displayControlStaticFlags: recordedDisplayControlStaticFlags,
-            audioDynamicStaticFlags: recordedAudioDynamicStaticFlags,
-            credSSPMessages: recordedCredSSPMessages,
-            credSSPGates: recordedCredSSPGates
-        )
-    }
-
-    func recordInputEvents(_ events: [RDPSlowPathInputEvent]) {
-        lock.lock()
-        recordedInputEvents.append(contentsOf: events)
-        lock.unlock()
-    }
-
-    func recordClipboard(flags: UInt32, message: RDPClipboardMessageSummary) {
-        lock.lock()
-        recordedClipboardStaticFlags.append(flags)
-        recordedClientClipboardMessages.append(message)
-        lock.unlock()
-    }
-
-    func recordLocalClipboardText(_ text: String) {
-        lock.lock()
-        recordedReceivedLocalClipboardText = text
-        lock.unlock()
-    }
-
-    func recordAudioMessage(_ message: RDPAudioMessageSummary) {
-        lock.lock()
-        recordedAudioClientMessages.append(message)
-        lock.unlock()
-    }
-
-    func recordAudioDynamicFlags(_ flags: UInt32) {
-        lock.lock()
-        recordedAudioDynamicStaticFlags.append(flags)
-        lock.unlock()
-    }
-
-    func recordDynamicCreateResponseFlags(_ flags: UInt32) {
-        lock.lock()
-        recordedDynamicCreateResponseStaticFlags.append(flags)
-        lock.unlock()
-    }
-
-    func recordAudioInputMessage(_ message: String) {
-        lock.lock()
-        recordedAudioInputClientMessages.append(message)
-        lock.unlock()
-    }
-
-    func recordDeviceRedirectionMessage(_ message: String) {
-        lock.lock()
-        recordedDeviceRedirectionClientMessages.append(message)
-        lock.unlock()
-    }
-
-    func recordDisplayControlLayout(_ layout: MockDisplayControlLayoutSummary, flags: UInt32) {
-        lock.lock()
-        recordedDisplayControlLayouts.append(layout)
-        recordedDisplayControlStaticFlags.append(flags)
-        lock.unlock()
-    }
-
-    func recordCredSSPMessage(_ message: String) {
-        lock.lock()
-        recordedCredSSPMessages.append(message)
-        lock.unlock()
-    }
-
-    func recordCredSSPGate(_ gate: String) {
-        lock.lock()
-        recordedCredSSPGates.append(gate)
-        lock.unlock()
-    }
+    var audioClientMessages: [RDPAudioMessageSummary] = []
+    var dynamicCreateStatuses: [UInt32: Int32] = [:]
+    var deviceRedirectionClientMessages: [String] = []
+    var displayControlLayouts: [MockDisplayControlLayoutSummary] = []
+    var dynamicCreateResponseStaticFlags: [UInt32] = []
+    var displayControlStaticFlags: [UInt32] = []
+    var audioDynamicStaticFlags: [UInt32] = []
+    var credSSPMessages: [String] = []
+    var credSSPGates: [String] = []
+    var disconnectUltimatumReasons: [UInt8] = []
+    var frameAcknowledgeIDs: [UInt32] = []
 }
 
 private enum MockKRDPConstants {
@@ -404,8 +307,6 @@ private enum MockKRDPConstants {
     static let deviceRedirectionChannelID: UInt16 = 1008
     static let audioChannelID: UInt16 = 1009
     static let shareID: UInt32 = 0x0001_03EE
-    static let inputDynamicChannelID: UInt32 = 1
-    static let audioInputDynamicChannelID: UInt32 = 3
     static let graphicsDynamicChannelID: UInt32 = 7
     static let displayControlDynamicChannelID: UInt32 = 17
     static let audioDynamicChannelID: UInt32 = 19
@@ -416,17 +317,15 @@ private enum MockKRDPConstants {
     static let height: UInt16 = 32
 }
 
-private struct MockMCSSendDataRequest {
-    var initiator: UInt16
-    var channelID: UInt16
-    var userData: Data
-}
+private typealias MockMCSSendDataRequest = (initiator: UInt16, channelID: UInt16, userData: Data)
 
 private struct MockClientShareDataPDU {
     var pduType2: UInt8
     var payload: Data
 }
 
+/// The server side of CredSSP with NTLM ([MS-CSSP] 3.1.5, [MS-NLMP] 3.2.5).
+/// It checks the client's proofs with the library's NTOWFv2 and RC4.
 final class MockCredSSPServer {
     private enum Stage {
         case negotiate
@@ -436,7 +335,7 @@ final class MockCredSSPServer {
     }
 
     private let credentials: RDPCredentials
-    private let transcript: MockKRDPServerTranscript
+    private let transcript: Locked<MockKRDPServerTranscript>
     private let subjectPublicKey: Data
     private let channelBindingsHash: Data
     private let serverChallenge = Data([0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF])
@@ -446,12 +345,12 @@ final class MockCredSSPServer {
     private var negotiatedFlags: UInt32 = 0
     private var sendSigningKey = Data()
     private var receiveSigningKey = Data()
-    private var sendSealingKey: MockNTLMRC4?
-    private var receiveSealingKey: MockNTLMRC4?
+    private var sendSealingKey: RDPRC4?
+    private var receiveSealingKey: RDPRC4?
     private var sendSequenceNumber: UInt32 = 0
     private var receiveSequenceNumber: UInt32 = 0
 
-    init(credentials: RDPCredentials, transcript: MockKRDPServerTranscript) throws {
+    init(credentials: RDPCredentials, transcript: Locked<MockKRDPServerTranscript> = Locked(MockKRDPServerTranscript())) throws {
         self.credentials = credentials
         self.transcript = transcript
         subjectPublicKey = try MockKRDPTLS.subjectPublicKey()
@@ -469,52 +368,51 @@ final class MockCredSSPServer {
         let request = try RDPCredSSPTSRequest.parse(data)
         switch stage {
         case .negotiate:
-            transcript.recordCredSSPMessage("ntlm-negotiate")
+            record(message: "ntlm-negotiate")
             let negotiateToken = try request.negoTokens.last.map(RDPSPNEGO.mechanismToken(from:))
             guard let nonce = request.clientNonce,
                   nonce.count == 32,
-                  negotiateToken?.starts(with: Data("NTLMSSP\u{0}".utf8)) == true
+                  negotiateToken?.starts(with: Self.ntlmSignature) == true
             else {
                 throw MockKRDPServerError.invalidClientPDU
             }
             if request.negoTokens.last == negotiateToken {
-                transcript.recordCredSSPGate("raw-ntlm-negotiate-token")
+                record(gate: "raw-ntlm-negotiate-token")
             }
-            transcript.recordCredSSPGate("initial-client-nonce")
+            record(gate: "initial-client-nonce")
             clientNonce = nonce
             stage = .authenticate
             return RDPCredSSPTSRequest(
                 version: 6,
-                negoTokens: [RDPSPNEGO.negTokenResponse(responseToken: challengeMessage())]
+                // Windows and FreeRDP-based servers send the raw NTLM challenge.
+                negoTokens: [challengeMessage()]
             ).encoded()
 
         case .authenticate:
-            transcript.recordCredSSPMessage("ntlm-authenticate")
+            record(message: "ntlm-authenticate")
             if let nonce = request.clientNonce {
                 if nonce == clientNonce {
-                    transcript.recordCredSSPGate("authenticate-client-nonce")
+                    record(gate: "authenticate-client-nonce")
                 }
                 clientNonce = nonce
             }
             guard let authenticateToken = request.negoTokens.last else {
                 throw MockKRDPServerError.invalidClientPDU
             }
-            if request.negoTokens.last?.starts(with: Data("NTLMSSP\u{0}".utf8)) == true {
-                transcript.recordCredSSPGate("raw-ntlm-authenticate-token")
+            if authenticateToken.starts(with: Self.ntlmSignature) {
+                record(gate: "raw-ntlm-authenticate-token")
             }
-            let authenticate = try RDPSPNEGO.mechanismToken(from: authenticateToken)
-            try installKeys(from: authenticate)
+            try installKeys(from: RDPSPNEGO.mechanismToken(from: authenticateToken))
             guard let clientPubKeyAuth = request.pubKeyAuth else {
                 throw MockKRDPServerError.invalidClientPDU
             }
-            let binding = try unwrap(clientPubKeyAuth)
-            guard binding == RDPCredSSPPublicKeyBinding.clientServerHash(
+            guard try unwrap(clientPubKeyAuth) == RDPCredSSPPublicKeyBinding.clientServerHash(
                 subjectPublicKey: subjectPublicKey,
                 nonce: clientNonce
             ) else {
                 throw MockKRDPServerError.invalidClientPDU
             }
-            transcript.recordCredSSPGate("nonce-bound-pubkeyauth")
+            record(gate: "nonce-bound-pubkeyauth")
             stage = .credentials
             return try RDPCredSSPTSRequest(
                 version: 6,
@@ -525,7 +423,7 @@ final class MockCredSSPServer {
             ).encoded()
 
         case .credentials:
-            transcript.recordCredSSPMessage("credentials")
+            record(message: "credentials")
             let expectedNonce = request.version >= 5 ? clientNonce : nil
             guard let authInfo = request.authInfo,
                   request.clientNonce == expectedNonce,
@@ -533,13 +431,21 @@ final class MockCredSSPServer {
             else {
                 throw MockKRDPServerError.invalidClientPDU
             }
-            transcript.recordCredSSPGate("credentials-client-nonce")
+            record(gate: "credentials-client-nonce")
             stage = .complete
             return nil
 
         case .complete:
             throw MockKRDPServerError.invalidClientPDU
         }
+    }
+
+    private func record(message: String) {
+        transcript.withLock { $0.credSSPMessages.append(message) }
+    }
+
+    private func record(gate: String) {
+        transcript.withLock { $0.credSSPGates.append(gate) }
     }
 
     private func challengeMessage() -> Data {
@@ -589,28 +495,29 @@ final class MockCredSSPServer {
         }
         let proof = Data(ntResponse.prefix(16))
         let responsePayload = Data(ntResponse.dropFirst(16))
-        let ntlmV2Hash = Self.ntlmV2Hash(credentials: credentials)
+        let ntlmV2Hash = RDPCredSSPNTLMContext.ntowfV2(
+            password: credentials.password,
+            username: credentials.username,
+            domain: credentials.domain ?? ""
+        )
         guard Self.hmacMD5(key: ntlmV2Hash, data: serverChallenge + responsePayload) == proof else {
             throw MockKRDPServerError.invalidClientPDU
         }
-        if ntlmV2TargetInfo(fromResponsePayload: responsePayload).containsNTLMChannelBindings(channelBindingsHash) {
-            transcript.recordCredSSPGate("ntlm-channel-bindings")
+        // NTLMv2_CLIENT_CHALLENGE: the AV pairs start 28 bytes in ([MS-NLMP] 2.2.2.7).
+        if Data(responsePayload.dropFirst(28)).containsNTLMChannelBindings(channelBindingsHash) {
+            record(gate: "ntlm-channel-bindings")
         }
         let keyExchangeKey = Self.hmacMD5(key: ntlmV2Hash, data: proof)
         negotiatedFlags = try readLittleEndianUInt32(authenticate, at: 60)
 
-        let exportedSessionKey: Data
+        var exportedSessionKey = keyExchangeKey
         if negotiatedFlags & Self.negotiateKeyExchange != 0 {
-            let encryptedRandomSessionKey = try readSecurityBuffer(authenticate, at: 52)
-            exportedSessionKey = MockNTLMRC4(key: keyExchangeKey).process(encryptedRandomSessionKey)
-        } else {
-            exportedSessionKey = keyExchangeKey
+            exportedSessionKey = try RDPRC4(key: keyExchangeKey).process(readSecurityBuffer(authenticate, at: 52))
         }
-
         sendSigningKey = Self.md5(exportedSessionKey + Self.serverSigningMagic)
         receiveSigningKey = Self.md5(exportedSessionKey + Self.clientSigningMagic)
-        sendSealingKey = MockNTLMRC4(key: Self.md5(exportedSessionKey + Self.serverSealingMagic))
-        receiveSealingKey = MockNTLMRC4(key: Self.md5(exportedSessionKey + Self.clientSealingMagic))
+        sendSealingKey = RDPRC4(key: Self.md5(exportedSessionKey + Self.serverSealingMagic))
+        receiveSealingKey = RDPRC4(key: Self.md5(exportedSessionKey + Self.clientSealingMagic))
     }
 
     private func wrap(_ message: Data) throws -> Data {
@@ -656,8 +563,7 @@ final class MockCredSSPServer {
         let checksum = negotiatedFlags & Self.negotiateKeyExchange != 0
             ? receiveSealingKey.process(Data(digest.prefix(8)))
             : Data(digest.prefix(8))
-        let expectedSignature = Self.signature(checksum: checksum, sequenceNumber: sequenceNumber)
-        guard signature == expectedSignature else {
+        guard signature == Self.signature(checksum: checksum, sequenceNumber: sequenceNumber) else {
             throw MockKRDPServerError.invalidClientPDU
         }
         receiveSequenceNumber &+= 1
@@ -665,16 +571,15 @@ final class MockCredSSPServer {
     }
 
     private func readSecurityBuffer(_ data: Data, at offset: Int) throws -> Data {
-        let length = Int(try readLittleEndianUInt16(data, at: offset))
-        let bufferOffset = Int(try readLittleEndianUInt32(data, at: offset + 4))
-        return try readData(data, at: bufferOffset, count: length)
+        var cursor = try ByteCursor(readData(data, at: offset, count: 8))
+        let length = try Int(cursor.readLittleEndianUInt16())
+        _ = try cursor.readLittleEndianUInt16()
+        return try readData(data, at: Int(cursor.readLittleEndianUInt32()), count: length)
     }
 
-    private func ntlmV2TargetInfo(fromResponsePayload responsePayload: Data) -> Data {
-        guard responsePayload.count >= 28 else {
-            return Data()
-        }
-        return Data(responsePayload.dropFirst(28))
+    private func readLittleEndianUInt32(_ data: Data, at offset: Int) throws -> UInt32 {
+        var cursor = try ByteCursor(readData(data, at: offset, count: 4))
+        return try cursor.readLittleEndianUInt32()
     }
 
     private func readData(_ data: Data, at offset: Int, count: Int) throws -> Data {
@@ -689,42 +594,10 @@ final class MockCredSSPServer {
         return data.subdata(in: start ..< data.index(start, offsetBy: count))
     }
 
-    private func readLittleEndianUInt16(_ data: Data, at offset: Int) throws -> UInt16 {
-        guard offset >= 0, offset <= data.count - 2 else {
-            throw MockKRDPServerError.invalidClientPDU
-        }
-        return UInt16(data[data.index(data.startIndex, offsetBy: offset)])
-            | UInt16(data[data.index(data.startIndex, offsetBy: offset + 1)]) << 8
-    }
-
-    private func readLittleEndianUInt32(_ data: Data, at offset: Int) throws -> UInt32 {
-        guard offset >= 0, offset <= data.count - 4 else {
-            throw MockKRDPServerError.invalidClientPDU
-        }
-        return UInt32(data[data.index(data.startIndex, offsetBy: offset)])
-            | UInt32(data[data.index(data.startIndex, offsetBy: offset + 1)]) << 8
-            | UInt32(data[data.index(data.startIndex, offsetBy: offset + 2)]) << 16
-            | UInt32(data[data.index(data.startIndex, offsetBy: offset + 3)]) << 24
-    }
-
     private func append(fieldLength: Int, offset: Int, to data: inout Data) {
         data.appendLittleEndianUInt16(UInt16(fieldLength))
         data.appendLittleEndianUInt16(UInt16(fieldLength))
         data.appendLittleEndianUInt32(UInt32(offset))
-    }
-
-    private func utf16LittleEndian(_ value: String) -> Data {
-        var data = Data()
-        for codeUnit in value.utf16 {
-            data.appendLittleEndianUInt16(codeUnit)
-        }
-        return data
-    }
-
-    private static func ntlmV2Hash(credentials: RDPCredentials) -> Data {
-        let ntHash = md4(utf16LittleEndian(credentials.password))
-        let identity = utf16LittleEndian(credentials.username.uppercased() + (credentials.domain ?? ""))
-        return hmacMD5(key: ntHash, data: identity)
     }
 
     private static func sequenceInput(sequenceNumber: UInt32, data: Data) -> Data {
@@ -742,128 +615,12 @@ final class MockCredSSPServer {
         return signature
     }
 
-    private static func utf16LittleEndian(_ value: String) -> Data {
-        var data = Data()
-        for codeUnit in value.utf16 {
-            data.appendLittleEndianUInt16(codeUnit)
-        }
-        return data
-    }
-
-    private static func md4(_ data: Data) -> Data {
-        var message = [UInt8](data)
-        let bitLength = UInt64(message.count) * 8
-        message.append(0x80)
-        while message.count % 64 != 56 {
-            message.append(0)
-        }
-        for shift in stride(from: 0, to: 64, by: 8) {
-            message.append(UInt8((bitLength >> UInt64(shift)) & 0xFF))
-        }
-
-        var a: UInt32 = 0x6745_2301
-        var b: UInt32 = 0xEFCD_AB89
-        var c: UInt32 = 0x98BA_DCFE
-        var d: UInt32 = 0x1032_5476
-
-        for chunkStart in stride(from: 0, to: message.count, by: 64) {
-            var words = [UInt32](repeating: 0, count: 16)
-            for index in 0 ..< 16 {
-                let offset = chunkStart + index * 4
-                words[index] = UInt32(message[offset])
-                    | UInt32(message[offset + 1]) << 8
-                    | UInt32(message[offset + 2]) << 16
-                    | UInt32(message[offset + 3]) << 24
-            }
-
-            let originalA = a
-            let originalB = b
-            let originalC = c
-            let originalD = d
-
-            for index in 0 ..< 16 {
-                let shift = [3, 7, 11, 19][index % 4]
-                switch index % 4 {
-                case 0:
-                    a = rotateLeft(a &+ f(b, c, d) &+ words[index], by: shift)
-                case 1:
-                    d = rotateLeft(d &+ f(a, b, c) &+ words[index], by: shift)
-                case 2:
-                    c = rotateLeft(c &+ f(d, a, b) &+ words[index], by: shift)
-                default:
-                    b = rotateLeft(b &+ f(c, d, a) &+ words[index], by: shift)
-                }
-            }
-
-            let round2Order = [0, 4, 8, 12, 1, 5, 9, 13, 2, 6, 10, 14, 3, 7, 11, 15]
-            for index in 0 ..< 16 {
-                let shift = [3, 5, 9, 13][index % 4]
-                let word = words[round2Order[index]]
-                switch index % 4 {
-                case 0:
-                    a = rotateLeft(a &+ g(b, c, d) &+ word &+ 0x5A82_7999, by: shift)
-                case 1:
-                    d = rotateLeft(d &+ g(a, b, c) &+ word &+ 0x5A82_7999, by: shift)
-                case 2:
-                    c = rotateLeft(c &+ g(d, a, b) &+ word &+ 0x5A82_7999, by: shift)
-                default:
-                    b = rotateLeft(b &+ g(c, d, a) &+ word &+ 0x5A82_7999, by: shift)
-                }
-            }
-
-            let round3Order = [0, 8, 4, 12, 2, 10, 6, 14, 1, 9, 5, 13, 3, 11, 7, 15]
-            for index in 0 ..< 16 {
-                let shift = [3, 9, 11, 15][index % 4]
-                let word = words[round3Order[index]]
-                switch index % 4 {
-                case 0:
-                    a = rotateLeft(a &+ h(b, c, d) &+ word &+ 0x6ED9_EBA1, by: shift)
-                case 1:
-                    d = rotateLeft(d &+ h(a, b, c) &+ word &+ 0x6ED9_EBA1, by: shift)
-                case 2:
-                    c = rotateLeft(c &+ h(d, a, b) &+ word &+ 0x6ED9_EBA1, by: shift)
-                default:
-                    b = rotateLeft(b &+ h(c, d, a) &+ word &+ 0x6ED9_EBA1, by: shift)
-                }
-            }
-
-            a &+= originalA
-            b &+= originalB
-            c &+= originalC
-            d &+= originalD
-        }
-
-        var digest = Data()
-        digest.appendLittleEndianUInt32(a)
-        digest.appendLittleEndianUInt32(b)
-        digest.appendLittleEndianUInt32(c)
-        digest.appendLittleEndianUInt32(d)
-        return digest
-    }
-
     private static func md5(_ data: Data) -> Data {
         Data(Insecure.MD5.hash(data: data))
     }
 
     private static func hmacMD5(key: Data, data: Data) -> Data {
-        let key = SymmetricKey(data: key)
-        return Data(HMAC<Insecure.MD5>.authenticationCode(for: data, using: key))
-    }
-
-    private static func f(_ x: UInt32, _ y: UInt32, _ z: UInt32) -> UInt32 {
-        (x & y) | (~x & z)
-    }
-
-    private static func g(_ x: UInt32, _ y: UInt32, _ z: UInt32) -> UInt32 {
-        (x & y) | (x & z) | (y & z)
-    }
-
-    private static func h(_ x: UInt32, _ y: UInt32, _ z: UInt32) -> UInt32 {
-        x ^ y ^ z
-    }
-
-    private static func rotateLeft(_ value: UInt32, by shift: Int) -> UInt32 {
-        (value << UInt32(shift)) | (value >> UInt32(32 - shift))
+        Data(HMAC<Insecure.MD5>.authenticationCode(for: data, using: SymmetricKey(data: key)))
     }
 
     private static let ntlmSignature = Data("NTLMSSP\u{0}".utf8)
@@ -874,60 +631,10 @@ final class MockCredSSPServer {
     private static let clientSealingMagic = Data("session key to client-to-server sealing key magic constant\u{0}".utf8)
     private static let serverSealingMagic = Data("session key to server-to-client sealing key magic constant\u{0}".utf8)
 
-    private static let negotiateUnicode: UInt32 = 0x0000_0001
-    private static let negotiateRequestTarget: UInt32 = 0x0000_0004
-    private static let negotiateSign: UInt32 = 0x0000_0010
-    private static let negotiateSeal: UInt32 = 0x0000_0020
-    private static let negotiateNTLM: UInt32 = 0x0000_0200
-    private static let negotiateAlwaysSign: UInt32 = 0x0000_8000
-    private static let negotiateExtendedSessionSecurity: UInt32 = 0x0008_0000
-    private static let negotiateTargetInfo: UInt32 = 0x0080_0000
-    private static let negotiateVersion: UInt32 = 0x0200_0000
-    private static let negotiate128: UInt32 = 0x2000_0000
     private static let negotiateKeyExchange: UInt32 = 0x4000_0000
-    private static let negotiate56: UInt32 = 0x8000_0000
-
-    private static let challengeFlags = negotiate56
-        | negotiate128
-        | negotiateAlwaysSign
-        | negotiateExtendedSessionSecurity
-        | negotiateNTLM
-        | negotiateRequestTarget
-        | negotiateUnicode
-        | negotiateTargetInfo
-        | negotiateVersion
-        | negotiateKeyExchange
-        | negotiateSeal
-        | negotiateSign
-}
-
-final class MockNTLMRC4 {
-    private var i = 0
-    private var j = 0
-    private var state = [UInt8](0 ... 255)
-
-    init(key: Data) {
-        precondition(key.isEmpty == false)
-        var j = 0
-        let keyBytes = [UInt8](key)
-        for i in 0 ..< 256 {
-            j = (j + Int(state[i]) + Int(keyBytes[i % keyBytes.count])) & 0xFF
-            state.swapAt(i, j)
-        }
-    }
-
-    func process(_ input: Data) -> Data {
-        var output = Data()
-        output.reserveCapacity(input.count)
-        for byte in input {
-            i = (i + 1) & 0xFF
-            j = (j + Int(state[i])) & 0xFF
-            state.swapAt(i, j)
-            let keyIndex = (Int(state[i]) + Int(state[j])) & 0xFF
-            output.append(byte ^ state[keyIndex])
-        }
-        return output
-    }
+    /// 56, 128, KEY_EXCH, VERSION, TARGET_INFO, EXTENDED_SESSIONSECURITY,
+    /// ALWAYS_SIGN, NTLM, SEAL, SIGN, REQUEST_TARGET and UNICODE ([MS-NLMP] 2.2.2.5).
+    private static let challengeFlags: UInt32 = 0xE288_8235
 }
 
 private final class MockKRDPServerHandler: ChannelInboundHandler {
@@ -951,83 +658,40 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
         case finalizationFontList
         case dynamicCapabilitiesResponse
         case graphicsCreateResponse(Int)
-        case inputClientReady
-        case inputCloseResponse
         case graphicsCapsAdvertise
         case graphicsFrameAcknowledge
         case done
     }
 
+    private let options: MockKRDPServer.Options
     private let tlsContext: NIOSSLContext
-    private let securityProtocol: MockKRDPSecurityProtocol
-    private let graphicsBehavior: MockKRDPGraphicsBehavior
-    private let graphicsCapabilitySelection: MockKRDPGraphicsCapabilitySelection
-    private let autoDetectBehavior: MockKRDPAutoDetectBehavior
-    private let licensingBehavior: MockKRDPLicensingBehavior
-    private let redirectionBehavior: MockKRDPRedirectionBehavior
-    private let finalizationBehavior: MockKRDPFinalizationBehavior
-    private let auxiliaryDynamicChannelBehavior: MockKRDPAuxiliaryDynamicChannelBehavior
-    private let dynamicChannelVersion: UInt16
-    private let clipboardFiles: [RDPClipboardLocalFile]
-    private let remoteClipboardText: String?
-    private let audioEnabled: Bool
-    private let waitForCompatibilityTraffic: Bool
-    private let requireBitmapCodecsCapability: Bool
-    private let skipChannelJoinSupported: Bool
-    private let transcript: MockKRDPServerTranscript
-    private let connectionLog: MockKRDPConnectionLog
+    private let transcript: Locked<MockKRDPServerTranscript>
+    private let connections: Locked<Int>
     private var connectionIndex = 0
     private var stage = Stage.x224
-    private var received = Data()
+    private var received = ClientByteStream()
+    private var hasReactivated = false
+    private var isAwaitingReactivation = false
     private var didReleaseGraphicsHandshake = false
-    private var didCompleteInputReadyClose = false
     private var didReleaseGraphicsFrame = false
     private var credSSPServer: MockCredSSPServer?
 
     init(
+        options: MockKRDPServer.Options,
         tlsContext: NIOSSLContext,
-        securityProtocol: MockKRDPSecurityProtocol,
-        graphicsBehavior: MockKRDPGraphicsBehavior,
-        graphicsCapabilitySelection: MockKRDPGraphicsCapabilitySelection,
-        autoDetectBehavior: MockKRDPAutoDetectBehavior,
-        licensingBehavior: MockKRDPLicensingBehavior,
-        redirectionBehavior: MockKRDPRedirectionBehavior,
-        finalizationBehavior: MockKRDPFinalizationBehavior,
-        auxiliaryDynamicChannelBehavior: MockKRDPAuxiliaryDynamicChannelBehavior,
-        dynamicChannelVersion: UInt16,
-        clipboardFiles: [RDPClipboardLocalFile],
-        remoteClipboardText: String?,
-        audioEnabled: Bool,
-        waitForCompatibilityTraffic: Bool,
-        requireBitmapCodecsCapability: Bool,
-        skipChannelJoinSupported: Bool,
-        transcript: MockKRDPServerTranscript,
-        connectionLog: MockKRDPConnectionLog
+        transcript: Locked<MockKRDPServerTranscript>,
+        connections: Locked<Int>
     ) {
+        self.options = options
         self.tlsContext = tlsContext
-        self.securityProtocol = securityProtocol
-        self.graphicsBehavior = graphicsBehavior
-        self.graphicsCapabilitySelection = graphicsCapabilitySelection
-        self.autoDetectBehavior = autoDetectBehavior
-        self.licensingBehavior = licensingBehavior
-        self.redirectionBehavior = redirectionBehavior
-        self.finalizationBehavior = finalizationBehavior
-        self.auxiliaryDynamicChannelBehavior = auxiliaryDynamicChannelBehavior
-        self.dynamicChannelVersion = dynamicChannelVersion
-        self.clipboardFiles = clipboardFiles
-        self.remoteClipboardText = remoteClipboardText
-        self.audioEnabled = audioEnabled
-        self.waitForCompatibilityTraffic = waitForCompatibilityTraffic
-        self.requireBitmapCodecsCapability = requireBitmapCodecsCapability
-        self.skipChannelJoinSupported = skipChannelJoinSupported
         self.transcript = transcript
-        self.connectionLog = connectionLog
+        self.connections = connections
     }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
         var buffer = unwrapInboundIn(data)
         if let bytes = buffer.readBytes(length: buffer.readableBytes) {
-            received.append(contentsOf: bytes)
+            received.append(bytes)
         }
 
         do {
@@ -1044,14 +708,13 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
 
     private func processAvailablePackets(context: ChannelHandlerContext) throws {
         while true {
-            switch stage {
-            case .credSSP:
-                guard let message = try nextASN1Message() else {
+            if case .credSSP = stage {
+                guard let message = try received.nextCredSSPMessage() else {
                     return
                 }
                 try handleCredSSP(message, context: context)
-            default:
-                guard let packet = nextTPKT() else {
+            } else {
+                guard let packet = try received.nextPacket() else {
                     return
                 }
                 try handle(packet, context: context)
@@ -1059,133 +722,37 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
         }
     }
 
-    private func nextTPKT() -> Data? {
-        guard received.count >= 4 else {
-            return nil
-        }
-        let length = Int(received[received.index(received.startIndex, offsetBy: 2)]) << 8
-            | Int(received[received.index(received.startIndex, offsetBy: 3)])
-        guard length >= 4, received.count >= length else {
-            return nil
-        }
-        let packet = Data(received.prefix(length))
-        received.removeFirst(length)
-        return packet
-    }
-
-    private func nextASN1Message() throws -> Data? {
-        guard received.count >= 2 else {
-            return nil
-        }
-        guard received[received.startIndex] == 0x30 else {
-            throw MockKRDPServerError.invalidClientPDU
-        }
-
-        let firstLengthByte = received[received.index(after: received.startIndex)]
-        let headerLength: Int
-        let payloadLength: Int
-        if firstLengthByte & 0x80 == 0 {
-            headerLength = 2
-            payloadLength = Int(firstLengthByte)
-        } else {
-            let lengthByteCount = Int(firstLengthByte & 0x7F)
-            guard lengthByteCount > 0, lengthByteCount <= 4 else {
-                throw MockKRDPServerError.invalidClientPDU
-            }
-            headerLength = 2 + lengthByteCount
-            guard received.count >= headerLength else {
-                return nil
-            }
-            var length = 0
-            for offset in 0 ..< lengthByteCount {
-                let byte = received[received.index(received.startIndex, offsetBy: 2 + offset)]
-                length = (length << 8) | Int(byte)
-            }
-            payloadLength = length
-        }
-
-        let totalLength = headerLength + payloadLength
-        guard received.count >= totalLength else {
-            return nil
-        }
-        let message = Data(received.prefix(totalLength))
-        received.removeFirst(totalLength)
-        return message
-    }
-
     private func handle(_ packet: Data, context: ChannelHandlerContext) throws {
-        if try handleInputPacketIfPresent(packet, context: context) {
+        if let ultimatum = try? MCSDisconnectProviderUltimatumPDU.parseIfPresent(fromTPKT: packet) {
+            transcript.withLock { $0.disconnectUltimatumReasons.append(ultimatum.reason) }
             return
         }
-        if try handleClipboardPacketIfPresent(packet, context: context) {
-            return
-        }
-        if try handleDeviceRedirectionPacketIfPresent(packet, context: context) {
-            return
-        }
-        if try handleAudioPacketIfPresent(packet, context: context) {
-            return
-        }
-        if try handleDisplayControlPacketIfPresent(packet, context: context) {
-            return
-        }
-        if try handleAuxiliaryDynamicChannelPacketIfPresent(packet, context: context) {
-            return
-        }
-        if try handleDynamicCreateResponseIfPresent(packet, context: context) {
+        if let request = try? mcsSendDataRequest(fromTPKT: packet),
+           request.initiator == MockKRDPConstants.userChannelID,
+           try handleChannelTraffic(request, context: context)
+        {
             return
         }
 
         switch stage {
         case .x224:
             _ = try TPKT.unwrap(packet)
-            connectionIndex = connectionLog.registerConnection()
-            switch securityProtocol {
-            case .tls:
-                writePacket(MockKRDPFixtures.x224ConnectionConfirm(selectedProtocols: .tls), context: context)
-                let tlsHandler = NIOSSLServerHandler(context: tlsContext)
-                try context.channel.pipeline.syncOperations.addHandler(tlsHandler, position: .first)
-                stage = .mcsConnectInitial
-            case let .credSSP(credentials):
-                writePacket(MockKRDPFixtures.x224ConnectionConfirm(selectedProtocols: .credSSP), context: context)
-                let tlsHandler = NIOSSLServerHandler(context: tlsContext)
-                try context.channel.pipeline.syncOperations.addHandler(tlsHandler, position: .first)
-                credSSPServer = try MockCredSSPServer(credentials: credentials, transcript: transcript)
-                stage = .credSSP
-            case let .credSSPWithEarlyUserAuth(credentials, _):
-                writePacket(
-                    MockKRDPFixtures.x224ConnectionConfirm(selectedProtocols: .credSSPWithEarlyUserAuth),
-                    context: context
-                )
-                let tlsHandler = NIOSSLServerHandler(context: tlsContext)
-                try context.channel.pipeline.syncOperations.addHandler(tlsHandler, position: .first)
-                credSSPServer = try MockCredSSPServer(credentials: credentials, transcript: transcript)
-                stage = .credSSP
-            case .rdSTLS:
-                writePacket(MockKRDPFixtures.x224ConnectionConfirm(selectedProtocols: .rdSTLS), context: context)
-                stage = .done
-            case .standard:
-                writePacket(
-                    MockKRDPFixtures.x224ConnectionConfirm(selectedProtocols: RDPSecurityProtocols(rawValue: 0)),
-                    context: context
-                )
-                stage = .done
-            case let .failure(code):
-                writePacket(MockKRDPFixtures.x224ConnectionFailure(code: code), context: context)
-                stage = .done
+            connectionIndex = connections.withLock { count in
+                count += 1
+                return count
             }
+            try answerConnectionRequest(context: context)
 
         case .credSSP:
             throw MockKRDPServerError.invalidClientPDU
 
         case .mcsConnectInitial:
             _ = try X224DataTPDU.unwrap(packet)
-            writePacket(
+            write(
                 MockKRDPFixtures.mcsConnectResponse(
                     clipboardEnabled: clipboardEnabled,
-                    audioEnabled: audioEnabled,
-                    clientRequestedProtocols: clientRequestedProtocols,
-                    skipChannelJoinSupported: skipChannelJoinSupported
+                    audioEnabled: options.audioEnabled,
+                    clientRequestedProtocols: clientRequestedProtocols
                 ),
                 context: context
             )
@@ -1197,337 +764,128 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
 
         case .attachUser:
             _ = try X224DataTPDU.unwrap(packet)
-            writePacket(MockKRDPFixtures.attachUserConfirm(), context: context)
-            stage = skipChannelJoinSupported ? .clientInfo : .channelJoin(0)
+            write(MockKRDPFixtures.attachUserConfirm(), context: context)
+            stage = .channelJoin(0)
 
         case let .channelJoin(index):
             _ = try X224DataTPDU.unwrap(packet)
             let joinChannelIDs = MockKRDPFixtures.joinChannelIDs(
                 clipboardEnabled: clipboardEnabled,
-                audioEnabled: audioEnabled
+                audioEnabled: options.audioEnabled
             )
-            let channelID = joinChannelIDs[index]
-            writePacket(MockKRDPFixtures.channelJoinConfirm(channelID: channelID), context: context)
-            let nextIndex = index + 1
-            stage = nextIndex == joinChannelIDs.count
-                ? .clientInfo
-                : .channelJoin(nextIndex)
+            write(MockKRDPFixtures.channelJoinConfirm(channelID: joinChannelIDs[index]), context: context)
+            stage = index + 1 == joinChannelIDs.count ? .clientInfo : .channelJoin(index + 1)
 
         case .clientInfo:
             try MockKRDPFixtures.expectSendDataRequest(packet, channelID: MockKRDPConstants.ioChannelID)
-            writePacket(MockKRDPFixtures.autoDetectRequest(), context: context)
+            if options.autoDetectBehavior == .noReplyRequestOnly {
+                write(MockKRDPFixtures.autoDetectRequest(requestType: 0x1014), context: context)
+                write(MockKRDPFixtures.licenseValidClient(), context: context)
+                write(MockKRDPFixtures.demandActive(), context: context)
+                stage = .confirmActive
+                break
+            }
+            write(MockKRDPFixtures.autoDetectRequest(), context: context)
             stage = .autoDetectResponse
 
         case .autoDetectResponse:
             try MockKRDPFixtures.expectSendDataRequest(packet, channelID: MockKRDPConstants.messageChannelID)
-            if autoDetectBehavior == .bandwidthMeasure {
-                writePacket(MockKRDPFixtures.autoDetectBandwidthMeasureStop(), context: context)
+            if options.autoDetectBehavior == .bandwidthMeasure {
+                write(MockKRDPFixtures.autoDetectBandwidthMeasureStop(), context: context)
                 stage = .bandwidthMeasureResponse
                 break
             }
-            switch licensingBehavior {
-            case .validClientThenDemandActive, .validClientThenDemandActiveWithMonitorLayout:
-                writePacket(MockKRDPFixtures.licenseValidClient(), context: context)
-                writePacket(MockKRDPFixtures.demandActive(), context: context)
-                if licensingBehavior == .validClientThenDemandActiveWithMonitorLayout {
-                    writePacket(MockKRDPFixtures.monitorLayout(), context: context)
-                }
-                stage = .confirmActive
-            case .demandActiveOnly:
-                writePacket(MockKRDPFixtures.demandActive(), context: context)
-                stage = .confirmActive
-            case .serverLicenseRequest, .serverLicenseRequestWithStoredClientLicense:
-                writePacket(MockKRDPFixtures.serverLicenseRequest(), context: context)
-                stage = licensingBehavior == .serverLicenseRequestWithStoredClientLicense
-                    ? .clientLicenseInformation
-                    : .clientNewLicenseRequest
-            case .serverLicenseRequestX509:
-                writePacket(
-                    MockKRDPFixtures.serverLicenseRequest(
-                        certificatePayload: try MockKRDPTLS.rdpX509CertificateChain()
-                    ),
-                    context: context
-                )
-                stage = .clientNewLicenseRequest
-            }
+            try startLicensing(context: context)
 
         case .bandwidthMeasureResponse:
             let request = try MockKRDPFixtures.expectSendDataRequest(packet, channelID: MockKRDPConstants.messageChannelID)
             try MockKRDPFixtures.expectAutoDetectBandwidthResult(request.userData)
-            switch licensingBehavior {
-            case .validClientThenDemandActive, .validClientThenDemandActiveWithMonitorLayout:
-                writePacket(MockKRDPFixtures.licenseValidClient(), context: context)
-                writePacket(MockKRDPFixtures.demandActive(), context: context)
-                if licensingBehavior == .validClientThenDemandActiveWithMonitorLayout {
-                    writePacket(MockKRDPFixtures.monitorLayout(), context: context)
-                }
-                stage = .confirmActive
-            case .demandActiveOnly:
-                writePacket(MockKRDPFixtures.demandActive(), context: context)
-                stage = .confirmActive
-            case .serverLicenseRequest, .serverLicenseRequestWithStoredClientLicense:
-                writePacket(MockKRDPFixtures.serverLicenseRequest(), context: context)
-                stage = licensingBehavior == .serverLicenseRequestWithStoredClientLicense
-                    ? .clientLicenseInformation
-                    : .clientNewLicenseRequest
-            case .serverLicenseRequestX509:
-                writePacket(
-                    MockKRDPFixtures.serverLicenseRequest(
-                        certificatePayload: try MockKRDPTLS.rdpX509CertificateChain()
-                    ),
-                    context: context
-                )
-                stage = .clientNewLicenseRequest
-            }
+            try startLicensing(context: context)
 
         case .clientNewLicenseRequest:
             let request = try MockKRDPFixtures.expectSendDataRequest(packet, channelID: MockKRDPConstants.ioChannelID)
             try MockKRDPFixtures.expectClientNewLicenseRequest(request.userData)
-            writePacket(MockKRDPFixtures.demandActive(), context: context)
+            // A host in its licensing grace period answers with STATUS_VALID_CLIENT
+            // ([MS-RDPELE] 3.1.5.3); the X.509 variant goes straight to Demand Active.
+            if options.licensingBehavior == .serverLicenseRequest {
+                write(MockKRDPFixtures.licenseValidClient(), context: context)
+            }
+            write(MockKRDPFixtures.demandActive(), context: context)
             stage = .confirmActive
 
         case .clientLicenseInformation:
             let request = try MockKRDPFixtures.expectSendDataRequest(packet, channelID: MockKRDPConstants.ioChannelID)
             try MockKRDPFixtures.expectClientLicenseInformation(request.userData)
-            writePacket(MockKRDPFixtures.demandActive(), context: context)
+            write(MockKRDPFixtures.demandActive(), context: context)
             stage = .confirmActive
 
         case .confirmActive:
             let request = try MockKRDPFixtures.expectSendDataRequest(packet, channelID: MockKRDPConstants.ioChannelID)
-            if requireBitmapCodecsCapability {
+            if options.requireBitmapCodecsCapability {
                 let capabilityTypes = try MockKRDPFixtures.clientConfirmActiveCapabilityTypes(from: request.userData)
                 guard capabilityTypes.contains(0x001D) else {
                     throw MockKRDPServerError.invalidClientPDU
                 }
             }
-            if finalizationBehavior == .saveSessionInfoBeforeSynchronize {
-                writePacket(MockKRDPFixtures.saveSessionInfo(), context: context)
-            }
-            switch finalizationBehavior {
+            switch options.finalizationBehavior {
             case .waitForClientSynchronizeBeforeServerSynchronize:
                 break
+            case .saveSessionInfoBeforeSynchronize:
+                write(MockKRDPFixtures.saveSessionInfo(), context: context)
+                write(MockKRDPFixtures.serverSynchronize(), context: context)
+                write(MockKRDPFixtures.serverControlCooperate(), context: context)
             case .controlCooperateBeforeSynchronize:
-                writePacket(MockKRDPFixtures.serverControlCooperate(), context: context)
-                writePacket(MockKRDPFixtures.serverSynchronize(), context: context)
+                write(MockKRDPFixtures.serverControlCooperate(), context: context)
+                write(MockKRDPFixtures.serverSynchronize(), context: context)
             default:
-                writePacket(MockKRDPFixtures.serverSynchronize(), context: context)
-                writePacket(MockKRDPFixtures.serverControlCooperate(), context: context)
+                write(MockKRDPFixtures.serverSynchronize(), context: context)
+                write(MockKRDPFixtures.serverControlCooperate(), context: context)
             }
             stage = .finalization(0)
 
         case let .finalization(count):
-            let request = try MockKRDPFixtures.expectSendDataRequest(packet, channelID: MockKRDPConstants.ioChannelID)
-            let nextCount = count + 1
-            let requiredCount: Int
-            switch finalizationBehavior {
-            case .grantBeforeFontList,
-                 .saveSessionInfoBeforeSynchronize,
-                 .controlCooperateBeforeSynchronize,
-                 .grantControlWithoutFontMap,
-                 .deactivateAfterFontMap,
-                 .deactivateThenUserRequestedDisconnectAfterFontMap,
-                 .setErrorInfoDeniedThenDeactivateAfterFontMap,
-                 .setErrorInfoLogoffThenDeactivateAfterFontMap,
-                 .userRequestedDisconnectAfterFontMap:
-                requiredCount = 3
-            case .waitForFontListBeforeGrant, .waitForClientSynchronizeBeforeServerSynchronize:
-                requiredCount = 4
-            }
-            if nextCount == 1 {
-                let shareData = try MockKRDPFixtures.clientShareDataPDU(from: request.userData)
-                let targetUser = try MockKRDPFixtures.clientSynchronizeTargetUser(from: request.userData)
-                // Live KRDP / tag 0.1.0 use targetUser 1002; Windows-style mocks use serverUserID.
-                guard shareData?.pduType2 == 0x1F,
-                      targetUser == MockKRDPConstants.serverUserID || targetUser == 1002
-                else {
-                    throw MockKRDPServerError.invalidClientPDU
-                }
-                guard finalizationBehavior == .waitForClientSynchronizeBeforeServerSynchronize else {
-                    stage = .finalization(nextCount)
-                    break
-                }
-                writePacket(MockKRDPFixtures.serverSynchronize(), context: context)
-                writePacket(MockKRDPFixtures.serverControlCooperate(), context: context)
-            }
-            if nextCount == 4 {
-                let shareData = try MockKRDPFixtures.clientShareDataPDU(from: request.userData)
-                guard shareData?.pduType2 == 0x27 else {
-                    throw MockKRDPServerError.invalidClientPDU
-                }
-            }
-            if nextCount == requiredCount {
-                if finalizationBehavior == .grantControlWithoutFontMap {
-                    sendControlGrantedWithoutFontMap(context: context)
-                    stage = .finalizationFontList
-                } else {
-                    sendFinalizationResponses(context: context)
-                    stage = finalizationBehavior == .waitForFontListBeforeGrant
-                        || finalizationBehavior == .waitForClientSynchronizeBeforeServerSynchronize
-                        ? .dynamicCapabilitiesResponse
-                        : .finalizationFontList
-                }
-            } else {
-                stage = .finalization(nextCount)
-            }
+            try receiveClientFinalization(packet, count: count + 1, context: context)
 
         case .finalizationFontList:
             try MockKRDPFixtures.expectSendDataRequest(packet, channelID: MockKRDPConstants.ioChannelID)
-            stage = .dynamicCapabilitiesResponse
+            stage = isAwaitingReactivation ? .confirmActive : .dynamicCapabilitiesResponse
+            isAwaitingReactivation = false
 
         case .dynamicCapabilitiesResponse:
             _ = try MockKRDPFixtures.staticVirtualChannelPayload(from: packet)
-            if auxiliaryDynamicChannelBehavior == .windowsInputAndCursor,
-               let inputRequest = auxiliaryDynamicChannelBehavior.createRequests.first
-            {
-                writePacket(MockKRDPFixtures.dynamicCreateRequest(
-                    channelID: inputRequest.channelID,
-                    channelName: inputRequest.channelName
-                ), context: context)
-                writePacket(MockKRDPFixtures.inputServerReady(), context: context)
-                stage = .graphicsCreateResponse(1)
-                break
-            }
-            for createRequest in auxiliaryDynamicChannelBehavior.createRequests {
-                writePacket(MockKRDPFixtures.dynamicCreateRequest(
+            let auxiliaryChannels = options.auxiliaryDynamicChannelBehavior.createRequests
+            for createRequest in auxiliaryChannels {
+                write(MockKRDPFixtures.dynamicCreateRequest(
                     channelID: createRequest.channelID,
                     channelName: createRequest.channelName
                 ), context: context)
             }
-            if auxiliaryDynamicChannelBehavior == .fragmentedGraphicsCreate {
+            if options.auxiliaryDynamicChannelBehavior == .fragmentedGraphicsCreate {
                 for createPacket in MockKRDPFixtures.fragmentedGraphicsCreateRequest() {
-                    writePacket(createPacket, context: context)
+                    write(createPacket, context: context)
                 }
             } else {
-                writePacket(MockKRDPFixtures.graphicsCreateRequest(), context: context)
+                write(MockKRDPFixtures.graphicsCreateRequest(), context: context)
             }
-            stage = .graphicsCreateResponse(auxiliaryDynamicChannelBehavior.createRequests.count + 1)
+            stage = .graphicsCreateResponse(auxiliaryChannels.count + 1)
 
         case let .graphicsCreateResponse(remaining):
-            _ = try MockKRDPFixtures.staticVirtualChannelPayload(from: packet)
-            stage = remaining > 1
-                ? .graphicsCreateResponse(remaining - 1)
-                : auxiliaryDynamicChannelBehavior == .windowsInputAndCursor && !didCompleteInputReadyClose
-                    ? .inputClientReady
-                    : .graphicsCapsAdvertise
-
-        case .inputClientReady:
             let staticPayload = try MockKRDPFixtures.staticVirtualChannelPayload(from: packet)
-            guard let serverReady = try RDPInputServerReadyPDU.parseIfPresent(
-                from: MockKRDPFixtures.inputServerReadyPayload()
-            ) else {
-                throw MockKRDPServerError.invalidClientPDU
+            if let response = MockKRDPFixtures.dynamicCreateResponse(staticPayload) {
+                transcript.withLock { $0.dynamicCreateStatuses[response.channelID] = response.status }
             }
-            guard let dataPDU = try RDPDynamicVirtualChannelDataPDU.parseIfPresent(from: staticPayload),
-                  dataPDU.channelID == MockKRDPConstants.inputDynamicChannelID,
-                  dataPDU.payload == RDPInputClientReadyPDU(serverReady: serverReady).encoded()
-            else {
-                throw MockKRDPServerError.invalidClientPDU
-            }
-            writePacket(MockKRDPFixtures.inputSuspend(), context: context)
-            writePacket(MockKRDPFixtures.inputResume(), context: context)
-            writePacket(MockKRDPFixtures.dynamicCloseRequest(channelID: MockKRDPConstants.inputDynamicChannelID), context: context)
-            stage = .inputCloseResponse
-
-        case .inputCloseResponse:
-            let staticPayload = try MockKRDPFixtures.staticVirtualChannelPayload(from: packet)
-            guard let closePDU = try RDPDynamicVirtualChannelClosePDU.parseIfPresent(from: staticPayload),
-                  closePDU.channelID == MockKRDPConstants.inputDynamicChannelID
-            else {
-                throw MockKRDPServerError.invalidClientPDU
-            }
-            didCompleteInputReadyClose = true
-            let remainingAuxiliaryCreates = auxiliaryDynamicChannelBehavior.createRequests.dropFirst()
-            for createRequest in remainingAuxiliaryCreates {
-                writePacket(MockKRDPFixtures.dynamicCreateRequest(
-                    channelID: createRequest.channelID,
-                    channelName: createRequest.channelName
-                ), context: context)
-            }
-            if auxiliaryDynamicChannelBehavior == .windowsInputAndCursor {
-                writePacket(MockKRDPFixtures.audioInputVersion(), context: context)
-                writePacket(MockKRDPFixtures.audioInputFormats(), context: context)
-                writePacket(MockKRDPFixtures.audioInputOpen(), context: context)
-            }
-            writePacket(MockKRDPFixtures.graphicsCreateRequest(), context: context)
-            stage = .graphicsCreateResponse(remainingAuxiliaryCreates.count + 1)
+            stage = remaining > 1 ? .graphicsCreateResponse(remaining - 1) : .graphicsCapsAdvertise
 
         case .graphicsCapsAdvertise:
-            let staticPayload = try MockKRDPFixtures.staticVirtualChannelPayload(from: packet)
-            if redirectionBehavior == .redirectFirstConnection, connectionIndex == 1 {
-                writePacket(MockKRDPFixtures.serverRedirection(), context: context)
-                stage = .done
-                break
-            }
-            let dataPDU = try RDPDynamicVirtualChannelDataPDU.parseIfPresent(from: staticPayload)
-            let advertise = try dataPDU.flatMap {
-                try RDPGFXCapsAdvertisePDU.parseIfPresent(from: $0.payload)
-            }
-            let selectedCapability = graphicsCapabilitySelection.selectedCapability(from: advertise)
-            if graphicsBehavior == .sendCompressedCapsConfirmFirstFrame {
-                writePacket(
-                    MockKRDPFixtures.compressedGraphicsCapsConfirmFirst(capability: selectedCapability),
-                    context: context
-                )
-            } else if graphicsBehavior == .sendFragmentedCompressedCapsConfirmFirstFrame {
-                for packet in MockKRDPFixtures.fragmentedCompressedGraphicsCapsConfirmFirst(
-                    capability: selectedCapability
-                ) {
-                    writePacket(packet, context: context)
-                }
-            } else if graphicsBehavior == .stallAfterFragmentedCapsConfirm {
-                writePacket(
-                    MockKRDPFixtures.incompleteCompressedGraphicsCapsConfirmFirst(capability: selectedCapability),
-                    context: context
-                )
-                stage = .done
-                break
-            } else {
-                writePacket(MockKRDPFixtures.graphicsCapsConfirm(capability: selectedCapability), context: context)
-            }
-            if waitForCompatibilityTraffic {
-                writePacket(MockKRDPFixtures.displayControlCreateRequest(), context: context)
-                writePacket(MockKRDPFixtures.displayControlCaps(), context: context)
-                if audioEnabled {
-                    writePacket(MockKRDPFixtures.audioCreateRequest(), context: context)
-                    writePacket(MockKRDPFixtures.audioFormats(), context: context)
-                    writePacket(MockKRDPFixtures.audioTraining(), context: context)
-                    writePacket(MockKRDPFixtures.audioWave2(), context: context)
-                }
-                maybeReleaseCompatibilityGraphicsFrame(context: context)
-                break
-            }
-            switch graphicsBehavior {
-            case .sendFirstFrame,
-                 .sendPointerUpdatesBeforeFirstFrame,
-                 .sendCompressedCapsConfirmFirstFrame,
-                 .sendFragmentedCompressedCapsConfirmFirstFrame,
-                 .sendFragmentedBitmapCompositionFrame,
-                 .sendClearCodecBandsFrame,
-                 .sendCAVideoRemoteFXFrame,
-                 .sendGnomeRemoteDesktopCAPROGRESSIVEFrame,
-                 .sendVideoBeforeBitmapCompositionFrame,
-                 .sendMultipleVideoUpdatesInFrame,
-                 .sendMultipleBitmapSurfacesInFrame,
-                 .sendMalformedAVCFrame,
-                 .sendInvalidGraphicsPDU,
-                 .sendCompressedCAVideoRemoteFXFrame,
-                 .sendUnsupportedCompressedDynamicData,
-                 .sendSoftSyncBeforeFrame,
-                 .sendUnknownCloseBeforeFrame,
-                 .closeAfterFirstFrame,
-                 .setErrorInfoLogoffBeforeFrame:
-                releaseGraphicsFrame(context: context)
-                stage = .graphicsFrameAcknowledge
-            case .sendEmptyFrameThenStall:
-                writePacket(MockKRDPFixtures.graphicsEmptyFrameUpdate(), context: context)
-                stage = .graphicsFrameAcknowledge
-            case .stallAfterCapsConfirm, .stallAfterFragmentedCapsConfirm:
-                stage = .done
-            }
+            try answerGraphicsCapsAdvertise(packet, context: context)
 
         case .graphicsFrameAcknowledge:
             _ = try MockKRDPFixtures.staticVirtualChannelPayload(from: packet)
-            if graphicsBehavior == .closeAfterFirstFrame {
+            if options.graphicsBehavior == .setErrorInfoThenCloseAfterFirstFrame {
+                // ERRINFO_DISCONNECTED_BY_OTHERCONNECTION, then TCP close.
+                write(MockKRDPFixtures.setErrorInfo(0x0000_0005), context: context)
+            }
+            if [.closeAfterFirstFrame, .setErrorInfoThenCloseAfterFirstFrame].contains(options.graphicsBehavior) {
                 context.close(promise: nil)
             }
             stage = .done
@@ -1537,33 +895,190 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
         }
     }
 
+    private func answerConnectionRequest(context: ChannelHandlerContext) throws {
+        let selectedProtocols: RDPSecurityProtocols
+        switch options.securityProtocol {
+        case .tls:
+            selectedProtocols = .tls
+        case let .credSSP(credentials):
+            selectedProtocols = .credSSP
+            credSSPServer = try MockCredSSPServer(credentials: credentials, transcript: transcript)
+        case let .credSSPWithEarlyUserAuth(credentials, _):
+            selectedProtocols = .credSSPWithEarlyUserAuth
+            credSSPServer = try MockCredSSPServer(credentials: credentials, transcript: transcript)
+        case .rdSTLS:
+            write(MockKRDPFixtures.x224ConnectionConfirm(selectedProtocols: .rdSTLS), context: context)
+            stage = .done
+            return
+        case .standard:
+            write(MockKRDPFixtures.x224ConnectionConfirm(selectedProtocols: []), context: context)
+            stage = .done
+            return
+        case let .failure(code):
+            write(MockKRDPFixtures.x224ConnectionFailure(code: code), context: context)
+            stage = .done
+            return
+        }
+        write(MockKRDPFixtures.x224ConnectionConfirm(selectedProtocols: selectedProtocols), context: context)
+        try context.channel.pipeline.syncOperations.addHandler(NIOSSLServerHandler(context: tlsContext), position: .first)
+        stage = credSSPServer == nil ? .mcsConnectInitial : .credSSP
+    }
+
+    private func startLicensing(context: ChannelHandlerContext) throws {
+        switch options.licensingBehavior {
+        case .validClientThenDemandActive where options.redirectionBehavior == .redirectInsteadOfDemandActive
+            && connectionIndex == 1:
+            write(MockKRDPFixtures.licenseValidClient(), context: context)
+            write(MockKRDPFixtures.serverRedirection(), context: context)
+            stage = .done
+        case .validClientThenDemandActive, .validClientThenDemandActiveWithMonitorLayout:
+            write(MockKRDPFixtures.licenseValidClient(), context: context)
+            write(MockKRDPFixtures.demandActive(), context: context)
+            if options.licensingBehavior == .validClientThenDemandActiveWithMonitorLayout {
+                write(MockKRDPFixtures.monitorLayout(), context: context)
+            }
+            stage = .confirmActive
+        case .demandActiveOnly:
+            write(MockKRDPFixtures.demandActive(), context: context)
+            stage = .confirmActive
+        case .serverLicenseRequest:
+            write(MockKRDPFixtures.serverLicenseRequest(), context: context)
+            stage = .clientNewLicenseRequest
+        case .serverLicenseRequestWithStoredClientLicense:
+            write(MockKRDPFixtures.serverLicenseRequest(), context: context)
+            stage = .clientLicenseInformation
+        case .serverLicenseRequestX509:
+            write(
+                MockKRDPFixtures.serverLicenseRequest(certificatePayload: try MockKRDPTLS.rdpX509CertificateChain()),
+                context: context
+            )
+            stage = .clientNewLicenseRequest
+        case .noLicenseServerError:
+            write(MockKRDPFixtures.licenseError(code: 0x0000_0006, stateTransition: 0x0000_0001), context: context)
+            stage = .done
+        case .disconnectInsteadOfLicensing:
+            write(MockKRDPFixtures.disconnectProviderUltimatum(), context: context)
+            stage = .done
+        }
+    }
+
+    /// The client's Synchronize, Cooperate, Request Control and Font List
+    /// ([MS-RDPBCGR] 1.3.1.1); `count` is the number received so far.
+    private func receiveClientFinalization(_ packet: Data, count: Int, context: ChannelHandlerContext) throws {
+        let request = try MockKRDPFixtures.expectSendDataRequest(packet, channelID: MockKRDPConstants.ioChannelID)
+        let behavior = options.finalizationBehavior
+        let waitsForFontList = [
+            .waitForFontListBeforeGrant,
+            .waitForClientSynchronizeBeforeServerSynchronize,
+        ].contains(behavior)
+        if count == 1 {
+            // The client targets the Demand Active pduSource ([MS-RDPBCGR] 3.2.5.3.13.1).
+            guard try MockKRDPFixtures.clientShareDataPDU(from: request.userData)?.pduType2 == 0x1F,
+                  try MockKRDPFixtures.clientSynchronizeTargetUser(from: request.userData)
+                  == MockKRDPConstants.serverUserID
+            else {
+                throw MockKRDPServerError.invalidClientPDU
+            }
+            if behavior == .waitForClientSynchronizeBeforeServerSynchronize {
+                write(MockKRDPFixtures.serverSynchronize(), context: context)
+                write(MockKRDPFixtures.serverControlCooperate(), context: context)
+            }
+        }
+        if count == 4, try MockKRDPFixtures.clientShareDataPDU(from: request.userData)?.pduType2 != 0x27 {
+            throw MockKRDPServerError.invalidClientPDU
+        }
+        guard count == (waitsForFontList ? 4 : 3) else {
+            stage = .finalization(count)
+            return
+        }
+        if behavior == .grantControlWithoutFontMap {
+            write(MockKRDPFixtures.controlGranted(), context: context)
+            for _ in 0 ..< 7 {
+                write(MockKRDPFixtures.saveSessionInfo(), context: context)
+            }
+            stage = .finalizationFontList
+            return
+        }
+        sendFinalizationResponses(context: context)
+        stage = waitsForFontList ? .dynamicCapabilitiesResponse : .finalizationFontList
+    }
+
+    private func answerGraphicsCapsAdvertise(_ packet: Data, context: ChannelHandlerContext) throws {
+        let staticPayload = try MockKRDPFixtures.staticVirtualChannelPayload(from: packet)
+        if options.redirectionBehavior == .redirectFirstConnection, connectionIndex == 1 {
+            write(MockKRDPFixtures.serverRedirection(), context: context)
+            stage = .done
+            return
+        }
+        let advertise = try RDPDynamicVirtualChannelDataPDU.parseIfPresent(from: staticPayload).flatMap {
+            try RDPGFXCapsAdvertisePDU.parseIfPresent(from: $0.payload)
+        }
+        let capability = options.graphicsCapabilitySelection.selectedCapability(from: advertise)
+        switch options.graphicsBehavior {
+        case .sendCompressedCapsConfirmFirstFrame:
+            write(MockKRDPFixtures.compressedGraphicsCapsConfirmFirst(capability: capability), context: context)
+        case .sendFragmentedCompressedCapsConfirmFirstFrame:
+            for packet in MockKRDPFixtures.fragmentedCompressedGraphicsCapsConfirmFirst(capability: capability) {
+                write(packet, context: context)
+            }
+        case .stallAfterFragmentedCapsConfirm:
+            write(
+                MockKRDPFixtures.fragmentedCompressedGraphicsCapsConfirmFirst(capability: capability)[0],
+                context: context
+            )
+            stage = .done
+            return
+        default:
+            write(MockKRDPFixtures.graphicsCapsConfirm(capability: capability), context: context)
+        }
+        if options.waitForCompatibilityTraffic {
+            write(MockKRDPFixtures.displayControlCreateRequest(), context: context)
+            write(MockKRDPFixtures.displayControlCaps(), context: context)
+            if options.audioEnabled {
+                write(MockKRDPFixtures.audioCreateRequest(), context: context)
+                write(MockKRDPFixtures.audioFormats(), context: context)
+                write(MockKRDPFixtures.audioTraining(), context: context)
+                write(MockKRDPFixtures.audioWave2(), context: context)
+            }
+            maybeReleaseCompatibilityGraphicsFrame(context: context)
+            return
+        }
+        switch options.graphicsBehavior {
+        case .sendEmptyFrameThenStall:
+            write(MockKRDPFixtures.graphicsEmptyFrameUpdate(), context: context)
+            stage = .graphicsFrameAcknowledge
+        default:
+            releaseGraphicsFrame(context: context)
+        }
+    }
+
     private func handleCredSSP(_ message: Data, context: ChannelHandlerContext) throws {
         guard let credSSPServer else {
             throw MockKRDPServerError.invalidClientPDU
         }
 
-        let response = try credSSPServer.handle(message)
-        if let response {
-            writeRaw(response, context: context)
+        if let response = try credSSPServer.handle(message) {
+            write(response, context: context)
         }
-        if credSSPServer.isComplete {
-            if case let .credSSPWithEarlyUserAuth(_, authorizationResult) = securityProtocol {
-                var result = Data()
-                result.appendLittleEndianUInt32(authorizationResult.rawValue)
-                writeRaw(result, context: context)
-                stage = authorizationResult == .success ? .mcsConnectInitial : .done
-            } else {
-                stage = .mcsConnectInitial
-            }
+        guard credSSPServer.isComplete else {
+            return
+        }
+        if case let .credSSPWithEarlyUserAuth(_, authorizationResult) = options.securityProtocol {
+            var result = Data()
+            result.appendLittleEndianUInt32(authorizationResult.rawValue)
+            write(result, context: context)
+            stage = authorizationResult == .success ? .mcsConnectInitial : .done
+        } else {
+            stage = .mcsConnectInitial
         }
     }
 
     private var clipboardEnabled: Bool {
-        clipboardFiles.isEmpty == false || remoteClipboardText != nil
+        options.clipboardFiles.isEmpty == false || options.remoteClipboardText != nil
     }
 
     private var clientRequestedProtocols: RDPSecurityProtocols {
-        switch securityProtocol {
+        switch options.securityProtocol {
         case .credSSPWithEarlyUserAuth:
             [.tls, .credSSP, .credSSPWithEarlyUserAuth]
         default:
@@ -1571,232 +1086,149 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
         }
     }
 
-    private func handleInputPacketIfPresent(_ packet: Data, context: ChannelHandlerContext) throws -> Bool {
-        guard let request = try? MockKRDPFixtures.clientSendDataRequest(from: packet),
-              request.initiator == MockKRDPConstants.userChannelID,
-              request.channelID == MockKRDPConstants.ioChannelID,
-              let shareData = try MockKRDPFixtures.clientShareDataPDU(from: request.userData),
-              shareData.pduType2 == 0x1C
-        else {
+    // MARK: Channel traffic at any stage
+
+    /// Handles input and virtual channel traffic; returns false for anything
+    /// that belongs to the connection sequence.
+    private func handleChannelTraffic(_ request: MockMCSSendDataRequest, context: ChannelHandlerContext) throws -> Bool {
+        switch request.channelID {
+        case MockKRDPConstants.ioChannelID:
+            guard let shareData = try MockKRDPFixtures.clientShareDataPDU(from: request.userData) else {
+                return false
+            }
+            switch shareData.pduType2 {
+            case 0x1C:
+                let events = try MockKRDPFixtures.inputEvents(from: shareData.payload)
+                transcript.withLock { $0.inputEvents += events }
+            case 0x38:
+                var cursor = ByteCursor(shareData.payload)
+                let frameID = try cursor.readLittleEndianUInt32()
+                transcript.withLock { $0.frameAcknowledgeIDs.append(frameID) }
+            default:
+                return false
+            }
+        case MockKRDPConstants.clipboardChannelID where clipboardEnabled:
+            try handleClipboard(completeStaticChannelPDU(request), context: context)
+            return true
+        case MockKRDPConstants.deviceRedirectionChannelID where options.audioEnabled:
+            let pdu = try RDPDeviceRedirectionPDU.parse(from: completeStaticChannelPDU(request).payload)
+            transcript.withLock { $0.deviceRedirectionClientMessages.append(pdu.typeName) }
+        case MockKRDPConstants.dynamicChannelID where options.audioEnabled || options.waitForCompatibilityTraffic:
+            let staticPDU = try RDPStaticVirtualChannelPDU.parse(
+                fromUserData: request.userData,
+                maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumPayloadByteCount
+            )
+            guard staticPDU.isComplete, try handleDynamicChannelTraffic(staticPDU) else {
+                return false
+            }
+        default:
             return false
         }
-
-        transcript.recordInputEvents(try MockKRDPFixtures.inputEvents(from: shareData.payload))
         maybeReleaseCompatibilityGraphicsFrame(context: context)
         return true
     }
 
-    private func handleClipboardPacketIfPresent(_ packet: Data, context: ChannelHandlerContext) throws -> Bool {
-        guard clipboardEnabled,
-              let request = try? MockKRDPFixtures.clientSendDataRequest(from: packet),
-              request.initiator == MockKRDPConstants.userChannelID,
-              request.channelID == MockKRDPConstants.clipboardChannelID
-        else {
-            return false
-        }
-
-        let staticPDU = try RDPStaticVirtualChannelPDU.parse(fromUserData: request.userData)
-        guard staticPDU.isComplete else {
+    private func completeStaticChannelPDU(_ request: MockMCSSendDataRequest) throws -> RDPStaticVirtualChannelPDU {
+        let pdu = try RDPStaticVirtualChannelPDU.parse(
+            fromUserData: request.userData,
+            maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumPayloadByteCount
+        )
+        guard pdu.isComplete else {
             throw MockKRDPServerError.invalidClientPDU
         }
+        return pdu
+    }
 
+    /// Records the audio, display control and create-response traffic that
+    /// `waitForCompatibilityTraffic` waits for.
+    private func handleDynamicChannelTraffic(_ staticPDU: RDPStaticVirtualChannelPDU) throws -> Bool {
+        let payload = staticPDU.payload
+        if options.waitForCompatibilityTraffic, MockKRDPFixtures.isDynamicCreateResponse(payload, channelIDs: [
+            MockKRDPConstants.displayControlDynamicChannelID,
+            MockKRDPConstants.audioDynamicChannelID,
+        ]) {
+            transcript.withLock { $0.dynamicCreateResponseStaticFlags.append(staticPDU.flags) }
+            return true
+        }
+        guard let dataPDU = try RDPDynamicVirtualChannelDataPDU.parseIfPresent(from: payload) else {
+            return false
+        }
+        switch dataPDU.channelID {
+        case MockKRDPConstants.audioDynamicChannelID where options.audioEnabled:
+            let audioPDU = try RDPAudioPDU.parse(from: dataPDU.payload)
+            transcript.withLock {
+                $0.audioDynamicStaticFlags.append(staticPDU.flags)
+                $0.audioClientMessages.append(.summarize(audioPDU))
+            }
+        case MockKRDPConstants.displayControlDynamicChannelID where options.waitForCompatibilityTraffic:
+            guard let layout = try MockKRDPFixtures.displayControlLayoutSummary(from: dataPDU.payload) else {
+                return false
+            }
+            transcript.withLock {
+                $0.displayControlLayouts.append(layout)
+                $0.displayControlStaticFlags.append(staticPDU.flags)
+            }
+        default:
+            return false
+        }
+        return true
+    }
+
+    private func handleClipboard(_ staticPDU: RDPStaticVirtualChannelPDU, context: ChannelHandlerContext) throws {
         let clipboardPDU = try RDPClipboardPDU.parse(from: staticPDU.payload)
-        transcript.recordClipboard(flags: staticPDU.flags, message: .summarize(clipboardPDU))
+        transcript.withLock {
+            $0.clipboardStaticFlags.append(staticPDU.flags)
+            $0.clientClipboardMessages.append(.summarize(clipboardPDU))
+        }
         if let response = try RDPClipboardFormatDataResponsePDU.parseIfPresent(from: clipboardPDU),
            response.ok,
            let text = try? response.decodedUnicodeText()
         {
-            transcript.recordLocalClipboardText(text)
+            transcript.withLock { $0.receivedLocalClipboardText = text }
             maybeReleaseCompatibilityGraphicsFrame(context: context)
-            return true
-        }
-        if let request = try RDPClipboardFormatDataRequestPDU.parseIfPresent(from: clipboardPDU) {
-            let response = clipboardFormatDataResponse(for: request)
-            writePacket(MockKRDPFixtures.clipboardPacket(response.encoded()), context: context)
-            return true
-        }
-
-        if let formatList = try RDPClipboardFormatListPDU.parseIfPresent(from: clipboardPDU),
-           formatList.formatIDs.contains(RDPClipboardFormatID.unicodeText)
+        } else if let request = try RDPClipboardFormatDataRequestPDU.parseIfPresent(from: clipboardPDU) {
+            for chunk in MockKRDPFixtures.clipboardPackets(clipboardFormatDataResponse(for: request).encoded()) {
+                write(chunk, context: context)
+            }
+        } else if let formatList = try RDPClipboardFormatListPDU.parseIfPresent(from: clipboardPDU),
+                  formatList.formatIDs.contains(RDPClipboardFormatID.unicodeText)
         {
-            writePacket(MockKRDPFixtures.clipboardFormatListResponse(), context: context)
-            writePacket(MockKRDPFixtures.clipboardUnicodeTextRequest(), context: context)
-            return true
-        }
-
-        if let request = try RDPClipboardFileContentsRequestPDU.parseIfPresent(from: clipboardPDU) {
-            let response = clipboardFileContentsResponse(for: request)
-            writePacket(MockKRDPFixtures.clipboardPacket(response.encoded()), context: context)
+            write(MockKRDPFixtures.clipboardFormatListResponse(), context: context)
+            write(MockKRDPFixtures.clipboardUnicodeTextRequest(), context: context)
+        } else if let request = try RDPClipboardFileContentsRequestPDU.parseIfPresent(from: clipboardPDU) {
+            write(MockKRDPFixtures.clipboardPacket(clipboardFileContentsResponse(for: request).encoded()), context: context)
             if request.flags & RDPClipboardFileContentsFlags.range != 0 {
                 releaseGraphicsHandshake(context: context)
             }
-            return true
         }
-
-        return true
-    }
-
-    private func handleDeviceRedirectionPacketIfPresent(
-        _ packet: Data,
-        context: ChannelHandlerContext
-    ) throws -> Bool {
-        guard audioEnabled,
-              let request = try? MockKRDPFixtures.clientSendDataRequest(from: packet),
-              request.initiator == MockKRDPConstants.userChannelID,
-              request.channelID == MockKRDPConstants.deviceRedirectionChannelID
-        else {
-            return false
-        }
-
-        let staticPDU = try RDPStaticVirtualChannelPDU.parse(fromUserData: request.userData)
-        guard staticPDU.isComplete else {
-            throw MockKRDPServerError.invalidClientPDU
-        }
-        let pdu = try RDPDeviceRedirectionPDU.parse(from: staticPDU.payload)
-        transcript.recordDeviceRedirectionMessage(pdu.typeName)
-        maybeReleaseCompatibilityGraphicsFrame(context: context)
-        return true
-    }
-
-    private func handleAudioPacketIfPresent(_ packet: Data, context: ChannelHandlerContext) throws -> Bool {
-        guard audioEnabled,
-              let request = try? MockKRDPFixtures.clientSendDataRequest(from: packet),
-              request.initiator == MockKRDPConstants.userChannelID,
-              request.channelID == MockKRDPConstants.dynamicChannelID
-        else {
-            return false
-        }
-
-        let staticPDU = try RDPStaticVirtualChannelPDU.parse(fromUserData: request.userData)
-        guard staticPDU.isComplete,
-              let dataPDU = try RDPDynamicVirtualChannelDataPDU.parseIfPresent(from: staticPDU.payload),
-              dataPDU.channelID == MockKRDPConstants.audioDynamicChannelID
-        else {
-            return false
-        }
-
-        let audioPDU = try RDPAudioPDU.parse(from: dataPDU.payload)
-        transcript.recordAudioDynamicFlags(staticPDU.flags)
-        transcript.recordAudioMessage(.summarize(audioPDU))
-        maybeReleaseCompatibilityGraphicsFrame(context: context)
-        return true
-    }
-
-    private func handleDisplayControlPacketIfPresent(
-        _ packet: Data,
-        context: ChannelHandlerContext
-    ) throws -> Bool {
-        guard waitForCompatibilityTraffic,
-              let request = try? MockKRDPFixtures.clientSendDataRequest(from: packet),
-              request.initiator == MockKRDPConstants.userChannelID,
-              request.channelID == MockKRDPConstants.dynamicChannelID
-        else {
-            return false
-        }
-
-        let staticPDU = try RDPStaticVirtualChannelPDU.parse(fromUserData: request.userData)
-        guard staticPDU.isComplete,
-              let dataPDU = try RDPDynamicVirtualChannelDataPDU.parseIfPresent(from: staticPDU.payload),
-              dataPDU.channelID == MockKRDPConstants.displayControlDynamicChannelID,
-              let layout = try MockKRDPFixtures.displayControlLayoutSummary(from: dataPDU.payload)
-        else {
-            return false
-        }
-
-        transcript.recordDisplayControlLayout(layout, flags: staticPDU.flags)
-        maybeReleaseCompatibilityGraphicsFrame(context: context)
-        return true
-    }
-
-    private func handleDynamicCreateResponseIfPresent(
-        _ packet: Data,
-        context _: ChannelHandlerContext
-    ) throws -> Bool {
-        guard waitForCompatibilityTraffic,
-              let request = try? MockKRDPFixtures.clientSendDataRequest(from: packet),
-              request.initiator == MockKRDPConstants.userChannelID,
-              request.channelID == MockKRDPConstants.dynamicChannelID
-        else {
-            return false
-        }
-
-        let staticPDU = try RDPStaticVirtualChannelPDU.parse(fromUserData: request.userData)
-        guard staticPDU.isComplete,
-              MockKRDPFixtures.isDynamicCreateResponse(
-                  staticPDU.payload,
-                  channelIDs: [
-                      MockKRDPConstants.displayControlDynamicChannelID,
-                      MockKRDPConstants.audioDynamicChannelID,
-                  ]
-              )
-        else {
-            return false
-        }
-
-        transcript.recordDynamicCreateResponseFlags(staticPDU.flags)
-        return true
-    }
-
-    private func handleAuxiliaryDynamicChannelPacketIfPresent(
-        _ packet: Data,
-        context _: ChannelHandlerContext
-    ) throws -> Bool {
-        let auxiliaryChannelsByID = Dictionary(
-            uniqueKeysWithValues: auxiliaryDynamicChannelBehavior.createRequests
-                .map { ($0.channelID, $0.channelName) }
-        )
-        guard auxiliaryChannelsByID.isEmpty == false,
-              let request = try? MockKRDPFixtures.clientSendDataRequest(from: packet),
-              request.initiator == MockKRDPConstants.userChannelID,
-              request.channelID == MockKRDPConstants.dynamicChannelID
-        else {
-            return false
-        }
-
-        let staticPDU = try RDPStaticVirtualChannelPDU.parse(fromUserData: request.userData)
-        guard staticPDU.isComplete,
-              let dataPDU = try RDPDynamicVirtualChannelDataPDU.parseIfPresent(from: staticPDU.payload),
-              let channelName = auxiliaryChannelsByID[dataPDU.channelID],
-              channelName != RDPInputDynamicChannel.name
-        else {
-            return false
-        }
-
-        if channelName == RDPAudioInputDynamicChannel.name {
-            let pdu = try RDPAudioInputPDU.parse(from: dataPDU.payload)
-            transcript.recordAudioInputMessage(pdu.typeName)
-        }
-
-        return true
     }
 
     private func clipboardFormatDataResponse(
         for request: RDPClipboardFormatDataRequestPDU
     ) -> RDPClipboardFormatDataResponsePDU {
         if request.formatID == RDPClipboardFormatID.unicodeText,
-           let remoteClipboardText
+           let remoteClipboardText = options.remoteClipboardText
         {
             return .unicodeText(remoteClipboardText)
         }
         guard request.formatID == MockKRDPConstants.remoteFileGroupDescriptorWFormatID else {
             return .failure()
         }
-
         return .fileGroupDescriptorW(
-            RDPClipboardFileGroupDescriptorW(descriptors: clipboardFiles.map(\.descriptor))
+            RDPClipboardFileGroupDescriptorW(descriptors: options.clipboardFiles.map(\.descriptor))
         )
     }
 
     private func clipboardFileContentsResponse(
         for request: RDPClipboardFileContentsRequestPDU
-    ) -> RDPClipboardFileContentsResponsePDU {
+    ) -> RDPClipboardFileContentsResponse {
         guard request.fileIndex >= 0,
-              Int(request.fileIndex) < clipboardFiles.count
+              Int(request.fileIndex) < options.clipboardFiles.count
         else {
             return .failure(streamID: request.streamID)
         }
 
-        let file = clipboardFiles[Int(request.fileIndex)]
+        let file = options.clipboardFiles[Int(request.fileIndex)]
         if request.flags & RDPClipboardFileContentsFlags.size != 0 {
             return .fileSize(streamID: request.streamID, byteCount: file.descriptor.fileSize)
         }
@@ -1816,88 +1248,81 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
         )
     }
 
+    // MARK: Server-driven steps
+
     private func releaseGraphicsHandshake(context: ChannelHandlerContext) {
         guard didReleaseGraphicsHandshake == false else {
             return
         }
 
         didReleaseGraphicsHandshake = true
-        writePacket(MockKRDPFixtures.dynamicCapabilitiesRequest(version: dynamicChannelVersion), context: context)
+        write(MockKRDPFixtures.dynamicCapabilitiesRequest(version: options.dynamicChannelVersion), context: context)
     }
 
     private func sendFinalizationResponses(context: ChannelHandlerContext) {
-        writePacket(MockKRDPFixtures.controlGranted(), context: context)
-        writePacket(MockKRDPFixtures.fontMap(), context: context)
+        write(MockKRDPFixtures.controlGranted(), context: context)
+        write(MockKRDPFixtures.fontMap(), context: context)
         if clipboardEnabled {
-            writePacket(MockKRDPFixtures.clipboardMonitorReady(), context: context)
-            writePacket(MockKRDPFixtures.clipboardCapabilities(), context: context)
-            writePacket(
+            write(MockKRDPFixtures.clipboardCapabilities(), context: context)
+            write(MockKRDPFixtures.clipboardMonitorReady(), context: context)
+            write(
                 MockKRDPFixtures.clipboardFormatList(
-                    includeFiles: clipboardFiles.isEmpty == false,
-                    includeText: remoteClipboardText != nil
+                    includeFiles: options.clipboardFiles.isEmpty == false,
+                    includeText: options.remoteClipboardText != nil
                 ),
                 context: context
             )
         }
-        if audioEnabled {
-            writePacket(MockKRDPFixtures.deviceRedirectionServerAnnounce(), context: context)
-            writePacket(MockKRDPFixtures.deviceRedirectionServerCapability(), context: context)
-            writePacket(MockKRDPFixtures.deviceRedirectionUserLoggedOn(), context: context)
+        if options.audioEnabled {
+            write(MockKRDPFixtures.deviceRedirectionServerAnnounce(), context: context)
+            write(MockKRDPFixtures.deviceRedirectionServerCapability(), context: context)
+            write(MockKRDPFixtures.deviceRedirectionUserLoggedOn(), context: context)
         }
-        if finalizationBehavior == .setErrorInfoLogoffThenDeactivateAfterFontMap {
-            writePacket(MockKRDPFixtures.setErrorInfo(0x0000_000C), context: context)
-            writePacket(MockKRDPFixtures.deactivateAll(), context: context)
-            writePacket(MockKRDPFixtures.disconnectProviderUltimatum(), context: context)
-            return
-        }
-        if finalizationBehavior == .setErrorInfoDeniedThenDeactivateAfterFontMap {
-            writePacket(MockKRDPFixtures.setErrorInfo(0x0000_0007), context: context)
-            writePacket(MockKRDPFixtures.deactivateAll(), context: context)
-            return
-        }
-        if finalizationBehavior == .userRequestedDisconnectAfterFontMap {
-            writePacket(MockKRDPFixtures.disconnectProviderUltimatum(), context: context)
-            return
-        }
-        if finalizationBehavior == .deactivateThenUserRequestedDisconnectAfterFontMap {
-            writePacket(MockKRDPFixtures.deactivateAll(), context: context)
-            writePacket(MockKRDPFixtures.disconnectProviderUltimatum(), context: context)
-            return
-        }
-        if finalizationBehavior == .deactivateAfterFontMap {
-            writePacket(MockKRDPFixtures.deactivateAll(), context: context)
-            return
-        }
-        if clipboardFiles.isEmpty || remoteClipboardText != nil || waitForCompatibilityTraffic {
-            releaseGraphicsHandshake(context: context)
-        }
-    }
-
-    private func sendControlGrantedWithoutFontMap(context: ChannelHandlerContext) {
-        writePacket(MockKRDPFixtures.controlGranted(), context: context)
-        for _ in 0 ..< 7 {
-            writePacket(MockKRDPFixtures.saveSessionInfo(), context: context)
+        switch options.finalizationBehavior {
+        case .setErrorInfoLogoffThenDeactivateAfterFontMap:
+            write(MockKRDPFixtures.setErrorInfo(0x0000_000C), context: context)
+            write(MockKRDPFixtures.deactivateAll(), context: context)
+            write(MockKRDPFixtures.disconnectProviderUltimatum(), context: context)
+        case .setErrorInfoDeniedThenDeactivateAfterFontMap:
+            write(MockKRDPFixtures.setErrorInfo(0x0000_0007), context: context)
+            write(MockKRDPFixtures.deactivateAll(), context: context)
+        case .userRequestedDisconnectAfterFontMap:
+            write(MockKRDPFixtures.disconnectProviderUltimatum(), context: context)
+        case .deactivateThenUserRequestedDisconnectAfterFontMap:
+            write(MockKRDPFixtures.deactivateAll(), context: context)
+            write(MockKRDPFixtures.disconnectProviderUltimatum(), context: context)
+        case .deactivateAfterFontMap:
+            write(MockKRDPFixtures.deactivateAll(), context: context)
+        case .deactivateThenReactivateAfterFontMap where !hasReactivated:
+            // Deactivation-reactivation ([MS-RDPBCGR] 1.3.1.3): the client
+            // answers the new Demand Active and finalizes again.
+            hasReactivated = true
+            isAwaitingReactivation = true
+            write(MockKRDPFixtures.deactivateAll(), context: context)
+            write(MockKRDPFixtures.demandActive(), context: context)
+        default:
+            if options.clipboardFiles.isEmpty || options.remoteClipboardText != nil || options.waitForCompatibilityTraffic {
+                releaseGraphicsHandshake(context: context)
+            }
         }
     }
 
     private func maybeReleaseCompatibilityGraphicsFrame(context: ChannelHandlerContext) {
-        guard waitForCompatibilityTraffic else {
+        guard options.waitForCompatibilityTraffic else {
             return
         }
 
-        let snapshot = transcript.snapshot
-        guard snapshot.inputEvents.isEmpty == false,
-              snapshot.clientClipboardMessages.map(\.typeName).contains("clipboard-format-data-response"),
-              snapshot.receivedLocalClipboardText != nil,
-              snapshot.deviceRedirectionClientMessages.contains("rdpdr-client-id-confirm"),
-              snapshot.deviceRedirectionClientMessages.contains("rdpdr-client-name"),
-              snapshot.deviceRedirectionClientMessages.contains("rdpdr-client-capability"),
-              snapshot.deviceRedirectionClientMessages.contains("rdpdr-device-list-announce"),
-              snapshot.displayControlLayouts.isEmpty == false,
-              snapshot.audioClientMessages.map(\.typeName).contains("audio-formats"),
-              snapshot.audioClientMessages.map(\.typeName).contains("audio-quality-mode"),
-              snapshot.audioClientMessages.map(\.typeName).contains("audio-training"),
-              snapshot.audioClientMessages.map(\.typeName).contains("audio-wave-confirm")
+        let transcript = transcript.value
+        let audioMessages = transcript.audioClientMessages.map(\.typeName)
+        guard transcript.inputEvents.isEmpty == false,
+              transcript.clientClipboardMessages.map(\.typeName).contains("clipboard-format-data-response"),
+              transcript.receivedLocalClipboardText != nil,
+              transcript.deviceRedirectionClientMessages.contains("rdpdr-client-id-confirm"),
+              transcript.deviceRedirectionClientMessages.contains("rdpdr-client-name"),
+              transcript.deviceRedirectionClientMessages.contains("rdpdr-client-capability"),
+              transcript.deviceRedirectionClientMessages.contains("rdpdr-device-list-announce"),
+              ["audio-formats", "audio-quality-mode", "audio-training", "audio-wave-confirm"]
+              .allSatisfy(audioMessages.contains)
         else {
             return
         }
@@ -1911,24 +1336,21 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
         }
 
         didReleaseGraphicsFrame = true
-        for packet in MockKRDPFixtures.graphicsFrameUpdatePackets(behavior: graphicsBehavior) {
-            writePacket(packet, context: context)
+        for packet in MockKRDPFixtures.graphicsFrameUpdatePackets(behavior: options.graphicsBehavior) {
+            write(packet, context: context)
         }
         stage = .graphicsFrameAcknowledge
+        if options.graphicsBehavior == .endSessionLikeGnomeAfterFirstFrame {
+            write(MockKRDPFixtures.setErrorInfo(0x0000_0001), context: context)
+            write(MockKRDPFixtures.disconnectProviderUltimatum(), context: context)
+            context.close(promise: nil)
+        }
     }
 
-    @discardableResult
-    private func writePacket(_ packet: Data, context: ChannelHandlerContext) -> EventLoopFuture<Void> {
+    private func write(_ packet: Data, context: ChannelHandlerContext) {
         var buffer = context.channel.allocator.buffer(capacity: packet.count)
         buffer.writeBytes(packet)
-        return context.writeAndFlush(wrapOutboundOut(buffer))
-    }
-
-    @discardableResult
-    private func writeRaw(_ packet: Data, context: ChannelHandlerContext) -> EventLoopFuture<Void> {
-        var buffer = context.channel.allocator.buffer(capacity: packet.count)
-        buffer.writeBytes(packet)
-        return context.writeAndFlush(wrapOutboundOut(buffer))
+        context.writeAndFlush(wrapOutboundOut(buffer), promise: nil)
     }
 }
 
@@ -1979,8 +1401,7 @@ private enum MockKRDPFixtures {
     static func mcsConnectResponse(
         clipboardEnabled: Bool = false,
         audioEnabled: Bool = false,
-        clientRequestedProtocols: RDPSecurityProtocols = [.tls, .credSSP],
-        skipChannelJoinSupported: Bool = false
+        clientRequestedProtocols: RDPSecurityProtocols = [.tls, .credSSP]
     ) -> Data {
         let domainParameters = Data([
             0x30, 0x1A,
@@ -2022,14 +1443,11 @@ private enum MockKRDPFixtures {
         ])
         var serverCoreData = Data([
             0x01, 0x0C,
-            skipChannelJoinSupported ? 0x10 : 0x0C,
+            0x0C,
             0x00,
             0x05, 0x00, 0x08, 0x00,
         ])
         serverCoreData.appendLittleEndianUInt32(clientRequestedProtocols.rawValue)
-        if skipChannelJoinSupported {
-            serverCoreData.appendLittleEndianUInt32(0x0000_0008)
-        }
         let serverSecurityData = Data([
             0x02, 0x0C, 0x0C, 0x00,
             0x00, 0x00, 0x00, 0x00,
@@ -2073,14 +1491,14 @@ private enum MockKRDPFixtures {
         return X224DataTPDU.wrap(data)
     }
 
-    static func autoDetectRequest() -> Data {
+    static func autoDetectRequest(requestType: UInt16 = 0x1001) -> Data {
         var payload = Data()
         payload.appendLittleEndianUInt16(0x1000)
         payload.appendLittleEndianUInt16(0)
         payload.appendUInt8(0x06)
         payload.appendUInt8(0x00)
         payload.appendLittleEndianUInt16(1)
-        payload.appendLittleEndianUInt16(0x1001)
+        payload.appendLittleEndianUInt16(requestType)
         return mcsSendDataIndication(
             channelID: MockKRDPConstants.messageChannelID,
             userData: payload
@@ -2144,14 +1562,18 @@ private enum MockKRDPFixtures {
     }
 
     static func licenseValidClient() -> Data {
+        licenseError(code: 0x0000_0007, stateTransition: 0x0000_0002)
+    }
+
+    static func licenseError(code: UInt32, stateTransition: UInt32) -> Data {
         var payload = Data()
         payload.appendLittleEndianUInt16(0x0080)
         payload.appendLittleEndianUInt16(0)
         payload.appendUInt8(0xFF)
         payload.appendUInt8(0x03)
         payload.appendLittleEndianUInt16(16)
-        payload.appendLittleEndianUInt32(0x0000_0007)
-        payload.appendLittleEndianUInt32(0x0000_0002)
+        payload.appendLittleEndianUInt32(code)
+        payload.appendLittleEndianUInt32(stateTransition)
         payload.appendLittleEndianUInt16(0x0004)
         payload.appendLittleEndianUInt16(0)
         return mcsSendDataIndication(
@@ -2249,37 +1671,18 @@ private enum MockKRDPFixtures {
         }
     }
 
-    private static func proprietaryServerCertificate() -> Data {
-        var publicKey = Data()
-        publicKey.appendLittleEndianUInt32(0x3141_5352)
-        publicKey.appendLittleEndianUInt32(72)
-        publicKey.appendLittleEndianUInt32(512)
-        publicKey.appendLittleEndianUInt32(63)
-        publicKey.appendLittleEndianUInt32(0x0001_0001)
-        publicKey.append(Data(repeating: 0xA5, count: 64))
-        publicKey.append(Data(repeating: 0, count: 8))
-
-        var certificate = Data()
-        certificate.appendLittleEndianUInt32(1)
-        certificate.appendLittleEndianUInt32(1)
-        certificate.appendLittleEndianUInt32(1)
-        certificate.appendLittleEndianUInt16(0x0006)
-        certificate.appendLittleEndianUInt16(UInt16(publicKey.count))
-        certificate.append(publicKey)
-        certificate.appendLittleEndianUInt16(0x0008)
-        certificate.appendLittleEndianUInt16(72)
-        certificate.append(Data(repeating: 0x5A, count: 72))
-        return certificate
-    }
-
     static func demandActive() -> Data {
         let sourceDescriptor = Data("RDPKitMock".utf8)
         var capabilities = Data()
-        capabilities.appendLittleEndianUInt16(2)
+        capabilities.appendLittleEndianUInt16(3)
         capabilities.appendLittleEndianUInt16(0)
         capabilities.appendLittleEndianUInt16(0x0001)
         capabilities.appendLittleEndianUInt16(4)
         capabilities.append(inputCapabilitySet())
+        // Frame Acknowledge, so the client acknowledges surface frame markers.
+        capabilities.appendLittleEndianUInt16(0x001E)
+        capabilities.appendLittleEndianUInt16(8)
+        capabilities.appendLittleEndianUInt32(2)
 
         var data = Data()
         data.appendLittleEndianUInt16(UInt16(18 + sourceDescriptor.count + capabilities.count))
@@ -2332,11 +1735,13 @@ private enum MockKRDPFixtures {
         return shareDataPacket(pduType2: 0x26, payload: payload)
     }
 
+    /// grantId is the client's user channel and controlId the server channel
+    /// ([MS-RDPBCGR] 2.2.1.21), as KRdp and gnome-remote-desktop send them.
     static func controlGranted() -> Data {
         var payload = Data()
         payload.appendLittleEndianUInt16(0x0002)
-        payload.appendLittleEndianUInt16(MockKRDPConstants.serverUserID)
-        payload.appendLittleEndianUInt32(UInt32(MockKRDPConstants.userChannelID))
+        payload.appendLittleEndianUInt16(MockKRDPConstants.userChannelID)
+        payload.appendLittleEndianUInt32(UInt32(RDPServerChannelID.fixed))
         return shareDataPacket(pduType2: 0x14, payload: payload)
     }
 
@@ -2361,6 +1766,25 @@ private enum MockKRDPFixtures {
         var payload = Data()
         payload.appendLittleEndianUInt32(errorInfo)
         return shareDataPacket(pduType2: 0x2F, payload: payload, pduSource: 0)
+    }
+
+    /// One fast-path Surface Commands update ([MS-RDPBCGR] 2.2.9.1.2.1.10) holding a Begin
+    /// and End frame marker for each ID, with no surface bits between them.
+    static func fastPathFrameMarkers(frameIDs: [UInt32]) -> Data {
+        var commands = Data()
+        for frameID in frameIDs {
+            for frameAction: UInt16 in [0, 1] {
+                commands.appendLittleEndianUInt16(0x0004)
+                commands.appendLittleEndianUInt16(frameAction)
+                commands.appendLittleEndianUInt32(frameID)
+            }
+        }
+        var update = Data([0x04])
+        update.appendLittleEndianUInt16(UInt16(commands.count))
+        update.append(commands)
+        // FASTPATH_OUTPUT_ACTION_FASTPATH, then the two-byte length form.
+        let length = 3 + update.count
+        return Data([0x00, 0x80 | UInt8(length >> 8), UInt8(length & 0xFF)]) + update
     }
 
     static func pointerColorUpdate() -> Data {
@@ -2401,13 +1825,8 @@ private enum MockKRDPFixtures {
         )
     }
 
-    static func disconnectProviderUltimatum(reason: UInt8 = 3) -> Data {
-        Data([
-            0x03, 0x00, 0x00, 0x09,
-            0x02, 0xF0, 0x80,
-            0x20 | ((reason >> 1) & 0x01),
-            (reason & 0x01) << 7,
-        ])
+    static func disconnectProviderUltimatum() -> Data {
+        MCSDisconnectProviderUltimatumPDU.userRequested.encodedTPKT()
     }
 
     static func dynamicCapabilitiesRequest(version: UInt16 = 2) -> Data {
@@ -2469,6 +1888,17 @@ private enum MockKRDPFixtures {
         staticVirtualChannelPacket(payload, channelID: MockKRDPConstants.clipboardChannelID)
     }
 
+    /// Splits a payload into the 1,600-byte chunks the client advertises
+    /// (VCChunkSize, [MS-RDPBCGR] 2.2.7.1.10, 3.1.5.2.1).
+    static func clipboardPackets(_ payload: Data) -> [Data] {
+        let chunkSize = RDPStaticVirtualChannelPDU.defaultChunkByteCount
+        return fragmentedStaticVirtualChannelPackets(
+            payload,
+            chunkSizes: Array(repeating: chunkSize, count: payload.count / chunkSize + 1),
+            channelID: MockKRDPConstants.clipboardChannelID
+        )
+    }
+
     static func graphicsCreateRequest() -> Data {
         staticVirtualChannelPacket(graphicsCreateRequestPayload())
     }
@@ -2492,7 +1922,7 @@ private enum MockKRDPFixtures {
     ) -> Data {
         let capability = capability.encoded
         let confirm = graphicsMessage(commandID: RDPGFXCommandID.capsConfirm, payload: capability)
-        return graphicsDynamicPacket(confirm)
+        return graphicsDynamicPacket(segmentedGraphicsData(confirm))
     }
 
     static func compressedGraphicsCapsConfirmFirst(
@@ -2501,7 +1931,7 @@ private enum MockKRDPFixtures {
     ) -> Data {
         let capability = capability.encoded
         let confirm = graphicsMessage(commandID: RDPGFXCommandID.capsConfirm, payload: capability)
-        return compressedGraphicsDynamicFirstPacket(confirm)
+        return compressedGraphicsDynamicFirstPacket(segmentedGraphicsData(confirm))
     }
 
     static func fragmentedCompressedGraphicsCapsConfirmFirst(
@@ -2509,7 +1939,7 @@ private enum MockKRDPFixtures {
             .selectedCapability(from: nil)
     ) -> [Data] {
         let capability = capability.encoded
-        let confirm = graphicsMessage(commandID: RDPGFXCommandID.capsConfirm, payload: capability)
+        let confirm = segmentedGraphicsData(graphicsMessage(commandID: RDPGFXCommandID.capsConfirm, payload: capability))
         let firstCount = min(8, confirm.count - 1)
         guard firstCount > 0 else {
             return [compressedGraphicsDynamicFirstPacket(confirm)]
@@ -2521,13 +1951,6 @@ private enum MockKRDPFixtures {
             ),
             graphicsDynamicPacket(Data(confirm.dropFirst(firstCount))),
         ]
-    }
-
-    static func incompleteCompressedGraphicsCapsConfirmFirst(
-        capability: RDPGFXCapabilitySet = MockKRDPGraphicsCapabilitySelection.fixedVersion81
-            .selectedCapability(from: nil)
-    ) -> Data {
-        fragmentedCompressedGraphicsCapsConfirmFirst(capability: capability)[0]
     }
 
     static func displayControlCreateRequest() -> Data {
@@ -2628,10 +2051,12 @@ private enum MockKRDPFixtures {
         case .sendFirstFrame,
              .sendCompressedCapsConfirmFirstFrame,
              .sendFragmentedCompressedCapsConfirmFirstFrame,
-             .closeAfterFirstFrame:
-            [graphicsDynamicPacket(avc420FrameMessages())]
+             .closeAfterFirstFrame,
+             .setErrorInfoThenCloseAfterFirstFrame,
+             .endSessionLikeGnomeAfterFirstFrame:
+            [graphicsDynamicPacket(segmentedGraphicsData(avc420FrameMessages()))]
         case .sendPointerUpdatesBeforeFirstFrame:
-            [pointerColorUpdate(), cachedPointerUpdate(), graphicsDynamicPacket(avc420FrameMessages())]
+            [pointerColorUpdate(), cachedPointerUpdate(), graphicsDynamicPacket(segmentedGraphicsData(avc420FrameMessages()))]
         case .setErrorInfoLogoffBeforeFrame:
             [
                 setErrorInfo(0x0000_000C),
@@ -2641,35 +2066,77 @@ private enum MockKRDPFixtures {
         case .sendFragmentedBitmapCompositionFrame:
             fragmentedGraphicsDynamicPackets(zgfxMultipart(bitmapCompositionFrameMessages()))
         case .sendClearCodecBandsFrame:
-            [graphicsDynamicPacket(clearCodecBandsFrameMessages())]
+            [graphicsDynamicPacket(segmentedGraphicsData(clearCodecBandsFrameMessages()))]
         case .sendCAVideoRemoteFXFrame:
-            [graphicsDynamicPacket(cavideoRemoteFXFrameMessages())]
-        case .sendGnomeRemoteDesktopCAPROGRESSIVEFrame:
-            [graphicsDynamicPacket(gnomeRemoteDesktopCAPROGRESSIVEFrameMessages())]
+            [graphicsDynamicPacket(segmentedGraphicsData(cavideoRemoteFXFrameMessages()))]
+        case .sendCAProgressiveFrame:
+            [graphicsDynamicPacket(segmentedGraphicsData(caprogressiveFrameMessages()))]
         case .sendVideoBeforeBitmapCompositionFrame:
-            [graphicsDynamicPacket(videoBeforeBitmapCompositionFrameMessages())]
+            [graphicsDynamicPacket(segmentedGraphicsData(videoBeforeBitmapCompositionFrameMessages()))]
         case .sendMultipleVideoUpdatesInFrame:
-            [graphicsDynamicPacket(multipleVideoUpdatesInFrameMessages())]
+            [graphicsDynamicPacket(segmentedGraphicsData(multipleVideoUpdatesInFrameMessages()))]
+        case .sendTwoFramesInOnePayload:
+            [graphicsDynamicPacket(segmentedGraphicsData(
+                avc420FrameMessages()
+                    + startFrameMessage(frameID: 2)
+                    + wireToSurfaceMessage()
+                    + endFrameMessage(frameID: 2)
+            ))]
+        case .deleteAndRecreateSurfaceInSecondFrame:
+            // The first video of frame 2 belongs to the surface deleted after it.
+            [graphicsDynamicPacket(segmentedGraphicsData(
+                avc420FrameMessages()
+                    + startFrameMessage(frameID: 2)
+                    + wireToSurfaceMessage()
+                    + deleteSurfaceMessage(surfaceID: 1)
+                    + createSurfaceMessage(surfaceID: 1)
+                    + mapSurfaceToOutputMessage(surfaceID: 1, x: 0, y: 0)
+                    + wireToSurfaceMessage()
+                    + endFrameMessage(frameID: 2)
+            ))]
         case .sendMultipleBitmapSurfacesInFrame:
-            [graphicsDynamicPacket(multipleBitmapSurfacesInFrameMessages())]
+            [graphicsDynamicPacket(segmentedGraphicsData(multipleBitmapSurfacesInFrameMessages()))]
+        case .sendVideoRegionsCoveringTheSurfaceFiveTimes:
+            [graphicsDynamicPacket(segmentedGraphicsData(overlappingVideoRegionsFrameMessages()))]
+        case .copyVideoFromStagingSurfacePerDamageRect:
+            [graphicsDynamicPacket(segmentedGraphicsData(stagedVideoFrameMessages()))]
+        case .copyDecodedVideoThroughSurfacesAndCache:
+            [graphicsDynamicPacket(segmentedGraphicsData(decodedVideoCopyFrameMessages()))]
+        case .copyVideoThroughHiddenSurface:
+            [graphicsDynamicPacket(segmentedGraphicsData(hiddenSurfaceVideoFrameMessages()))]
+        case .deleteSurfacesAfterCopyingOutOfThem:
+            [graphicsDynamicPacket(segmentedGraphicsData(deletedSourceFrameMessages()))]
+        case .sendAlphaOverVideo:
+            [graphicsDynamicPacket(segmentedGraphicsData(alphaOverVideoFrameMessages()))]
+        case .sendHiddenSurfaceVideoBeforeAKeyframe:
+            [graphicsDynamicPacket(segmentedGraphicsData(hiddenSurfaceVideoBeforeAKeyframeMessages()))]
+        case .copyOutOfHiddenSurfaceAfterVideoBeforeAKeyframe:
+            [graphicsDynamicPacket(segmentedGraphicsData(copyAfterHiddenSurfaceVideoBeforeAKeyframeMessages()))]
+        case .mapSurfaceAfterDeletingAnotherInTheFrame:
+            [graphicsDynamicPacket(segmentedGraphicsData(mappedAfterDeletionFrameMessages()))]
         case .sendMalformedAVCFrame:
-            [graphicsDynamicPacket(malformedAVCFrameMessages())]
+            [graphicsDynamicPacket(segmentedGraphicsData(malformedAVCFrameMessages()))]
         case .sendInvalidGraphicsPDU:
             [graphicsDynamicPacket(Data([0x12, 0x00, 0x00]))]
         case .sendCompressedCAVideoRemoteFXFrame:
-            [compressedGraphicsDynamicPacket(cavideoRemoteFXFrameMessages())]
+            [compressedGraphicsDynamicPacket(segmentedGraphicsData(cavideoRemoteFXFrameMessages()))]
         case .sendUnsupportedCompressedDynamicData:
             [invalidCompressedGraphicsDynamicPacket(Data([0x12, 0x00]))]
+        case .sendCompressedDataLargerThanOnePDU:
+            // RDP8-lite segment that expands to 8,192 x 0x41 ([MS-RDPEDYC] 2.2.3.4).
+            [invalidCompressedGraphicsDynamicPacket(Data([0xE0, 0x26, 0x20, 0xC4, 0x3F, 0xFD, 0xFF, 0xE0, 0x05]))]
         case .sendSoftSyncBeforeFrame:
-            [softSyncRequest(), graphicsDynamicPacket(avc420FrameMessages())]
+            [softSyncRequest(), graphicsDynamicPacket(segmentedGraphicsData(avc420FrameMessages()))]
         case .sendUnknownCloseBeforeFrame:
             [
                 dynamicCloseRequest(channelID: 0x00FE_ED00),
-                graphicsDynamicPacket(avc420FrameMessages()),
+                graphicsDynamicPacket(segmentedGraphicsData(avc420FrameMessages())),
             ]
         case .sendEmptyFrameThenStall:
             [graphicsEmptyFrameUpdate()]
-        case .stallAfterCapsConfirm, .stallAfterFragmentedCapsConfirm:
+        case .sendFastPathEmptyFramesBeforeFirstFrame:
+            [fastPathFrameMarkers(frameIDs: [5, 6]), graphicsDynamicPacket(segmentedGraphicsData(avc420FrameMessages()))]
+        case .stallAfterFragmentedCapsConfirm:
             []
         }
     }
@@ -2699,6 +2166,196 @@ private enum MockKRDPFixtures {
             + wireToSurfaceMessage(surfaceID: 1)
             + wireToSurfaceMessage(surfaceID: 2)
             + endFrameMessage(frameID: 11)
+    }
+
+    static func overlappingVideoRegionsFrameMessages() -> Data {
+        let fullSurface = RDPGFXRect16(left: 0, top: 0, right: MockKRDPConstants.width, bottom: MockKRDPConstants.height)
+        return createSurfaceMessage()
+            + mapSurfaceToOutputMessage(surfaceID: 1, x: 0, y: 0)
+            + startFrameMessage()
+            + wireToSurfaceMessage(bitmapData: avc420BitmapStream(regions: Array(repeating: fullSurface, count: 5)))
+            + endFrameMessage()
+    }
+
+    /// gnome-remote-desktop's: video into unmapped surface 2, then one SurfaceToSurface per
+    /// damage rectangle to mapped surface 1 (blit_surface_to_surface in
+    /// grd-rdp-dvc-graphics-pipeline.c).
+    static func stagedVideoFrameMessages() -> Data {
+        let fullSurface = RDPGFXRect16(left: 0, top: 0, right: MockKRDPConstants.width, bottom: MockKRDPConstants.height)
+        let damage = [
+            RDPGFXRect16(left: 0, top: 0, right: 16, bottom: 8),
+            RDPGFXRect16(left: 32, top: 16, right: 64, bottom: 32),
+        ]
+        var messages = createSurfaceMessage(surfaceID: 1)
+        messages += createSurfaceMessage(surfaceID: 2)
+        messages += mapSurfaceToOutputMessage(surfaceID: 1, x: 0, y: 0)
+        messages += startFrameMessage(frameID: 1)
+        messages += wireToSurfaceMessage(surfaceID: 2)
+        messages += surfaceToSurfaceMessage(sourceSurfaceID: 2, destinationSurfaceID: 1, sourceRect: fullSurface)
+        messages += endFrameMessage(frameID: 1)
+        messages += startFrameMessage(frameID: 2)
+        messages += wireToSurfaceMessage(surfaceID: 2, bitmapData: avc420BitmapStream(regions: damage))
+        for rect in damage {
+            messages += surfaceToSurfaceMessage(sourceSurfaceID: 2, destinationSurfaceID: 1, sourceRect: rect)
+        }
+        messages += endFrameMessage(frameID: 2)
+        return messages
+    }
+
+    /// Video, then text over it, a scroll, and a trip through the cache of what holds both.
+    static func decodedVideoCopyFrameMessages() -> Data {
+        var messages = createSurfaceMessage(surfaceID: 1)
+        messages += mapSurfaceToOutputMessage(surfaceID: 1, x: 0, y: 0)
+        messages += startFrameMessage(frameID: 1)
+        messages += wireToSurfaceMessage(surfaceID: 1)
+        messages += endFrameMessage(frameID: 1)
+        messages += startFrameMessage(frameID: 2)
+        messages += solidFillMessage(
+            surfaceID: 1,
+            color: [0x01, 0x02, 0x03, 0xFF],
+            rects: [RDPGFXRect16(left: 0, top: 0, right: 8, bottom: 8)]
+        )
+        messages += surfaceToSurfaceMessage(
+            sourceSurfaceID: 1,
+            destinationSurfaceID: 1,
+            sourceRect: RDPGFXRect16(left: 0, top: 0, right: 64, bottom: 16),
+            destinationPoint: RDPGFXPoint16(x: 0, y: 16)
+        )
+        messages += surfaceToCacheMessage(
+            surfaceID: 1,
+            cacheKey: 1,
+            cacheSlot: 3,
+            sourceRect: RDPGFXRect16(left: 0, top: 0, right: 16, bottom: 16)
+        )
+        messages += cacheToSurfaceMessage(cacheSlot: 3, surfaceID: 1, points: [RDPGFXPoint16(x: 48, y: 0)])
+        messages += evictCacheEntryMessage(cacheSlot: 3)
+        messages += surfaceToCacheMessage(
+            surfaceID: 1,
+            cacheKey: 2,
+            cacheSlot: 4,
+            sourceRect: RDPGFXRect16(left: 16, top: 0, right: 32, bottom: 16)
+        )
+        messages += evictCacheEntryMessage(cacheSlot: 4)
+        messages += endFrameMessage(frameID: 2)
+        messages += startFrameMessage(frameID: 3)
+        messages += wireToSurfaceMessage(surfaceID: 1)
+        messages += endFrameMessage(frameID: 3)
+        return messages
+    }
+
+    /// Video copied into unmapped surface 2, which then gets video of its own and is copied back.
+    static func hiddenSurfaceVideoFrameMessages() -> Data {
+        let fullSurface = RDPGFXRect16(left: 0, top: 0, right: MockKRDPConstants.width, bottom: MockKRDPConstants.height)
+        var messages = createSurfaceMessage(surfaceID: 1)
+        messages += createSurfaceMessage(surfaceID: 2)
+        messages += mapSurfaceToOutputMessage(surfaceID: 1, x: 0, y: 0)
+        messages += startFrameMessage(frameID: 1)
+        messages += wireToSurfaceMessage(surfaceID: 1)
+        messages += surfaceToSurfaceMessage(sourceSurfaceID: 1, destinationSurfaceID: 2, sourceRect: fullSurface)
+        messages += wireToSurfaceMessage(surfaceID: 2)
+        messages += surfaceToSurfaceMessage(sourceSurfaceID: 2, destinationSurfaceID: 1, sourceRect: fullSurface)
+        messages += endFrameMessage(frameID: 1)
+        return messages
+    }
+
+    /// Video copied out of mapped surface 2, then out of unmapped staging surface 3, each
+    /// deleted right after the copy.
+    static func deletedSourceFrameMessages() -> Data {
+        let fullSurface = RDPGFXRect16(left: 0, top: 0, right: MockKRDPConstants.width, bottom: MockKRDPConstants.height)
+        var messages = createSurfaceMessage(surfaceID: 1)
+        messages += createSurfaceMessage(surfaceID: 2)
+        messages += mapSurfaceToOutputMessage(surfaceID: 1, x: 0, y: 0)
+        messages += mapSurfaceToOutputMessage(surfaceID: 2, x: 0, y: 0)
+        messages += startFrameMessage(frameID: 1)
+        messages += wireToSurfaceMessage(surfaceID: 2)
+        messages += surfaceToSurfaceMessage(sourceSurfaceID: 2, destinationSurfaceID: 1, sourceRect: fullSurface)
+        messages += deleteSurfaceMessage(surfaceID: 2)
+        messages += endFrameMessage(frameID: 1)
+        messages += startFrameMessage(frameID: 2)
+        messages += createSurfaceMessage(surfaceID: 3)
+        messages += wireToSurfaceMessage(surfaceID: 3)
+        messages += surfaceToSurfaceMessage(sourceSurfaceID: 3, destinationSurfaceID: 1, sourceRect: fullSurface)
+        messages += deleteSurfaceMessage(surfaceID: 3)
+        messages += endFrameMessage(frameID: 2)
+        messages += startFrameMessage(frameID: 3)
+        messages += wireToSurfaceMessage(surfaceID: 1)
+        messages += endFrameMessage(frameID: 3)
+        return messages
+    }
+
+    /// Video copied into unmapped surface 2, which then gets a P slice, a keyframe and a P slice.
+    static func hiddenSurfaceVideoBeforeAKeyframeMessages() -> Data {
+        let fullSurface = RDPGFXRect16(left: 0, top: 0, right: MockKRDPConstants.width, bottom: MockKRDPConstants.height)
+        var messages = createSurfaceMessage(surfaceID: 1)
+        messages += createSurfaceMessage(surfaceID: 2)
+        messages += mapSurfaceToOutputMessage(surfaceID: 1, x: 0, y: 0)
+        messages += startFrameMessage(frameID: 1)
+        messages += wireToSurfaceMessage(surfaceID: 1)
+        messages += surfaceToSurfaceMessage(sourceSurfaceID: 1, destinationSurfaceID: 2, sourceRect: fullSurface)
+        messages += wireToSurfaceMessage(surfaceID: 2, bitmapData: avc420BitmapStream(isKeyframe: false))
+        messages += wireToSurfaceMessage(surfaceID: 2)
+        messages += wireToSurfaceMessage(surfaceID: 2, bitmapData: avc420BitmapStream(isKeyframe: false))
+        messages += endFrameMessage(frameID: 1)
+        return messages
+    }
+
+    /// Video copied into unmapped surface 2, a fill drawn there, a P slice over both, then a
+    /// copy of the fill back to mapped surface 1.
+    static func copyAfterHiddenSurfaceVideoBeforeAKeyframeMessages() -> Data {
+        let fullSurface = RDPGFXRect16(left: 0, top: 0, right: MockKRDPConstants.width, bottom: MockKRDPConstants.height)
+        let fill = RDPGFXRect16(left: 0, top: 0, right: 16, bottom: 8)
+        var messages = createSurfaceMessage(surfaceID: 1)
+        messages += createSurfaceMessage(surfaceID: 2)
+        messages += mapSurfaceToOutputMessage(surfaceID: 1, x: 0, y: 0)
+        messages += startFrameMessage(frameID: 1)
+        messages += wireToSurfaceMessage(surfaceID: 1)
+        messages += surfaceToSurfaceMessage(sourceSurfaceID: 1, destinationSurfaceID: 2, sourceRect: fullSurface)
+        messages += solidFillMessage(surfaceID: 2, color: [0x01, 0x02, 0x03, 0xFF], rects: [fill])
+        messages += wireToSurfaceMessage(surfaceID: 2, bitmapData: avc420BitmapStream(isKeyframe: false))
+        messages += surfaceToSurfaceMessage(
+            sourceSurfaceID: 2,
+            destinationSurfaceID: 1,
+            sourceRect: fill,
+            destinationPoint: RDPGFXPoint16(x: 32, y: 16)
+        )
+        messages += endFrameMessage(frameID: 1)
+        return messages
+    }
+
+    /// Video for unmapped surface 3, then a copy out of surface 2 and its deletion, then the
+    /// mapping of surface 3, all in one frame.
+    static func mappedAfterDeletionFrameMessages() -> Data {
+        let fullSurface = RDPGFXRect16(left: 0, top: 0, right: MockKRDPConstants.width, bottom: MockKRDPConstants.height)
+        var messages = createSurfaceMessage(surfaceID: 1)
+        messages += createSurfaceMessage(surfaceID: 2)
+        messages += createSurfaceMessage(surfaceID: 3)
+        messages += mapSurfaceToOutputMessage(surfaceID: 1, x: 0, y: 0)
+        messages += mapSurfaceToOutputMessage(surfaceID: 2, x: 0, y: 0)
+        messages += startFrameMessage(frameID: 1)
+        messages += wireToSurfaceMessage(surfaceID: 3)
+        messages += wireToSurfaceMessage(surfaceID: 2)
+        messages += surfaceToSurfaceMessage(sourceSurfaceID: 2, destinationSurfaceID: 1, sourceRect: fullSurface)
+        messages += deleteSurfaceMessage(surfaceID: 2)
+        messages += mapSurfaceToOutputMessage(surfaceID: 3, x: 0, y: 0)
+        messages += endFrameMessage(frameID: 1)
+        return messages
+    }
+
+    /// Video, then its alpha, as Windows sends for RemoteApp windows.
+    static func alphaOverVideoFrameMessages() -> Data {
+        // One run-length segment of 0x80 for every pixel (MS-RDPEGFX 2.2.4.3.1).
+        var alpha = Data()
+        alpha.appendLittleEndianUInt16(0x414C)
+        alpha.appendLittleEndianUInt16(1)
+        alpha.append(contentsOf: [0x80, 0xFF])
+        alpha.appendLittleEndianUInt16(MockKRDPConstants.width * MockKRDPConstants.height)
+        var messages = createSurfaceMessage(surfaceID: 1)
+        messages += mapSurfaceToOutputMessage(surfaceID: 1, x: 0, y: 0)
+        messages += startFrameMessage(frameID: 1)
+        messages += wireToSurfaceMessage(surfaceID: 1)
+        messages += wireToSurfaceMessage(surfaceID: 1, codecID: RDPGFXCodecID.alpha, bitmapData: alpha)
+        messages += endFrameMessage(frameID: 1)
+        return messages
     }
 
     static func multipleBitmapSurfacesInFrameMessages() -> Data {
@@ -2794,7 +2451,7 @@ private enum MockKRDPFixtures {
             + endFrameMessage(frameID: 4)
     }
 
-    static func gnomeRemoteDesktopCAPROGRESSIVEFrameMessages() -> Data {
+    static func caprogressiveFrameMessages() -> Data {
         createSurfaceMessage(width: 64, height: 64)
             + mapSurfaceToOutputMessage(surfaceID: 1, x: 0, y: 0)
             + startFrameMessage(frameID: 10)
@@ -2830,12 +2487,12 @@ private enum MockKRDPFixtures {
             + startFrameMessage()
             + wireToSurfaceMessage()
             + endFrameMessage()
-        return graphicsDynamicPacket(messages)
+        return graphicsDynamicPacket(segmentedGraphicsData(messages))
     }
 
     @discardableResult
     static func expectSendDataRequest(_ packet: Data, channelID expectedChannelID: UInt16) throws -> MockMCSSendDataRequest {
-        let request = try clientSendDataRequest(from: packet)
+        let request = try mcsSendDataRequest(fromTPKT: packet)
         guard request.initiator == MockKRDPConstants.userChannelID,
               request.channelID == expectedChannelID
         else {
@@ -2845,39 +2502,13 @@ private enum MockKRDPFixtures {
     }
 
     static func staticVirtualChannelPayload(from packet: Data) throws -> Data {
-        let request = try clientSendDataRequest(from: packet)
+        let request = try mcsSendDataRequest(fromTPKT: packet)
         guard request.initiator == MockKRDPConstants.userChannelID,
               request.channelID == MockKRDPConstants.dynamicChannelID
         else {
             throw MockKRDPServerError.invalidClientPDU
         }
-        return try RDPStaticVirtualChannelPDU.parse(fromUserData: request.userData).payload
-    }
-
-    static func clientSendDataRequest(from packet: Data) throws -> MockMCSSendDataRequest {
-        var cursor = try ByteCursor(X224DataTPDU.unwrap(packet))
-        let header = try cursor.readUInt8()
-        guard header == 0x64 else {
-            throw MockKRDPServerError.invalidClientPDU
-        }
-
-        let initiatorOffset = try cursor.readBigEndianUInt16()
-        let channelID = try cursor.readBigEndianUInt16()
-        let priority = try cursor.readUInt8()
-        guard priority == 0x70, initiatorOffset <= UInt16.max - 1001 else {
-            throw MockKRDPServerError.invalidClientPDU
-        }
-
-        let length = try cursor.readPERLength()
-        let userData = try cursor.readData(count: length)
-        guard cursor.remaining == 0 else {
-            throw MockKRDPServerError.invalidClientPDU
-        }
-        return MockMCSSendDataRequest(
-            initiator: 1001 + initiatorOffset,
-            channelID: channelID,
-            userData: userData
-        )
+        return try RDPStaticVirtualChannelPDU.parse(fromUserData: request.userData, maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumPayloadByteCount).payload
     }
 
     static func clientShareDataPDU(from userData: Data) throws -> MockClientShareDataPDU? {
@@ -3068,6 +2699,19 @@ private enum MockKRDPFixtures {
         )
     }
 
+    static func dynamicCreateResponse(_ payload: Data) -> (channelID: UInt32, status: Int32)? {
+        var cursor = ByteCursor(payload)
+        guard let header = try? RDPDynamicVirtualChannelHeader(byte: cursor.readUInt8()),
+              header.command == .create,
+              let channelID = try? cursor.readDynamicVirtualChannelID(lengthCode: header.channelIDLength),
+              let status = try? cursor.readLittleEndianUInt32(),
+              cursor.remaining == 0
+        else {
+            return nil
+        }
+        return (channelID, Int32(bitPattern: status))
+    }
+
     static func isDynamicCreateResponse(_ payload: Data, channelIDs: Set<UInt32>) -> Bool {
         guard payload.count >= 6 else {
             return false
@@ -3166,6 +2810,11 @@ private enum MockKRDPFixtures {
             chunkIndex += 1
         }
         return packets
+    }
+
+    /// Wraps graphics messages in an uncompressed single RDP_SEGMENTED_DATA segment.
+    private static func segmentedGraphicsData(_ messages: Data) -> Data {
+        Data([0xE0, 0x04]) + messages
     }
 
     private static func graphicsDynamicPacket(_ payload: Data) -> Data {
@@ -3271,58 +2920,6 @@ private enum MockKRDPFixtures {
         return staticVirtualChannelPacket(dynamicPayload)
     }
 
-    static func inputServerReady() -> Data {
-        dynamicPacket(inputServerReadyPayload(), channelID: MockKRDPConstants.inputDynamicChannelID)
-    }
-
-    static func inputSuspend() -> Data {
-        var payload = Data()
-        payload.appendLittleEndianUInt16(0x0004)
-        payload.appendLittleEndianUInt32(6)
-        return dynamicPacket(payload, channelID: MockKRDPConstants.inputDynamicChannelID)
-    }
-
-    static func inputResume() -> Data {
-        var payload = Data()
-        payload.appendLittleEndianUInt16(0x0005)
-        payload.appendLittleEndianUInt32(6)
-        return dynamicPacket(payload, channelID: MockKRDPConstants.inputDynamicChannelID)
-    }
-
-    static func inputServerReadyPayload() -> Data {
-        var payload = Data()
-        payload.appendLittleEndianUInt16(0x0001)
-        payload.appendLittleEndianUInt32(14)
-        payload.appendLittleEndianUInt32(RDPInputProtocolVersion.version300.rawValue)
-        payload.appendLittleEndianUInt32(0x0000_0001)
-        return payload
-    }
-
-    static func audioInputVersion() -> Data {
-        dynamicPacket(
-            RDPAudioInputVersionPDU(version: 2).encoded(),
-            channelID: MockKRDPConstants.audioInputDynamicChannelID
-        )
-    }
-
-    static func audioInputFormats() -> Data {
-        dynamicPacket(
-            RDPAudioInputFormatsPDU(formats: [.pcmStereo48k16Bit]).encoded(),
-            channelID: MockKRDPConstants.audioInputDynamicChannelID
-        )
-    }
-
-    static func audioInputOpen() -> Data {
-        var payload = Data([RDPAudioInputMessageType.open])
-        payload.appendLittleEndianUInt32(480)
-        payload.appendLittleEndianUInt32(0)
-        payload.append(RDPAudioFormat.pcmStereo48k16Bit.encoded())
-        return dynamicPacket(
-            payload,
-            channelID: MockKRDPConstants.audioInputDynamicChannelID
-        )
-    }
-
     static func dynamicCloseRequest(channelID: UInt32) -> Data {
         staticVirtualChannelPacket(RDPDynamicVirtualChannelClosePDU(channelID: channelID).encoded())
     }
@@ -3339,17 +2936,6 @@ private enum MockKRDPFixtures {
         return staticVirtualChannelPacket(payload)
     }
 
-    private static func mcsSendDataIndication(channelID: UInt16, userData: Data) -> Data {
-        var data = Data()
-        data.appendUInt8(0x68)
-        data.appendBigEndianUInt16(MockKRDPConstants.serverUserID - 1001)
-        data.appendBigEndianUInt16(channelID)
-        data.appendUInt8(0x70)
-        data.appendPERLength(userData.count)
-        data.append(userData)
-        return X224DataTPDU.wrap(data)
-    }
-
     private static func createSurfaceMessage(
         surfaceID: UInt16 = 1,
         width: UInt16 = MockKRDPConstants.width,
@@ -3361,6 +2947,12 @@ private enum MockKRDPFixtures {
         payload.appendLittleEndianUInt16(height)
         payload.appendUInt8(0x20)
         return graphicsMessage(commandID: RDPGFXCommandID.createSurface, payload: payload)
+    }
+
+    private static func deleteSurfaceMessage(surfaceID: UInt16) -> Data {
+        var payload = Data()
+        payload.appendLittleEndianUInt16(surfaceID)
+        return graphicsMessage(commandID: RDPGFXCommandID.deleteSurface, payload: payload)
     }
 
     private static func mapSurfaceToOutputMessage(surfaceID: UInt16, x: UInt32, y: UInt32) -> Data {
@@ -3463,62 +3055,33 @@ private enum MockKRDPFixtures {
         return graphicsMessage(commandID: RDPGFXCommandID.cacheToSurface, payload: payload)
     }
 
+    private static func surfaceToSurfaceMessage(
+        sourceSurfaceID: UInt16,
+        destinationSurfaceID: UInt16,
+        sourceRect: RDPGFXRect16,
+        destinationPoint: RDPGFXPoint16? = nil
+    ) -> Data {
+        let point = destinationPoint ?? RDPGFXPoint16(x: Int16(sourceRect.left), y: Int16(sourceRect.top))
+        var payload = Data()
+        payload.appendLittleEndianUInt16(sourceSurfaceID)
+        payload.appendLittleEndianUInt16(destinationSurfaceID)
+        payload.append(rectangleData(sourceRect))
+        payload.appendLittleEndianUInt16(1)
+        payload.appendLittleEndianUInt16(UInt16(bitPattern: point.x))
+        payload.appendLittleEndianUInt16(UInt16(bitPattern: point.y))
+        return graphicsMessage(commandID: RDPGFXCommandID.surfaceToSurface, payload: payload)
+    }
+
+    private static func evictCacheEntryMessage(cacheSlot: UInt16) -> Data {
+        var payload = Data()
+        payload.appendLittleEndianUInt16(cacheSlot)
+        return graphicsMessage(commandID: RDPGFXCommandID.evictCacheEntry, payload: payload)
+    }
+
     private static func endFrameMessage(frameID: UInt32 = MockKRDPConstants.frameID) -> Data {
         var payload = Data()
         payload.appendLittleEndianUInt32(frameID)
         return graphicsMessage(commandID: RDPGFXCommandID.endFrame, payload: payload)
-    }
-
-    private static func clearCodecRawRegionStream(width: UInt16, height: UInt16, pixels: [UInt8]) -> Data {
-        var stream = Data([0x00, 0x00])
-        stream.appendLittleEndianUInt32(0)
-        stream.appendLittleEndianUInt32(0)
-        stream.appendLittleEndianUInt32(UInt32(13 + pixels.count))
-        stream.appendLittleEndianUInt16(0)
-        stream.appendLittleEndianUInt16(0)
-        stream.appendLittleEndianUInt16(width)
-        stream.appendLittleEndianUInt16(height)
-        stream.appendLittleEndianUInt32(UInt32(pixels.count))
-        stream.appendUInt8(0)
-        stream.append(contentsOf: pixels)
-        return stream
-    }
-
-    private static func clearCodecBandsStream(seqNumber: UInt8, bandsData: Data) -> Data {
-        var stream = Data([0x00, seqNumber])
-        stream.appendLittleEndianUInt32(0)
-        stream.appendLittleEndianUInt32(UInt32(bandsData.count))
-        stream.appendLittleEndianUInt32(0)
-        stream.append(bandsData)
-        return stream
-    }
-
-    private static func clearCodecTwoColumnBandsData() -> Data {
-        var bandsData = Data()
-        bandsData.appendLittleEndianUInt16(0)
-        bandsData.appendLittleEndianUInt16(1)
-        bandsData.appendLittleEndianUInt16(0)
-        bandsData.appendLittleEndianUInt16(2)
-        bandsData.append(contentsOf: [0x00, 0x00, 0x00])
-        bandsData.appendLittleEndianUInt16(0x0301)
-        bandsData.append(contentsOf: [
-            0x10, 0x20, 0x30,
-            0x40, 0x50, 0x60,
-        ])
-        bandsData.appendLittleEndianUInt16(0x0100)
-        bandsData.append(contentsOf: [
-            0x70, 0x80, 0x90,
-        ])
-        return bandsData
-    }
-
-    private static func rectangleData(_ rect: RDPGFXRect16) -> Data {
-        var data = Data()
-        data.appendLittleEndianUInt16(rect.left)
-        data.appendLittleEndianUInt16(rect.top)
-        data.appendLittleEndianUInt16(rect.right)
-        data.appendLittleEndianUInt16(rect.bottom)
-        return data
     }
 
     private static func zgfxMultipart(_ data: Data) -> Data {
@@ -3537,44 +3100,26 @@ private enum MockKRDPFixtures {
         return encoded
     }
 
-    private static func avc420BitmapStream() -> Data {
+    /// An AVC420 update: a keyframe (SPS, PPS and an IDR slice) or a P slice.
+    private static func avc420BitmapStream(
+        regions: [RDPGFXRect16] = [RDPGFXRect16(left: 0, top: 0, right: MockKRDPConstants.width, bottom: MockKRDPConstants.height)],
+        isKeyframe: Bool = true
+    ) -> Data {
         var data = Data()
-        data.appendLittleEndianUInt32(1)
-        data.appendLittleEndianUInt16(0)
-        data.appendLittleEndianUInt16(0)
-        data.appendLittleEndianUInt16(MockKRDPConstants.width)
-        data.appendLittleEndianUInt16(MockKRDPConstants.height)
-        data.appendUInt8(24)
-        data.appendUInt8(90)
-        data.append(Data([
+        data.appendLittleEndianUInt32(UInt32(regions.count))
+        for region in regions {
+            data.append(rectangleData(region))
+        }
+        for _ in regions {
+            data.appendUInt8(24)
+            data.appendUInt8(90)
+        }
+        data.append(isKeyframe ? Data([
             0x00, 0x00, 0x00, 0x01, 0x67, 0x64, 0x00, 0x1F,
             0x00, 0x00, 0x01, 0x68, 0xEE, 0x3C, 0x80,
             0x00, 0x00, 0x01, 0x65, 0x88,
-        ]))
+        ]) : Data([0x00, 0x00, 0x00, 0x01, 0x41, 0x9A]))
         return data
-    }
-
-    private static func graphicsMessage(commandID: UInt16, payload: Data) -> Data {
-        var data = Data()
-        data.appendLittleEndianUInt16(commandID)
-        data.appendLittleEndianUInt16(0)
-        data.appendLittleEndianUInt32(UInt32(8 + payload.count))
-        data.append(payload)
-        return data
-    }
-
-    private static func berOctetString(_ value: Data) -> Data {
-        var data = Data([0x04])
-        data.append(berLength(value.count))
-        data.append(value)
-        return data
-    }
-
-    private static func berLength(_ length: Int) -> Data {
-        if length < 0x80 {
-            return Data([UInt8(length)])
-        }
-        return Data([0x82, UInt8((length >> 8) & 0xFF), UInt8(length & 0xFF)])
     }
 }
 

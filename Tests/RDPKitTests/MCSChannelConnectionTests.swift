@@ -35,6 +35,14 @@ import Testing
         try MCSAttachUserConfirm.parse(fromTPKT: Data([
             0x03, 0x00, 0x00, 0x09,
             0x02, 0xF0, 0x80,
+            0x2C, 0x00,
+        ]))
+    }
+    // The PER bit says the initiator is present, so it must be there.
+    #expect(throws: RDPDecodeError.truncated(needed: 2, remaining: 0)) {
+        try MCSAttachUserConfirm.parse(fromTPKT: Data([
+            0x03, 0x00, 0x00, 0x09,
+            0x02, 0xF0, 0x80,
             0x2E, 0x00,
         ]))
     }
@@ -44,7 +52,7 @@ import Testing
     let confirm = try MCSAttachUserConfirm.parse(fromTPKT: Data([
         0x03, 0x00, 0x00, 0x09,
         0x02, 0xF0, 0x80,
-        0x2E, 0x01,
+        0x2C, 0x01,
     ]))
 
     #expect(confirm.result == 1)
@@ -113,14 +121,47 @@ import Testing
     #expect(!confirm.validates(requestedChannelID: 1005))
 }
 
-@Test func rejectsMCSChannelJoinConfirmWithoutChannelID() {
+@Test func rejectsSuccessfulMCSChannelJoinConfirmWithoutChannelID() {
     #expect(throws: RDPDecodeError.invalidMCSChannelJoinConfirm) {
+        try MCSChannelJoinConfirm.parse(fromTPKT: Data([
+            0x03, 0x00, 0x00, 0x0D,
+            0x02, 0xF0, 0x80,
+            0x3C, 0x00, 0x00, 0x06, 0x03, 0xEC,
+        ]))
+    }
+    #expect(throws: RDPDecodeError.truncated(needed: 2, remaining: 0)) {
         try MCSChannelJoinConfirm.parse(fromTPKT: Data([
             0x03, 0x00, 0x00, 0x0D,
             0x02, 0xF0, 0x80,
             0x3E, 0x00, 0x00, 0x06, 0x03, 0xEC,
         ]))
     }
+}
+
+@Test func parsesFailedMCSChannelJoinConfirmWithoutChannelID() throws {
+    // T.125 ChannelJoinConfirm.channelId is OPTIONAL; a refused join may omit it.
+    let confirm = try MCSChannelJoinConfirm.parse(fromTPKT: Data([
+        0x03, 0x00, 0x00, 0x0D,
+        0x02, 0xF0, 0x80,
+        0x3C, 0x60, 0x00, 0x06, 0x03, 0xEC,
+    ]))
+
+    #expect(confirm.result != 0)
+    #expect(confirm.requestedChannelID == 1004)
+    #expect(confirm.channelID == 0)
+    #expect(!confirm.validates(requestedChannelID: 1004))
+}
+
+@Test func treatsPackedHighResultBitAsMCSConfirmFailure() throws {
+    // Spec PER puts Result's top bit in the header (rt-parameters-unacceptable = 8).
+    let confirm = try MCSAttachUserConfirm.parse(fromTPKT: Data([
+        0x03, 0x00, 0x00, 0x09,
+        0x02, 0xF0, 0x80,
+        0x2D, 0x00,
+    ]))
+
+    #expect(confirm.result != 0)
+    #expect(confirm.userChannelID == nil)
 }
 
 @Test func rejectsMCSChannelJoinConfirmWithTrailingBytes() {

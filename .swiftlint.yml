@@ -5,19 +5,10 @@ included:
   - Tests
   - Examples/RDPClient/Sources
   - Examples/RDPFirstFrameCapture
-  - Examples/RDPFirstFrameCaptureSupport
+  - Examples/RDPCommandLineSupport
   - Examples/RDPFrameBenchmark
   - Examples/RDPPreflight
   - Examples/Tests
-
-excluded:
-  - DerivedData
-  - target
-  - captures
-  - Examples/RDPClient/Generated
-  - Examples/RDPClient/RDPKitExamples.xcodeproj
-  - RDPClient.xcodeproj
-  - RDPKitExamples.xcodeproj
 
 only_rules:
   - contains_over_filter_count

@@ -125,7 +125,6 @@ import Testing
         ])
     )))
 
-    #expect(try RDPServerPointerUpdate.parseIfPresent(from: shareData) == .position(RDPPoint16(x: 1, y: 2)))
     #expect(shareData.pointerUpdate == .position(RDPPoint16(x: 1, y: 2)))
 }
 
@@ -133,7 +132,7 @@ import Testing
     let state = RDPRemotePointerState()
     let image = RDPColorPointerAttribute(
         cacheIndex: 2,
-        hotSpot: RDPPoint16(x: 1, y: 3),
+        hotSpot: RDPPoint16(x: 1, y: 0),
         width: 2,
         height: 1,
         xorMaskData: Data([0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff]),
@@ -141,7 +140,7 @@ import Testing
     )
     let expected = RDPRemotePointerImage(
         cacheIndex: 2,
-        hotSpot: RDPRemotePoint(x: 1, y: 3),
+        hotSpot: RDPRemotePoint(x: 1, y: 0),
         width: 2,
         height: 1,
         xorBitsPerPixel: 24,
@@ -183,6 +182,21 @@ import Testing
     #expect(try state.apply(.cached(cacheIndex: 3)) == .cachedImage(replacementImage))
 }
 
+@Test func pointerStateClampsHotSpotOntoPointerImage() throws {
+    let state = RDPRemotePointerState()
+    var attribute = pointerAttribute(cacheIndex: 1, marker: 0x11)
+    attribute.hotSpot = RDPPoint16(x: 5, y: 9)
+
+    guard case let .image(image) = try state.apply(.pointer(RDPNewPointerAttribute(
+        xorBitsPerPixel: 16,
+        colorPointer: attribute
+    ))) else {
+        Issue.record("Expected a resolved pointer image")
+        return
+    }
+    #expect(image.hotSpot == RDPRemotePoint(x: 0, y: 0))
+}
+
 @Test func pointerStateHandlesCacheReferencesAndRejectsOutOfRangeIndices() throws {
     let state = RDPRemotePointerState()
 
@@ -195,7 +209,55 @@ import Testing
     }
 }
 
-@Test func rejectsInvalidPointerUpdates() {
+@Test func decodesKRDPFastPathNewPointerWithoutAndMask() throws {
+    let url = try #require(Bundle.module.url(
+        forResource: "krdp-negotiation-transcript",
+        withExtension: "json",
+        subdirectory: "Fixtures"
+    ))
+    let events = try JSONDecoder().decode([RDPWireEvent].self, from: Data(contentsOf: url))
+    let newPointerBytes = try #require(events.first { $0.sequence == 36 }?.bytes)
+    let cachedPointerBytes = try #require(events.first { $0.sequence == 37 }?.bytes)
+
+    let newPointer = try RDPFastPathOutputPDU.parse(newPointerBytes)
+    let cachedPointer = try RDPFastPathOutputPDU.parse(cachedPointerBytes)
+    guard case let .pointer(pointer) = try #require(newPointer.updates.first?.pointerUpdate) else {
+        Issue.record("Expected a fast-path new pointer")
+        return
+    }
+    #expect(pointer.xorBitsPerPixel == 32)
+    #expect(pointer.colorPointer.width == 46)
+    #expect(pointer.colorPointer.height == 46)
+    #expect(pointer.colorPointer.hotSpot == RDPPoint16(x: 7, y: 3))
+    #expect(pointer.colorPointer.xorMaskData.count == 46 * 46 * 4)
+    #expect(pointer.colorPointer.andMaskData.isEmpty)
+
+    let state = RDPRemotePointerState()
+    guard case let .image(image) = try state.apply(.pointer(pointer)) else {
+        Issue.record("Expected a resolved pointer image")
+        return
+    }
+    let cachedUpdate = try #require(cachedPointer.updates.first?.pointerUpdate)
+    #expect(try state.apply(cachedUpdate) == .cachedImage(image))
+}
+
+@Test func rejectsMissingAndMaskBelowThirtyTwoBitsPerPixel() {
+    var cursor = ByteCursor(Data([
+        0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x01, 0x00,
+        0x01, 0x00,
+        0x00, 0x00,
+        0x04, 0x00,
+        0x01, 0x02, 0x03, 0x00,
+    ]))
+
+    #expect(throws: RDPDecodeError.invalidPointerPDU) {
+        try RDPColorPointerAttribute.parse(from: &cursor)
+    }
+}
+
+@Test func rejectsInvalidPointerUpdates() throws {
     #expect(throws: RDPDecodeError.invalidPointerPDU) {
         try RDPServerPointerUpdate.parsePayload(Data([0x02, 0x00, 0x00, 0x00]))
     }
@@ -270,28 +332,12 @@ import Testing
         oversizedNewPointer.append(Data(repeating: 0, count: 582))
         _ = try RDPServerPointerUpdate.parsePayload(oversizedNewPointer)
     }
-    #expect(throws: RDPDecodeError.invalidPointerPDU) {
-        try RDPShareDataPDU.parseIfPresent(fromTPKT: shareDataPacket(
-            type: 0x1B,
-            payload: Data([0x02, 0x00, 0x00, 0x00])
-        ))
-    }
-}
-
-private func shareDataPacket(type: UInt8, payload: Data) -> Data {
-    var userData = Data()
-    userData.appendLittleEndianUInt16(UInt16(18 + payload.count))
-    userData.appendLittleEndianUInt16(0x0017)
-    userData.appendLittleEndianUInt16(1005)
-    userData.appendLittleEndianUInt32(0x0001_0000)
-    userData.appendUInt8(0)
-    userData.appendUInt8(1)
-    userData.appendLittleEndianUInt16(UInt16(payload.count + 4))
-    userData.appendUInt8(type)
-    userData.appendUInt8(0)
-    userData.appendLittleEndianUInt16(0)
-    userData.append(payload)
-    return mcsSendDataIndication(channelID: 1003, userData: userData)
+    let malformed = try RDPShareDataPDU.parseIfPresent(fromTPKT: shareDataPacket(
+        type: 0x1B,
+        payload: Data([0x02, 0x00, 0x00, 0x00])
+    ))
+    #expect(malformed?.pointerUpdate == nil)
+    #expect(malformed?.pointerDecodeError == .invalidPointerPDU)
 }
 
 private func pointerAttribute(cacheIndex: UInt16, marker: UInt8) -> RDPColorPointerAttribute {
@@ -303,15 +349,4 @@ private func pointerAttribute(cacheIndex: UInt16, marker: UInt8) -> RDPColorPoin
         xorMaskData: Data([marker, marker]),
         andMaskData: Data([0xff, 0x00])
     )
-}
-
-private func mcsSendDataIndication(channelID: UInt16, userData: Data) -> Data {
-    var data = Data()
-    data.appendUInt8(0x68)
-    data.appendBigEndianUInt16(1005 - 1001)
-    data.appendBigEndianUInt16(channelID)
-    data.appendUInt8(0x70)
-    data.appendPERLength(userData.count)
-    data.append(userData)
-    return X224DataTPDU.wrap(data)
 }

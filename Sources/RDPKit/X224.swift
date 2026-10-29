@@ -34,70 +34,38 @@ enum X224DataTPDU {
 struct X224ConnectionRequest: Equatable, Sendable {
     var routingToken: Data?
     var negotiationRequest: RDPNegotiationRequest
-    var correlationID: Data?
 
-    init(
-        routingToken: Data? = nil,
-        negotiationRequest: RDPNegotiationRequest = RDPNegotiationRequest(),
-        correlationID: Data? = nil
-    ) {
+    init(routingToken: Data? = nil, negotiationRequest: RDPNegotiationRequest = RDPNegotiationRequest()) {
         self.routingToken = routingToken
         self.negotiationRequest = negotiationRequest
-        self.correlationID = correlationID
     }
 
     func encodedTPKT() -> Data {
-        var negotiationRequest = negotiationRequest
-        let correlationInfo = encodedCorrelationInfo(correlationID)
-        let routingToken = normalizedRoutingToken(routingToken)
-        if correlationInfo != nil {
-            negotiationRequest.flags |= RDPNegotiationRequestFlags.correlationInfoPresent
-        }
-        let negotiation = negotiationRequest.encoded()
-        let trailingByteCount = (routingToken?.count ?? 0) + negotiation.count + (correlationInfo?.count ?? 0)
-        precondition(trailingByteCount <= Int(UInt8.max) - 6)
+        var trailing = routingToken.map(Self.terminated) ?? Data()
+        trailing.append(negotiationRequest.encoded())
+        precondition(trailing.count <= Self.maximumTrailingByteCount)
 
         var tpdu = Data()
-        tpdu.appendUInt8(UInt8(6 + trailingByteCount))
+        tpdu.appendUInt8(UInt8(6 + trailing.count))
         tpdu.appendUInt8(X224TPDUType.connectionRequest.rawValue)
         tpdu.appendBigEndianUInt16(0)
         tpdu.appendBigEndianUInt16(0)
         tpdu.appendUInt8(0)
-        if let routingToken {
-            tpdu.append(routingToken)
-        }
-        tpdu.append(negotiation)
-        if let correlationInfo {
-            tpdu.append(correlationInfo)
-        }
-
+        tpdu.append(trailing)
         return TPKT.wrap(tpdu)
     }
 
-    private func normalizedRoutingToken(_ routingToken: Data?) -> Data? {
-        guard var routingToken else {
-            return nil
-        }
-        let terminator = Data([0x0D, 0x0A])
-        if Data(routingToken.suffix(terminator.count)) != terminator {
-            routingToken.append(terminator)
-        }
-        return routingToken
+    /// Whether a (server-supplied) routing token fits next to the 8-byte RDP_NEG_REQ.
+    static func canCarry(routingToken: Data) -> Bool {
+        terminated(routingToken).count + 8 <= maximumTrailingByteCount
     }
 
-    private func encodedCorrelationInfo(_ correlationID: Data?) -> Data? {
-        guard let correlationID else {
-            return nil
-        }
-        precondition(correlationID.count == 16)
+    /// X.224 length indicators stop at 254 and cover the 6 fixed bytes after them.
+    private static let maximumTrailingByteCount = 254 - 6
 
-        var data = Data()
-        data.appendUInt8(0x06)
-        data.appendUInt8(0x00)
-        data.appendLittleEndianUInt16(36)
-        data.append(correlationID)
-        data.append(contentsOf: repeatElement(0, count: 16))
-        return data
+    private static func terminated(_ routingToken: Data) -> Data {
+        let terminator = Data([0x0D, 0x0A])
+        return routingToken.suffix(terminator.count) == terminator ? routingToken : routingToken + terminator
     }
 }
 
@@ -129,32 +97,16 @@ struct X224ConnectionConfirm: Equatable, Sendable {
         let sourceReference = try cursor.readBigEndianUInt16()
         let classAndOptions = try cursor.readUInt8()
 
-        let trailingLength = lengthIndicator - 6
-        guard trailingLength >= 0 else {
-            throw RDPDecodeError.invalidX224Length(
-                declared: lengthIndicator,
-                actual: payload.count - 1
-            )
-        }
-
-        let trailing = try cursor.readData(count: trailingLength)
-        let negotiationFlags: UInt8?
-        let negotiationResult: RDPNegotiationResult?
-        if trailingLength > 0, !trailing.isEmpty {
-            let response = try RDPNegotiationResponse.parseMessage(trailing)
-            negotiationFlags = response.flags
-            negotiationResult = response.result
-        } else {
-            negotiationFlags = nil
-            negotiationResult = nil
-        }
-
+        // Servers that predate RDP negotiation send no RDP_NEG_RSP/RDP_NEG_FAILURE.
+        let response = cursor.remaining > 0
+            ? try RDPNegotiationResponse.parse(cursor.readRemainingData())
+            : nil
         return X224ConnectionConfirm(
             destinationReference: destinationReference,
             sourceReference: sourceReference,
             classAndOptions: classAndOptions,
-            negotiationFlags: negotiationFlags,
-            negotiationResult: negotiationResult
+            negotiationFlags: response?.flags,
+            negotiationResult: response?.result
         )
     }
 }

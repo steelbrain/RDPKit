@@ -1,5 +1,6 @@
 import Foundation
 @testable import RDPKit
+import Security
 import Testing
 
 @Test func parsesSuccessfulMCSConnectResponseServerChannels() throws {
@@ -61,7 +62,6 @@ import Testing
     )
 
     #expect(response.serverEarlyCapabilityFlags == 0x0000_0008)
-    #expect(response.serverSupportsSkipChannelJoin)
 }
 
 @Test func rejectsMCSConnectResponseWithMismatchedClientRequestedProtocols() {
@@ -353,6 +353,43 @@ import Testing
     }
 }
 
+@Test func rawRSAEncryptionMatchesSecurityFramework() throws {
+    let attributes: [String: Any] = [
+        kSecAttrKeyType as String: kSecAttrKeyTypeRSA,
+        kSecAttrKeySizeInBits as String: 1024,
+    ]
+    let privateKey = try #require(SecKeyCreateRandomKey(attributes as CFDictionary, nil))
+    let secPublicKey = try #require(SecKeyCopyPublicKey(privateKey))
+    let pkcs1 = try #require(SecKeyCopyExternalRepresentation(secPublicKey, nil) as Data?)
+    // PKCS #1 RSAPublicKey: 30 81 89 02 81 81 00 <128-byte modulus> 02 03 01 00 01
+    let modulus = Data(pkcs1.dropFirst(7).prefix(128))
+    #expect(Data(pkcs1.suffix(5)) == Data([0x02, 0x03, 0x01, 0x00, 0x01]))
+    let publicKey = RDPRSAPublicKey(
+        modulus: Data(modulus.reversed()),
+        publicExponent: 0x0001_0001,
+        keyByteCount: 136
+    )
+    let premasterSecret = Data((0 ..< 48).map { UInt8($0 * 5 + 3) })
+
+    let bigEndianInput = Data(repeating: 0, count: 80) + Data(premasterSecret.reversed())
+    let expected = try #require(SecKeyCreateEncryptedData(
+        secPublicKey,
+        .rsaEncryptionRaw,
+        bigEndianInput as CFData,
+        nil
+    ) as Data?)
+    #expect(try publicKey.encryptRawLittleEndian(premasterSecret) == Data(expected.reversed()) + Data(count: 8))
+}
+
+@Test func rawRSAEncryptionRejectsPlaintextNotBelowModulus() {
+    // A server-supplied tiny modulus used to make the client loop for ~2^384 subtractions.
+    let publicKey = RDPRSAPublicKey(modulus: Data([0x03]), publicExponent: 3, keyByteCount: 9)
+
+    #expect(throws: RDPDecodeError.invalidMCSConnectResponseHeader) {
+        try publicKey.encryptRawLittleEndian(Data(repeating: 0xFF, count: 48))
+    }
+}
+
 private func sampleMCSConnectResponse(
     channelIDs: [UInt16] = [1004],
     includePad: Bool? = nil,
@@ -468,42 +505,4 @@ private func standardSecurityBody(certificate: Data) -> Data {
     body.append(Data(repeating: 0x11, count: 32))
     body.append(certificate)
     return body
-}
-
-private func proprietaryServerCertificate() -> Data {
-    var publicKey = Data()
-    publicKey.appendLittleEndianUInt32(0x3141_5352)
-    publicKey.appendLittleEndianUInt32(72)
-    publicKey.appendLittleEndianUInt32(512)
-    publicKey.appendLittleEndianUInt32(63)
-    publicKey.appendLittleEndianUInt32(0x0001_0001)
-    publicKey.append(Data(repeating: 0xA5, count: 64))
-    publicKey.append(Data(repeating: 0, count: 8))
-
-    var certificate = Data()
-    certificate.appendLittleEndianUInt32(1)
-    certificate.appendLittleEndianUInt32(1)
-    certificate.appendLittleEndianUInt32(1)
-    certificate.appendLittleEndianUInt16(0x0006)
-    certificate.appendLittleEndianUInt16(UInt16(publicKey.count))
-    certificate.append(publicKey)
-    certificate.appendLittleEndianUInt16(0x0008)
-    certificate.appendLittleEndianUInt16(72)
-    certificate.append(Data(repeating: 0x5A, count: 72))
-    return certificate
-}
-
-private func berOctetString(_ value: Data) -> Data {
-    var data = Data([0x04])
-    data.append(berLength(value.count))
-    data.append(value)
-    return data
-}
-
-private func berLength(_ length: Int) -> Data {
-    if length < 0x80 {
-        return Data([UInt8(length)])
-    }
-
-    return Data([0x82, UInt8((length >> 8) & 0xFF), UInt8(length & 0xFF)])
 }

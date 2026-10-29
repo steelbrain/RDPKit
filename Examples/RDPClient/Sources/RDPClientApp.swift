@@ -14,15 +14,8 @@ struct RDPClientApp: App {
         }
         .windowStyle(.titleBar)
         .commands {
-            RDPSessionCommands()
+            RDPSessionCommands(center: launchStore.sessionCommands)
         }
-
-        WindowGroup("Stats for Nerds", id: RDPWindowID.sessionDiagnostics, for: UUID.self) { sessionID in
-            RemoteSessionDiagnosticsWindow(sessionID: sessionID.wrappedValue)
-                .environmentObject(launchStore)
-        }
-        .windowStyle(.titleBar)
-        .defaultSize(width: 840, height: 720)
     }
 }
 
@@ -53,238 +46,80 @@ private final class RDPClientAppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+struct RDPSessionCommandState: Equatable {
+    var startTitle: String
+    var canStart: Bool
+    var canCancel: Bool
+    var controlsVisible: Bool
+    var canSyncClipboard: Bool
+    var canStartTemporaryClipboardSharing: Bool
+}
+
+/// Publishes the key session window's command state so the Session menu stays current.
+@MainActor
+final class RDPSessionCommandCenter: ObservableObject {
+    @Published private(set) var state: RDPSessionCommandState?
+    private(set) weak var controller: RDPRemoteSessionViewController?
+
+    func publish(_ state: RDPSessionCommandState, from controller: RDPRemoteSessionViewController) {
+        self.controller = controller
+        if self.state != state {
+            self.state = state
+        }
+    }
+
+    func withdraw(_ controller: RDPRemoteSessionViewController) {
+        guard self.controller === controller else {
+            return
+        }
+        self.controller = nil
+        state = nil
+    }
+}
+
 private struct RDPSessionCommands: Commands {
-    @FocusedValue(\.rdpOpenDiagnostics) private var openDiagnostics
-    @FocusedValue(\.rdpToggleSessionControls) private var toggleSessionControls
-    @FocusedValue(\.rdpSessionControlsVisible) private var sessionControlsVisible
-    @FocusedValue(\.rdpStartSession) private var startSession
-    @FocusedValue(\.rdpStartSessionTitle) private var startSessionTitle
-    @FocusedValue(\.rdpCanStartSession) private var canStartSession
-    @FocusedValue(\.rdpCancelSession) private var cancelSession
-    @FocusedValue(\.rdpCanCancelSession) private var canCancelSession
-    @FocusedValue(\.rdpSyncClipboard) private var syncClipboard
-    @FocusedValue(\.rdpCanSyncClipboard) private var canSyncClipboard
-    @FocusedValue(\.rdpStartTemporaryClipboardSharing) private var startTemporaryClipboardSharing
-    @FocusedValue(\.rdpCanStartTemporaryClipboardSharing) private var canStartTemporaryClipboardSharing
+    @ObservedObject var center: RDPSessionCommandCenter
 
     var body: some Commands {
         CommandMenu("Session") {
-            Button(effectiveStartSessionTitle) {
-                if let startSession {
-                    startSession()
-                } else {
-                    appKitSessionController?.rdpStartSession()
-                }
+            Button(center.state?.startTitle ?? "Connect") {
+                center.controller?.startSession()
             }
             .keyboardShortcut("r", modifiers: [.command])
-            .disabled(!effectiveCanStartSession)
+            .disabled(center.state?.canStart != true)
 
+            // No shortcut: Cmd-. would end a session at one keystroke and keep Win-. from the server.
             Button("Cancel") {
-                if let cancelSession {
-                    cancelSession()
-                } else {
-                    appKitSessionController?.rdpCancelSession()
-                }
+                center.controller?.cancelConnection()
             }
-            .keyboardShortcut(".", modifiers: [.command])
-            .disabled(!effectiveCanCancelSession)
+            .disabled(center.state?.canCancel != true)
 
             Divider()
 
-            Button(effectiveSessionControlsVisible ? "Hide Controls" : "Show Controls") {
-                if let toggleSessionControls {
-                    toggleSessionControls()
-                } else {
-                    appKitSessionController?.rdpToggleSessionControls()
-                }
+            Button(center.state?.controlsVisible == true ? "Hide Controls" : "Show Controls") {
+                center.controller?.toggleSessionControls()
             }
-            .disabled(!hasSessionCommandTarget)
+            .disabled(center.state == nil)
 
             Divider()
 
             Button("Sync Clipboard Now") {
-                if let syncClipboard {
-                    syncClipboard()
-                } else {
-                    appKitSessionController?.rdpSyncClipboard()
-                }
+                center.controller?.syncClipboardNow()
             }
-            .disabled(!effectiveCanSyncClipboard)
+            .disabled(center.state?.canSyncClipboard != true)
 
             Button("Share Clipboard for 30 Seconds") {
-                if let startTemporaryClipboardSharing {
-                    startTemporaryClipboardSharing()
-                } else {
-                    appKitSessionController?.rdpStartTemporaryClipboardSharing()
-                }
+                center.controller?.startTemporaryClipboardSharing()
             }
-            .disabled(!effectiveCanStartTemporaryClipboardSharing)
+            .disabled(center.state?.canStartTemporaryClipboardSharing != true)
 
             Divider()
 
             Button("Open Stats for Nerds") {
-                if let openDiagnostics {
-                    openDiagnostics()
-                } else {
-                    appKitSessionController?.rdpOpenDiagnostics()
-                }
+                center.controller?.openDiagnosticsWindow()
             }
             .keyboardShortcut("d", modifiers: [.command, .shift])
-            .disabled(!hasSessionCommandTarget)
+            .disabled(center.state == nil)
         }
-    }
-
-    private var appKitSessionController: RDPSessionCommandHandling? {
-        NSApp.keyWindow?.contentViewController as? RDPSessionCommandHandling
-    }
-
-    private var hasSessionCommandTarget: Bool {
-        openDiagnostics != nil || appKitSessionController != nil
-    }
-
-    private var effectiveStartSessionTitle: String {
-        startSessionTitle ?? appKitSessionController?.rdpStartSessionTitle ?? "Connect"
-    }
-
-    private var effectiveCanStartSession: Bool {
-        if startSession != nil {
-            return canStartSession == true
-        }
-        return appKitSessionController?.rdpCanStartSession == true
-    }
-
-    private var effectiveCanCancelSession: Bool {
-        if cancelSession != nil {
-            return canCancelSession == true
-        }
-        return appKitSessionController?.rdpCanCancelSession == true
-    }
-
-    private var effectiveSessionControlsVisible: Bool {
-        sessionControlsVisible ?? appKitSessionController?.rdpSessionControlsVisible ?? false
-    }
-
-    private var effectiveCanSyncClipboard: Bool {
-        if syncClipboard != nil {
-            return canSyncClipboard == true
-        }
-        return appKitSessionController?.rdpCanSyncClipboard == true
-    }
-
-    private var effectiveCanStartTemporaryClipboardSharing: Bool {
-        if startTemporaryClipboardSharing != nil {
-            return canStartTemporaryClipboardSharing == true
-        }
-        return appKitSessionController?.rdpCanStartTemporaryClipboardSharing == true
-    }
-}
-
-private struct RDPOpenDiagnosticsFocusedValueKey: FocusedValueKey {
-    typealias Value = () -> Void
-}
-
-private struct RDPToggleSessionControlsFocusedValueKey: FocusedValueKey {
-    typealias Value = () -> Void
-}
-
-private struct RDPSessionControlsVisibleFocusedValueKey: FocusedValueKey {
-    typealias Value = Bool
-}
-
-private struct RDPStartSessionFocusedValueKey: FocusedValueKey {
-    typealias Value = () -> Void
-}
-
-private struct RDPStartSessionTitleFocusedValueKey: FocusedValueKey {
-    typealias Value = String
-}
-
-private struct RDPCanStartSessionFocusedValueKey: FocusedValueKey {
-    typealias Value = Bool
-}
-
-private struct RDPCancelSessionFocusedValueKey: FocusedValueKey {
-    typealias Value = () -> Void
-}
-
-private struct RDPCanCancelSessionFocusedValueKey: FocusedValueKey {
-    typealias Value = Bool
-}
-
-private struct RDPSyncClipboardFocusedValueKey: FocusedValueKey {
-    typealias Value = () -> Void
-}
-
-private struct RDPCanSyncClipboardFocusedValueKey: FocusedValueKey {
-    typealias Value = Bool
-}
-
-private struct RDPStartTemporaryClipboardSharingFocusedValueKey: FocusedValueKey {
-    typealias Value = () -> Void
-}
-
-private struct RDPCanStartTemporaryClipboardSharingFocusedValueKey: FocusedValueKey {
-    typealias Value = Bool
-}
-
-extension FocusedValues {
-    var rdpOpenDiagnostics: (() -> Void)? {
-        get { self[RDPOpenDiagnosticsFocusedValueKey.self] }
-        set { self[RDPOpenDiagnosticsFocusedValueKey.self] = newValue }
-    }
-
-    var rdpToggleSessionControls: (() -> Void)? {
-        get { self[RDPToggleSessionControlsFocusedValueKey.self] }
-        set { self[RDPToggleSessionControlsFocusedValueKey.self] = newValue }
-    }
-
-    var rdpSessionControlsVisible: Bool? {
-        get { self[RDPSessionControlsVisibleFocusedValueKey.self] }
-        set { self[RDPSessionControlsVisibleFocusedValueKey.self] = newValue }
-    }
-
-    var rdpStartSession: (() -> Void)? {
-        get { self[RDPStartSessionFocusedValueKey.self] }
-        set { self[RDPStartSessionFocusedValueKey.self] = newValue }
-    }
-
-    var rdpStartSessionTitle: String? {
-        get { self[RDPStartSessionTitleFocusedValueKey.self] }
-        set { self[RDPStartSessionTitleFocusedValueKey.self] = newValue }
-    }
-
-    var rdpCanStartSession: Bool? {
-        get { self[RDPCanStartSessionFocusedValueKey.self] }
-        set { self[RDPCanStartSessionFocusedValueKey.self] = newValue }
-    }
-
-    var rdpCancelSession: (() -> Void)? {
-        get { self[RDPCancelSessionFocusedValueKey.self] }
-        set { self[RDPCancelSessionFocusedValueKey.self] = newValue }
-    }
-
-    var rdpCanCancelSession: Bool? {
-        get { self[RDPCanCancelSessionFocusedValueKey.self] }
-        set { self[RDPCanCancelSessionFocusedValueKey.self] = newValue }
-    }
-
-    var rdpSyncClipboard: (() -> Void)? {
-        get { self[RDPSyncClipboardFocusedValueKey.self] }
-        set { self[RDPSyncClipboardFocusedValueKey.self] = newValue }
-    }
-
-    var rdpCanSyncClipboard: Bool? {
-        get { self[RDPCanSyncClipboardFocusedValueKey.self] }
-        set { self[RDPCanSyncClipboardFocusedValueKey.self] = newValue }
-    }
-
-    var rdpStartTemporaryClipboardSharing: (() -> Void)? {
-        get { self[RDPStartTemporaryClipboardSharingFocusedValueKey.self] }
-        set { self[RDPStartTemporaryClipboardSharingFocusedValueKey.self] = newValue }
-    }
-
-    var rdpCanStartTemporaryClipboardSharing: Bool? {
-        get { self[RDPCanStartTemporaryClipboardSharingFocusedValueKey.self] }
-        set { self[RDPCanStartTemporaryClipboardSharingFocusedValueKey.self] = newValue }
     }
 }

@@ -26,7 +26,7 @@ let package = Package(
         ),
     ],
     dependencies: [
-        .package(path: ".."),
+        .package(name: "RDPKit", path: ".."),
     ],
     targets: [
         .executableTarget(
@@ -36,25 +36,26 @@ let package = Package(
             ],
             path: "RDPClient/Sources"
         ),
+        .target(
+            name: "RDPCommandLineSupport",
+            dependencies: [
+                .product(name: "RDPKit", package: "RDPKit"),
+            ],
+            path: "RDPCommandLineSupport"
+        ),
         .executableTarget(
             name: "RDPFirstFrameCapture",
             dependencies: [
                 .product(name: "RDPKit", package: "RDPKit"),
-                "RDPFirstFrameCaptureSupport",
+                "RDPCommandLineSupport",
             ],
             path: "RDPFirstFrameCapture"
-        ),
-        .target(
-            name: "RDPFirstFrameCaptureSupport",
-            dependencies: [
-                .product(name: "RDPKit", package: "RDPKit"),
-            ],
-            path: "RDPFirstFrameCaptureSupport"
         ),
         .executableTarget(
             name: "RDPFrameBenchmark",
             dependencies: [
                 .product(name: "RDPKit", package: "RDPKit"),
+                "RDPCommandLineSupport",
             ],
             path: "RDPFrameBenchmark"
         ),
@@ -62,15 +63,19 @@ let package = Package(
             name: "RDPPreflight",
             dependencies: [
                 .product(name: "RDPKit", package: "RDPKit"),
+                "RDPCommandLineSupport",
             ],
             path: "RDPPreflight"
         ),
         .testTarget(
-            name: "RDPFirstFrameCaptureSupportTests",
+            name: "RDPCommandLineToolTests",
             dependencies: [
-                "RDPFirstFrameCaptureSupport",
+                "RDPCommandLineSupport",
+                "RDPFirstFrameCapture",
+                "RDPFrameBenchmark",
+                "RDPPreflight",
             ],
-            path: "Tests/RDPFirstFrameCaptureSupportTests"
+            path: "Tests/RDPCommandLineToolTests"
         ),
         .testTarget(
             name: "RDPClientTests",

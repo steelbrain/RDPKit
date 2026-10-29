@@ -228,3 +228,80 @@ import Testing
         ]))
     }
 }
+
+@Test func decompressesUnencodedRunInsideCompressedSegment() throws {
+    // 10001 00000 (distance 0), 15-bit count 2, byte alignment, then "hi".
+    let decoded = try RDPZGFXDecompressor().decompress(Data([
+        0xE0, 0x24,
+        0x88, 0x00, 0x01, 0x00,
+        0x68, 0x69,
+        0x00,
+    ]))
+
+    #expect(decoded == Data("hi".utf8))
+}
+
+@Test func rejectsUnencodedRunPastEndOfSegment() {
+    #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
+        try RDPZGFXDecompressor().decompress(Data([
+            0xE0, 0x24,
+            0x88, 0x00, 0x01, 0x80,
+            0x68, 0x69,
+            0x00,
+        ]))
+    }
+}
+
+@Test func rejectsReservedZGFXTokenPrefix() {
+    #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
+        try RDPZGFXDecompressor().decompress(Data([
+            0xE0, 0x24,
+            0xBE, 0x00, 0x00, 0x00,
+            0x00,
+        ]))
+    }
+}
+
+@Test func rejectsMultipartSegmentsExceedingUncompressedSize() {
+    var encoded = Data([0xE1])
+    encoded.appendLittleEndianUInt16(2)
+    encoded.appendLittleEndianUInt32(1)
+    for _ in 0 ..< 2 {
+        encoded.appendLittleEndianUInt32(3)
+        encoded.append(contentsOf: [0x04, 0x41, 0x42])
+    }
+
+    #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
+        try RDPZGFXDecompressor().decompress(encoded)
+    }
+}
+
+@Test func rejectsMultipartMessageLargerThanTheGraphicsMessageLimit() {
+    // Unencoded 65,535-byte segments whose sum matches the declared size,
+    // one segment more than fits in the limit.
+    let segment = Data([0x04]) + Data(repeating: 0x41, count: 65_535)
+    let segmentCount = RDPZGFXDecompressor.maximumMultipartByteCount / 65_535 + 1
+    var encoded = Data([0xE1])
+    encoded.appendLittleEndianUInt16(UInt16(segmentCount))
+    encoded.appendLittleEndianUInt32(UInt32(segmentCount * 65_535))
+    for _ in 0 ..< segmentCount {
+        encoded.appendLittleEndianUInt32(UInt32(segment.count))
+        encoded.append(segment)
+    }
+
+    #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
+        try RDPZGFXDecompressor().decompress(encoded)
+    }
+}
+
+@Test func rejectsMultipartSegmentCountBeyondAvailableData() {
+    var encoded = Data([0xE1])
+    encoded.appendLittleEndianUInt16(0xFFFF)
+    encoded.appendLittleEndianUInt32(1)
+    encoded.appendLittleEndianUInt32(2)
+    encoded.append(contentsOf: [0x04, 0x41])
+
+    #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
+        try RDPZGFXDecompressor().decompress(encoded)
+    }
+}

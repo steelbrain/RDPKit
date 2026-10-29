@@ -13,8 +13,9 @@ Use this boundary when making changes:
   clients belongs in `Sources/RDPKit`.
 - macOS-only UI, Keychain wiring, AppKit windowing, and app preferences belong in
   `Examples/RDPClient`.
-- Command-line probes and demos belong in `Examples/RDPPreflight` or
-  `Examples/RDPFirstFrameCapture`.
+- Command-line probes and demos belong in `Examples/RDPPreflight`,
+  `Examples/RDPFirstFrameCapture` or `Examples/RDPFrameBenchmark`; argument
+  parsing they share belongs in `Examples/RDPCommandLineSupport`.
 
 The library should prefer Apple primitives and Apple-maintained Swift packages:
 VideoToolbox, CoreMedia, CoreVideo, AVFoundation, Security, SwiftNIO, and
@@ -51,6 +52,8 @@ Suggested checks:
   `swift build --package-path Examples --product RDPClient`
   `swift build --package-path Examples --product RDPPreflight`
   `swift build --package-path Examples --product RDPFirstFrameCapture`
+  `swift build --package-path Examples --product RDPFrameBenchmark`
+- Example tests: `swift test --package-path Examples`
 
 For documentation-only changes, a full build is optional, but check links,
 commands, and references to removed files.

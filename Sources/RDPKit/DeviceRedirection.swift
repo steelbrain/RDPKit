@@ -3,7 +3,6 @@ import Foundation
 
 enum RDPDeviceRedirectionComponent {
     static let core: UInt16 = 0x4472
-    static let printer: UInt16 = 0x5052
 }
 
 enum RDPDeviceRedirectionPacketID {
@@ -11,86 +10,24 @@ enum RDPDeviceRedirectionPacketID {
     static let clientIDConfirm: UInt16 = 0x4343
     static let clientName: UInt16 = 0x434E
     static let deviceListAnnounce: UInt16 = 0x4441
-    static let deviceReply: UInt16 = 0x6472
-    static let deviceIORequest: UInt16 = 0x4952
-    static let deviceIOCompletion: UInt16 = 0x4943
     static let serverCapability: UInt16 = 0x5350
     static let clientCapability: UInt16 = 0x4350
-    static let deviceListRemove: UInt16 = 0x444D
-    static let printerCacheData: UInt16 = 0x5043
     static let userLoggedOn: UInt16 = 0x554C
-    static let printerUsingXPS: UInt16 = 0x5543
-
-    static func isValid(_ packetID: UInt16, for component: UInt16) -> Bool {
-        switch (component, packetID) {
-        case (RDPDeviceRedirectionComponent.core, serverAnnounce),
-             (RDPDeviceRedirectionComponent.core, clientIDConfirm),
-             (RDPDeviceRedirectionComponent.core, clientName),
-             (RDPDeviceRedirectionComponent.core, deviceListAnnounce),
-             (RDPDeviceRedirectionComponent.core, deviceReply),
-             (RDPDeviceRedirectionComponent.core, deviceIORequest),
-             (RDPDeviceRedirectionComponent.core, deviceIOCompletion),
-             (RDPDeviceRedirectionComponent.core, serverCapability),
-             (RDPDeviceRedirectionComponent.core, clientCapability),
-             (RDPDeviceRedirectionComponent.core, deviceListRemove),
-             (RDPDeviceRedirectionComponent.core, userLoggedOn),
-             (RDPDeviceRedirectionComponent.printer, printerCacheData),
-             (RDPDeviceRedirectionComponent.printer, printerUsingXPS):
-            true
-        default:
-            false
-        }
-    }
 }
 
 enum RDPDeviceRedirectionVersion {
     static let major: UInt16 = 0x0001
-    static let minorRDP5: UInt16 = 0x0002
-    static let minorRDP51: UInt16 = 0x0005
-    static let minorRDP52: UInt16 = 0x000A
     static let minorRDP6: UInt16 = 0x000C
-    static let minorRDP61: UInt16 = 0x000D
-
-    static func isValidMinor(_ minor: UInt16) -> Bool {
-        switch minor {
-        case minorRDP5, minorRDP51, minorRDP52, minorRDP6, minorRDP61:
-            true
-        default:
-            false
-        }
-    }
 }
 
-private enum RDPDeviceRedirectionCapability {
-    static let generalType: UInt16 = 0x0001
-    static let printerType: UInt16 = 0x0002
-    static let portType: UInt16 = 0x0003
-    static let driveType: UInt16 = 0x0004
-    static let smartCardType: UInt16 = 0x0005
-    static let headerLength: UInt16 = 8
-    static let generalVersion1: UInt32 = 0x0000_0001
-    static let generalVersion2: UInt32 = 0x0000_0002
-    static let generalVersion1Length: UInt16 = 40
-    static let generalLength: UInt16 = 44
-    static let deviceVersion1: UInt32 = 0x0000_0001
-    static let driveVersion2: UInt32 = 0x0000_0002
-}
-
-private enum RDPDeviceRedirectionIOCode1 {
-    static let supported: UInt32 = 0x0000_FFFF
-    static let validMask: UInt32 = 0x0000_FFFF
-}
-
-private enum RDPDeviceRedirectionExtendedPDU {
-    static let deviceRemove: UInt32 = 0x0000_0001
-    static let clientDisplayName: UInt32 = 0x0000_0002
-    static let userLoggedOn: UInt32 = 0x0000_0004
-    static let validMask: UInt32 = deviceRemove | clientDisplayName | userLoggedOn
-}
-
-private enum RDPDeviceRedirectionExtraFlags1 {
-    static let enableAsyncIO: UInt32 = 0x0000_0001
-    static let validMask: UInt32 = enableAsyncIO
+/// GENERAL_CAPS_SET values the client sends ([MS-RDPEFS] 2.2.2.7.1).
+private enum RDPDeviceRedirectionGeneralCapability {
+    static let type: UInt16 = 0x0001
+    static let length: UInt16 = 44
+    static let version2: UInt32 = 0x0000_0002
+    static let allIOCode1: UInt32 = 0x0000_FFFF
+    /// RDPDR_DEVICE_REMOVE_PDUS | RDPDR_CLIENT_DISPLAY_NAME_PDU | RDPDR_USER_LOGGEDON_PDU.
+    static let extendedPDU: UInt32 = 0x0000_0007
 }
 
 struct RDPDeviceRedirectionHeader: Equatable, Sendable {
@@ -103,13 +40,6 @@ struct RDPDeviceRedirectionHeader: Equatable, Sendable {
     ) {
         self.component = component
         self.packetID = packetID
-    }
-
-    static func parse(from cursor: inout ByteCursor) throws -> RDPDeviceRedirectionHeader {
-        try RDPDeviceRedirectionHeader(
-            component: cursor.readLittleEndianUInt16(),
-            packetID: cursor.readLittleEndianUInt16()
-        )
     }
 
     func encoded() -> Data {
@@ -151,12 +81,13 @@ struct RDPDeviceRedirectionPDU: Equatable, Sendable {
         }
 
         var cursor = ByteCursor(data)
-        let header = try RDPDeviceRedirectionHeader.parse(from: &cursor)
-        guard RDPDeviceRedirectionPacketID.isValid(header.packetID, for: header.component)
-        else {
-            throw RDPDecodeError.invalidStaticVirtualChannelPDU
-        }
-        return RDPDeviceRedirectionPDU(header: header, payload: cursor.readRemainingData())
+        return try RDPDeviceRedirectionPDU(
+            header: RDPDeviceRedirectionHeader(
+                component: cursor.readLittleEndianUInt16(),
+                packetID: cursor.readLittleEndianUInt16()
+            ),
+            payload: cursor.readRemainingData()
+        )
     }
 
     func encoded() -> Data {
@@ -166,6 +97,8 @@ struct RDPDeviceRedirectionPDU: Equatable, Sendable {
     }
 }
 
+/// Body shared by the Server Announce Request and the Client Announce Reply /
+/// Server Client ID Confirm ([MS-RDPEFS] 2.2.2.2, 2.2.2.3, 2.2.2.6).
 struct RDPDeviceRedirectionVersionAndID: Equatable, Sendable {
     var major: UInt16
     var minor: UInt16
@@ -188,18 +121,12 @@ struct RDPDeviceRedirectionVersionAndID: Equatable, Sendable {
             minor: cursor.readLittleEndianUInt16(),
             clientID: cursor.readLittleEndianUInt32()
         )
-        guard versionAndID.major == RDPDeviceRedirectionVersion.major,
-              RDPDeviceRedirectionVersion.isValidMinor(versionAndID.minor)
-        else {
+        // Any server minor version is accepted: the client replies with its own version
+        // (MS-RDPEFS 3.2.5.1.3), and Appendix A lists values beyond those in 2.2.2.2.
+        guard versionAndID.major == RDPDeviceRedirectionVersion.major else {
             throw RDPDecodeError.invalidStaticVirtualChannelPDU
         }
         return versionAndID
-    }
-
-    func clientAnnounceReplyEncoded(
-        clientIDGenerator: () -> UInt32 = { UInt32.random(in: UInt32.min ... UInt32.max) }
-    ) -> Data {
-        clientAnnounceReplyEncoded(clientID: clientIDForReply(clientIDGenerator: clientIDGenerator))
     }
 
     func clientAnnounceReplyEncoded(clientID: UInt32) -> Data {
@@ -213,6 +140,8 @@ struct RDPDeviceRedirectionVersionAndID: Equatable, Sendable {
         ).encoded()
     }
 
+    /// Echoes the server's ClientId from minor version 12 on and generates a
+    /// random one for older servers ([MS-RDPEFS] 3.2.5.1.3).
     func clientIDForReply(clientIDGenerator: () -> UInt32) -> UInt32 {
         guard minor >= RDPDeviceRedirectionVersion.minorRDP6 else {
             return clientIDGenerator()
@@ -225,7 +154,8 @@ struct RDPDeviceRedirectionClientNameRequest: Equatable, Sendable {
     var computerName: String
 
     func encoded() -> Data {
-        let computerName = utf16LENullTerminated(self.computerName)
+        var computerName = Data(utf16LittleEndian: self.computerName)
+        computerName.appendLittleEndianUInt16(0)
         var payload = Data()
         payload.appendLittleEndianUInt32(1)
         payload.appendLittleEndianUInt32(0)
@@ -238,6 +168,8 @@ struct RDPDeviceRedirectionClientNameRequest: Equatable, Sendable {
     }
 }
 
+/// Client Core Capability Response carrying only the general capability set,
+/// since the client redirects no devices ([MS-RDPEFS] 2.2.2.8).
 struct RDPDeviceRedirectionClientCapabilities: Equatable, Sendable {
     var minorVersion: UInt16
 
@@ -245,160 +177,23 @@ struct RDPDeviceRedirectionClientCapabilities: Equatable, Sendable {
         var payload = Data()
         payload.appendLittleEndianUInt16(1)
         payload.appendLittleEndianUInt16(0)
-        payload.append(generalCapabilityEncoded())
+        payload.appendLittleEndianUInt16(RDPDeviceRedirectionGeneralCapability.type)
+        payload.appendLittleEndianUInt16(RDPDeviceRedirectionGeneralCapability.length)
+        payload.appendLittleEndianUInt32(RDPDeviceRedirectionGeneralCapability.version2)
+        payload.appendLittleEndianUInt32(0)
+        payload.appendLittleEndianUInt32(0)
+        payload.appendLittleEndianUInt16(RDPDeviceRedirectionVersion.major)
+        payload.appendLittleEndianUInt16(minorVersion)
+        payload.appendLittleEndianUInt32(RDPDeviceRedirectionGeneralCapability.allIOCode1)
+        payload.appendLittleEndianUInt32(0)
+        payload.appendLittleEndianUInt32(RDPDeviceRedirectionGeneralCapability.extendedPDU)
+        payload.appendLittleEndianUInt32(0)
+        payload.appendLittleEndianUInt32(0)
+        payload.appendLittleEndianUInt32(0)
         return RDPDeviceRedirectionPDU(
             header: RDPDeviceRedirectionHeader(packetID: RDPDeviceRedirectionPacketID.clientCapability),
             payload: payload
         ).encoded()
-    }
-
-    private func generalCapabilityEncoded() -> Data {
-        var data = Data()
-        data.appendLittleEndianUInt16(RDPDeviceRedirectionCapability.generalType)
-        data.appendLittleEndianUInt16(RDPDeviceRedirectionCapability.generalLength)
-        data.appendLittleEndianUInt32(RDPDeviceRedirectionCapability.generalVersion2)
-        data.appendLittleEndianUInt32(0)
-        data.appendLittleEndianUInt32(0)
-        data.appendLittleEndianUInt16(RDPDeviceRedirectionVersion.major)
-        data.appendLittleEndianUInt16(minorVersion)
-        data.appendLittleEndianUInt32(RDPDeviceRedirectionIOCode1.supported)
-        data.appendLittleEndianUInt32(0)
-        data.appendLittleEndianUInt32(
-            RDPDeviceRedirectionExtendedPDU.deviceRemove
-                | RDPDeviceRedirectionExtendedPDU.clientDisplayName
-                | RDPDeviceRedirectionExtendedPDU.userLoggedOn
-        )
-        data.appendLittleEndianUInt32(0)
-        data.appendLittleEndianUInt32(0)
-        data.appendLittleEndianUInt32(0)
-        return data
-    }
-}
-
-struct RDPDeviceRedirectionServerCapabilities: Equatable, Sendable {
-    struct Capability: Equatable, Sendable {
-        var type: UInt16
-        var version: UInt32
-    }
-
-    var capabilities: [Capability]
-
-    static func parse(from pdu: RDPDeviceRedirectionPDU) throws -> RDPDeviceRedirectionServerCapabilities? {
-        guard pdu.header.component == RDPDeviceRedirectionComponent.core,
-              pdu.header.packetID == RDPDeviceRedirectionPacketID.serverCapability
-        else {
-            return nil
-        }
-        guard !pdu.payload.isEmpty else {
-            return RDPDeviceRedirectionServerCapabilities(capabilities: [])
-        }
-        guard pdu.payload.count >= 4 else {
-            throw RDPDecodeError.invalidStaticVirtualChannelPDU
-        }
-
-        var cursor = ByteCursor(pdu.payload)
-        let count = try Int(cursor.readLittleEndianUInt16())
-        _ = try cursor.readLittleEndianUInt16()
-
-        var capabilities: [Capability] = []
-        capabilities.reserveCapacity(count)
-        for _ in 0 ..< count {
-            guard cursor.remaining >= Int(RDPDeviceRedirectionCapability.headerLength) else {
-                throw RDPDecodeError.invalidStaticVirtualChannelPDU
-            }
-            let type = try cursor.readLittleEndianUInt16()
-            let length = try cursor.readLittleEndianUInt16()
-            let version = try cursor.readLittleEndianUInt32()
-            guard length >= RDPDeviceRedirectionCapability.headerLength,
-                  Int(length) - Int(RDPDeviceRedirectionCapability.headerLength) <= cursor.remaining
-            else {
-                throw RDPDecodeError.invalidStaticVirtualChannelPDU
-            }
-            let body = try cursor.readData(count: Int(length) - Int(RDPDeviceRedirectionCapability.headerLength))
-            try validateCapability(type: type, length: length, version: version, body: body)
-            capabilities.append(Capability(type: type, version: version))
-        }
-        guard cursor.remaining == 0 else {
-            throw RDPDecodeError.invalidStaticVirtualChannelPDU
-        }
-
-        return RDPDeviceRedirectionServerCapabilities(capabilities: capabilities)
-    }
-
-    private static func validateCapability(
-        type: UInt16,
-        length: UInt16,
-        version: UInt32,
-        body: Data
-    ) throws {
-        switch type {
-        case RDPDeviceRedirectionCapability.generalType:
-            try validateGeneralCapability(length: length, version: version, body: body)
-        case RDPDeviceRedirectionCapability.printerType,
-             RDPDeviceRedirectionCapability.portType,
-             RDPDeviceRedirectionCapability.smartCardType:
-            guard length == RDPDeviceRedirectionCapability.headerLength,
-                  version == RDPDeviceRedirectionCapability.deviceVersion1
-            else {
-                throw RDPDecodeError.invalidStaticVirtualChannelPDU
-            }
-        case RDPDeviceRedirectionCapability.driveType:
-            guard length == RDPDeviceRedirectionCapability.headerLength,
-                  version == RDPDeviceRedirectionCapability.deviceVersion1
-                    || version == RDPDeviceRedirectionCapability.driveVersion2
-            else {
-                throw RDPDecodeError.invalidStaticVirtualChannelPDU
-            }
-        default:
-            throw RDPDecodeError.invalidStaticVirtualChannelPDU
-        }
-    }
-
-    private static func validateGeneralCapability(
-        length: UInt16,
-        version: UInt32,
-        body: Data
-    ) throws {
-        let expectedLength: UInt16
-        switch version {
-        case RDPDeviceRedirectionCapability.generalVersion1:
-            expectedLength = RDPDeviceRedirectionCapability.generalVersion1Length
-        case RDPDeviceRedirectionCapability.generalVersion2:
-            expectedLength = RDPDeviceRedirectionCapability.generalLength
-        default:
-            throw RDPDecodeError.invalidStaticVirtualChannelPDU
-        }
-        guard length == expectedLength,
-              body.count == Int(expectedLength) - Int(RDPDeviceRedirectionCapability.headerLength)
-        else {
-            throw RDPDecodeError.invalidStaticVirtualChannelPDU
-        }
-
-        var cursor = ByteCursor(body)
-        _ = try cursor.readLittleEndianUInt32()
-        _ = try cursor.readLittleEndianUInt32()
-        let protocolMajorVersion = try cursor.readLittleEndianUInt16()
-        let protocolMinorVersion = try cursor.readLittleEndianUInt16()
-        let ioCode1 = try cursor.readLittleEndianUInt32()
-        let ioCode2 = try cursor.readLittleEndianUInt32()
-        let extendedPDU = try cursor.readLittleEndianUInt32()
-        let extraFlags1 = try cursor.readLittleEndianUInt32()
-        let extraFlags2 = try cursor.readLittleEndianUInt32()
-        if version == RDPDeviceRedirectionCapability.generalVersion2 {
-            _ = try cursor.readLittleEndianUInt32()
-        }
-
-        guard protocolMajorVersion == RDPDeviceRedirectionVersion.major,
-              RDPDeviceRedirectionVersion.isValidMinor(protocolMinorVersion),
-              ioCode1 & ~RDPDeviceRedirectionIOCode1.validMask == 0,
-              ioCode2 == 0,
-              extendedPDU & ~RDPDeviceRedirectionExtendedPDU.validMask == 0,
-              extraFlags1 & ~RDPDeviceRedirectionExtraFlags1.validMask == 0,
-              extraFlags2 == 0,
-              cursor.remaining == 0
-        else {
-            throw RDPDecodeError.invalidStaticVirtualChannelPDU
-        }
     }
 }
 
@@ -413,6 +208,9 @@ struct RDPDeviceRedirectionDeviceListAnnounce: Equatable, Sendable {
     }
 }
 
+/// Runs the rdpdr initialization with an empty device list ([MS-RDPEFS] 3.1.3).
+/// The channel exists for audio: Windows sends nothing on RDPSND unless the
+/// client advertises rdpdr ([MS-RDPEA] Appendix A, note on section 2.1).
 final class RDPDeviceRedirectionSession: @unchecked Sendable {
     let staticChannelID: UInt16
     private let userChannelID: UInt16
@@ -447,32 +245,26 @@ final class RDPDeviceRedirectionSession: @unchecked Sendable {
             let clientID = announce.clientIDForReply {
                 UInt32.random(in: UInt32.min ... UInt32.max)
             }
-            lock.lock()
-            minorVersion = min(RDPDeviceRedirectionVersion.minorRDP6, announce.minor)
-            announcedClientID = clientID
-            lock.unlock()
+            lock.withLock {
+                minorVersion = min(RDPDeviceRedirectionVersion.minorRDP6, announce.minor)
+                announcedClientID = clientID
+            }
             send(announce.clientAnnounceReplyEncoded(clientID: clientID))
             send(RDPDeviceRedirectionClientNameRequest(computerName: computerName).encoded())
 
         case RDPDeviceRedirectionPacketID.serverCapability:
-            _ = try RDPDeviceRedirectionServerCapabilities.parse(from: pdu)
-            send(RDPDeviceRedirectionClientCapabilities(minorVersion: currentMinorVersion()).encoded())
+            let minorVersion = lock.withLock { self.minorVersion }
+            send(RDPDeviceRedirectionClientCapabilities(minorVersion: minorVersion).encoded())
 
         case RDPDeviceRedirectionPacketID.clientIDConfirm:
-            if let confirm = try RDPDeviceRedirectionVersionAndID.parse(from: pdu) {
-                lock.lock()
-                let clientIDMatches = confirm.clientID == announcedClientID
-                if clientIDMatches {
-                    minorVersion = confirm.minor
-                }
-                lock.unlock()
-                guard clientIDMatches else {
-                    throw RDPDecodeError.invalidStaticVirtualChannelPDU
-                }
-                if confirm.minor == RDPDeviceRedirectionVersion.minorRDP51 {
-                    send(RDPDeviceRedirectionDeviceListAnnounce().encoded())
-                }
+            guard let confirm = try RDPDeviceRedirectionVersionAndID.parse(from: pdu) else {
+                return
             }
+            // The confirmed ClientId MUST match the Client Announce Reply ([MS-RDPEFS] 3.2.5.1.6).
+            guard confirm.clientID == lock.withLock({ announcedClientID }) else {
+                throw RDPDecodeError.invalidStaticVirtualChannelPDU
+            }
+            send(RDPDeviceRedirectionDeviceListAnnounce().encoded())
 
         case RDPDeviceRedirectionPacketID.userLoggedOn:
             guard pdu.payload.isEmpty else {
@@ -483,12 +275,6 @@ final class RDPDeviceRedirectionSession: @unchecked Sendable {
         default:
             return
         }
-    }
-
-    private func currentMinorVersion() -> UInt16 {
-        lock.lock()
-        defer { lock.unlock() }
-        return minorVersion
     }
 
     private func send(_ payload: Data) {
@@ -503,13 +289,4 @@ final class RDPDeviceRedirectionSession: @unchecked Sendable {
             self.channel.writeAndFlush(buffer, promise: nil)
         }
     }
-}
-
-private func utf16LENullTerminated(_ value: String) -> Data {
-    var data = Data()
-    for codeUnit in value.utf16 {
-        data.appendLittleEndianUInt16(codeUnit)
-    }
-    data.appendLittleEndianUInt16(0)
-    return data
 }

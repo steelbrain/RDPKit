@@ -19,15 +19,11 @@ struct MCSConnectResponse: Equatable, Sendable {
     var serverEarlyCapabilityFlags: UInt32?
     var ioChannelID: UInt16?
     var messageChannelID: UInt16?
-    var staticChannelAssignments: [RDPStaticVirtualChannelAssignment]
+    var staticChannelAssignments: [RDPStaticVirtualChannelAssignment] = []
     var serverCertificatePublicKey: RDPRSAPublicKey?
 
     var resultName: String {
         result == 0 ? "rt-successful" : "rt-\(result)"
-    }
-
-    var serverSupportsSkipChannelJoin: Bool {
-        serverEarlyCapabilityFlags.map { $0 & 0x0000_0008 != 0 } ?? false
     }
 
     static func parse(
@@ -49,58 +45,26 @@ struct MCSConnectResponse: Equatable, Sendable {
         guard resultValue <= UInt8.max else {
             throw RDPDecodeError.invalidBERLength
         }
-        let result = UInt8(resultValue)
-
+        var response = MCSConnectResponse(result: UInt8(resultValue))
         guard mcsCursor.remaining > 0 else {
-            return MCSConnectResponse(
-                result: result,
-                calledConnectID: nil,
-                serverUserDataKey: nil,
-                clientRequestedProtocols: nil,
-                serverEarlyCapabilityFlags: nil,
-                ioChannelID: nil,
-                messageChannelID: nil,
-                staticChannelAssignments: [],
-                serverCertificatePublicKey: nil
-            )
+            return response
         }
 
         let calledConnectIDValue = try mcsCursor.readBERInteger()
         guard calledConnectIDValue <= UInt16.max else {
             throw RDPDecodeError.invalidBERLength
         }
-        let calledConnectID = UInt16(calledConnectIDValue)
+        response.calledConnectID = UInt16(calledConnectIDValue)
         _ = try mcsCursor.readBERSequenceData()
-        let userData = try mcsCursor.readBEROctetString()
-        let serverData = try parseGCCServerData(
-            userData,
+        try parseGCCServerData(
+            mcsCursor.readBEROctetString(),
+            into: &response,
             requestedChannels: requestedChannels,
             expectedRequestedProtocols: expectedRequestedProtocols,
             expectedMessageChannelAdvertised: expectedMessageChannelAdvertised
         )
-
-        return MCSConnectResponse(
-            result: result,
-            calledConnectID: calledConnectID,
-            serverUserDataKey: serverData.key,
-            clientRequestedProtocols: serverData.clientRequestedProtocols,
-            serverEarlyCapabilityFlags: serverData.serverEarlyCapabilityFlags,
-            ioChannelID: serverData.ioChannelID,
-            messageChannelID: serverData.messageChannelID,
-            staticChannelAssignments: serverData.staticChannelAssignments,
-            serverCertificatePublicKey: serverData.serverSecurityData?.serverCertificatePublicKey
-        )
+        return response
     }
-}
-
-private struct GCCServerData {
-    var key: String?
-    var clientRequestedProtocols: RDPSecurityProtocols?
-    var serverEarlyCapabilityFlags: UInt32?
-    var serverSecurityData: ServerSecurityData?
-    var ioChannelID: UInt16?
-    var messageChannelID: UInt16?
-    var staticChannelAssignments: [RDPStaticVirtualChannelAssignment]
 }
 
 private struct ServerSecurityData {
@@ -129,79 +93,64 @@ struct RDPRSAPublicKey: Equatable, Sendable {
 
 private func parseGCCServerData(
     _ data: Data,
+    into response: inout MCSConnectResponse,
     requestedChannels: [RDPStaticVirtualChannel],
     expectedRequestedProtocols: RDPSecurityProtocols?,
     expectedMessageChannelAdvertised: Bool
-) throws -> GCCServerData {
-    let serverKey = Data([0x4D, 0x63, 0x44, 0x6E])
-    guard let keyRange = data.range(of: serverKey) else {
+) throws {
+    // GRD, KRdp and Windows (MS-RDPBCGR 4.1.4) send a wrong GCC ConnectPDU length
+    // (0x2A); do not validate it. Locate the server H.221 key instead.
+    let serverKey = "McDn"
+    guard let keyRange = data.range(of: Data(serverKey.utf8)) else {
         throw RDPDecodeError.invalidMCSConnectResponseHeader
     }
 
-    var cursor = ByteCursor(Data(data[keyRange.upperBound...]))
+    var cursor = ByteCursor(data[keyRange.upperBound...])
     let userDataLength = try cursor.readPERLength()
     let serverBlocks = try cursor.readData(count: userDataLength)
     guard cursor.remaining == 0 else {
         throw RDPDecodeError.invalidMCSConnectResponseHeader
     }
-    let serverData = try parseServerDataBlocks(from: serverBlocks)
+    response.serverUserDataKey = serverKey
+    let (channelIDs, serverSecurityData) = try parseServerDataBlocks(serverBlocks, into: &response)
     if let expectedRequestedProtocols {
-        let actualRequestedProtocols = serverData.clientRequestedProtocols ?? RDPSecurityProtocols(rawValue: 0)
+        let actualRequestedProtocols = response.clientRequestedProtocols ?? RDPSecurityProtocols(rawValue: 0)
         guard actualRequestedProtocols == expectedRequestedProtocols else {
             throw RDPDecodeError.invalidMCSConnectResponseHeader
         }
-        if expectedRequestedProtocols.rawValue != 0, let securityData = serverData.serverSecurityData {
-            guard securityData.encryptionMethod == 0, securityData.encryptionLevel == 0 else {
+        if expectedRequestedProtocols.rawValue != 0, let serverSecurityData {
+            guard serverSecurityData.encryptionMethod == 0, serverSecurityData.encryptionLevel == 0 else {
                 throw RDPDecodeError.invalidMCSConnectResponseHeader
             }
         }
     }
-    if serverData.messageChannelID != nil {
+    if response.messageChannelID != nil {
         guard expectedMessageChannelAdvertised else {
             throw RDPDecodeError.invalidMCSConnectResponseHeader
         }
     }
     if !requestedChannels.isEmpty {
-        guard serverData.channelIDs.count == requestedChannels.count else {
+        guard channelIDs.count == requestedChannels.count else {
             throw RDPDecodeError.invalidMCSConnectResponseHeader
         }
     }
 
-    let assignments = serverData.channelIDs.enumerated().map { index, channelID in
+    response.serverCertificatePublicKey = serverSecurityData?.serverCertificatePublicKey
+    response.staticChannelAssignments = channelIDs.enumerated().map { index, channelID in
         let name = requestedChannels.indices.contains(index)
             ? requestedChannels[index].name
             : "channel-\(index)"
         return RDPStaticVirtualChannelAssignment(name: name, channelID: channelID)
     }
-
-    return GCCServerData(
-        key: "McDn",
-        clientRequestedProtocols: serverData.clientRequestedProtocols,
-        serverEarlyCapabilityFlags: serverData.serverEarlyCapabilityFlags,
-        serverSecurityData: serverData.serverSecurityData,
-        ioChannelID: serverData.ioChannelID,
-        messageChannelID: serverData.messageChannelID,
-        staticChannelAssignments: assignments
-    )
 }
 
 private func parseServerDataBlocks(
-    from serverBlocks: Data
-) throws -> (
-    clientRequestedProtocols: RDPSecurityProtocols?,
-    serverEarlyCapabilityFlags: UInt32?,
-    serverSecurityData: ServerSecurityData?,
-    ioChannelID: UInt16?,
-    channelIDs: [UInt16],
-    messageChannelID: UInt16?
-) {
+    _ serverBlocks: Data,
+    into response: inout MCSConnectResponse
+) throws -> (channelIDs: [UInt16], serverSecurityData: ServerSecurityData?) {
     var cursor = ByteCursor(serverBlocks)
-    var clientRequestedProtocols: RDPSecurityProtocols?
-    var serverEarlyCapabilityFlags: UInt32?
     var serverSecurityData: ServerSecurityData?
-    var ioChannelID: UInt16?
     var channelIDs: [UInt16] = []
-    var messageChannelID: UInt16?
     var seenKnownBlockTypes = Set<UInt16>()
 
     while cursor.remaining >= 4 {
@@ -222,13 +171,15 @@ private func parseServerDataBlocks(
             guard body.count == 4 || body.count == 8 || body.count == 12 else {
                 throw RDPDecodeError.invalidMCSConnectResponseHeader
             }
-            if body.count >= 8 {
-                var bodyCursor = ByteCursor(body)
-                _ = try bodyCursor.readLittleEndianUInt32()
-                clientRequestedProtocols = RDPSecurityProtocols(rawValue: try bodyCursor.readLittleEndianUInt32())
-                if body.count == 12 {
-                    serverEarlyCapabilityFlags = try bodyCursor.readLittleEndianUInt32()
-                }
+            var bodyCursor = ByteCursor(body)
+            _ = try bodyCursor.readLittleEndianUInt32()
+            if bodyCursor.remaining > 0 {
+                response.clientRequestedProtocols = try RDPSecurityProtocols(
+                    rawValue: bodyCursor.readLittleEndianUInt32()
+                )
+            }
+            if bodyCursor.remaining > 0 {
+                response.serverEarlyCapabilityFlags = try bodyCursor.readLittleEndianUInt32()
             }
         case 0x0C02:
             serverSecurityData = try parseServerSecurityData(body)
@@ -237,28 +188,21 @@ private func parseServerDataBlocks(
                 throw RDPDecodeError.invalidMCSConnectResponseHeader
             }
             var bodyCursor = ByteCursor(body)
-            ioChannelID = try bodyCursor.readLittleEndianUInt16()
+            response.ioChannelID = try bodyCursor.readLittleEndianUInt16()
             let channelCount = try Int(bodyCursor.readLittleEndianUInt16())
-            channelIDs = []
             for _ in 0 ..< channelCount {
                 try channelIDs.append(bodyCursor.readLittleEndianUInt16())
             }
-            if channelCount.isMultiple(of: 2) {
-                guard bodyCursor.remaining == 0 else {
-                    throw RDPDecodeError.invalidMCSConnectResponseHeader
-                }
-            } else {
-                guard bodyCursor.remaining == 2 else {
-                    throw RDPDecodeError.invalidMCSConnectResponseHeader
-                }
-                _ = try bodyCursor.readLittleEndianUInt16()
+            // MS-RDPBCGR 2.2.1.4.4: Pad is present exactly when channelCount is odd.
+            guard bodyCursor.remaining == (channelCount.isMultiple(of: 2) ? 0 : 2) else {
+                throw RDPDecodeError.invalidMCSConnectResponseHeader
             }
         case 0x0C04:
             guard body.count == 2 else {
                 throw RDPDecodeError.invalidMCSConnectResponseHeader
             }
             var bodyCursor = ByteCursor(body)
-            messageChannelID = try bodyCursor.readLittleEndianUInt16()
+            response.messageChannelID = try bodyCursor.readLittleEndianUInt16()
         case 0x0C08:
             guard body.count == 4 else {
                 throw RDPDecodeError.invalidMCSConnectResponseHeader
@@ -273,15 +217,7 @@ private func parseServerDataBlocks(
     guard seenKnownBlockTypes.isSuperset(of: [0x0C01, 0x0C02, 0x0C03]) else {
         throw RDPDecodeError.invalidMCSConnectResponseHeader
     }
-
-    return (
-        clientRequestedProtocols,
-        serverEarlyCapabilityFlags,
-        serverSecurityData,
-        ioChannelID,
-        channelIDs,
-        messageChannelID
-    )
+    return (channelIDs, serverSecurityData)
 }
 
 private func isKnownServerDataBlock(_ type: UInt16) -> Bool {
@@ -339,11 +275,7 @@ private func parseServerSecurityData(_ body: Data) throws -> ServerSecurityData 
     )
 }
 
-func validateRDPServerCertificate(_ data: Data) throws {
-    _ = try rdpServerCertificatePublicKey(data)
-}
-
-func rdpServerCertificatePublicKey(_ data: Data) throws -> RDPRSAPublicKey? {
+func rdpServerCertificatePublicKey(_ data: Data) throws -> RDPRSAPublicKey {
     var cursor = ByteCursor(data)
     let version = try cursor.readLittleEndianUInt32()
     switch version & 0x7FFF_FFFF {
@@ -447,27 +379,8 @@ private func parseX509CertificateRSAPublicKey(_ certificateDER: Data) throws -> 
         throw RDPDecodeError.invalidMCSConnectResponseHeader
     }
 
-    return try parseDERRSAPublicKey(externalRepresentation as Data)
-}
-
-private func parseDERRSAPublicKey(_ der: Data) throws -> RDPRSAPublicKey {
-    do {
-        return try parseDERPKCS1RSAPublicKey(der)
-    } catch {
-        return try parseDERSubjectPublicKeyInfoRSAPublicKey(der)
-    }
-}
-
-private func parseDERSubjectPublicKeyInfoRSAPublicKey(_ der: Data) throws -> RDPRSAPublicKey {
-    var cursor = DERCursor(der)
-    var sequence = try DERCursor(cursor.readValue(tag: 0x30))
-    _ = try sequence.readValue(tag: 0x30)
-    let bitString = try sequence.readValue(tag: 0x03)
-    guard sequence.isAtEnd,
-          bitString.first == 0 else {
-        throw RDPDecodeError.invalidMCSConnectResponseHeader
-    }
-    return try parseDERPKCS1RSAPublicKey(Data(bitString.dropFirst()))
+    // SecKeyCopyExternalRepresentation returns PKCS #1 RSAPublicKey for RSA keys.
+    return try parseDERPKCS1RSAPublicKey(externalRepresentation as Data)
 }
 
 private func parseDERPKCS1RSAPublicKey(_ der: Data) throws -> RDPRSAPublicKey {
@@ -510,137 +423,144 @@ private func derUInt32(_ bytes: Data) throws -> UInt32 {
     return value
 }
 
+/// Raw RSA (`base^exponent mod modulus`) on little-endian integers. Raw RSA
+/// requires `base < modulus`; the size cap bounds the work a server-supplied
+/// key can cause.
 private func modPowLittleEndian(base: Data, exponent: UInt32, modulus: Data) throws -> Data {
-    guard exponent > 0, !modulus.isEmpty, compareLittleEndian(modulus, Data([1])) > 0 else {
+    let modulus = littleEndianLimbs(modulus)
+    let base = littleEndianLimbs(base)
+    guard exponent > 0,
+          (1 ... 512).contains(modulus.count),
+          modulus[0] & 1 == 1,
+          modulus != [1],
+          base.count < modulus.count
+          || base.count == modulus.count && isLess(base, modulus)
+    else {
         throw RDPDecodeError.invalidMCSConnectResponseHeader
     }
 
-    var result = Data([1])
-    var factor = remainderLittleEndian(trimLittleEndian(base), modulus)
-    var remainingExponent = exponent
-    while remainingExponent > 0 {
-        if remainingExponent & 1 == 1 {
-            result = multiplyModLittleEndian(result, factor, modulus)
+    let result = MontgomeryModulus(modulus).power(base, exponent)
+    var bytes = Data(capacity: result.count * 4)
+    for limb in result {
+        bytes.appendLittleEndianUInt32(limb)
+    }
+    while bytes.last == 0 {
+        bytes.removeLast()
+    }
+    return bytes
+}
+
+private func littleEndianLimbs(_ bytes: Data) -> [UInt32] {
+    var limbs = [UInt32](repeating: 0, count: (bytes.count + 3) / 4)
+    for (offset, byte) in bytes.enumerated() {
+        limbs[offset / 4] |= UInt32(byte) << (8 * (offset % 4))
+    }
+    while limbs.last == 0 {
+        limbs.removeLast()
+    }
+    return limbs
+}
+
+/// Compares equal-length little-endian limb arrays.
+private func isLess(_ lhs: [UInt32], _ rhs: [UInt32]) -> Bool {
+    for index in lhs.indices.reversed() where lhs[index] != rhs[index] {
+        return lhs[index] < rhs[index]
+    }
+    return false
+}
+
+/// Montgomery arithmetic modulo an odd modulus of 32-bit little-endian limbs.
+private struct MontgomeryModulus {
+    let limbs: [UInt32]
+    /// `-limbs[0]^-1 mod 2^32`.
+    private let negativeInverse: UInt32
+
+    init(_ limbs: [UInt32]) {
+        self.limbs = limbs
+        var inverse: UInt32 = 1
+        for _ in 0 ..< 5 {
+            inverse = inverse &* (2 &- limbs[0] &* inverse)
         }
-        remainingExponent >>= 1
-        if remainingExponent > 0 {
-            factor = multiplyModLittleEndian(factor, factor, modulus)
+        negativeInverse = 0 &- inverse
+    }
+
+    func power(_ base: [UInt32], _ exponent: UInt32) -> [UInt32] {
+        let montgomeryBase = toMontgomery(base)
+        var result = toMontgomery([1])
+        for bit in (0 ..< UInt32.bitWidth - exponent.leadingZeroBitCount).reversed() {
+            result = multiply(result, result)
+            if (exponent >> bit) & 1 == 1 {
+                result = multiply(result, montgomeryBase)
+            }
+        }
+        return multiply(result, padded([1]))
+    }
+
+    private func padded(_ value: [UInt32]) -> [UInt32] {
+        value + [UInt32](repeating: 0, count: limbs.count - value.count)
+    }
+
+    /// `value * 2^(32 * limbs.count) mod n` by modular doubling; `value < n`.
+    private func toMontgomery(_ value: [UInt32]) -> [UInt32] {
+        var result = padded(value)
+        for _ in 0 ..< UInt32.bitWidth * limbs.count {
+            var carry: UInt32 = 0
+            for index in result.indices {
+                let limb = result[index]
+                result[index] = limb << 1 | carry
+                carry = limb >> 31
+            }
+            if carry != 0 || !isLess(result, limbs) {
+                subtractModulus(from: &result)
+            }
+        }
+        return result
+    }
+
+    /// `lhs * rhs * 2^-(32 * limbs.count) mod n` (CIOS).
+    private func multiply(_ lhs: [UInt32], _ rhs: [UInt32]) -> [UInt32] {
+        let count = limbs.count
+        var accumulator = [UInt32](repeating: 0, count: count + 2)
+        for outer in 0 ..< count {
+            var carry: UInt64 = 0
+            for inner in 0 ..< count {
+                let sum = UInt64(accumulator[inner]) + UInt64(lhs[inner]) * UInt64(rhs[outer]) + carry
+                accumulator[inner] = UInt32(truncatingIfNeeded: sum)
+                carry = sum >> 32
+            }
+            var sum = UInt64(accumulator[count]) + carry
+            accumulator[count] = UInt32(truncatingIfNeeded: sum)
+            accumulator[count + 1] = UInt32(sum >> 32)
+
+            let factor = accumulator[0] &* negativeInverse
+            sum = UInt64(accumulator[0]) + UInt64(factor) * UInt64(limbs[0])
+            carry = sum >> 32
+            for inner in 1 ..< count {
+                sum = UInt64(accumulator[inner]) + UInt64(factor) * UInt64(limbs[inner]) + carry
+                accumulator[inner - 1] = UInt32(truncatingIfNeeded: sum)
+                carry = sum >> 32
+            }
+            sum = UInt64(accumulator[count]) + carry
+            accumulator[count - 1] = UInt32(truncatingIfNeeded: sum)
+            accumulator[count] = accumulator[count + 1] + UInt32(sum >> 32)
+        }
+
+        var result = Array(accumulator[0 ..< count])
+        if accumulator[count] != 0 || !isLess(result, limbs) {
+            subtractModulus(from: &result)
+        }
+        return result
+    }
+
+    private func subtractModulus(from value: inout [UInt32]) {
+        var borrow = false
+        for index in value.indices {
+            let (partial, firstBorrow) = value[index].subtractingReportingOverflow(limbs[index])
+            let (difference, secondBorrow) = partial.subtractingReportingOverflow(borrow ? 1 : 0)
+            value[index] = difference
+            borrow = firstBorrow || secondBorrow
         }
     }
-    return trimLittleEndian(result)
-}
-
-private func multiplyModLittleEndian(_ lhs: Data, _ rhs: Data, _ modulus: Data) -> Data {
-    var result = Data()
-    var addend = remainderLittleEndian(lhs, modulus)
-    var multiplier = trimLittleEndian(rhs)
-
-    while !multiplier.isEmpty {
-        if multiplier[multiplier.startIndex] & 1 == 1 {
-            result = addModLittleEndian(result, addend, modulus)
-        }
-        addend = addModLittleEndian(addend, addend, modulus)
-        shiftRightOneBitLittleEndian(&multiplier)
-    }
-    return result
-}
-
-private func addModLittleEndian(_ lhs: Data, _ rhs: Data, _ modulus: Data) -> Data {
-    var sum = addLittleEndian(lhs, rhs)
-    if compareLittleEndian(sum, modulus) >= 0 {
-        sum = subtractLittleEndian(sum, modulus)
-    }
-    return sum
-}
-
-private func remainderLittleEndian(_ value: Data, _ modulus: Data) -> Data {
-    var result = trimLittleEndian(value)
-    while compareLittleEndian(result, modulus) >= 0 {
-        result = subtractLittleEndian(result, modulus)
-    }
-    return result
-}
-
-private func addLittleEndian(_ lhs: Data, _ rhs: Data) -> Data {
-    let count = max(lhs.count, rhs.count)
-    var result = Data()
-    result.reserveCapacity(count + 1)
-    var carry: UInt16 = 0
-
-    for offset in 0 ..< count {
-        let lhsByte = offset < lhs.count ? UInt16(lhs[lhs.index(lhs.startIndex, offsetBy: offset)]) : 0
-        let rhsByte = offset < rhs.count ? UInt16(rhs[rhs.index(rhs.startIndex, offsetBy: offset)]) : 0
-        let value = lhsByte + rhsByte + carry
-        result.append(UInt8(value & 0xFF))
-        carry = value >> 8
-    }
-    if carry > 0 {
-        result.append(UInt8(carry))
-    }
-    return trimLittleEndian(result)
-}
-
-private func subtractLittleEndian(_ lhs: Data, _ rhs: Data) -> Data {
-    var result = Data()
-    result.reserveCapacity(lhs.count)
-    var borrow = 0
-
-    for offset in 0 ..< lhs.count {
-        let lhsByte = Int(lhs[lhs.index(lhs.startIndex, offsetBy: offset)])
-        let rhsByte = offset < rhs.count ? Int(rhs[rhs.index(rhs.startIndex, offsetBy: offset)]) : 0
-        var value = lhsByte - rhsByte - borrow
-        if value < 0 {
-            value += 256
-            borrow = 1
-        } else {
-            borrow = 0
-        }
-        result.append(UInt8(value))
-    }
-    return trimLittleEndian(result)
-}
-
-private func compareLittleEndian(_ lhs: Data, _ rhs: Data) -> Int {
-    let lhs = trimLittleEndian(lhs)
-    let rhs = trimLittleEndian(rhs)
-    if lhs.count != rhs.count {
-        return lhs.count < rhs.count ? -1 : 1
-    }
-    guard !lhs.isEmpty else {
-        return 0
-    }
-
-    for offset in stride(from: lhs.count - 1, through: 0, by: -1) {
-        let lhsByte = lhs[lhs.index(lhs.startIndex, offsetBy: offset)]
-        let rhsByte = rhs[rhs.index(rhs.startIndex, offsetBy: offset)]
-        if lhsByte != rhsByte {
-            return lhsByte < rhsByte ? -1 : 1
-        }
-    }
-    return 0
-}
-
-private func shiftRightOneBitLittleEndian(_ value: inout Data) {
-    var carry: UInt8 = 0
-    for offset in stride(from: value.count - 1, through: 0, by: -1) {
-        let index = value.index(value.startIndex, offsetBy: offset)
-        let byte = value[index]
-        value[index] = byte >> 1 | carry
-        carry = byte & 1 == 1 ? 0x80 : 0
-    }
-    value = trimLittleEndian(value)
-}
-
-private func trimLittleEndian(_ data: Data) -> Data {
-    var end = data.endIndex
-    while end > data.startIndex {
-        let previous = data.index(before: end)
-        guard data[previous] == 0 else {
-            break
-        }
-        end = previous
-    }
-    return Data(data[data.startIndex ..< end])
 }
 
 private struct DERCursor {

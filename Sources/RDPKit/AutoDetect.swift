@@ -55,38 +55,32 @@ struct RDPServerAutoDetectRequest: Equatable, Sendable {
         }
     }
 
-    func response(measuredByteCount: UInt32? = nil) -> RDPClientAutoDetectResponsePDU? {
+    /// The client's reply, if the request has one ([MS-RDPBCGR] 2.2.14.2).
+    /// Bandwidth Measure Start/Payload and Network Characteristics Result
+    /// have none; the Network Characteristics Sync response is reserved for
+    /// auto-reconnect with previously measured values (2.2.14.2.3). Only the
+    /// meter calls this, so every result carries a measurement.
+    fileprivate func response(byteCount: UInt32, milliseconds: UInt32) -> RDPClientAutoDetectResponsePDU? {
+        let resultType: UInt16
         switch requestType {
+        case 0x0001, 0x1001:
+            return RDPClientAutoDetectResponsePDU(sequenceNumber: sequenceNumber)
         case 0x002B:
-            return RDPClientAutoDetectResponsePDU(
-                sequenceNumber: sequenceNumber,
-                responseType: RDPClientAutoDetectResponsePDU.ResponseType.bandwidthMeasureResults,
-                bandwidthByteCount: measuredByteCount ?? measuredByteCountContribution
-            )
+            resultType = RDPClientAutoDetectResponsePDU.ResponseType.bandwidthMeasureResults
         case 0x0429:
-            return RDPClientAutoDetectResponsePDU(
-                sequenceNumber: sequenceNumber,
-                responseType: RDPClientAutoDetectResponsePDU.ResponseType.continuousBandwidthMeasureResults,
-                bandwidthByteCount: measuredByteCount ?? measuredByteCountContribution
-            )
-        case 0x0001:
-            return RDPClientAutoDetectResponsePDU(sequenceNumber: sequenceNumber)
-        case 0x1001:
-            return RDPClientAutoDetectResponsePDU(sequenceNumber: sequenceNumber)
-        case 0x1014:
-            return .networkCharacteristicsSync(sequenceNumber: sequenceNumber)
-        case 0x0840, 0x0880, 0x08C0:
-            // GRD/KRdp transcripts include a client response barrier after result PDUs.
-            return RDPClientAutoDetectResponsePDU(sequenceNumber: sequenceNumber)
+            resultType = RDPClientAutoDetectResponsePDU.ResponseType.continuousBandwidthMeasureResults
         default:
             return nil
         }
+        return RDPClientAutoDetectResponsePDU(
+            sequenceNumber: sequenceNumber,
+            responseType: resultType,
+            bandwidthByteCount: byteCount,
+            bandwidthMilliseconds: milliseconds
+        )
     }
 
-    static func parseIfPresent(fromTPKT packet: Data) throws -> RDPServerAutoDetectRequest? {
-        guard let indication = try? MCSSendDataIndicationPDU.parse(fromTPKT: packet) else {
-            return nil
-        }
+    static func parseIfPresent(from indication: MCSSendDataIndicationPDU) throws -> RDPServerAutoDetectRequest? {
         guard indication.userData.count >= 10 else {
             return nil
         }
@@ -119,6 +113,55 @@ struct RDPServerAutoDetectRequest: Equatable, Sendable {
             requestType: requestType,
             payloadByteCount: payloadByteCount
         )
+    }
+}
+
+/// Answers a run of auto-detect requests, measuring each bandwidth test:
+/// Bandwidth Measure Results report the bytes and the milliseconds between
+/// receipt of the Start and Stop requests ([MS-RDPBCGR] 2.2.14.2.2).
+struct RDPAutoDetectBandwidthMeter: Sendable {
+    private var startedAt: ContinuousClock.Instant?
+    private var byteCount: UInt32 = 0
+
+    mutating func response(
+        to request: RDPServerAutoDetectRequest,
+        receivedAt now: ContinuousClock.Instant = .now
+    ) -> RDPClientAutoDetectResponsePDU? {
+        if request.resetsMeasuredByteCount {
+            startedAt = now
+            byteCount = 0
+        }
+        let (total, overflow) = byteCount.addingReportingOverflow(request.measuredByteCountContribution)
+        byteCount = overflow ? .max : total
+
+        // A Stop without a Start has nothing to time; report the 1 ms minimum.
+        guard let response = request.response(
+            byteCount: byteCount,
+            milliseconds: startedAt.map { Self.milliseconds(now - $0) } ?? 1
+        ) else {
+            return nil
+        }
+        if case .bandwidth = response.payload {
+            startedAt = nil
+            byteCount = 0
+        }
+        return response
+    }
+
+    /// Counts other traffic received while a measurement runs: continuous
+    /// detection measures the session's own data ([MS-RDPBCGR] 1.3.9).
+    mutating func countReceivedBytes(_ count: Int) {
+        guard startedAt != nil else {
+            return
+        }
+        let (total, overflow) = byteCount.addingReportingOverflow(UInt32(clamping: count))
+        byteCount = overflow ? .max : total
+    }
+
+    private static func milliseconds(_ duration: Duration) -> UInt32 {
+        let (seconds, attoseconds) = duration.components
+        let milliseconds = seconds * 1000 + attoseconds / 1_000_000_000_000_000
+        return UInt32(clamping: milliseconds)
     }
 }
 
@@ -155,7 +198,9 @@ private extension ByteCursor {
             return 0
 
         default:
-            throw RDPDecodeError.invalidAutoDetectRequest
+            // A request type this client does not know gets no response.
+            _ = readRemainingData()
+            return 0
         }
     }
 
@@ -182,60 +227,38 @@ struct RDPClientAutoDetectResponsePDU: Equatable, Sendable {
         static let rtt: UInt16 = 0x0000
         static let bandwidthMeasureResults: UInt16 = 0x0003
         static let continuousBandwidthMeasureResults: UInt16 = 0x000B
-        static let networkCharacteristicsSync: UInt16 = 0x0018
     }
 
     enum Payload: Equatable, Sendable {
         case rtt
         case bandwidth(byteCount: UInt32, milliseconds: UInt32)
-        case networkCharacteristicsSync(bandwidth: UInt32, rtt: UInt32)
     }
 
     var sequenceNumber: UInt16
     var responseType: UInt16
     var payload: Payload
 
+    /// RTT Measure Response ([MS-RDPBCGR] 2.2.14.2.1).
+    init(sequenceNumber: UInt16) {
+        self.sequenceNumber = sequenceNumber
+        responseType = ResponseType.rtt
+        payload = .rtt
+    }
+
+    /// Bandwidth Measure Results ([MS-RDPBCGR] 2.2.14.2.2).
     init(
         sequenceNumber: UInt16,
-        responseType: UInt16 = ResponseType.rtt,
-        bandwidthByteCount: UInt32? = nil,
-        bandwidthMilliseconds: UInt32 = 1
+        responseType: UInt16,
+        bandwidthByteCount: UInt32,
+        bandwidthMilliseconds: UInt32
     ) {
-        if bandwidthByteCount == nil {
-            precondition(responseType == ResponseType.rtt)
-        } else {
-            precondition(
-                responseType == ResponseType.bandwidthMeasureResults
-                    || responseType == ResponseType.continuousBandwidthMeasureResults
-            )
-        }
-
-        self.sequenceNumber = sequenceNumber
-        self.responseType = responseType
-        if let bandwidthByteCount {
-            payload = .bandwidth(byteCount: bandwidthByteCount, milliseconds: bandwidthMilliseconds)
-        } else {
-            payload = .rtt
-        }
-    }
-
-    static func networkCharacteristicsSync(
-        sequenceNumber: UInt16,
-        bandwidth: UInt32 = 0,
-        rtt: UInt32 = 0
-    ) -> RDPClientAutoDetectResponsePDU {
-        RDPClientAutoDetectResponsePDU(
-            sequenceNumber: sequenceNumber,
-            responseType: ResponseType.networkCharacteristicsSync,
-            payload: .networkCharacteristicsSync(bandwidth: bandwidth, rtt: rtt)
+        precondition(
+            responseType == ResponseType.bandwidthMeasureResults
+                || responseType == ResponseType.continuousBandwidthMeasureResults
         )
-    }
-
-    private init(sequenceNumber: UInt16, responseType: UInt16, payload: Payload) {
-        precondition(responseType == ResponseType.networkCharacteristicsSync)
         self.sequenceNumber = sequenceNumber
         self.responseType = responseType
-        self.payload = payload
+        payload = .bandwidth(byteCount: bandwidthByteCount, milliseconds: bandwidthMilliseconds)
     }
 
     func encodedPDUData() -> Data {
@@ -252,9 +275,6 @@ struct RDPClientAutoDetectResponsePDU: Equatable, Sendable {
         case let .bandwidth(byteCount, milliseconds):
             data.appendLittleEndianUInt32(max(1, milliseconds))
             data.appendLittleEndianUInt32(byteCount)
-        case let .networkCharacteristicsSync(bandwidth, rtt):
-            data.appendLittleEndianUInt32(bandwidth)
-            data.appendLittleEndianUInt32(rtt)
         }
         return data
     }
@@ -271,7 +291,7 @@ struct RDPClientAutoDetectResponsePDU: Equatable, Sendable {
         switch payload {
         case .rtt:
             0x06
-        case .bandwidth, .networkCharacteristicsSync:
+        case .bandwidth:
             0x0E
         }
     }

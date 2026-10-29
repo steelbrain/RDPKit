@@ -1,0 +1,493 @@
+import Foundation
+
+public struct RDPH264AnnexBSample: Equatable, Sendable {
+    public var lengthPrefixedData: Data
+    public var sequenceParameterSet: Data?
+    public var pictureParameterSet: Data?
+
+    public var isEmpty: Bool {
+        lengthPrefixedData.isEmpty
+    }
+}
+
+public struct RDPHEVCAnnexBSample: Equatable, Sendable {
+    public var lengthPrefixedData: Data
+    public var videoParameterSet: Data?
+    public var sequenceParameterSet: Data?
+    public var pictureParameterSet: Data?
+
+    public var isEmpty: Bool {
+        lengthPrefixedData.isEmpty
+    }
+}
+
+public enum RDPH264AnnexB {
+    public static func nalUnitTypes(from data: Data) -> [UInt8] {
+        RDPAnnexB.nalUnitTypes(from: data, codec: .h264)
+    }
+
+    public static func sample(from data: Data) -> RDPH264AnnexBSample {
+        let sample = RDPAnnexB.lengthPrefixedSample(from: data, codec: .h264)
+        return RDPH264AnnexBSample(
+            lengthPrefixedData: sample.data,
+            sequenceParameterSet: sample.parameterSets[7],
+            pictureParameterSet: sample.parameterSets[8]
+        )
+    }
+}
+
+public enum RDPHEVCAnnexB {
+    public static func nalUnitTypes(from data: Data) -> [UInt8] {
+        RDPAnnexB.nalUnitTypes(from: data, codec: .hevc)
+    }
+
+    public static func sample(from data: Data) -> RDPHEVCAnnexBSample {
+        let sample = RDPAnnexB.lengthPrefixedSample(from: data, codec: .hevc)
+        return RDPHEVCAnnexBSample(
+            lengthPrefixedData: sample.data,
+            videoParameterSet: sample.parameterSets[32],
+            sequenceParameterSet: sample.parameterSets[33],
+            pictureParameterSet: sample.parameterSets[34]
+        )
+    }
+}
+
+/// H.264 sequence parameter set rewriting (ITU-T H.264 7.3.2.1.1 and E.1.1).
+enum RDPH264SequenceParameterSet {
+    /// Returns the SPS NAL unit with a VUI video signal type stating the colours its samples hold,
+    /// or nil when the SPS cannot be parsed. Every other field is copied bit for bit.
+    ///
+    /// MS-RDPEGFX 2.2.4.4 and 3.3.8.3.1 define RDPGFX H.264 samples as full-range BT.709, whatever
+    /// the VUI says; gnome-remote-desktop encodes that and signals no range (gnome fixture), and so
+    /// does FreeRDP through x264 (freerdp-shadow fixtures). The exception is KPipeWire's libx264
+    /// encoder (see `RDPAnnexB.identifiesKPipeWire`) when it signals no range: x264 then holds what
+    /// FFmpeg's default RGB conversion feeds it, limited-range BT.601. KRdp 6.8 sends that
+    /// (krdp-colour-chart fixture). Primaries are BT.709 and the transfer sRGB, those of desktop
+    /// content.
+    static func signalingSampleColours(_ nalUnit: Data, encodedByKPipeWire: Bool) -> Data? {
+        guard let (header, rbsp, stopBitPosition) = rbsp(of: nalUnit) else {
+            return nil
+        }
+        var reader = RBSPBitReader(bytes: rbsp, end: stopBitPosition)
+        var writer = RBSPBitWriter()
+        do {
+            _ = try reader.skipToVUIParametersPresentFlag()
+            writer.copy(rbsp, bits: 0 ..< reader.position)
+            let hasVUI = try reader.readBits(1) == 1
+            writer.write(1, bitCount: 1)
+            var videoFormat: UInt32 = 5 // Unspecified
+            var signalsRange = false
+            if hasVUI {
+                let start = reader.position
+                if try reader.readBits(1) == 1, try reader.readBits(8) == 255 {
+                    try reader.skipBits(32) // Extended_SAR sar_width, sar_height
+                }
+                if try reader.readBits(1) == 1 {
+                    try reader.skipBits(1) // overscan_appropriate_flag
+                }
+                writer.copy(rbsp, bits: start ..< reader.position)
+                if try reader.readBits(1) == 1 {
+                    signalsRange = true
+                    videoFormat = try reader.readBits(3)
+                    try reader.skipBits(1) // video_full_range_flag
+                    if try reader.readBits(1) == 1 {
+                        try reader.skipBits(24) // colour_primaries, transfer_characteristics, matrix_coefficients
+                    }
+                }
+            } else {
+                writer.write(0, bitCount: 2) // aspect_ratio_info_present_flag, overscan_info_present_flag
+            }
+            let isLimitedBT601 = encodedByKPipeWire && !signalsRange
+            writer.write(1, bitCount: 1) // video_signal_type_present_flag
+            writer.write(videoFormat, bitCount: 3)
+            writer.write(isLimitedBT601 ? 0 : 1, bitCount: 1) // video_full_range_flag
+            writer.write(1, bitCount: 1) // colour_description_present_flag
+            // BT.709 primaries and the sRGB transfer, then the BT.601 or BT.709 matrix. Tagged with
+            // the BT.709 transfer, Core Image renders lighter colours than MS-RDPEGFX 3.3.8.3.1 defines.
+            writer.write(isLimitedBT601 ? 0x01_0D_06 : 0x01_0D_01, bitCount: 24)
+            if hasVUI {
+                writer.copy(rbsp, bits: reader.position ..< stopBitPosition)
+            } else {
+                // chroma_loc_info, timing_info, NAL HRD, VCL HRD, pic_struct, and bitstream_restriction flags.
+                writer.write(0, bitCount: 6)
+            }
+        } catch {
+            return nil
+        }
+        writer.write(1, bitCount: 1) // rbsp_stop_one_bit
+        return Data([header]) + addingEmulationPrevention(writer.bytes)
+    }
+
+    /// Returns the SPS NAL unit without frame cropping, so a decoder outputs the whole coded
+    /// picture, or nil when the SPS cannot be parsed. MS-RDPEGFX 2.2.4.4 codes pictures at sizes
+    /// aligned to 16 and crops them by the region rectangles; FreeRDP's encoders signal SPS
+    /// cropping as well (freerdp-shadow-avc444v2 fixture: 1920x1088 cropped to 1080 rows).
+    static func removingFrameCropping(_ nalUnit: Data) -> Data? {
+        guard let (header, rbsp, stopBitPosition) = rbsp(of: nalUnit) else {
+            return nil
+        }
+        var reader = RBSPBitReader(bytes: rbsp, end: stopBitPosition)
+        guard let fields = try? reader.skipToVUIParametersPresentFlag() else {
+            return nil
+        }
+        guard fields.frameCroppingBits.count > 1 else {
+            return nalUnit
+        }
+        var writer = RBSPBitWriter()
+        writer.copy(rbsp, bits: 0 ..< fields.frameCroppingBits.lowerBound)
+        writer.write(0, bitCount: 1) // frame_cropping_flag
+        writer.copy(rbsp, bits: fields.frameCroppingBits.upperBound ..< stopBitPosition)
+        writer.write(1, bitCount: 1) // rbsp_stop_one_bit
+        return Data([header]) + addingEmulationPrevention(writer.bytes)
+    }
+
+    /// The SPS's picture width after frame cropping (7.4.2.1.1): the width of the frames the
+    /// encoder was given. Nil when the SPS cannot be parsed.
+    static func croppedWidth(_ nalUnit: Data) -> Int? {
+        guard let (_, rbsp, stopBitPosition) = rbsp(of: nalUnit) else {
+            return nil
+        }
+        var reader = RBSPBitReader(bytes: rbsp, end: stopBitPosition)
+        return (try? reader.skipToVUIParametersPresentFlag())?.croppedWidth
+    }
+
+    /// The SPS's RBSP and the position of its rbsp_stop_one_bit; anything after that bit is
+    /// alignment or trailing zeros.
+    private static func rbsp(of nalUnit: Data) -> (header: UInt8, bytes: [UInt8], stopBitPosition: Int)? {
+        guard let header = nalUnit.first, header & 0x1F == 7 else {
+            return nil
+        }
+        let rbsp = removingEmulationPrevention(nalUnit.dropFirst())
+        guard let lastByteIndex = rbsp.lastIndex(where: { $0 != 0 }) else {
+            return nil
+        }
+        return (header, rbsp, lastByteIndex * 8 + 7 - rbsp[lastByteIndex].trailingZeroBitCount)
+    }
+
+    private static func removingEmulationPrevention(_ bytes: Data) -> [UInt8] {
+        var rbsp: [UInt8] = []
+        rbsp.reserveCapacity(bytes.count)
+        var zeroCount = 0
+        for byte in bytes {
+            if zeroCount >= 2, byte == 3 {
+                zeroCount = 0
+                continue
+            }
+            rbsp.append(byte)
+            zeroCount = byte == 0 ? zeroCount + 1 : 0
+        }
+        return rbsp
+    }
+
+    private static func addingEmulationPrevention(_ rbsp: [UInt8]) -> Data {
+        var bytes = Data(capacity: rbsp.count + rbsp.count / 2)
+        var zeroCount = 0
+        for byte in rbsp {
+            if zeroCount >= 2, byte <= 3 {
+                bytes.append(3)
+                zeroCount = 0
+            }
+            bytes.append(byte)
+            zeroCount = byte == 0 ? zeroCount + 1 : 0
+        }
+        return bytes
+    }
+}
+
+private struct RBSPBitReader {
+    struct EndOfData: Error {}
+
+    let bytes: [UInt8]
+    let end: Int
+    var position = 0
+
+    mutating func readBits(_ count: Int) throws -> UInt32 {
+        guard position + count <= end else {
+            throw EndOfData()
+        }
+        var value: UInt32 = 0
+        for _ in 0 ..< count {
+            let bit = bytes[position >> 3] >> (7 - UInt8(position & 7)) & 1
+            value = value << 1 | UInt32(bit)
+            position += 1
+        }
+        return value
+    }
+
+    mutating func skipBits(_ count: Int) throws {
+        guard position + count <= end else {
+            throw EndOfData()
+        }
+        position += count
+    }
+
+    /// ue(v), 9.1.
+    mutating func readUnsignedExpGolomb() throws -> UInt32 {
+        var leadingZeroBits = 0
+        while try readBits(1) == 0 {
+            leadingZeroBits += 1
+            guard leadingZeroBits < 32 else {
+                throw EndOfData()
+            }
+        }
+        let suffix = try readBits(leadingZeroBits)
+        return (UInt32(1) << leadingZeroBits) - 1 + suffix
+    }
+
+    /// se(v), 9.1.1.
+    mutating func readSignedExpGolomb() throws -> Int {
+        let codeNum = Int(try readUnsignedExpGolomb())
+        return codeNum.isMultiple(of: 2) ? -(codeNum / 2) : (codeNum + 1) / 2
+    }
+
+    struct SequenceFields {
+        /// frame_cropping_flag and the offsets that follow it.
+        var frameCroppingBits: Range<Int>
+        /// Nil when the cropping leaves no columns.
+        var croppedWidth: Int?
+    }
+
+    /// Reads seq_parameter_set_data() up to vui_parameters_present_flag (7.3.2.1.1).
+    mutating func skipToVUIParametersPresentFlag() throws -> SequenceFields {
+        let profileIDC = try readBits(8)
+        try skipBits(16) // constraint_set flags, reserved_zero_2bits, level_idc
+        _ = try readUnsignedExpGolomb() // seq_parameter_set_id
+        var chromaArrayType: UInt32 = 1
+        if [100, 110, 122, 244, 44, 83, 86, 118, 128, 138, 139, 134, 135].contains(profileIDC) {
+            let chromaFormatIDC = try readUnsignedExpGolomb()
+            chromaArrayType = chromaFormatIDC
+            if chromaFormatIDC == 3, try readBits(1) == 1 { // separate_colour_plane_flag
+                chromaArrayType = 0
+            }
+            _ = try readUnsignedExpGolomb() // bit_depth_luma_minus8
+            _ = try readUnsignedExpGolomb() // bit_depth_chroma_minus8
+            try skipBits(1) // qpprime_y_zero_transform_bypass_flag
+            if try readBits(1) == 1 { // seq_scaling_matrix_present_flag
+                for index in 0 ..< (chromaFormatIDC == 3 ? 12 : 8) {
+                    if try readBits(1) == 1 { // seq_scaling_list_present_flag
+                        try skipScalingList(size: index < 6 ? 16 : 64)
+                    }
+                }
+            }
+        }
+        _ = try readUnsignedExpGolomb() // log2_max_frame_num_minus4
+        switch try readUnsignedExpGolomb() { // pic_order_cnt_type
+        case 0:
+            _ = try readUnsignedExpGolomb() // log2_max_pic_order_cnt_lsb_minus4
+        case 1:
+            try skipBits(1) // delta_pic_order_always_zero_flag
+            _ = try readSignedExpGolomb() // offset_for_non_ref_pic
+            _ = try readSignedExpGolomb() // offset_for_top_to_bottom_field
+            let referenceFrameCount = try readUnsignedExpGolomb() // num_ref_frames_in_pic_order_cnt_cycle
+            for _ in 0 ..< referenceFrameCount {
+                _ = try readSignedExpGolomb() // offset_for_ref_frame
+            }
+        default:
+            break
+        }
+        _ = try readUnsignedExpGolomb() // max_num_ref_frames
+        try skipBits(1) // gaps_in_frame_num_value_allowed_flag
+        let codedWidth = (Int(try readUnsignedExpGolomb()) + 1) * 16 // pic_width_in_mbs_minus1
+        _ = try readUnsignedExpGolomb() // pic_height_in_map_units_minus1
+        if try readBits(1) == 0 { // frame_mbs_only_flag
+            try skipBits(1) // mb_adaptive_frame_field_flag
+        }
+        try skipBits(1) // direct_8x8_inference_flag
+        let frameCroppingStart = position
+        var croppedColumns = 0
+        if try readBits(1) == 1 { // frame_cropping_flag
+            // frame_crop_left_offset and frame_crop_right_offset, in units of CropUnitX (7-19, 7-21).
+            let cropUnitX = chromaArrayType == 1 || chromaArrayType == 2 ? 2 : 1
+            croppedColumns = cropUnitX * (Int(try readUnsignedExpGolomb()) + Int(try readUnsignedExpGolomb()))
+            _ = try readUnsignedExpGolomb() // frame_crop_top_offset
+            _ = try readUnsignedExpGolomb() // frame_crop_bottom_offset
+        }
+        return SequenceFields(
+            frameCroppingBits: frameCroppingStart ..< position,
+            croppedWidth: croppedColumns < codedWidth ? codedWidth - croppedColumns : nil
+        )
+    }
+
+    /// scaling_list(), 7.3.2.1.1.1.
+    private mutating func skipScalingList(size: Int) throws {
+        var lastScale = 8
+        var nextScale = 8
+        for _ in 0 ..< size {
+            if nextScale != 0 {
+                let deltaScale = try readSignedExpGolomb()
+                nextScale = (lastScale + deltaScale + 256) % 256
+            }
+            lastScale = nextScale == 0 ? lastScale : nextScale
+        }
+    }
+}
+
+private struct RBSPBitWriter {
+    private(set) var bytes: [UInt8] = []
+    private var bitCount = 0
+
+    mutating func write(_ value: UInt32, bitCount count: Int) {
+        for shift in stride(from: count - 1, through: 0, by: -1) {
+            if bitCount.isMultiple(of: 8) {
+                bytes.append(0)
+            }
+            bytes[bytes.count - 1] |= UInt8(value >> UInt32(shift) & 1) << (7 - UInt8(bitCount & 7))
+            bitCount += 1
+        }
+    }
+
+    mutating func copy(_ source: [UInt8], bits range: Range<Int>) {
+        for position in range {
+            write(UInt32(source[position >> 3] >> (7 - UInt8(position & 7)) & 1), bitCount: 1)
+        }
+    }
+}
+
+/// Splits ITU-T H.264/H.265 Annex B byte streams at their start codes.
+enum RDPAnnexB {
+    enum Codec {
+        case h264
+        case hevc
+
+        /// NAL units shorter than their header are skipped.
+        var headerByteCount: Int {
+            self == .h264 ? 1 : 2
+        }
+
+        var parameterSetTypes: [UInt8] {
+            self == .h264 ? [7, 8] : [32, 33, 34]
+        }
+
+        func nalUnitType(_ firstHeaderByte: UInt8) -> UInt8 {
+            self == .h264 ? firstHeaderByte & 0x1F : (firstHeaderByte >> 1) & 0x3F
+        }
+    }
+
+    static func nalUnitTypes(from data: Data, codec: Codec) -> [UInt8] {
+        data.withUnsafeBytes { rawBytes in
+            let bytes = rawBytes.bindMemory(to: UInt8.self)
+            return nalUnitPayloadRanges(in: bytes, codec: codec).map { range in
+                codec.nalUnitType(bytes[range.lowerBound])
+            }
+        }
+    }
+
+    /// Converts NAL units to the 4-byte big-endian length-prefixed form, keeping the
+    /// first payload of each parameter-set NAL unit type.
+    static func lengthPrefixedSample(
+        from data: Data,
+        codec: Codec
+    ) -> (data: Data, parameterSets: [UInt8: Data]) {
+        data.withUnsafeBytes { rawBytes in
+            let bytes = rawBytes.bindMemory(to: UInt8.self)
+            let ranges = nalUnitPayloadRanges(in: bytes, codec: codec)
+            var lengthPrefixedData = Data()
+            lengthPrefixedData.reserveCapacity(ranges.reduce(0) { $0 + 4 + $1.count })
+            var parameterSets: [UInt8: Data] = [:]
+            for range in ranges {
+                let payload = UnsafeBufferPointer(rebasing: bytes[range])
+                let type = codec.nalUnitType(payload[0])
+                if codec.parameterSetTypes.contains(type), parameterSets[type] == nil {
+                    parameterSets[type] = Data(payload)
+                }
+                withUnsafeBytes(of: UInt32(range.count).bigEndian) { lengthBytes in
+                    lengthPrefixedData.append(contentsOf: lengthBytes)
+                }
+                lengthPrefixedData.append(payload)
+            }
+            return (lengthPrefixedData, parameterSets)
+        }
+    }
+
+    /// Whether the H.264 access unit comes from KPipeWire's libx264 encoder: x264's options name
+    /// its fixed 100-frame GOP and its quality-based rate control. KRdp 6.8 sends those at every
+    /// quality (krdp-colour-chart and krdp-negotiation fixtures: keyint=100, rc=crf at crf 19.8
+    /// and 21). FreeRDP's x264 encoder keeps x264's GOP of 250 and sets a bitrate
+    /// (freerdp-shadow fixtures: keyint=250, rc=abr).
+    static func identifiesKPipeWire(_ data: Data) -> Bool {
+        guard let options = x264Options(data)?.split(separator: " ") else {
+            return false
+        }
+        return options.contains("keyint=100") && options.contains("rc=crf")
+    }
+
+    /// The options x264 lists in its version SEI, a user_data_unregistered message (H.264 D.1.7)
+    /// under x264's UUID that it writes into the first access unit it encodes; nil when the access
+    /// unit has none.
+    private static func x264Options(_ data: Data) -> Substring? {
+        let x264UUID: [UInt8] = [
+            0xDC, 0x45, 0xE9, 0xBD, 0xE6, 0xD9, 0x48, 0xB7, 0x96, 0x2C, 0xD8, 0x20, 0xD9, 0x23, 0xEE, 0xEF,
+        ]
+        let userData = data.withUnsafeBytes { rawBytes -> [UInt8]? in
+            let bytes = rawBytes.bindMemory(to: UInt8.self)
+            for range in nalUnitPayloadRanges(in: bytes, codec: .h264) where bytes[range.lowerBound] & 0x1F == 6 {
+                // payloadType and payloadSize are runs of 0xFF closed by a smaller byte (D.1.1).
+                var index = range.lowerBound + 1
+                func readRun() -> Int? {
+                    var value = 0
+                    while index < range.upperBound, bytes[index] == 0xFF {
+                        value += 255
+                        index += 1
+                    }
+                    guard index < range.upperBound else {
+                        return nil
+                    }
+                    defer { index += 1 }
+                    return value + Int(bytes[index])
+                }
+                guard readRun() == 5, let payloadSize = readRun() else {
+                    continue
+                }
+                let end = min(range.upperBound, index + payloadSize)
+                guard index + x264UUID.count <= end,
+                      bytes[index ..< index + x264UUID.count].elementsEqual(x264UUID)
+                else {
+                    continue
+                }
+                return Array(bytes[index + x264UUID.count ..< end].prefix { $0 != 0 })
+            }
+            return nil
+        }
+        guard let userData else {
+            return nil
+        }
+        let text = String(decoding: userData, as: UTF8.self)
+        return text.range(of: " - options: ").map { text[$0.upperBound...] }
+    }
+
+    static func nalUnitPayloadRanges(in bytes: UnsafeBufferPointer<UInt8>, codec: Codec) -> [Range<Int>] {
+        var ranges: [Range<Int>] = []
+        var payloadStart: Int?
+        var searchOffset = 0
+        while let startCode = nextStartCode(in: bytes, from: searchOffset) {
+            if let payloadStart, payloadStart < startCode.index {
+                ranges.append(payloadStart ..< startCode.index)
+            }
+            payloadStart = startCode.index + startCode.length
+            searchOffset = startCode.index + startCode.length
+        }
+        if let payloadStart, payloadStart < bytes.count {
+            ranges.append(payloadStart ..< bytes.count)
+        }
+        return ranges.filter { $0.count >= codec.headerByteCount }
+    }
+
+    private static func nextStartCode(
+        in bytes: UnsafeBufferPointer<UInt8>,
+        from offset: Int
+    ) -> (index: Int, length: Int)? {
+        var index = offset
+        while index + 2 < bytes.count {
+            if bytes[index] == 0, bytes[index + 1] == 0 {
+                if bytes[index + 2] == 1 {
+                    return (index, 3)
+                }
+                if bytes[index + 2] == 0, index + 3 < bytes.count, bytes[index + 3] == 1 {
+                    return (index, 4)
+                }
+            }
+            index += 1
+        }
+        return nil
+    }
+}

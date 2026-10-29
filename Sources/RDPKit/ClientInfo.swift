@@ -13,17 +13,22 @@ enum RDPClientInfoEncodingError: Error, Equatable, CustomStringConvertible {
 
 struct RDPClientInfoPDU: Equatable, Sendable {
     var credentials: RDPCredentials?
+    /// A Server Redirection password cookie (`RDPServerRedirectionPDU.passwordCookie`),
+    /// sent verbatim in place of the credentials' password when reconnecting.
+    var passwordCookie: Data?
     var clientAddress: String
     var clientDirectory: String
     var audioPlaybackEnabled: Bool
 
     init(
         credentials: RDPCredentials?,
+        passwordCookie: Data? = nil,
         clientAddress: String = "0.0.0.0",
-        clientDirectory: String = "KRDPSwift",
+        clientDirectory: String = "RDPKit",
         audioPlaybackEnabled: Bool = false
     ) {
         self.credentials = credentials
+        self.passwordCookie = passwordCookie
         self.clientAddress = clientAddress
         self.clientDirectory = clientDirectory
         self.audioPlaybackEnabled = audioPlaybackEnabled
@@ -44,10 +49,15 @@ struct RDPClientInfoPDU: Equatable, Sendable {
             name: "username",
             maxBytesIncludingNull: RDPClientInfoLimits.standardFieldByteCount
         )
-        let password = try rdpUnicodeString(
-            credentials?.password ?? "",
+        // The 512-byte limit is for typed passwords; a redirection cookie is
+        // opaque server data (a PK-encrypted one for a 4096-bit key is 512
+        // bytes before the terminator), bounded only by the 16-bit cbPassword.
+        let password = try rdpUnicodeField(
+            passwordCookie ?? Data(utf16LittleEndian: credentials?.password ?? ""),
             name: "password",
-            maxBytesIncludingNull: RDPClientInfoLimits.standardFieldByteCount
+            maxBytesIncludingNull: passwordCookie == nil
+                ? RDPClientInfoLimits.standardFieldByteCount
+                : RDPClientInfoLimits.passwordCookieByteCount
         )
         let alternateShell = try rdpUnicodeString(
             "",
@@ -98,8 +108,9 @@ struct RDPClientInfoPDU: Equatable, Sendable {
         return data
     }
 
+    /// Throws when a redirection cookie leaves no room in one MCS PDU.
     func encodedTPKT(userChannelID: UInt16, ioChannelID: UInt16) throws -> Data {
-        try MCSSendDataRequestPDU(
+        try MCSSendDataRequestPDU.checked(
             initiator: userChannelID,
             channelID: ioChannelID,
             userData: encodedPDUData()
@@ -110,7 +121,7 @@ struct RDPClientInfoPDU: Equatable, Sendable {
         var flags: UInt32 = 0
         flags |= RDPClientInfoFlags.mouse
         flags |= RDPClientInfoFlags.disableCtrlAltDel
-        if credentials != nil {
+        if credentials != nil || passwordCookie != nil {
             flags |= RDPClientInfoFlags.autoLogon
         }
         flags |= RDPClientInfoFlags.unicode
@@ -143,6 +154,7 @@ private enum RDPClientInfoFlags {
 
 private enum RDPClientInfoLimits {
     static let standardFieldByteCount = 512
+    static let passwordCookieByteCount = Int(UInt16.max)
     static let clientAddressByteCount = 80
 }
 
@@ -165,10 +177,16 @@ private func rdpUnicodeString(
     name: String,
     maxBytesIncludingNull: Int
 ) throws -> RDPUnicodeString {
-    var bytes = Data()
-    for codeUnit in value.utf16 {
-        bytes.appendLittleEndianUInt16(codeUnit)
-    }
+    try rdpUnicodeField(Data(utf16LittleEndian: value), name: name, maxBytesIncludingNull: maxBytesIncludingNull)
+}
+
+/// Appends the mandatory null terminator to the field's character data.
+private func rdpUnicodeField(
+    _ characterData: Data,
+    name: String,
+    maxBytesIncludingNull: Int
+) throws -> RDPUnicodeString {
+    var bytes = characterData
     bytes.appendLittleEndianUInt16(0)
 
     guard bytes.count <= maxBytesIncludingNull else {

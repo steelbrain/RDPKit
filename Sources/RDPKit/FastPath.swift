@@ -59,10 +59,21 @@ enum RDPFastPathFragmentation: UInt8, Sendable {
 }
 
 struct RDPFastPathOutputUpdate: Equatable, Sendable {
+    enum Content: Equatable, Sendable {
+        case pointer(RDPServerPointerUpdate)
+        case malformedPointer(RDPDecodeError)
+        case surfaceCommands([RDPSurfaceCommand])
+        case bitmap(RDPBitmapUpdate)
+        case palette(RDPPaletteUpdate)
+    }
+
     var updateCode: RDPFastPathUpdateCode
     var fragmentation: RDPFastPathFragmentation
     var compressionFlags: UInt8?
     var updateData: Data
+    /// Decoded body of a complete, uncompressed update; nil for fragments,
+    /// compressed payloads, Synchronize and Orders.
+    private(set) var content: Content?
 
     var typeName: String {
         updateCode.typeName
@@ -73,83 +84,59 @@ struct RDPFastPathOutputUpdate: Equatable, Sendable {
     }
 
     var pointerUpdate: RDPServerPointerUpdate? {
-        guard fragmentation == .single,
-              !isCompressedPayload
-        else {
+        guard case let .pointer(update) = content else {
             return nil
         }
-        switch updateCode {
-        case .pointerNull:
-            guard updateData.isEmpty else {
-                return nil
-            }
-            return .system(type: 0x0000_0000)
-        case .pointerDefault:
-            guard updateData.isEmpty else {
-                return nil
-            }
-            return .system(type: 0x0000_7F00)
-        case .pointerPosition:
-            guard let position = try? Self.parsePointerPosition(updateData) else {
-                return nil
-            }
-            return .position(position)
-        case .colorPointer:
-            var cursor = ByteCursor(updateData)
-            guard let color = try? RDPColorPointerAttribute.parse(from: &cursor) else {
-                return nil
-            }
-            return .color(color)
-        case .cachedPointer:
-            guard updateData.count == 2 else {
-                return nil
-            }
-            return .cached(cacheIndex: updateData.littleEndianUInt16(at: 0))
-        case .newPointer:
-            var cursor = ByteCursor(updateData)
-            guard let pointer = try? Self.parseNewPointer(from: &cursor) else {
-                return nil
-            }
-            return .pointer(pointer)
-        case .largePointer:
-            var cursor = ByteCursor(updateData)
-            guard let pointer = try? Self.parseLargePointer(from: &cursor) else {
-                return nil
-            }
-            return .largePointer(pointer)
-        default:
+        return update
+    }
+
+    /// Why a pointer update could not be decoded. Pointer shapes are cosmetic,
+    /// so the session goes on; the caller records the error instead.
+    var pointerDecodeError: RDPDecodeError? {
+        guard case let .malformedPointer(error) = content else {
             return nil
         }
+        return error
     }
 
     var surfaceCommands: [RDPSurfaceCommand]? {
-        guard updateCode == .surfaceCommands,
-              fragmentation == .single,
-              !isCompressedPayload
-        else {
+        guard case let .surfaceCommands(commands) = content else {
             return nil
         }
-        return try? RDPSurfaceCommand.parsePayload(updateData)
+        return commands
     }
 
     var bitmapUpdate: RDPBitmapUpdate? {
-        guard updateCode == .bitmap,
-              fragmentation == .single,
-              !isCompressedPayload
-        else {
+        guard case let .bitmap(update) = content else {
             return nil
         }
-        return try? RDPSlowPathGraphicsUpdate.parseBitmapPayload(updateData)
+        return update
     }
 
     var paletteUpdate: RDPPaletteUpdate? {
-        guard updateCode == .palette,
-              fragmentation == .single,
-              !isCompressedPayload
-        else {
+        guard case let .palette(update) = content else {
             return nil
         }
-        return try? RDPSlowPathGraphicsUpdate.parsePalettePayload(updateData)
+        return update
+    }
+
+    private init(
+        updateCode: RDPFastPathUpdateCode,
+        fragmentation: RDPFastPathFragmentation,
+        compressionFlags: UInt8?,
+        updateData: Data
+    ) throws {
+        self.updateCode = updateCode
+        self.fragmentation = fragmentation
+        self.compressionFlags = compressionFlags
+        self.updateData = updateData
+        if fragmentation == .single, !isCompressedPayload {
+            do {
+                content = try Self.decodeContent(updateCode: updateCode, updateData: updateData)
+            } catch {
+                throw RDPDecodeError.invalidFastPathOutputPDU
+            }
+        }
     }
 
     static func parse(from cursor: inout ByteCursor) throws -> RDPFastPathOutputUpdate {
@@ -170,19 +157,11 @@ struct RDPFastPathOutputUpdate: Equatable, Sendable {
         guard updateDataByteCount <= cursor.remaining else {
             throw RDPDecodeError.invalidFastPathOutputPDU
         }
-        let updateData = try cursor.readData(count: updateDataByteCount)
-
-        try validate(
+        return try RDPFastPathOutputUpdate(
             updateCode: updateCode,
             fragmentation: fragmentation,
             compressionFlags: compressionFlags,
-            updateData: updateData
-        )
-        return RDPFastPathOutputUpdate(
-            updateCode: updateCode,
-            fragmentation: fragmentation,
-            compressionFlags: compressionFlags,
-            updateData: updateData
+            updateData: cursor.readData(count: updateDataByteCount)
         )
     }
 
@@ -191,13 +170,7 @@ struct RDPFastPathOutputUpdate: Equatable, Sendable {
         compressionFlags: UInt8?,
         updateData: Data
     ) throws -> RDPFastPathOutputUpdate {
-        try validate(
-            updateCode: updateCode,
-            fragmentation: .single,
-            compressionFlags: compressionFlags,
-            updateData: updateData
-        )
-        return RDPFastPathOutputUpdate(
+        try RDPFastPathOutputUpdate(
             updateCode: updateCode,
             fragmentation: .single,
             compressionFlags: compressionFlags,
@@ -205,48 +178,72 @@ struct RDPFastPathOutputUpdate: Equatable, Sendable {
         )
     }
 
-    private static func validate(
-        updateCode: RDPFastPathUpdateCode,
-        fragmentation: RDPFastPathFragmentation,
-        compressionFlags: UInt8?,
-        updateData: Data
-    ) throws {
-        if fragmentation != .single || compressionFlags.map({ $0 & RDPFastPathCompressionFlags.compressed != 0 }) == true {
-            return
-        }
-
+    /// [MS-RDPBCGR] 2.2.9.1.2.1.x update bodies. Malformed graphics bodies
+    /// throw, like the slow-path Share Data parser; malformed pointers become
+    /// `.malformedPointer` so the caller can record and skip them.
+    private static func decodeContent(updateCode: RDPFastPathUpdateCode, updateData: Data) throws -> Content? {
         switch updateCode {
+        case .orders:
+            return nil
         case .bitmap:
-            do {
-                _ = try RDPSlowPathGraphicsUpdate.parseBitmapPayload(updateData)
-            } catch {
-                throw RDPDecodeError.invalidFastPathOutputPDU
-            }
+            return try .bitmap(RDPSlowPathGraphicsUpdate.parseBitmapPayload(updateData))
         case .palette:
-            do {
-                _ = try RDPSlowPathGraphicsUpdate.parsePalettePayload(updateData)
-            } catch {
-                throw RDPDecodeError.invalidFastPathOutputPDU
-            }
+            return try .palette(RDPSlowPathGraphicsUpdate.parsePalettePayload(updateData))
         case .surfaceCommands:
-            do {
-                _ = try RDPSurfaceCommand.parsePayload(updateData)
-            } catch {
-                throw RDPDecodeError.invalidFastPathOutputPDU
-            }
-        case .synchronize, .pointerNull, .pointerDefault:
+            return try .surfaceCommands(RDPSurfaceCommand.parsePayload(updateData))
+        case .synchronize:
             guard updateData.isEmpty else {
                 throw RDPDecodeError.invalidFastPathOutputPDU
             }
-        case .pointerPosition:
-            _ = try parsePointerPosition(updateData)
-        case .cachedPointer:
-            guard updateData.count == 2 else {
-                throw RDPDecodeError.invalidFastPathOutputPDU
+            return nil
+        case .pointerNull, .pointerDefault, .pointerPosition, .colorPointer, .cachedPointer, .newPointer, .largePointer:
+            do {
+                return try .pointer(decodePointer(updateCode: updateCode, updateData: updateData))
+            } catch let error as RDPDecodeError {
+                return .malformedPointer(error)
             }
-        default:
-            return
         }
+    }
+
+    private static func decodePointer(
+        updateCode: RDPFastPathUpdateCode,
+        updateData: Data
+    ) throws -> RDPServerPointerUpdate {
+        var cursor = ByteCursor(updateData)
+        let update: RDPServerPointerUpdate
+        switch updateCode {
+        case .pointerNull:
+            update = .system(type: 0x0000_0000)
+        case .pointerDefault:
+            update = .system(type: 0x0000_7F00)
+        case .pointerPosition:
+            update = try .position(RDPPoint16.parse(from: &cursor))
+        case .colorPointer:
+            update = try .color(RDPColorPointerAttribute.parse(from: &cursor))
+        case .cachedPointer:
+            update = try .cached(cacheIndex: cursor.readLittleEndianUInt16())
+        case .newPointer:
+            let xorBitsPerPixel = try cursor.readLittleEndianUInt16()
+            update = try .pointer(RDPNewPointerAttribute(
+                xorBitsPerPixel: xorBitsPerPixel,
+                colorPointer: RDPColorPointerAttribute.parse(from: &cursor, xorBitsPerPixel: xorBitsPerPixel)
+            ))
+        case .largePointer:
+            let xorBitsPerPixel = try cursor.readLittleEndianUInt16()
+            update = try .largePointer(RDPNewPointerAttribute(
+                xorBitsPerPixel: xorBitsPerPixel,
+                colorPointer: RDPColorPointerAttribute.parseLargeFastPath(
+                    from: &cursor,
+                    xorBitsPerPixel: xorBitsPerPixel
+                )
+            ))
+        case .orders, .bitmap, .palette, .synchronize, .surfaceCommands:
+            throw RDPDecodeError.invalidFastPathOutputPDU
+        }
+        guard cursor.remaining == 0 else {
+            throw RDPDecodeError.invalidPointerPDU
+        }
+        return update
     }
 
     private static func validateCompressionFlags(_ compressionFlags: UInt8?) throws {
@@ -266,38 +263,6 @@ struct RDPFastPathOutputUpdate: Equatable, Sendable {
         guard compressionFlags & RDPFastPathCompressionFlags.reserved == 0 else {
             throw RDPDecodeError.invalidFastPathOutputPDU
         }
-    }
-
-    private static func parsePointerPosition(_ data: Data) throws -> RDPPoint16 {
-        guard data.count == 4 else {
-            throw RDPDecodeError.invalidFastPathOutputPDU
-        }
-        var cursor = ByteCursor(data)
-        return try RDPPoint16.parse(from: &cursor)
-    }
-
-    private static func parseNewPointer(from cursor: inout ByteCursor) throws -> RDPNewPointerAttribute {
-        let xorBitsPerPixel = try cursor.readLittleEndianUInt16()
-        let colorPointer = try RDPColorPointerAttribute.parse(
-            from: &cursor,
-            xorBitsPerPixel: xorBitsPerPixel
-        )
-        return RDPNewPointerAttribute(
-            xorBitsPerPixel: xorBitsPerPixel,
-            colorPointer: colorPointer
-        )
-    }
-
-    private static func parseLargePointer(from cursor: inout ByteCursor) throws -> RDPNewPointerAttribute {
-        let xorBitsPerPixel = try cursor.readLittleEndianUInt16()
-        let colorPointer = try RDPColorPointerAttribute.parseLargeFastPath(
-            from: &cursor,
-            xorBitsPerPixel: xorBitsPerPixel
-        )
-        return RDPNewPointerAttribute(
-            xorBitsPerPixel: xorBitsPerPixel,
-            colorPointer: colorPointer
-        )
     }
 }
 
@@ -506,7 +471,6 @@ private enum RDPFastPathCompressionFlags {
     static let rdp61Type: UInt8 = 0x03
     static let compressed: UInt8 = 0x20
     static let atFront: UInt8 = 0x40
-    static let flushed: UInt8 = 0x80
     static let reserved: UInt8 = 0x10
 }
 
@@ -522,12 +486,5 @@ private extension RDPFastPathFragmentation {
         case .next:
             "next"
         }
-    }
-}
-
-private extension Data {
-    func littleEndianUInt16(at offset: Int) -> UInt16 {
-        UInt16(self[index(startIndex, offsetBy: offset)])
-            | UInt16(self[index(startIndex, offsetBy: offset + 1)]) << 8
     }
 }

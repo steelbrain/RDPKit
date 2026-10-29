@@ -2,32 +2,26 @@ import CoreGraphics
 import CoreVideo
 import Darwin
 import Foundation
+import RDPCommandLineSupport
 import RDPKit
 
-private struct BenchmarkArguments {
-    var host: String?
-    var port: UInt16 = 3389
-    var username: String?
-    var domain: String?
-    var passwordEnv: String?
-    var timeoutSeconds = 60
+struct BenchmarkArguments {
+    var connection = RDPCommandLineConnectionOptions(timeoutSeconds: 60)
     var frames = 10
-    var desktopSize: BenchmarkDisplaySize?
-    var displayResize: BenchmarkDisplaySize?
-    var profiles: [RDPGraphicsCapabilityProfile] = RDPGraphicsCapabilityProfile.allCases
-    var hideCertificateWarnings = false
+    var displayResize: (width: UInt16, height: UInt16)?
     var json = false
+
+    /// Every profile unless `--graphics-profile` selected a subset.
+    var profiles: [RDPGraphicsCapabilityProfile] {
+        connection.graphicsCapabilityProfiles.isEmpty
+            ? RDPGraphicsCapabilityProfile.allCases
+            : connection.graphicsCapabilityProfiles
+    }
 }
 
-private struct BenchmarkDisplaySize: Equatable {
-    var width: UInt16
-    var height: UInt16
-}
-
-private enum BenchmarkStrategy: String, CaseIterable, Encodable {
+enum BenchmarkStrategy: String, CaseIterable, Encodable {
     case pixelBuffer
     case cgImage
-    case cgImageCrop
 }
 
 private struct BenchmarkReport: Encodable {
@@ -73,7 +67,7 @@ private struct CapturedFrameReport: Encodable {
     var payloadByteCount: Int
 }
 
-private struct StrategyBenchmarkReport: Encodable {
+struct StrategyBenchmarkReport: Encodable {
     var strategy: BenchmarkStrategy
     var decodedFrameCount: Int
     var failedFrameCount: Int
@@ -89,56 +83,20 @@ private struct StrategyBenchmarkReport: Encodable {
     var samplePreparationAverageMilliseconds: Double?
     var videoToolboxAverageMilliseconds: Double?
     var imageConversionAverageMilliseconds: Double?
-    var cropAverageMilliseconds: Double?
     var decodedPixelFormats: [UInt32]
     var usesHardwareAcceleration: Bool?
     var outputPixelCount: Int
     var errors: [String]
 }
 
-private enum BenchmarkError: Error, CustomStringConvertible {
-    case missingValue(String)
-    case missingHost
-    case missingCredential(String)
-    case missingPasswordEnv(String)
-    case invalidPort(String)
-    case invalidTimeout(String)
-    case invalidFrames(String)
-    case invalidDisplaySize(String)
-    case invalidGraphicsProfile(String)
-
-    var description: String {
-        switch self {
-        case let .missingValue(option):
-            "missing value for \(option)"
-        case .missingHost:
-            "missing required --host"
-        case let .missingCredential(message):
-            message
-        case let .missingPasswordEnv(name):
-            "password environment variable \(name) is not set or is empty"
-        case let .invalidPort(value):
-            "invalid --port \(value)"
-        case let .invalidTimeout(value):
-            "invalid --timeout-seconds \(value)"
-        case let .invalidFrames(value):
-            "invalid --frames \(value)"
-        case let .invalidDisplaySize(value):
-            "invalid display size \(value)"
-        case let .invalidGraphicsProfile(value):
-            "invalid --graphics-profile \(value)"
-        }
-    }
-}
-
-private struct ProcessSample {
+struct ProcessSample {
     var wallTime: Date
     var cpuTimeSeconds: Double
     var residentMemoryBytes: Int64
 }
 
 private struct LiveCapture {
-    var report: RDPPreflightReport
+    var report: RDPConnectionReport
     var frames: [RDPGraphicsFrameSnapshot]
     var wireByteCount: Int
     var measurement: MeasurementDelta
@@ -161,6 +119,10 @@ private final class LiveCaptureAccumulator: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
 
+        // Updates of the decoder's own pixels have nothing to decode on their own.
+        guard frame.contentKind != .surfaceCopy, frame.contentKind != .alpha else {
+            return false
+        }
         guard capturedFrames.count < frameLimit else {
             return capturedFrames.count >= frameLimit
         }
@@ -183,7 +145,7 @@ private final class LiveCaptureAccumulator: @unchecked Sendable {
     }
 }
 
-private struct MeasurementDelta {
+struct MeasurementDelta {
     var wallMilliseconds: Double
     var cpuMilliseconds: Double
     var residentMemoryDeltaBytes: Int64
@@ -195,12 +157,16 @@ private struct FrameTiming {
     var cpuMilliseconds: Double
 }
 
-private enum RDPFrameBenchmark {
+enum RDPFrameBenchmark {
     static func main() {
+        if RDPCommandLineArguments.requestsHelp(CommandLine.arguments) {
+            printUsage()
+            exit(0)
+        }
         do {
             let args = try parseArguments(CommandLine.arguments)
-            let host = try requiredHost(args)
-            let credentials = try loadCredentials(from: args)
+            let host = try args.connection.requiredHost()
+            let credentials = try args.connection.credentials()
             let report = runBenchmark(host: host, credentials: credentials, args: args)
 
             if args.json {
@@ -211,6 +177,10 @@ private enum RDPFrameBenchmark {
                 print()
             } else {
                 printTextReport(report)
+            }
+            // A profile that failed or fell short is not a measurement to compare.
+            if report.profiles.contains(where: { $0.status != "success" }) {
+                exit(1)
             }
         } catch {
             fputs("\(String(describing: error))\n", stderr)
@@ -224,14 +194,9 @@ private enum RDPFrameBenchmark {
         credentials: RDPCredentials?,
         args: BenchmarkArguments
     ) -> BenchmarkReport {
-        let target = "\(host):\(args.port)"
+        let target = "\(host):\(args.connection.port)"
         let reports = args.profiles.map { profile in
-            benchmarkProfile(
-                profile,
-                host: host,
-                credentials: credentials,
-                args: args
-            )
+            benchmarkProfile(profile, credentials: credentials, args: args)
         }
         return BenchmarkReport(
             target: target,
@@ -242,34 +207,25 @@ private enum RDPFrameBenchmark {
 
     private static func benchmarkProfile(
         _ profile: RDPGraphicsCapabilityProfile,
-        host: String,
         credentials: RDPCredentials?,
         args: BenchmarkArguments
     ) -> ProfileBenchmarkReport {
         do {
-            let capture = try captureFrames(
-                profile,
-                host: host,
-                credentials: credentials,
-                args: args
-            )
+            let capture = try captureFrames(profile, credentials: credentials, args: args)
             let framePayloadByteCount = capture.frames.reduce(0) { $0 + $1.payloadByteCount }
             let codecNames = Array(Set(capture.frames.map(\.codecName))).sorted()
             let frameReports = makeCapturedFrameReports(capture.frames)
             let strategyReports = BenchmarkStrategy.allCases.map { strategy in
                 benchmarkStrategy(strategy, frames: capture.frames)
             }
-            let completedRequestedFrames = capture.frames.count >= args.frames
-            let stoppedAfterCapture = completedRequestedFrames && capture.report.error == "cancelled"
-            let status = completedRequestedFrames
-                ? (stoppedAfterCapture ? "success" : capture.report.status)
-                : "incomplete"
-            let error = completedRequestedFrames
-                ? (stoppedAfterCapture ? nil : capture.report.error)
-                : "captured \(capture.frames.count) of \(args.frames) requested frames"
+            let outcome = captureOutcome(
+                capturedFrameCount: capture.frames.count,
+                requestedFrameCount: args.frames,
+                report: capture.report
+            )
             return ProfileBenchmarkReport(
                 profile: profile.rawValue,
-                status: status,
+                status: outcome.status,
                 selectedCapabilityVersion: capture.report.rdpGraphicsSelectedCapabilityVersion,
                 selectedCapabilityFlags: capture.report.rdpGraphicsSelectedCapabilityFlags,
                 firstFrameCodecName: capture.report.rdpGraphicsFirstFrame?.codecName,
@@ -284,7 +240,7 @@ private enum RDPFrameBenchmark {
                 codecNames: codecNames,
                 frameReports: frameReports,
                 strategyReports: strategyReports,
-                error: error
+                error: outcome.error
             )
         } catch {
             return ProfileBenchmarkReport(
@@ -307,6 +263,26 @@ private enum RDPFrameBenchmark {
                 error: String(describing: error)
             )
         }
+    }
+
+    /// A profile's status and error. The benchmark cancels the session once it has every
+    /// requested frame; a session that failed before then keeps its own error.
+    static func captureOutcome(
+        capturedFrameCount: Int,
+        requestedFrameCount: Int,
+        report: RDPConnectionReport
+    ) -> (status: String, error: String?) {
+        guard capturedFrameCount >= requestedFrameCount else {
+            let shortfall = "captured \(capturedFrameCount) of \(requestedFrameCount) requested frames"
+            guard report.status == "failure" else {
+                return ("incomplete", shortfall)
+            }
+            return ("failure", "\(shortfall): \(report.error ?? "RDP connection failed at \(report.stage)")")
+        }
+        if report.error == "cancelled" {
+            return ("success", nil)
+        }
+        return (report.status, report.error)
     }
 
     private static func makeCapturedFrameReports(_ frames: [RDPGraphicsFrameSnapshot]) -> [CapturedFrameReport] {
@@ -334,7 +310,6 @@ private enum RDPFrameBenchmark {
 
     private static func captureFrames(
         _ profile: RDPGraphicsCapabilityProfile,
-        host: String,
         credentials: RDPCredentials?,
         args: BenchmarkArguments
     ) throws -> LiveCapture {
@@ -344,27 +319,23 @@ private enum RDPFrameBenchmark {
             initialResidentMemoryBytes: currentResidentMemoryBytes()
         )
         let candidateFrameLimit = args.frames + max(3, args.frames)
+        let configuration = try args.connection.configuration(
+            credentials: credentials,
+            graphicsCapabilityProfile: profile,
+            graphicsFrameCaptureLimit: candidateFrameLimit,
+            clipboardEnabled: false
+        )
+        let displayResize = args.displayResize
         let start = processSample()
-        let report = RDPPreflightClient().run(
-            configuration: RDPConnectionConfiguration(
-                host: host,
-                port: args.port,
-                credentials: credentials,
-                timeoutSeconds: args.timeoutSeconds,
-                hideCertificateWarnings: args.hideCertificateWarnings,
-                graphicsFrameCaptureLimit: candidateFrameLimit,
-                desktopWidth: args.desktopSize?.width ?? 1280,
-                desktopHeight: args.desktopSize?.height ?? 720,
-                clipboardEnabled: false,
-                graphicsCapabilityProfile: profile
-            ),
+        let report = RDPSessionClient().run(
+            configuration: configuration,
             onGraphicsFrame: { frame in
                 if accumulator.appendFrame(frame) {
                     cancellation.cancel()
                 }
             },
             onDisplayControlReady: { session in
-                guard let displayResize = args.displayResize else {
+                guard let displayResize else {
                     return
                 }
                 session.sendSingleMonitorLayout(
@@ -392,7 +363,7 @@ private enum RDPFrameBenchmark {
         )
     }
 
-    private static func benchmarkStrategy(
+    static func benchmarkStrategy(
         _ strategy: BenchmarkStrategy,
         frames: [RDPGraphicsFrameSnapshot]
     ) -> StrategyBenchmarkReport {
@@ -401,7 +372,6 @@ private enum RDPFrameBenchmark {
         var samplePreparationMilliseconds = 0.0
         var videoToolboxMilliseconds = 0.0
         var imageConversionMilliseconds = 0.0
-        var cropMilliseconds = 0.0
         var decodedPixelFormats: Set<UInt32> = []
         var usesHardwareAcceleration: Bool?
         var outputPixelCount = 0
@@ -429,12 +399,6 @@ private enum RDPFrameBenchmark {
                     case .cgImage:
                         let image = try decoder.decode(frame)
                         outputPixelCount += image.width * image.height
-                    case .cgImageCrop:
-                        let image = try decoder.decode(frame)
-                        let cropStart = Date()
-                        let cropped = try RDPH264DecodedFrameImage.cropToDestinationRect(image, frame: frame)
-                        cropMilliseconds += Date().timeIntervalSince(cropStart) * 1000
-                        outputPixelCount += cropped.width * cropped.height
                     }
 
                     let frameEnd = processSample()
@@ -456,6 +420,8 @@ private enum RDPFrameBenchmark {
         let measurement = measurementDelta(start: start, end: end, peakResidentMemoryBytes: peakResidentMemoryBytes)
         let wallTimes = frameTimings.map(\.wallMilliseconds)
         let decodedFrameCount = frames.count - failedFrameCount
+        // Only decodeDetailed(_:) times its stages; decode(_:) returns just the image.
+        let stageFrameCount = strategy == .pixelBuffer ? decodedFrameCount : 0
         return StrategyBenchmarkReport(
             strategy: strategy,
             decodedFrameCount: decodedFrameCount,
@@ -469,10 +435,9 @@ private enum RDPFrameBenchmark {
             averageCPUMilliseconds: frameTimings.isEmpty ? nil : measurement.cpuMilliseconds / Double(frameTimings.count),
             residentMemoryDeltaBytes: measurement.residentMemoryDeltaBytes,
             residentMemoryPeakDeltaBytes: measurement.residentMemoryPeakDeltaBytes,
-            samplePreparationAverageMilliseconds: averageComponent(samplePreparationMilliseconds, decodedFrameCount),
-            videoToolboxAverageMilliseconds: averageComponent(videoToolboxMilliseconds, decodedFrameCount),
-            imageConversionAverageMilliseconds: averageComponent(imageConversionMilliseconds, decodedFrameCount),
-            cropAverageMilliseconds: averageComponent(cropMilliseconds, decodedFrameCount),
+            samplePreparationAverageMilliseconds: averageComponent(samplePreparationMilliseconds, stageFrameCount),
+            videoToolboxAverageMilliseconds: averageComponent(videoToolboxMilliseconds, stageFrameCount),
+            imageConversionAverageMilliseconds: averageComponent(imageConversionMilliseconds, stageFrameCount),
             decodedPixelFormats: Array(decodedPixelFormats).sorted(),
             usesHardwareAcceleration: usesHardwareAcceleration,
             outputPixelCount: outputPixelCount,
@@ -493,8 +458,8 @@ private enum RDPFrameBenchmark {
             first=\(profile.firstFrameCodecName ?? "none")/\(profile.firstFrameContentKind?.rawValue ?? "none")
             """)
             print("""
-              capture wall=\(format(profile.captureWallMilliseconds))ms \
-              cpu=\(format(profile.captureCPUMilliseconds))ms \
+              capture wall=\(milliseconds(profile.captureWallMilliseconds)) \
+              cpu=\(milliseconds(profile.captureCPUMilliseconds)) \
               rssΔ=\(formatBytes(profile.captureResidentMemoryDeltaBytes)) \
               rssPeakΔ=\(formatBytes(profile.captureResidentMemoryPeakDeltaBytes)) \
               wire=\(profile.wireByteCount)B payload=\(profile.framePayloadByteCount)B
@@ -514,15 +479,14 @@ private enum RDPFrameBenchmark {
                 print("""
               \(strategy.strategy.rawValue): \
               frames=\(strategy.decodedFrameCount) failed=\(strategy.failedFrameCount) \
-              wall avg=\(format(strategy.averageWallMilliseconds))ms \
-              p50=\(format(strategy.p50WallMilliseconds))ms \
-              p95=\(format(strategy.p95WallMilliseconds))ms \
-              max=\(format(strategy.maxWallMilliseconds))ms \
-              cpu avg=\(format(strategy.averageCPUMilliseconds))ms \
-              sample=\(format(strategy.samplePreparationAverageMilliseconds))ms \
-              vt=\(format(strategy.videoToolboxAverageMilliseconds))ms \
-              image=\(format(strategy.imageConversionAverageMilliseconds))ms \
-              crop=\(format(strategy.cropAverageMilliseconds))ms \
+              wall avg=\(milliseconds(strategy.averageWallMilliseconds)) \
+              p50=\(milliseconds(strategy.p50WallMilliseconds)) \
+              p95=\(milliseconds(strategy.p95WallMilliseconds)) \
+              max=\(milliseconds(strategy.maxWallMilliseconds)) \
+              cpu avg=\(milliseconds(strategy.averageCPUMilliseconds)) \
+              sample=\(milliseconds(strategy.samplePreparationAverageMilliseconds)) \
+              vt=\(milliseconds(strategy.videoToolboxAverageMilliseconds)) \
+              image=\(milliseconds(strategy.imageConversionAverageMilliseconds)) \
               rssΔ=\(formatBytes(strategy.residentMemoryDeltaBytes)) \
               rssPeakΔ=\(formatBytes(strategy.residentMemoryPeakDeltaBytes)) \
               hw=\(strategy.usesHardwareAcceleration.map(String.init) ?? "n/a")
@@ -534,125 +498,34 @@ private enum RDPFrameBenchmark {
         }
     }
 
-    private static func parseArguments(_ values: [String]) throws -> BenchmarkArguments {
+    static func parseArguments(_ values: [String]) throws -> BenchmarkArguments {
         var args = BenchmarkArguments()
-        var index = 1
-        var explicitProfiles: [RDPGraphicsCapabilityProfile] = []
-
-        while index < values.count {
-            let value = values[index]
-            switch value {
-            case "--host":
-                index += 1
-                guard index < values.count else { throw BenchmarkError.missingValue(value) }
-                args.host = values[index]
-            case "--port":
-                index += 1
-                guard index < values.count else { throw BenchmarkError.missingValue(value) }
-                guard let port = UInt16(values[index]) else { throw BenchmarkError.invalidPort(values[index]) }
-                args.port = port
-            case "--username":
-                index += 1
-                guard index < values.count else { throw BenchmarkError.missingValue(value) }
-                args.username = values[index]
-            case "--domain":
-                index += 1
-                guard index < values.count else { throw BenchmarkError.missingValue(value) }
-                args.domain = values[index]
-            case "--password-env":
-                index += 1
-                guard index < values.count else { throw BenchmarkError.missingValue(value) }
-                args.passwordEnv = values[index]
-            case "--timeout-seconds":
-                index += 1
-                guard index < values.count else { throw BenchmarkError.missingValue(value) }
-                guard let timeout = Int(values[index]), timeout > 0 else {
-                    throw BenchmarkError.invalidTimeout(values[index])
-                }
-                args.timeoutSeconds = timeout
+        var cursor = RDPCommandLineArguments(values)
+        while let option = cursor.nextOption() {
+            if try args.connection.parse(option, from: &cursor) {
+                continue
+            }
+            switch option {
             case "--frames":
-                index += 1
-                guard index < values.count else { throw BenchmarkError.missingValue(value) }
-                guard let frames = Int(values[index]), frames > 0 else {
-                    throw BenchmarkError.invalidFrames(values[index])
-                }
-                args.frames = frames
+                args.frames = try cursor.graphicsFrameCount(for: option)
             case "--desktop-size":
-                index += 1
-                guard index < values.count else { throw BenchmarkError.missingValue(value) }
-                guard let size = parseDisplaySize(values[index]) else {
-                    throw BenchmarkError.invalidDisplaySize(values[index])
-                }
-                args.desktopSize = size
+                let size = try cursor.size(
+                    for: option,
+                    widths: RDPCommandLineConnectionOptions.desktopWidths,
+                    heights: RDPCommandLineConnectionOptions.desktopHeights
+                )
+                args.connection.desktopWidth = size.width
+                args.connection.desktopHeight = size.height
             case "--display-resize":
-                index += 1
-                guard index < values.count else { throw BenchmarkError.missingValue(value) }
-                guard let size = parseDisplaySize(values[index]) else {
-                    throw BenchmarkError.invalidDisplaySize(values[index])
-                }
-                args.displayResize = size
-            case "--graphics-profile":
-                index += 1
-                guard index < values.count else { throw BenchmarkError.missingValue(value) }
-                guard let profile = RDPGraphicsCapabilityProfile(rawValue: values[index]) else {
-                    throw BenchmarkError.invalidGraphicsProfile(values[index])
-                }
-                explicitProfiles.append(profile)
-            case "--hide-certificate-warnings":
-                args.hideCertificateWarnings = true
+                // A monitor is 200...8192 pixels each way ([MS-RDPEDISP] 2.2.2.2.1).
+                args.displayResize = try cursor.size(for: option, widths: 200 ... 8192, heights: 200 ... 8192)
             case "--json":
                 args.json = true
-            case "-h", "--help":
-                printUsage()
-                exit(0)
             default:
-                throw BenchmarkError.missingValue("unknown option \(value)")
+                throw RDPCommandLineError.unknownOption(option)
             }
-            index += 1
-        }
-
-        if !explicitProfiles.isEmpty {
-            args.profiles = explicitProfiles
         }
         return args
-    }
-
-    private static func parseDisplaySize(_ value: String) -> BenchmarkDisplaySize? {
-        let parts = value.lowercased().split(separator: "x", maxSplits: 1)
-        guard parts.count == 2,
-              let width = UInt16(parts[0]),
-              let height = UInt16(parts[1]),
-              width > 0,
-              height > 0
-        else {
-            return nil
-        }
-        return BenchmarkDisplaySize(width: width, height: height)
-    }
-
-    private static func requiredHost(_ args: BenchmarkArguments) throws -> String {
-        guard let host = args.host, !host.isEmpty else {
-            throw BenchmarkError.missingHost
-        }
-        return host
-    }
-
-    private static func loadCredentials(from args: BenchmarkArguments) throws -> RDPCredentials? {
-        let hasAnyCredentialInput = args.username != nil || args.domain != nil || args.passwordEnv != nil
-        guard hasAnyCredentialInput else {
-            return nil
-        }
-        guard let username = args.username, !username.isEmpty else {
-            throw BenchmarkError.missingCredential("username is required when password or domain is provided")
-        }
-        guard let passwordEnv = args.passwordEnv else {
-            throw BenchmarkError.missingCredential("password environment variable is required when credentials are provided")
-        }
-        let password = ProcessInfo.processInfo.environment[passwordEnv]
-        guard let password, !password.isEmpty else {
-            throw BenchmarkError.missingPasswordEnv(passwordEnv)
-        }
-        return RDPCredentials(username: username, domain: args.domain, password: password)
     }
 }
 
@@ -693,16 +566,19 @@ private func currentResidentMemoryBytes() -> Int64 {
     return Int64(info.resident_size)
 }
 
-private func measurementDelta(
+/// `peakResidentMemoryBytes` is the most seen between the samples; it can start before
+/// `start`, so the peak also counts both samples.
+func measurementDelta(
     start: ProcessSample,
     end: ProcessSample,
     peakResidentMemoryBytes: Int64
 ) -> MeasurementDelta {
-    MeasurementDelta(
+    let peak = max(peakResidentMemoryBytes, start.residentMemoryBytes, end.residentMemoryBytes)
+    return MeasurementDelta(
         wallMilliseconds: end.wallTime.timeIntervalSince(start.wallTime) * 1000,
         cpuMilliseconds: max(0, end.cpuTimeSeconds - start.cpuTimeSeconds) * 1000,
         residentMemoryDeltaBytes: end.residentMemoryBytes - start.residentMemoryBytes,
-        residentMemoryPeakDeltaBytes: peakResidentMemoryBytes - start.residentMemoryBytes
+        residentMemoryPeakDeltaBytes: peak - start.residentMemoryBytes
     )
 }
 
@@ -741,6 +617,10 @@ private func percentile(_ values: [Double], percentile: Double) -> Double? {
     return sorted[index]
 }
 
+private func milliseconds(_ value: Double?) -> String {
+    value.map { "\(format($0))ms" } ?? "n/a"
+}
+
 private func format(_ value: Double?) -> String {
     guard let value else {
         return "n/a"
@@ -764,7 +644,7 @@ private func printUsage() {
     print("""
     Usage: RDPFrameBenchmark --host <host> [--port 3389] [--username <name>] [--domain <domain>] [--password-env <env>] [--timeout-seconds 60] [--frames 10] [--desktop-size 1920x1080] [--display-resize 2768x1492] [--graphics-profile automatic|avcThinClient|avc420|legacy] [--hide-certificate-warnings] [--json]
 
-    Captures live RDPGFX frames and replays them through pixelBuffer, cgImage, and cgImageCrop decode strategies.
+    Captures live RDPGFX frames and replays them through pixelBuffer and cgImage decode strategies.
     Pass --graphics-profile multiple times to benchmark a subset; default is all profiles.
     """)
 }
