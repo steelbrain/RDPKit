@@ -14,6 +14,11 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
     public var earlyUserAuthorizationEnabled: Bool
     public var graphicsCapabilityProfile: RDPGraphicsCapabilityProfile
     public var storedClientLicense: RDPStoredClientLicense?
+    public var keyboardLayout: RDPKeyboardLayout
+    public var keyboardType: RDPKeyboardType
+    /// An OEM-dependent value; 0 for most keyboards.
+    public var keyboardSubType: UInt32
+    public var keyboardFunctionKeyCount: UInt32
     var redirectionRoutingToken: Data?
     var redirectionSessionID: UInt32?
     var redirectionPasswordCookie: Data?
@@ -32,7 +37,11 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
         audioPlaybackEnabled: Bool = false,
         earlyUserAuthorizationEnabled: Bool = false,
         graphicsCapabilityProfile: RDPGraphicsCapabilityProfile = .automatic,
-        storedClientLicense: RDPStoredClientLicense? = nil
+        storedClientLicense: RDPStoredClientLicense? = nil,
+        keyboardLayout: RDPKeyboardLayout = .unitedStates,
+        keyboardType: RDPKeyboardType = .ibmEnhanced,
+        keyboardSubType: UInt32 = 0,
+        keyboardFunctionKeyCount: UInt32 = 12
     ) {
         self.host = host.trimmingCharacters(in: .whitespacesAndNewlines)
         self.port = port
@@ -47,6 +56,10 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
         self.earlyUserAuthorizationEnabled = earlyUserAuthorizationEnabled
         self.graphicsCapabilityProfile = graphicsCapabilityProfile
         self.storedClientLicense = storedClientLicense
+        self.keyboardLayout = keyboardLayout
+        self.keyboardType = keyboardType
+        self.keyboardSubType = keyboardSubType
+        self.keyboardFunctionKeyCount = keyboardFunctionKeyCount
         self.redirectionRoutingToken = nil
         self.redirectionSessionID = nil
         self.redirectionPasswordCookie = nil
@@ -64,7 +77,11 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
         audioPlaybackEnabled: Bool = false,
         earlyUserAuthorizationEnabled: Bool = false,
         graphicsCapabilityProfile: RDPGraphicsCapabilityProfile = .automatic,
-        storedClientLicense: RDPStoredClientLicense? = nil
+        storedClientLicense: RDPStoredClientLicense? = nil,
+        keyboardLayout: RDPKeyboardLayout = .unitedStates,
+        keyboardType: RDPKeyboardType = .ibmEnhanced,
+        keyboardSubType: UInt32 = 0,
+        keyboardFunctionKeyCount: UInt32 = 12
     ) {
         self.init(
             host: target.host,
@@ -79,7 +96,11 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
             audioPlaybackEnabled: audioPlaybackEnabled,
             earlyUserAuthorizationEnabled: earlyUserAuthorizationEnabled,
             graphicsCapabilityProfile: graphicsCapabilityProfile,
-            storedClientLicense: storedClientLicense
+            storedClientLicense: storedClientLicense,
+            keyboardLayout: keyboardLayout,
+            keyboardType: keyboardType,
+            keyboardSubType: keyboardSubType,
+            keyboardFunctionKeyCount: keyboardFunctionKeyCount
         )
     }
 
@@ -94,6 +115,15 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
 
     public var displayName: String {
         identity.displayName
+    }
+
+    var clientKeyboard: RDPClientKeyboard {
+        RDPClientKeyboard(
+            layout: keyboardLayout,
+            type: keyboardType,
+            subType: keyboardSubType,
+            functionKeyCount: keyboardFunctionKeyCount
+        )
     }
 
     var staticVirtualChannels: [RDPStaticVirtualChannel] {

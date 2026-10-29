@@ -52,6 +52,13 @@
   server's monitor layout from RDPGFX ResetGraphics as `RDPRemoteMonitor`
   rectangles in the graphics output, so a client can show a single remote
   monitor. KRdp's exclusive monitor bounds are read correctly.
+- `RDPConnectionConfiguration.keyboardLayout` sets the Windows keyboard layout
+  (`RDPKeyboardLayout`, a KLID such as 0x00000407 for German) the server uses
+  to turn scancodes into characters, and `keyboardType` (`RDPKeyboardType`),
+  `keyboardSubType` and `keyboardFunctionKeyCount` the keyboard it assumes.
+  They go in the Client Core Data and the Input Capability Set, and default
+  to what RDPKit sent before: US English, an IBM enhanced keyboard, subtype 0
+  and 12 function keys.
 
 ### Compatibility and fixes
 

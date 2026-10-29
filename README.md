@@ -161,6 +161,8 @@ itself.
 ### Input And Display
 
 - Slow-path and fast-path keyboard scancodes and Unicode input
+- Configurable keyboard layout (KLID), type, subtype, and function key count,
+  announced in the Client Core Data and the Input Capability Set
 - Pointer motion, buttons, extended buttons, vertical wheel, and horizontal wheel
 - Remote pointer shapes, system pointers, and pointer-cache updates
 - Display control channel support for resize and monitor layout updates

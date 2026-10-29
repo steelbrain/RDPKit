@@ -15,7 +15,8 @@ extension RDPClientConnection {
             channels: configuration.staticVirtualChannels,
             advertiseMessageChannel: (report.negotiationFlags ?? 0)
                 & RDPNegotiationResponseFlags.extendedClientDataSupported != 0,
-            redirectedSessionID: configuration.redirectionSessionID
+            redirectedSessionID: configuration.redirectionSessionID,
+            keyboard: configuration.clientKeyboard
         )
         let connectInitial = MCSConnectInitialPDU(configuration: mcsConfiguration).encodedTPKT()
         report.mcsConnectInitialHex = connectInitial.rdpHexString

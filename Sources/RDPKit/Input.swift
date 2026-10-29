@@ -48,6 +48,42 @@ public struct RDPKeyboardScancode: Equatable, Hashable, Sendable {
     }
 }
 
+/// A Windows keyboard layout identifier (KLID), such as 0x00000407 for German. The server
+/// turns scancodes into characters with this layout, so it should match the local keyboard
+/// ([MS-RDPBCGR] 2.2.1.3.2, 2.2.7.1.6).
+public struct RDPKeyboardLayout: RawRepresentable, Hashable, Sendable {
+    public var rawValue: UInt32
+
+    public init(rawValue: UInt32) {
+        self.rawValue = rawValue
+    }
+
+    public static let unitedStates = RDPKeyboardLayout(rawValue: 0x0000_0409)
+}
+
+/// The kind of keyboard the server assumes when it maps scancodes ([MS-RDPBCGR] 2.2.1.3.2).
+public struct RDPKeyboardType: RawRepresentable, Hashable, Sendable {
+    public var rawValue: UInt32
+
+    public init(rawValue: UInt32) {
+        self.rawValue = rawValue
+    }
+
+    /// An IBM enhanced (101- or 102-key) keyboard.
+    public static let ibmEnhanced = RDPKeyboardType(rawValue: 4)
+    /// A Japanese keyboard.
+    public static let japanese = RDPKeyboardType(rawValue: 7)
+}
+
+/// The keyboard announced in the Client Core Data and again in the Input Capability
+/// Set, which SHOULD match ([MS-RDPBCGR] 2.2.1.3.2, 2.2.7.1.6).
+struct RDPClientKeyboard: Equatable, Sendable {
+    var layout = RDPKeyboardLayout.unitedStates
+    var type = RDPKeyboardType.ibmEnhanced
+    var subType: UInt32 = 0
+    var functionKeyCount: UInt32 = 12
+}
+
 public struct RDPToggleKeyFlags: OptionSet, Sendable {
     public let rawValue: UInt32
 

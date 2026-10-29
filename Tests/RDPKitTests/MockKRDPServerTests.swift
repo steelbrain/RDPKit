@@ -202,6 +202,24 @@ struct MockKRDPServerTests {
         #expect(core.littleEndianUInt32(at: 230) == 100)
     }
 
+    /// The configured keyboard reaches the Client Core Data and the Input Capability Set.
+    @Test func clientAnnouncesTheConfiguredKeyboard() throws {
+        let report = try runMock(.init()) {
+            $0.keyboardLayout = RDPKeyboardLayout(rawValue: 0x0000_0411)
+            $0.keyboardType = .japanese
+            $0.keyboardSubType = 2
+            $0.keyboardFunctionKeyCount = 12
+        }.report
+
+        #expect(report.status == "success")
+        let core = try clientCoreData(fromMCSConnectInitialHex: report.mcsConnectInitialHex)
+        #expect(core.littleEndianUInt32(at: 16) == 0x0000_0411)
+        #expect(core[56 ..< 68] == hexData("07 00 00 00 02 00 00 00 0c 00 00 00"))
+        let confirmActive = try #require(report.rdpConfirmActiveRequestHex.flatMap(Data.init(rdpHexString:)))
+        // TS_INPUT_CAPABILITYSET: type 0x000D, length 88.
+        #expect(confirmActive.range(of: hexData("0d 00 58 00 35 01 00 00 11 04 00 00 07 00 00 00 02 00 00 00 0c 00 00 00")) != nil)
+    }
+
     /// Recording a wire transcript keeps every server PDU for replay but only
     /// the length of the client's, which carry credentials.
     @Test func wireTranscriptRedactsClientApplicationPayloadsButKeepsByteCounts() throws {

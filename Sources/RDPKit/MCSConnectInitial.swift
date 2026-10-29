@@ -98,6 +98,7 @@ struct MCSConnectInitialConfiguration: Equatable, Sendable {
     var channels: [RDPStaticVirtualChannel]
     var advertiseMessageChannel: Bool
     var redirectedSessionID: UInt32?
+    var keyboard: RDPClientKeyboard
 
     init(
         desktopWidth: UInt16 = 1280,
@@ -107,7 +108,8 @@ struct MCSConnectInitialConfiguration: Equatable, Sendable {
         requestedProtocols: RDPSecurityProtocols = [.tls, .credSSP],
         channels: [RDPStaticVirtualChannel] = [.drdynvc],
         advertiseMessageChannel: Bool = false,
-        redirectedSessionID: UInt32? = nil
+        redirectedSessionID: UInt32? = nil,
+        keyboard: RDPClientKeyboard = RDPClientKeyboard()
     ) {
         precondition(!channels.isEmpty)
         precondition(channels.count <= 31)
@@ -122,6 +124,7 @@ struct MCSConnectInitialConfiguration: Equatable, Sendable {
         self.channels = channels
         self.advertiseMessageChannel = advertiseMessageChannel
         self.redirectedSessionID = redirectedSessionID
+        self.keyboard = keyboard
     }
 }
 
@@ -201,12 +204,12 @@ struct MCSConnectInitialPDU: Equatable, Sendable {
         body.appendLittleEndianUInt16(configuration.desktopHeight)
         body.appendLittleEndianUInt16(0xCA01)
         body.appendLittleEndianUInt16(0xAA03)
-        body.appendLittleEndianUInt32(0x0000_0409)
+        body.appendLittleEndianUInt32(configuration.keyboard.layout.rawValue)
         body.appendLittleEndianUInt32(3790)
         body.append(Data(fixedUTF16LittleEndian: configuration.clientName, codeUnitCount: 16))
-        body.appendLittleEndianUInt32(4)
-        body.appendLittleEndianUInt32(0)
-        body.appendLittleEndianUInt32(12)
+        body.appendLittleEndianUInt32(configuration.keyboard.type.rawValue)
+        body.appendLittleEndianUInt32(configuration.keyboard.subType)
+        body.appendLittleEndianUInt32(configuration.keyboard.functionKeyCount)
         body.append(Data(repeating: 0, count: 64))
         body.appendLittleEndianUInt16(0xCA04)
         body.appendLittleEndianUInt16(1)

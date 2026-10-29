@@ -79,6 +79,24 @@ import Testing
     #expect(core.littleEndianUInt32(at: 230) == 100)
 }
 
+/// MS-RDPBCGR 2.2.1.3.2: keyboardLayout follows SASSequence, 16 bytes into the block;
+/// keyboardType, keyboardSubType and keyboardFunctionKey follow clientName, then imeFileName.
+@Test func clientCoreDataCarriesTheKeyboard() {
+    let defaultCore = MCSConnectInitialPDU().encodedClientCoreData()
+    let japaneseCore = MCSConnectInitialPDU(configuration: MCSConnectInitialConfiguration(
+        keyboard: RDPClientKeyboard(layout: RDPKeyboardLayout(rawValue: 0xE001_0411), type: .japanese, subType: 2, functionKeyCount: 12)
+    )).encodedClientCoreData()
+
+    #expect(defaultCore[16 ..< 20] == hexData("09 04 00 00"))
+    #expect(defaultCore[56 ..< 132] == hexData("04 00 00 00 00 00 00 00 0c 00 00 00") + Data(repeating: 0, count: 64))
+    #expect(japaneseCore[16 ..< 20] == hexData("11 04 01 e0"))
+    #expect(japaneseCore[56 ..< 132] == hexData("07 00 00 00 02 00 00 00 0c 00 00 00") + Data(repeating: 0, count: 64))
+    // Nothing else moves.
+    #expect(japaneseCore[..<16] == defaultCore[..<16])
+    #expect(japaneseCore[20 ..< 56] == defaultCore[20 ..< 56])
+    #expect(japaneseCore[132...] == defaultCore[132...])
+}
+
 @Test func clientCoreDataNullTerminatesMaximumLengthClientName() {
     let pdu = MCSConnectInitialPDU(configuration: MCSConnectInitialConfiguration(
         clientName: "ABCDEFGHIJKLMNO"

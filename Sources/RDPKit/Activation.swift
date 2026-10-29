@@ -166,12 +166,14 @@ struct RDPClientConfirmActivePDU: Equatable, Sendable {
     var shareID: UInt32
     var desktopWidth: UInt16
     var desktopHeight: UInt16
+    var keyboard: RDPClientKeyboard
     var sourceDescriptor: Data
 
     init(
         shareID: UInt32,
         desktopWidth: UInt16 = 1280,
         desktopHeight: UInt16 = 720,
+        keyboard: RDPClientKeyboard = RDPClientKeyboard(),
         sourceDescriptor: Data = Data("RDPKit".utf8)
     ) {
         precondition(!sourceDescriptor.isEmpty)
@@ -180,6 +182,7 @@ struct RDPClientConfirmActivePDU: Equatable, Sendable {
         self.shareID = shareID
         self.desktopWidth = desktopWidth
         self.desktopHeight = desktopHeight
+        self.keyboard = keyboard
         self.sourceDescriptor = sourceDescriptor
     }
 
@@ -365,10 +368,10 @@ struct RDPClientConfirmActivePDU: Equatable, Sendable {
                 | RDPInputCapabilityFlags.mouseHorizontalWheel
         )
         data.appendLittleEndianUInt16(0)
-        data.appendLittleEndianUInt32(0x0000_0409)
-        data.appendLittleEndianUInt32(4)
-        data.appendLittleEndianUInt32(0)
-        data.appendLittleEndianUInt32(12)
+        data.appendLittleEndianUInt32(keyboard.layout.rawValue)
+        data.appendLittleEndianUInt32(keyboard.type.rawValue)
+        data.appendLittleEndianUInt32(keyboard.subType)
+        data.appendLittleEndianUInt32(keyboard.functionKeyCount)
         data.append(Data(repeating: 0, count: 64))
         return data
     }

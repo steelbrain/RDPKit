@@ -267,6 +267,19 @@ import Testing
     ])))
 }
 
+/// MS-RDPBCGR 2.2.7.1.6: inputFlags, pad2octetsA, keyboardLayout, keyboardType,
+/// keyboardSubType, keyboardFunctionKey, imeFileName.
+@Test func confirmActiveInputCapabilityCarriesTheKeyboard() throws {
+    let defaultInput = try #require(try RDPClientConfirmActivePDU(shareID: 1).capabilityBodies(userChannelID: 1006)[0x000D])
+    let frenchInput = try #require(try RDPClientConfirmActivePDU(
+        shareID: 0x0001_03EE,
+        keyboard: RDPClientKeyboard(layout: RDPKeyboardLayout(rawValue: 0x0000_040C), type: RDPKeyboardType(rawValue: 1), subType: 3, functionKeyCount: 10)
+    ).capabilityBodies(userChannelID: 1006)[0x000D])
+
+    #expect(defaultInput == hexData("35 01 00 00 09 04 00 00 04 00 00 00 00 00 00 00 0c 00 00 00") + Data(repeating: 0, count: 64))
+    #expect(frenchInput == hexData("35 01 00 00 0c 04 00 00 01 00 00 00 03 00 00 00 0a 00 00 00") + Data(repeating: 0, count: 64))
+}
+
 @Test func confirmActiveExposesItsAdvertisedMultifragmentBufferSize() throws {
     let confirmActive = RDPClientConfirmActivePDU(shareID: 1)
 

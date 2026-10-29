@@ -316,7 +316,8 @@ extension RDPClientConnection {
         let confirmActive = RDPClientConfirmActivePDU(
             shareID: demandActive.shareID,
             desktopWidth: desktopWidth,
-            desktopHeight: desktopHeight
+            desktopHeight: desktopHeight,
+            keyboard: configuration.clientKeyboard
         )
         let confirmActivePacket = confirmActive.encodedTPKT(userChannelID: userChannelID, ioChannelID: ioChannelID)
         report.rdpConfirmActiveRequestHex = confirmActivePacket.rdpHexString
