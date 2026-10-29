@@ -239,6 +239,8 @@ final class RDPGFXSurfaceCompositor {
     private var cachedByteCount = 0
     private var evictedDecoderCacheSlots: [UInt16] = []
     private var graphicsOutputRect: RDPFrameRect?
+    /// The monitors of the last ResetGraphics, in graphics output coordinates.
+    private(set) var monitors: [RDPRemoteMonitor] = []
     private let maximumCacheByteCount: Int
     private static let maximumSurfaceByteCount = 1 << 30
     private let maximumCacheSlot: UInt16
@@ -384,6 +386,7 @@ final class RDPGFXSurfaceCompositor {
             codecName: "surface-bgra",
             pixelFormat: surface.pixelFormat,
             graphicsOutputRect: graphicsOutputRect,
+            monitors: monitors,
             surfaceRect: surfaceRect,
             mappedOutputRect: mappedOutputRect,
             destinationRect: surfaceRect,
@@ -508,6 +511,7 @@ final class RDPGFXSurfaceCompositor {
             right: UInt16(pdu.width),
             bottom: UInt16(pdu.height)
         )
+        monitors = pdu.outputMonitors
     }
 
     private func createSurface(_ pdu: RDPGFXCreateSurfacePDU) throws {

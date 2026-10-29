@@ -180,6 +180,36 @@ import Testing
     #expect(compositor.makeFrames(frameID: 28).isEmpty)
 }
 
+@Test func compositorFramesCarryTheLastGraphicsResetMonitors() throws {
+    let compositor = RDPGFXSurfaceCompositor()
+    let clearCodec = RDPClearCodecDecoder()
+    try compositor.process(
+        try resetGraphicsMessage(width: 4, height: 2, monitors: [
+            RDPMonitorDefinition(left: 0, top: 0, right: 1, bottom: 1, flags: RDPMonitorDefinition.primary),
+            RDPMonitorDefinition(left: 2, top: 0, right: 3, bottom: 1, flags: 0),
+        ]),
+        clearCodec: clearCodec
+    )
+    try compositor.process(try createSurfaceMessage(surfaceID: 1, width: 4, height: 2), clearCodec: clearCodec)
+    try compositor.process(try mapSurfaceToOutputMessage(surfaceID: 1, x: 0, y: 0), clearCodec: clearCodec)
+    let fill = try solidFillMessage(
+        surfaceID: 1,
+        color: [0x01, 0x02, 0x03, 0xFF],
+        rects: [RDPGFXRect16(left: 0, top: 0, right: 4, bottom: 2)]
+    )
+    try compositor.process(fill, clearCodec: clearCodec)
+
+    #expect(compositor.makeFrames(frameID: 1).map(\.monitors) == [[
+        RDPRemoteMonitor(rect: RDPFrameRect(left: 0, top: 0, right: 2, bottom: 2), isPrimary: true),
+        RDPRemoteMonitor(rect: RDPFrameRect(left: 2, top: 0, right: 4, bottom: 2), isPrimary: false),
+    ]])
+
+    try compositor.process(try resetGraphicsMessage(width: 4, height: 2), clearCodec: clearCodec)
+    try compositor.process(fill, clearCodec: clearCodec)
+
+    #expect(compositor.makeFrames(frameID: 2).map(\.monitors) == [[]])
+}
+
 @Test func compositorDoesNotEmitUnmappedOffscreenSurfaces() throws {
     let compositor = RDPGFXSurfaceCompositor()
     let clearCodec = RDPClearCodecDecoder()
@@ -2472,12 +2502,22 @@ private func deleteEncodingContextMessage(
     return try makeGraphicsMessage(commandID: RDPGFXCommandID.deleteEncodingContext, payload: payload)
 }
 
-private func resetGraphicsMessage(width: UInt32, height: UInt32) throws -> RDPGFXHeader {
+private func resetGraphicsMessage(
+    width: UInt32,
+    height: UInt32,
+    monitors: [RDPMonitorDefinition] = []
+) throws -> RDPGFXHeader {
     var payload = Data()
     payload.appendLittleEndianUInt32(width)
     payload.appendLittleEndianUInt32(height)
-    payload.appendLittleEndianUInt32(0)
-    payload.append(Data(repeating: 0, count: 320))
+    payload.appendLittleEndianUInt32(UInt32(monitors.count))
+    for monitor in monitors {
+        for value in [monitor.left, monitor.top, monitor.right, monitor.bottom] {
+            payload.appendLittleEndianUInt32(UInt32(bitPattern: value))
+        }
+        payload.appendLittleEndianUInt32(monitor.flags)
+    }
+    payload.append(Data(repeating: 0, count: 320 - monitors.count * 20))
     return try makeGraphicsMessage(commandID: RDPGFXCommandID.resetGraphics, payload: payload)
 }
 

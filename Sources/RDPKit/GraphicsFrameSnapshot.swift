@@ -113,6 +113,20 @@ extension [RDPFrameRect] {
     }
 }
 
+/// A monitor of the remote desktop, from the server's monitor layout ([MS-RDPEGFX] 2.2.2.14).
+/// A client shows one monitor by drawing only its rectangle of the graphics output.
+public struct RDPRemoteMonitor: Encodable, Equatable, Sendable {
+    /// Where the monitor is in the graphics output.
+    public var rect: RDPFrameRect
+    /// Whether this is the primary monitor, whose top-left is the desktop's origin.
+    public var isPrimary: Bool
+
+    public init(rect: RDPFrameRect, isPrimary: Bool) {
+        self.rect = rect
+        self.isPrimary = isPrimary
+    }
+}
+
 public enum RDPAVC444SubframeLayout: String, Encodable, Equatable, Sendable {
     case yuv420AndChroma420
     case yuv420Only
@@ -127,6 +141,9 @@ public struct RDPGraphicsFrameSnapshot: Encodable, Equatable, Sendable {
     public var videoCodec: RDPVideoCodec
     public var pixelFormat: UInt8
     public var graphicsOutputRect: RDPFrameRect?
+    /// The server's monitors in the graphics output, as its last ResetGraphics laid them out
+    /// ([MS-RDPEGFX] 2.2.2.14). Empty before one, and for updates outside RDPGFX.
+    public var monitors: [RDPRemoteMonitor]
     /// Where the surface is in the graphics output. Nil with a ``graphicsOutputRect`` for a
     /// surface not mapped to the output: a decoder keeps the update for later copies out of
     /// the surface and presents nothing.
@@ -159,6 +176,7 @@ public struct RDPGraphicsFrameSnapshot: Encodable, Equatable, Sendable {
         videoCodec: RDPVideoCodec = .h264,
         pixelFormat: UInt8,
         graphicsOutputRect: RDPFrameRect? = nil,
+        monitors: [RDPRemoteMonitor] = [],
         surfaceRect: RDPFrameRect? = nil,
         mappedOutputRect: RDPFrameRect? = nil,
         destinationRect: RDPFrameRect,
@@ -181,6 +199,7 @@ public struct RDPGraphicsFrameSnapshot: Encodable, Equatable, Sendable {
         self.videoCodec = videoCodec
         self.pixelFormat = pixelFormat
         self.graphicsOutputRect = graphicsOutputRect
+        self.monitors = monitors
         self.surfaceRect = surfaceRect
         self.mappedOutputRect = mappedOutputRect
         self.destinationRect = destinationRect
@@ -241,6 +260,7 @@ public struct RDPGraphicsFrameSnapshot: Encodable, Equatable, Sendable {
         case videoCodecName
         case pixelFormat
         case graphicsOutputRect
+        case monitors
         case surfaceRect
         case mappedOutputRect
         case destinationRect
@@ -263,6 +283,9 @@ public struct RDPGraphicsFrameSnapshot: Encodable, Equatable, Sendable {
         try container.encode(videoCodec.displayName, forKey: .videoCodecName)
         try container.encode(pixelFormat, forKey: .pixelFormat)
         try container.encodeIfPresent(graphicsOutputRect, forKey: .graphicsOutputRect)
+        if !monitors.isEmpty {
+            try container.encode(monitors, forKey: .monitors)
+        }
         try container.encodeIfPresent(surfaceRect, forKey: .surfaceRect)
         try container.encodeIfPresent(mappedOutputRect, forKey: .mappedOutputRect)
         try container.encode(destinationRect, forKey: .destinationRect)

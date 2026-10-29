@@ -102,12 +102,17 @@ import Testing
 }
 
 @Test func frameMetadataCopiesReusableFrameSummary() {
+    let monitors = [
+        RDPRemoteMonitor(rect: RDPFrameRect(left: 0, top: 0, right: 960, bottom: 1080), isPrimary: true),
+        RDPRemoteMonitor(rect: RDPFrameRect(left: 960, top: 0, right: 1920, bottom: 1080), isPrimary: false),
+    ]
     let frame = RDPGraphicsFrameSnapshot(
         frameID: 9,
         surfaceID: 3,
         codecID: RDPGFXCodecID.avc420,
         codecName: "avc420",
         pixelFormat: 32,
+        monitors: monitors,
         destinationRect: RDPFrameRect(left: 0, top: 0, right: 1920, bottom: 1080),
         regionRects: [
             RDPFrameRect(left: 0, top: 0, right: 960, bottom: 1080),
@@ -124,6 +129,7 @@ import Testing
     #expect(metadata.videoCodec == .h264)
     #expect(metadata.width == 1920)
     #expect(metadata.height == 1080)
+    #expect(metadata.monitors == monitors)
     #expect(metadata.videoByteCount == 4)
     #expect(metadata.payloadByteCount == 4)
     #expect(metadata.regionCount == 2)

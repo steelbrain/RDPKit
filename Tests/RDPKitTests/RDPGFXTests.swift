@@ -560,23 +560,54 @@ import Testing
 
 @Test func parsesResetGraphicsWithExclusiveMonitorBounds() throws {
     // KRdp reports right/bottom as exclusive values (3840x2400 output).
-    var monitor = Data()
-    monitor.appendLittleEndianUInt32(0)
-    monitor.appendLittleEndianUInt32(0)
-    monitor.appendLittleEndianUInt32(3_840)
-    monitor.appendLittleEndianUInt32(2_400)
-    monitor.appendLittleEndianUInt32(1)
     let message = try RDPGFXHeader.parse(from: resetGraphicsMessage(
         width: 3_840,
         height: 2_400,
         monitorCount: 1,
-        monitorData: monitor
+        monitorData: monitorDefinitionBytes(left: 0, top: 0, right: 3_840, bottom: 2_400, flags: 1)
     ))
 
     let summary = try RDPGFXMessageSummary.summarize(message)
+    let reset = try RDPGFXResetGraphicsPDU.parse(from: message)
 
     #expect(summary.width == 3_840)
     #expect(summary.height == 2_400)
+    #expect(reset.outputMonitors == [
+        RDPRemoteMonitor(rect: RDPFrameRect(left: 0, top: 0, right: 3_840, bottom: 2_400), isPrimary: true),
+    ])
+}
+
+/// TS_MONITOR_DEF puts the primary monitor at 0,0 with inclusive bounds ([MS-RDPBCGR]
+/// 2.2.1.3.6.1); the graphics output starts at the smallest left and top of any monitor.
+@Test func placesResetGraphicsMonitorsInTheGraphicsOutput() throws {
+    let reset = try RDPGFXResetGraphicsPDU.parse(from: RDPGFXHeader.parse(from: resetGraphicsMessage(
+        width: 3_840,
+        height: 1_200,
+        monitorCount: 2,
+        monitorData: monitorDefinitionBytes(left: 0, top: 0, right: 1_919, bottom: 1_079, flags: 1)
+            + monitorDefinitionBytes(left: -1_920, top: -120, right: -1, bottom: 1_079, flags: 0)
+    )))
+
+    #expect(reset.outputMonitors == [
+        RDPRemoteMonitor(rect: RDPFrameRect(left: 1_920, top: 120, right: 3_840, bottom: 1_200), isPrimary: true),
+        RDPRemoteMonitor(rect: RDPFrameRect(left: 0, top: 0, right: 1_920, bottom: 1_200), isPrimary: false),
+    ])
+}
+
+/// A monitor reaching past the output is clipped to it; one outside it, or inverted, is left out.
+@Test func clipsResetGraphicsMonitorsToTheGraphicsOutput() throws {
+    let reset = try RDPGFXResetGraphicsPDU.parse(from: RDPGFXHeader.parse(from: resetGraphicsMessage(
+        width: 1_920,
+        height: 1_080,
+        monitorCount: 3,
+        monitorData: monitorDefinitionBytes(left: 0, top: 0, right: 2_559, bottom: 1_439, flags: 1)
+            + monitorDefinitionBytes(left: 1_920, top: 0, right: 3_839, bottom: 1_079, flags: 0)
+            + monitorDefinitionBytes(left: 100, top: 100, right: 99, bottom: 199, flags: 0)
+    )))
+
+    #expect(reset.outputMonitors == [
+        RDPRemoteMonitor(rect: RDPFrameRect(left: 0, top: 0, right: 1_920, bottom: 1_080), isPrimary: true),
+    ])
 }
 
 @Test func rejectsResetGraphicsOutsideSpecLimits() {
@@ -1676,6 +1707,15 @@ private func resetGraphicsMessage(
         payload.append(Data(repeating: 0, count: 332 - payload.count))
     }
     return graphicsMessage(commandID: RDPGFXCommandID.resetGraphics, payload: payload)
+}
+
+private func monitorDefinitionBytes(left: Int32, top: Int32, right: Int32, bottom: Int32, flags: UInt32) -> Data {
+    var data = Data()
+    for value in [left, top, right, bottom] {
+        data.appendLittleEndianUInt32(UInt32(bitPattern: value))
+    }
+    data.appendLittleEndianUInt32(flags)
+    return data
 }
 
 private func mapSurfaceToOutputMessage(

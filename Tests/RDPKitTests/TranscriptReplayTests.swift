@@ -25,6 +25,10 @@ import Testing
     #expect(report.rdpGraphicsFirstFrame?.width == 1280)
     #expect(report.rdpGraphicsFirstFrame?.height == 720)
     #expect(report.rdpGraphicsFirstFrame?.videoNalUnitTypes == [7, 8, 5])
+    // ResetGraphics names one monitor, (0,0)-(1279,719) with inclusive bounds.
+    #expect(report.rdpGraphicsFirstFrame?.monitors == [
+        RDPRemoteMonitor(rect: RDPFrameRect(left: 0, top: 0, right: 1280, bottom: 720), isPrimary: true),
+    ])
 }
 
 @Test func replaysKrdpNegotiationTranscriptThroughToFirstFrame() throws {
@@ -43,6 +47,10 @@ import Testing
     #expect(report.rdpGraphicsFirstFrame?.width == 3840)
     #expect(report.rdpGraphicsFirstFrame?.height == 2400)
     #expect(report.rdpGraphicsFirstFrame.map { Array($0.videoNalUnitTypes.prefix(3)) } == [7, 8, 6])
+    // ResetGraphics (event 39) names one monitor, (0,0)-(3840,2400) with exclusive bounds.
+    #expect(report.rdpGraphicsFirstFrame?.monitors == [
+        RDPRemoteMonitor(rect: RDPFrameRect(left: 0, top: 0, right: 3840, bottom: 2400), isPrimary: true),
+    ])
 
     // KRdp runs auto-detect after activation (events 31, 38, 43, 44): RTT
     // requests get RTT responses, and the continuous Bandwidth Measure Stop

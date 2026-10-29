@@ -91,6 +91,45 @@ import Testing
     #expect(try bgraPixel(atX: 1, y: 1, in: presentation.imageBuffer) == [0xA0, 0xB0, 0xC0, 0xFF])
 }
 
+@Test func decodedVideoCompositorPresentationsKeepTheServerMonitors() throws {
+    let compositor = RDPDecodedVideoSurfaceCompositor()
+    let outputRect = RDPFrameRect(left: 0, top: 0, right: 4, bottom: 2)
+    let monitors = [
+        RDPRemoteMonitor(rect: RDPFrameRect(left: 0, top: 0, right: 2, bottom: 2), isPrimary: true),
+        RDPRemoteMonitor(rect: RDPFrameRect(left: 2, top: 0, right: 4, bottom: 2), isPrimary: false),
+    ]
+    var whole = videoFrame(
+        id: 1,
+        graphicsOutputRect: outputRect,
+        surfaceRect: outputRect,
+        destinationRect: outputRect,
+        regionRects: [outputRect]
+    )
+    whole.monitors = monitors
+    var partial = videoFrame(
+        id: 2,
+        graphicsOutputRect: outputRect,
+        surfaceRect: outputRect,
+        destinationRect: RDPFrameRect(left: 2, top: 0, right: 4, bottom: 2),
+        regionRects: [RDPFrameRect(left: 0, top: 0, right: 2, bottom: 2)],
+        nalUnitTypes: [1]
+    )
+    partial.monitors = monitors
+
+    let direct = try compositor.presented(
+        for: whole,
+        decodedImageBuffer: try bgraPixelBuffer(width: 4, height: 2, pixel: [0x10, 0x20, 0x30, 0xFF])
+    )
+    let composed = try compositor.presented(
+        for: partial,
+        decodedImageBuffer: try bgraPixelBuffer(width: 2, height: 2, pixel: [0xA0, 0xB0, 0xC0, 0xFF])
+    )
+
+    #expect(direct.frame.monitors == monitors)
+    #expect(composed.frame.codecName == "graphics-output-bgra")
+    #expect(composed.frame.monitors == monitors)
+}
+
 @Test func decodedVideoCompositorPreservesAVC444ChromaOutsideLaterLumaMask() throws {
     let compositor = RDPDecodedVideoSurfaceCompositor()
     let outputRect = RDPFrameRect(left: 0, top: 0, right: 4, bottom: 4)

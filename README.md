@@ -124,6 +124,8 @@ itself.
   through 10.7, with automatic, AVC thin-client, AVC420, and legacy profiles
 - Persistent mapped and scaled surface composition, including partial updates,
   multiple surfaces, caches, solid fills, alpha bitmaps, and graphics resets
+- The server's monitor layout on every RDPGFX frame (`RDPRemoteMonitor`), so a
+  client can show a single remote monitor
 - AVC420/H.264 rendering through per-surface VideoToolbox decoders, presented
   as full-range BT.709 as MS-RDPEGFX specifies, and KRdp's limited-range
   x264 video corrected

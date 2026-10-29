@@ -281,16 +281,66 @@ private func parseTrailingArray<Element>(
     return elements
 }
 
+/// TS_MONITOR_DEF ([MS-RDPBCGR] 2.2.1.3.6.1): a monitor in desktop coordinates, which put the
+/// primary monitor's top-left at 0,0, so the others' can be negative. Right and bottom are
+/// inclusive.
+struct RDPMonitorDefinition: Equatable, Sendable {
+    static let primary: UInt32 = 0x0000_0001
+
+    var left: Int32
+    var top: Int32
+    var right: Int32
+    var bottom: Int32
+    var flags: UInt32
+
+    static func parse(_ cursor: inout ByteCursor) throws -> RDPMonitorDefinition {
+        try RDPMonitorDefinition(
+            left: Int32(bitPattern: cursor.readLittleEndianUInt32()),
+            top: Int32(bitPattern: cursor.readLittleEndianUInt32()),
+            right: Int32(bitPattern: cursor.readLittleEndianUInt32()),
+            bottom: Int32(bitPattern: cursor.readLittleEndianUInt32()),
+            flags: cursor.readLittleEndianUInt32()
+        )
+    }
+}
+
 struct RDPGFXResetGraphicsPDU: Equatable, Sendable {
     static let maximumDimension: UInt32 = 32_766
     static let maximumMonitorCount: UInt32 = 16
 
     var width: UInt32
     var height: UInt32
+    var monitors: [RDPMonitorDefinition]
 
-    /// The PDU is always 340 bytes long; monitorDefArray and the padding are not read.
-    /// KRdp sends exclusive right/bottom monitor values although TS_MONITOR_DEF is
-    /// inclusive, so the monitor rects must never be checked against the output size.
+    /// The monitors where they are in the graphics output, in the server's order. The output
+    /// holds the desktop from the smallest left and top of any monitor. Each monitor is
+    /// clipped to the output, and one with nothing in it is left out: KRdp 6.8 sends right
+    /// and bottom exclusive (Fixtures/krdp-negotiation-transcript.json, sequence 39: monitor
+    /// (0,0)-(3840,2400) in a 3840x2400 output), which clipping reads as the whole output.
+    var outputMonitors: [RDPRemoteMonitor] {
+        guard let originX = monitors.map(\.left).min(),
+              let originY = monitors.map(\.top).min()
+        else {
+            return []
+        }
+        func outputCoordinate(_ value: Int, origin: Int32, limit: UInt32) -> UInt16 {
+            UInt16(min(max(value - Int(origin), 0), Int(limit)))
+        }
+        return monitors.compactMap { monitor in
+            let rect = RDPFrameRect(
+                left: outputCoordinate(Int(monitor.left), origin: originX, limit: width),
+                top: outputCoordinate(Int(monitor.top), origin: originY, limit: height),
+                right: outputCoordinate(Int(monitor.right) + 1, origin: originX, limit: width),
+                bottom: outputCoordinate(Int(monitor.bottom) + 1, origin: originY, limit: height)
+            )
+            guard rect.width > 0, rect.height > 0 else {
+                return nil
+            }
+            return RDPRemoteMonitor(rect: rect, isPrimary: monitor.flags & RDPMonitorDefinition.primary != 0)
+        }
+    }
+
+    /// The PDU is always 340 bytes long; padding follows monitorDefArray.
     static func parse(from message: RDPGFXHeader) throws -> RDPGFXResetGraphicsPDU {
         guard message.commandID == RDPGFXCommandID.resetGraphics,
               message.payload.count == 340 - 8
@@ -308,7 +358,8 @@ struct RDPGFXResetGraphicsPDU: Equatable, Sendable {
         else {
             throw RDPDecodeError.invalidRDPGFXPDU
         }
-        return RDPGFXResetGraphicsPDU(width: width, height: height)
+        let monitors = try (0 ..< monitorCount).map { _ in try RDPMonitorDefinition.parse(&cursor) }
+        return RDPGFXResetGraphicsPDU(width: width, height: height, monitors: monitors)
     }
 }
 

@@ -46,6 +46,13 @@
   examples.
 - The default client, workstation and source names are `RDPKit`/`RDPKIT`.
 
+### Additions
+
+- `RDPGraphicsFrameSnapshot.monitors` and `RDPFrameMetadata.monitors` give the
+  server's monitor layout from RDPGFX ResetGraphics as `RDPRemoteMonitor`
+  rectangles in the graphics output, so a client can show a single remote
+  monitor. KRdp's exclusive monitor bounds are read correctly.
+
 ### Compatibility and fixes
 
 - Connections: every step before the first frame is bounded by the timeout,
