@@ -337,6 +337,12 @@ final class RDPRemoteSessionClipboard {
         cancelLocalFileRead()
         let fileURLs = Self.fileURLs(on: pasteboard)
         guard fileURLs.isEmpty else {
+            // The files go once read, but they replace the server's copy now, as text does: an
+            // empty clipboard goes at once, so the server's older copy is not fetched when
+            // sharing turns on, nor applied should it reach this thread late. A remote copy made
+            // during the read is newer still, and wins.
+            session?.publishLocalUnicodeText(nil)
+            serverHoldsLocalCopy = false
             // Reading up to 32 MiB, or a file iCloud has to download first, would stall the UI.
             localFileRead = Task { [weak self] in
                 let payload = await Task.detached(priority: .userInitiated) {

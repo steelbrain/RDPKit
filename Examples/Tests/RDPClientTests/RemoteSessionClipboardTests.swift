@@ -260,6 +260,57 @@ private func makePasteboard() -> NSPasteboard {
     #expect(pasteboard.string(forType: .string) == "newer remote")
 }
 
+/// Copies `contents` to the pasteboard as a file in `directory`.
+@MainActor
+private func copyFile(_ contents: Data, in directory: URL, to pasteboard: NSPasteboard) throws {
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let fileURL = directory.appendingPathComponent("notes.txt")
+    try contents.write(to: fileURL)
+    pasteboard.clearContents()
+    pasteboard.writeObjects([fileURL as NSURL])
+}
+
+/// Turning sharing on sends copied files as it sends text, though they take a while to read:
+/// the copy the server announced while sharing was off is not fetched in their place.
+@MainActor
+@Test func sharingTurnedOnMidSessionSendsCopiedFiles() async throws {
+    let pasteboard = makePasteboard()
+    defer { pasteboard.releaseGlobally() }
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    try copyFile(Data("local".utf8), in: directory, to: pasteboard)
+    let session = RecordedClipboard()
+    let clipboard = RDPRemoteSessionClipboard(isSharingEnabled: false, pasteboard: pasteboard)
+    clipboard.attach(session)
+    session.unfetchedRemoteCopy = true
+
+    clipboard.setSharingEnabled(true)
+    #expect(session.fetchesRemoteCopies)
+    #expect(session.isAwaitingRemoteCopy == false)
+    try await waitUntil { session.publishedFiles.isEmpty == false }
+    #expect(session.publishedFiles.map { $0.map(\.contents) } == [[Data("local".utf8)]])
+}
+
+/// The server's clipboard, emptied before the bridge attached, is reported once attaching turns
+/// fetching on, and can reach the main thread while the pasteboard's files are being read. The
+/// files are the newer copy, so they still go.
+@MainActor
+@Test func copiedFilesGoThoughAnOlderRemoteCopyArrivesDuringTheirRead() async throws {
+    let pasteboard = makePasteboard()
+    defer { pasteboard.releaseGlobally() }
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    try copyFile(Data("local".utf8), in: directory, to: pasteboard)
+    let session = RecordedClipboard()
+    let clipboard = RDPRemoteSessionClipboard(isSharingEnabled: true, pasteboard: pasteboard)
+
+    let emptied = session.announceRemoteCopy()
+    clipboard.attach(session)
+    clipboard.receiveRemoteCopyUnavailable(isEmpty: true, copyNumber: emptied)
+    try await waitUntil { session.publishedFiles.isEmpty == false }
+    #expect(session.publishedFiles.map { $0.map(\.contents) } == [[Data("local".utf8)]])
+}
+
 @MainActor
 @Test func copiedLocalFilesAreReadOffTheMainThread() async throws {
     let pasteboard = makePasteboard()
