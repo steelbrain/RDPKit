@@ -257,6 +257,33 @@ private func pasteboardFileURLs(_ pasteboard: NSPasteboard) -> [URL] {
 }
 
 @MainActor
+@Test func aRemoteFileCopyWinsOverALocalFileStillBeingRead() async throws {
+    let pasteboard = makePasteboard()
+    defer { pasteboard.releaseGlobally() }
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let localFileURL = directory.appendingPathComponent("local.txt")
+    try Data("local".utf8).write(to: localFileURL)
+    let session = RecordedClipboard()
+    let clipboard = RDPRemoteSessionClipboard(isSharingEnabled: true, pasteboard: pasteboard)
+    clipboard.attach(session)
+    let contents = Data("remote".utf8)
+
+    pasteboard.clearContents()
+    pasteboard.writeObjects([localFileURL as NSURL])
+    clipboard.poll()
+    try startRemoteFileDownload(contents, to: clipboard, from: session)
+    try await Task.sleep(nanoseconds: 200_000_000)
+    #expect(session.publishedFiles.isEmpty)
+
+    try answerRangeRequest(with: contents, to: clipboard, from: session)
+    let fileURL = try #require(pasteboardFileURLs(pasteboard).first)
+    defer { try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent()) }
+    #expect(try Data(contentsOf: fileURL) == contents)
+}
+
+@MainActor
 @Test func aDownloadTheServerStopsAnsweringTimesOut() throws {
     let pasteboard = makePasteboard()
     defer { pasteboard.releaseGlobally() }

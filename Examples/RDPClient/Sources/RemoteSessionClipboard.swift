@@ -166,6 +166,7 @@ final class RDPRemoteSessionClipboard {
         guard isSharingEnabled else {
             return
         }
+        cancelLocalFileRead()
         discardFileTransfer()
         do {
             let files = try descriptorList.remoteFileTransferFiles(
