@@ -15,6 +15,8 @@ final class RemoteInputCaptureNSView: NSView {
     var keyboardLayout = RDPKeyboardLayout.unitedStates
     /// Whether the Mac's layout makes a key a dead key with these modifiers; tests replace it.
     var isDeadKey: @MainActor (UInt16, NSEvent.ModifierFlags) -> Bool = MacRDPDeadKeys.isDeadKey(keyCode:modifierFlags:)
+    /// What the Mac's layout types for a key with no dead key pending; tests replace it.
+    var uncomposedOutput: @MainActor (UInt16, NSEvent.ModifierFlags) -> String? = MacRDPDeadKeys.output(keyCode:modifierFlags:)
     var inputSession: (any RDPInputEventSending)? {
         willSet {
             if inputSession != nil, inputSession !== newValue {
@@ -32,6 +34,8 @@ final class RemoteInputCaptureNSView: NSView {
     private var inputState = RDPInputStateTracker()
     private var deferredModifierKeys = MacRDPDeferredModifierKeys()
     private var wheelAccumulator = RDPScrollWheelAccumulator()
+    /// A dead key went to the server as an Alt chord, so macOS composes the next key with its accent.
+    private var followsChordedDeadKey = false
     private var commandKeyUpMonitor: Any?
 
     override var acceptsFirstResponder: Bool {
@@ -150,6 +154,12 @@ final class RemoteInputCaptureNSView: NSView {
 
     override func keyDown(with event: NSEvent) {
         releaseModifiers(missingFrom: event.modifierFlags)
+        let isComposedByChordedDeadKey = followsChordedDeadKey && event.isARepeat == false
+        followsChordedDeadKey = false
+        let characters = isComposedByChordedDeadKey ? MacRDPKeyboardMapping.characters(
+            afterChordedDeadKey: event.characters,
+            uncomposed: uncomposedOutput(event.keyCode, event.modifierFlags)
+        ) : event.characters
         // Windows' Japanese layout makes Shift-英数 Caps Lock, which would toggle the server's
         // out of step with the Mac's, so Shift-Eisu sends nothing there.
         if keyboardLayout == MacRDPKeyboardLayout.japanese, Int(event.keyCode) == kVK_JIS_Eisu,
@@ -160,28 +170,33 @@ final class RemoteInputCaptureNSView: NSView {
         if let scancode = MacRDPKeyboardMapping.scancode(forKeyCode: event.keyCode, layout: keyboardLayout),
            MacRDPKeyboardMapping.shouldSendScancode(
                forKeyCode: event.keyCode,
-               characters: event.characters,
+               characters: characters,
                charactersIgnoringModifiers: event.charactersIgnoringModifiers,
                modifierFlags: event.modifierFlags,
                isHeldAsScancode: inputState.isScancodePressed(scancode),
                isAltPressed: MacRDPModifierKey.altScancodes.contains(where: inputState.isScancodePressed),
                isDeadKey: { isDeadKey(event.keyCode, event.modifierFlags) }
            ) || MacRDPKeyboardMapping.windowsTypes(
-               event.characters,
+               characters,
                charactersIgnoringModifiers: event.charactersIgnoringModifiers,
                for: scancode,
                modifierFlags: event.modifierFlags,
                layout: keyboardLayout
            )
         {
-            // A dead key's accent ahead of Return or Tab; text never goes with Command or Control.
-            if event.isARepeat == false,
+            // A dead key's accent ahead of Return or Tab, unless that dead key went as a chord;
+            // text never goes with Command or Control.
+            if event.isARepeat == false, isComposedByChordedDeadKey == false,
                event.modifierFlags.isDisjoint(with: [.command, .control]),
-               let text = MacRDPKeyboardMapping.deadKeyText(aheadOf: event.characters)
+               let text = MacRDPKeyboardMapping.deadKeyText(aheadOf: characters)
             {
                 inputSession?.send(MacRDPKeyboardMapping.unicodeEvents(for: text))
             }
             sendKeyboardScancode(scancode, isReleased: false)
+            // A dead key that went as a chord, as left Option-E goes as Alt-E.
+            if characters?.isEmpty == true, isDeadKey(event.keyCode, event.modifierFlags) {
+                followsChordedDeadKey = true
+            }
             return
         }
         guard event.modifierFlags.isDisjoint(with: [.command, .control]) else {
@@ -189,7 +204,7 @@ final class RemoteInputCaptureNSView: NSView {
         }
         // Right Option, if held back, typed this or started a dead key, so it is no Alt tap.
         deferredModifierKeys.noteChordedElsewhere()
-        let events = MacRDPKeyboardMapping.unicodeEvents(for: event.characters ?? "")
+        let events = MacRDPKeyboardMapping.unicodeEvents(for: characters ?? "")
         guard events.isEmpty == false else {
             return
         }
@@ -360,6 +375,7 @@ final class RemoteInputCaptureNSView: NSView {
     /// A key still held back never reached the server, so nothing is sent for it.
     private func releasePressedInputs() {
         deferredModifierKeys.reset()
+        followsChordedDeadKey = false
         inputSession?.send(inputState.releasePressedInputs())
     }
 
@@ -674,6 +690,17 @@ enum MacRDPKeyboardMapping {
         }
         let text = String(scalars.dropLast())
         return text.isEmpty == false && isPrintable(text) ? text : nil
+    }
+
+    /// The characters to decide the key after a dead key by, when that dead key went to the
+    /// server as part of an Alt chord (Option-E as Alt-E on US): macOS still composes the next
+    /// key with its accent ("a" as "á"), which the server never asked for. `uncomposed` is what
+    /// the key types with no dead key pending; a control or function key keeps its own.
+    static func characters(afterChordedDeadKey characters: String?, uncomposed: String?) -> String? {
+        guard let uncomposed, uncomposed.isEmpty || isPrintable(uncomposed) else {
+            return characters
+        }
+        return uncomposed
     }
 
     /// No control characters and none of AppKit's function-key characters.

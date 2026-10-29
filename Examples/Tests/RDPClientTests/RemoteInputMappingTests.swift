@@ -286,6 +286,36 @@ private func sendsScancode(
     #expect(MacRDPDeadKeys.isDeadKey(keyCode: UInt16(kVK_ANSI_E), modifierFlags: .option) == currentAnswer)
 }
 
+/// What US keys type with no dead key pending: nothing for the dead key Option-E itself.
+@MainActor
+@Test func theUSLayoutsUncomposedOutput() throws {
+    let filter = [kTISPropertyInputSourceID as String: "com.apple.keylayout.US"] as CFDictionary
+    let sources = try #require(TISCreateInputSourceList(filter, true)?.takeRetainedValue() as? [TISInputSource])
+    let us = try #require(sources.first)
+    func output(_ keyCode: Int, _ modifierFlags: NSEvent.ModifierFlags) -> String? {
+        MacRDPDeadKeys.output(keyCode: UInt16(keyCode), modifierFlags: modifierFlags, in: us)
+    }
+    #expect(output(kVK_ANSI_A, []) == "a")
+    #expect(output(kVK_ANSI_A, .shift) == "A")
+    #expect(output(kVK_ANSI_L, .option) == "¬")
+    #expect(output(kVK_ANSI_E, .option) == "")
+    #expect(output(kVK_Return, []) == "\r")
+}
+
+/// After a dead key went as an Alt chord, the next key is decided by what it types on its own,
+/// except a control or function key, whose characters stay AppKit's.
+@Test func theKeyAfterAChordedDeadKeyIsDecidedByItsUncomposedOutput() {
+    func characters(_ composed: String?, _ uncomposed: String?) -> String? {
+        MacRDPKeyboardMapping.characters(afterChordedDeadKey: composed, uncomposed: uncomposed)
+    }
+    #expect(characters("á", "a") == "a")
+    #expect(characters("´¬", "¬") == "¬")
+    #expect(characters("´", "") == "")
+    #expect(characters("´\r", "\r") == "´\r")
+    #expect(characters("\u{F702}", "\u{1C}") == "\u{F702}")
+    #expect(characters("á", nil) == "á")
+}
+
 /// PC keypads have no "=", and German has a dead key where the main "=" key is.
 @Test func keypadEqualsSendsTheEqualsKeyScancodeOnlyWhereTheLayoutTypesIt() {
     #expect(MacRDPKeyboardMapping.scancode(forKeyCode: UInt16(kVK_ANSI_KeypadEquals)) == RDPKeyboardScancode(code: 0x0D))
@@ -968,6 +998,82 @@ private let rightOptionFlags = NSEvent.ModifierFlags(rawValue: NSEvent.ModifierF
         .keyboard(scancode: keyE, isReleased: true),
         .keyboard(scancode: rightAlt, isReleased: true),
     ])
+}
+
+/// Left Option-E goes as Alt-E, a shortcut, but macOS still starts its dead key and composes the
+/// next key with the accent: that key goes as what it types on its own, and no accent goes ahead
+/// of Return. Right Option does the same once its Alt is on the server.
+@MainActor
+@Test func theKeyAfterADeadKeySentAsAnAltChordIsNotComposed() throws {
+    let leftAlt = RDPKeyboardScancode(code: 0x38)
+    let rightAlt = RDPKeyboardScancode(code: 0x38, isExtended: true)
+    let keyE = RDPKeyboardScancode(code: 0x12)
+    let keyA = RDPKeyboardScancode(code: 0x1E)
+    let returnKey = RDPKeyboardScancode(code: 0x1C)
+    let leftArrow = RDPKeyboardScancode(code: 0x4B, isExtended: true)
+    let input = RecordedInput()
+    let view = RemoteInputCaptureNSView()
+    view.inputSession = input
+    view.isDeadKey = { keyCode, flags in Int(keyCode) == kVK_ANSI_E && flags.contains(.option) }
+    view.uncomposedOutput = { keyCode, flags in
+        [kVK_ANSI_A: "a", kVK_Return: "\r", kVK_ANSI_E: flags.contains(.option) ? "" : "e"][Int(keyCode)]
+    }
+    func modifier(_ keyCode: Int, _ flags: NSEvent.ModifierFlags) throws {
+        view.flagsChanged(with: try keyEvent(.flagsChanged, keyCode: keyCode, modifierFlags: flags))
+    }
+    func press(_ keyCode: Int, _ characters: String, _ ignoring: String, _ flags: NSEvent.ModifierFlags = []) throws {
+        view.keyDown(with: try keyEvent(.keyDown, keyCode: keyCode, characters: characters, charactersIgnoringModifiers: ignoring, modifierFlags: flags))
+        view.keyUp(with: try keyEvent(.keyUp, keyCode: keyCode, characters: characters, charactersIgnoringModifiers: ignoring, modifierFlags: flags))
+    }
+    func leftOptionE() throws {
+        try modifier(kVK_Option, leftOptionFlags)
+        try press(kVK_ANSI_E, "", "e", leftOptionFlags)
+        try modifier(kVK_Option, [])
+    }
+
+    // Left Option-E, then "a", which macOS reports as "á"; only that key is affected.
+    try leftOptionE()
+    try press(kVK_ANSI_A, "á", "a")
+    try press(kVK_ANSI_A, "á", "a")
+    // Left Option-E, then Return, reported as "´\r".
+    try leftOptionE()
+    try press(kVK_Return, "´\r", "\r")
+    // Right Option-E once Left Arrow sent its Alt, then "a".
+    try modifier(kVK_RightOption, rightOptionFlags)
+    try press(kVK_LeftArrow, "\u{F702}", "\u{F702}", rightOptionFlags)
+    try press(kVK_ANSI_E, "", "e", rightOptionFlags)
+    try modifier(kVK_RightOption, [])
+    try press(kVK_ANSI_A, "á", "a")
+    // Focus lost in between: the next key goes as it is.
+    try leftOptionE()
+    _ = view.resignFirstResponder()
+    try press(kVK_ANSI_A, "á", "a")
+
+    let altE: [RDPSlowPathInputEvent] = [
+        .keyboard(scancode: leftAlt, isReleased: false),
+        .keyboard(scancode: keyE, isReleased: false),
+        .keyboard(scancode: keyE, isReleased: true),
+        .keyboard(scancode: leftAlt, isReleased: true),
+    ]
+    let keyAPress: [RDPSlowPathInputEvent] = [
+        .keyboard(scancode: keyA, isReleased: false),
+        .keyboard(scancode: keyA, isReleased: true),
+    ]
+    let composedA: [RDPSlowPathInputEvent] = [
+        .unicode(codeUnit: 0xE1, isReleased: false),
+        .unicode(codeUnit: 0xE1, isReleased: true),
+    ]
+    #expect(input.events == altE + keyAPress + composedA
+        + altE + [.keyboard(scancode: returnKey, isReleased: false), .keyboard(scancode: returnKey, isReleased: true)]
+        + [
+            .keyboard(scancode: rightAlt, isReleased: false),
+            .keyboard(scancode: leftArrow, isReleased: false),
+            .keyboard(scancode: leftArrow, isReleased: true),
+            .keyboard(scancode: keyE, isReleased: false),
+            .keyboard(scancode: keyE, isReleased: true),
+            .keyboard(scancode: rightAlt, isReleased: true),
+        ] + keyAPress
+        + altE + composedA)
 }
 
 /// Left Option goes as Alt at once, for shortcuts; right Option goes as Alt ahead of a key it

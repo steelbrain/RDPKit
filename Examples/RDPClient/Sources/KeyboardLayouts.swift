@@ -231,6 +231,8 @@ enum MacRDPKeyboardLayout {
 /// Whether a key starts a dead key with the Mac's keyboard layout, as Option-E does on US: it
 /// types nothing, and the next key types the accent. A custom layout can also give a key no
 /// output with Option without making it a dead key; that key then goes as Alt and the key.
+/// Also what a key types with no dead key pending, for the key after a dead key that went to
+/// the server as an Alt chord.
 @MainActor
 enum MacRDPDeadKeys {
     private struct Keystroke: Hashable {
@@ -265,6 +267,26 @@ enum MacRDPDeadKeys {
     /// UCKeyTranslate with dead keys on leaves a dead-key state for a key that starts one. Nil
     /// when `source` has no Unicode layout data.
     static func isDeadKey(keyCode: UInt16, modifierFlags: NSEvent.ModifierFlags, in source: TISInputSource) -> Bool? {
+        translate(keyCode: keyCode, modifierFlags: modifierFlags, in: source).map { $0.deadKeyState != 0 }
+    }
+
+    /// What the key types with the current layout and no dead key pending: nothing for a key
+    /// that starts one. Nil when the layout data cannot be read.
+    static func output(keyCode: UInt16, modifierFlags: NSEvent.ModifierFlags) -> String? {
+        TISCopyCurrentKeyboardLayoutInputSource().flatMap {
+            output(keyCode: keyCode, modifierFlags: modifierFlags, in: $0.takeRetainedValue())
+        }
+    }
+
+    static func output(keyCode: UInt16, modifierFlags: NSEvent.ModifierFlags, in source: TISInputSource) -> String? {
+        translate(keyCode: keyCode, modifierFlags: modifierFlags, in: source)?.output
+    }
+
+    private static func translate(
+        keyCode: UInt16,
+        modifierFlags: NSEvent.ModifierFlags,
+        in source: TISInputSource
+    ) -> (output: String, deadKeyState: UInt32)? {
         guard let data = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData),
               let bytes = CFDataGetBytePtr(Unmanaged<CFData>.fromOpaque(data).takeUnretainedValue())
         else {
@@ -285,7 +307,10 @@ enum MacRDPDeadKeys {
             &length,
             &characters
         )
-        return status == noErr ? deadKeyState != 0 : nil
+        guard status == noErr else {
+            return nil
+        }
+        return (String(utf16CodeUnits: characters, count: length), deadKeyState)
     }
 
     /// The Carbon modifier bits (EventModifiers) shifted down a byte, as UCKeyTranslate takes them.
