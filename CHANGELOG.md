@@ -80,6 +80,14 @@
   server's first copy. Joining still announces the client's clipboard, empty
   until it publishes, and Windows 11 then empties its own clipboard;
   `clipboardEnabled` off leaves it untouched.
+- `run` and `connect` take `onClipboardRemoteCopyUnavailable`
+  (`RDPClipboardRemoteCopyUnavailableHandler`), called when the server
+  announces a copy none of which is fetched, so the copy delivered before is
+  no longer the server's. `isEmpty` is true for an empty Format List, which
+  Windows 11 sends when its clipboard is emptied, and false for a copy of
+  only formats the session does not fetch, such as an image without
+  `onClipboardContent`. It is not called while `fetchesRemoteCopies` is off.
+  gnome-remote-desktop 51 sends nothing when its clipboard is cleared.
 - `RDPRemotePointerBitmap(_:)` turns an `RDPRemotePointerImage` from
   `onRemotePointer` into premultiplied RGBA (`pixels`, `bytesPerRow`) and a
   hot spot clamped into the image, with a `cgImage` for
@@ -122,6 +130,14 @@
   only in case are numbered in their last component. A folder numbered to
   differ from another folder or a file of its name keeps its number for
   everything inside it.
+- Clipboard: publishing drops the remote copy being fetched, since the
+  client's Format List replaces it on the server ([MS-RDPECLIP] 1.3.2.2.1),
+  so a late answer is no longer delivered as text, content or a file list.
+- Clipboard: remote file names saved on the client keep Unicode format
+  characters such as ZWNJ, ZWJ, the soft hyphen and bidi marks, so
+  "گزارش‌ها.pdf" no longer becomes "گزارش_ها.pdf". Control characters, line
+  separators, `:` and the bidi embeddings, overrides and isolates still
+  become `_`.
 
 ### Examples
 
@@ -174,7 +190,15 @@
     Lock on goes as its scancode, as without it.
   - Clipboard sharing can be turned on mid-session; with it off, nothing
     crosses either way. To allow that, RDPClient always joins the clipboard
-    channel, which empties a Windows server's clipboard at connect.
+    channel, which empties a Windows server's clipboard at connect. Turning
+    sharing off, or a 30 s share ending, empties the server's clipboard only
+    while it holds the Mac's copy, so text the server's user copied during
+    the share stays.
+  - When the server empties its clipboard, as a password manager does,
+    RDPClient clears the pasteboard if it still holds the text or files that
+    came from the server; a local copy made since is kept. A server copy
+    RDPClient takes nothing of, such as an image, cancels a remote file
+    download in progress.
   - Remote file downloads:
     - A download no longer replaces text or files copied after it began.
       A remote file copy cancels a local file read still in progress, and
