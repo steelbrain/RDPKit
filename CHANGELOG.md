@@ -227,6 +227,19 @@
   Cmd-. to the server instead of ending the session, and pins a redirected
   server's certificate under its own host. The command-line
   tools share argument parsing through `RDPCommandLineSupport`.
+- RDPClient releases modifiers whose release it never saw (one made while a
+  menu is open), detaches input, display control and clipboard when a session
+  ends, sends the window's size to each new display-control session (also
+  after a redirection), keeps the password and Remember choice passed in from
+  the Connections window, gives the desktop keyboard focus when it appears,
+  reads copied files off the main thread, downloads remote clipboard files in
+  ranges of up to 1 MiB, and keeps clipboard sharing on after "Share for 30s".
+- RDPClient refuses a system-untrusted certificate from a host whose
+  certificate the user trusted before any credential is sent; trusting a
+  certificate for a host replaces the previous one.
+- `RDPConnectionIdentity.credentialAccountName` lowercases the host, as
+  `hasSameConnectionIdentity(as:)` matches it; RDPClient moves a password saved
+  under the old name the first time it misses.
 - RDPFirstFrameCapture captures for the whole settle window and says why none
   decoded. RDPFrameBenchmark validates its sizes, reports why a profile failed
   and exits 1, and reports stages `cgImage` does not time as n/a. Both tools
