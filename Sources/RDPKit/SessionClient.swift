@@ -77,7 +77,8 @@ public struct RDPSessionClient: Sendable {
     /// the TCP connection failed, the X.224 exchange could not be completed, or
     /// the run was cancelled before that. A negotiation the server refuses
     /// (RDP_NEG_FAILURE) or settles on a protocol RDPKit does not support
-    /// returns a failure report.
+    /// returns a failure report. The error carries the report `run` returns
+    /// in its place.
     public func connect(
         configuration: RDPConnectionConfiguration,
         onGraphicsFrame: RDPGraphicsFrameHandler? = nil,
@@ -114,7 +115,7 @@ public struct RDPSessionClient: Sendable {
             shouldCancel: shouldCancel
         )
         return try session(configuration: configuration, callbacks: callbacks) { connection, error in
-            throw connection.connectionError(error)
+            throw connection.thrownError(error)
         }
     }
 

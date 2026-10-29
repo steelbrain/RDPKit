@@ -418,15 +418,21 @@ public struct RDPSocketError: Encodable, Equatable, Sendable {
 }
 
 /// Why a connection failed: `failure` for code, `description` in words.
-/// `RDPSessionClient.connect` throws it; a report carries the two as
-/// `failure` and `error`.
+/// `RDPSessionClient.connect` throws it with the report `run` returns for the
+/// same failure; a report carries the two as `failure` and `error`.
 public struct RDPConnectionError: Error, CustomStringConvertible, Sendable {
     public var failure: RDPConnectionFailure
     public var description: String
+    /// The report `RDPSessionClient.run` returns for this failure: the stage
+    /// reached and the negotiation. `connect` attaches it, and throws only
+    /// before the TLS handshake, so it holds no captured frames and stays
+    /// small. Nil on an error `connect` did not throw.
+    public var report: RDPConnectionReport?
 
-    public init(_ failure: RDPConnectionFailure, description: String) {
+    public init(_ failure: RDPConnectionFailure, description: String, report: RDPConnectionReport? = nil) {
         self.failure = failure
         self.description = description
+        self.report = report
     }
 }
 

@@ -477,6 +477,8 @@ func liveSessionEndsNormallyOnlyForReasonsThatAreNoFailure(
     let report = RDPSessionClient().run(configuration: configuration)
     #expect(report.connectionStage == .negotiation)
     #expect(report.failure == error?.failure)
+    // connect's error carries the report run returns.
+    #expect(error?.report == report)
     guard case let .connect(socketError)? = report.failure else {
         Issue.record("expected a connect failure, got \(String(describing: report.failure))")
         return

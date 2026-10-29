@@ -197,6 +197,17 @@ final class RDPClientConnection {
         return finishReport()
     }
 
+    /// Ends the attempt like `failedReport`, for `connect`: the reason that
+    /// report records, to throw with the report attached.
+    func thrownError(_ error: Error) -> RDPConnectionError {
+        let report = failedReport(error)
+        // Read back rather than mapped again: cancellation may have landed since.
+        guard let failure = report.failure, let description = report.error else {
+            return connectionError(error)
+        }
+        return RDPConnectionError(failure, description: description, report: report)
+    }
+
     private func end(_ failure: RDPConnectionFailure, _ error: String) -> Bool {
         report.error = error
         report.failure = failure
