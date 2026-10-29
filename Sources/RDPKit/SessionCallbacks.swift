@@ -16,6 +16,9 @@ public typealias RDPInputSessionHandler = @Sendable (RDPInputSession) -> Void
 public typealias RDPDisplayControlSessionHandler = @Sendable (RDPDisplayControlSession) -> Void
 public typealias RDPClipboardSessionHandler = @Sendable (RDPClipboardSession) -> Void
 public typealias RDPClipboardTextHandler = @Sendable (String) -> Void
+/// Receives every format fetched of a remote copy. Setting it makes the session fetch
+/// HTML, RTF and bitmaps as well as text; `onClipboardText` still receives the text.
+public typealias RDPClipboardContentHandler = @Sendable (RDPClipboardContent) -> Void
 public typealias RDPClipboardFileGroupDescriptorHandler = @Sendable (RDPClipboardFileGroupDescriptorW) -> Void
 public typealias RDPClipboardFileContentsHandler = @Sendable (RDPClipboardFileContentsResponse) -> Void
 public typealias RDPAudioSampleHandler = @Sendable (RDPAudioSample) -> Void
@@ -44,6 +47,7 @@ struct RDPSessionCallbacks {
     var onDisplayControlReady: RDPDisplayControlSessionHandler?
     var onClipboardReady: RDPClipboardSessionHandler?
     var onClipboardText: RDPClipboardTextHandler?
+    var onClipboardContent: RDPClipboardContentHandler?
     var onClipboardFileGroupDescriptor: RDPClipboardFileGroupDescriptorHandler?
     var onClipboardFileContents: RDPClipboardFileContentsHandler?
     var onAudioSample: RDPAudioSampleHandler?

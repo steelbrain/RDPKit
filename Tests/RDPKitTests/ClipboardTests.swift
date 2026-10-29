@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 import NIOCore
 import NIOEmbedded
@@ -856,8 +857,11 @@ private final class ClipboardPublishRace: @unchecked Sendable {
         channel: channel,
         sentMessageHandler: sent.record
     )
+    // Without onClipboardContent only the text of a copy is requested.
     let formatList = RDPClipboardFormatListPDU(entries: [
         RDPClipboardFormatListEntry(formatID: RDPClipboardFormatID.unicodeText),
+        RDPClipboardFormatListEntry(formatID: 0xC0A1, formatName: "HTML Format"),
+        RDPClipboardFormatListEntry(formatID: RDPClipboardFormatID.dib),
     ]).encoded()
     let textResponse = RDPClipboardFormatDataResponsePDU.unicodeText("hello").encoded()
 
@@ -870,6 +874,7 @@ private final class ClipboardPublishRace: @unchecked Sendable {
         "clipboard-format-list-response",
         "clipboard-format-data-request",
     ])
+    #expect(try sentFormatDataRequestIDs(sent) == [RDPClipboardFormatID.unicodeText])
     _ = try channel.finish()
 }
 
@@ -917,17 +922,187 @@ private final class ClipboardPublishRace: @unchecked Sendable {
     _ = try channel.finish()
 }
 
-@Test func clipboardSessionMatchesFormatDataResponsesToRequestsInOrder() throws {
+@Test func clipboardSessionSendsOneFormatDataRequestAtATime() throws {
     let channel = EmbeddedChannel()
-    let session = RDPClipboardSession(userChannelID: 1006, staticChannelID: 1007, channel: channel)
+    let sent = ClipboardSentMessages()
+    let session = RDPClipboardSession(
+        userChannelID: 1006,
+        staticChannelID: 1007,
+        channel: channel,
+        requestsRichFormats: true,
+        sentMessageHandler: sent.record
+    )
+    let formatList = RDPClipboardFormatListPDU(entries: [
+        RDPClipboardFormatListEntry(formatID: RDPClipboardFormatID.unicodeText),
+        RDPClipboardFormatListEntry(formatID: 0xC0A1, formatName: "HTML Format"),
+        RDPClipboardFormatListEntry(formatID: 0xC0A2, formatName: "rich text format"),
+        RDPClipboardFormatListEntry(formatID: RDPClipboardFormatID.dib),
+    ]).encoded()
+    let bitmap = Data([40, 0, 0, 0])
 
-    session.requestFileGroupDescriptorW(formatID: 0xC006)
-    session.requestUnicodeText()
+    _ = try session.receive(RDPClipboardPDU.parse(from: RDPClipboardCapabilitiesPDU().encoded()))
+    _ = try session.receive(RDPClipboardPDU(messageType: RDPClipboardMessageType.monitorReady))
+    #expect(try session.receive(RDPClipboardPDU.parse(from: formatList)) == nil)
+    #expect(session.outstandingFormatDataRequests == [.unicodeText, .html(formatID: 0xC0A1), .richText(formatID: 0xC0A2), .bitmap(formatID: 8)])
+    #expect(try sentFormatDataRequestIDs(sent) == [13])
 
-    #expect(session.takePendingFormatDataResponse() == .fileGroupDescriptorW(formatID: 0xC006))
-    #expect(session.takePendingFormatDataResponse() == .unicodeText)
-    #expect(session.takePendingFormatDataResponse() == nil)
+    #expect(try session.receive(RDPClipboardPDU.parse(from: RDPClipboardFormatDataResponsePDU.unicodeText("hi").encoded())) == nil)
+    #expect(try session.receive(RDPClipboardPDU.parse(from: RDPClipboardFormatDataResponsePDU(
+        ok: true,
+        data: RDPClipboardHTML.encoded("<b>hi</b>")
+    ).encoded())) == nil)
+    // A format the server cannot render is left out; the copy still arrives.
+    #expect(try session.receive(RDPClipboardPDU.parse(from: RDPClipboardFormatDataResponsePDU.failure().encoded())) == nil)
+    let last = try session.receive(RDPClipboardPDU.parse(from: RDPClipboardFormatDataResponsePDU(ok: true, data: bitmap).encoded()))
+
+    #expect(try sentFormatDataRequestIDs(sent) == [13, 0xC0A1, 0xC0A2, 8])
+    #expect(last == .content(RDPClipboardContent(text: "hi", html: "<html><body><!--StartFragment--><b>hi</b><!--EndFragment--></body></html>", bitmap: bitmap)))
+    #expect(session.outstandingFormatDataRequests.isEmpty)
     _ = try channel.finish()
+}
+
+/// A new remote copy replaces the requests of the last one that have not gone out,
+/// and the answer to the one that has is dropped.
+@Test func clipboardSessionDropsTheRestOfAnOlderRemoteCopy() throws {
+    let channel = EmbeddedChannel()
+    let sent = ClipboardSentMessages()
+    let session = RDPClipboardSession(
+        userChannelID: 1006,
+        staticChannelID: 1007,
+        channel: channel,
+        requestsRichFormats: true,
+        sentMessageHandler: sent.record
+    )
+    let richCopy = RDPClipboardFormatListPDU(entries: [
+        RDPClipboardFormatListEntry(formatID: RDPClipboardFormatID.unicodeText),
+        RDPClipboardFormatListEntry(formatID: 0xC0A1, formatName: "HTML Format"),
+    ]).encoded()
+    let textCopy = RDPClipboardFormatListPDU(entries: [
+        RDPClipboardFormatListEntry(formatID: RDPClipboardFormatID.unicodeText),
+    ]).encoded()
+
+    _ = try session.receive(RDPClipboardPDU.parse(from: RDPClipboardCapabilitiesPDU().encoded()))
+    _ = try session.receive(RDPClipboardPDU(messageType: RDPClipboardMessageType.monitorReady))
+    _ = try session.receive(RDPClipboardPDU.parse(from: richCopy))
+    _ = try session.receive(RDPClipboardPDU.parse(from: textCopy))
+    #expect(session.outstandingFormatDataRequests == [.unicodeText, .unicodeText])
+    #expect(try session.receive(RDPClipboardPDU.parse(from: RDPClipboardFormatDataResponsePDU.unicodeText("old").encoded())) == nil)
+    #expect(try session.receive(RDPClipboardPDU.parse(from: RDPClipboardFormatDataResponsePDU.unicodeText("new").encoded()))
+        == .content(RDPClipboardContent(text: "new")))
+    #expect(try sentFormatDataRequestIDs(sent) == [13, 13])
+    _ = try channel.finish()
+}
+
+@Test func clipboardSessionOffersAndAnswersEveryLocalFormat() throws {
+    let channel = EmbeddedChannel()
+    let sent = ClipboardSentMessages()
+    let session = RDPClipboardSession(userChannelID: 1006, staticChannelID: 1007, channel: channel, sentMessageHandler: sent.record)
+    let bitmap = Data([40, 0, 0, 0, 1, 0, 0, 0])
+    let content = RDPClipboardContent(text: "a\nb", html: "<i>a</i>", richText: Data("{\\rtf1 a}".utf8), bitmap: bitmap)
+
+    _ = try session.receive(RDPClipboardPDU.parse(from: RDPClipboardCapabilitiesPDU().encoded()))
+    _ = try session.receive(RDPClipboardPDU(messageType: RDPClipboardMessageType.monitorReady))
+    session.publishLocalContent(content)
+
+    #expect(try clipboardPayload(fromPackets: try #require(sent.packets.last)) == RDPClipboardFormatListPDU(entries: [
+        RDPClipboardFormatListEntry(formatID: RDPClipboardFormatID.unicodeText),
+        RDPClipboardFormatListEntry(formatID: 0xC002, formatName: "HTML Format"),
+        RDPClipboardFormatListEntry(formatID: 0xC003, formatName: "Rich Text Format"),
+        RDPClipboardFormatListEntry(formatID: RDPClipboardFormatID.dib),
+    ]).encoded())
+    var responses: [RDPClipboardFormatDataResponsePDU?] = []
+    for formatID: UInt32 in [13, 0xC002, 0xC003, 8, 0xC001] {
+        _ = try session.receive(RDPClipboardPDU.parse(from: RDPClipboardFormatDataRequestPDU(formatID: formatID).encoded()))
+        responses.append(try RDPClipboardFormatDataResponsePDU.parseIfPresent(
+            from: RDPClipboardPDU.parse(from: clipboardPayload(fromPackets: try #require(sent.packets.last)))
+        ))
+    }
+
+    #expect(try responses[0]?.decodedUnicodeText() == "a\nb")
+    #expect(responses[1]?.data == RDPClipboardHTML.encoded("<i>a</i>"))
+    #expect(responses[2]?.data == Data("{\\rtf1 a}\u{0}".utf8))
+    #expect(responses[3]?.data == bitmap)
+    #expect(responses[4] == .failure())
+
+    session.publishLocalContent(RDPClipboardContent())
+    #expect(try clipboardPayload(fromPackets: try #require(sent.packets.last)) == RDPClipboardFormatListPDU(entries: []).encoded())
+    _ = try channel.finish()
+}
+
+@Test func clipboardHTMLEnvelopeOffsetsPointAtTheDocumentAndFragment() throws {
+    let encoded = RDPClipboardHTML.encoded("<html><head><style>b{}</style></head><body class=\"x\"><b>é</b></body></html>")
+    let text = try #require(String(data: encoded.dropLast(), encoding: .utf8))
+    func offset(_ key: String) throws -> Int {
+        let line = try #require(text.split(separator: "\r\n").first { $0.hasPrefix(key + ":") })
+        return try #require(Int(line.dropFirst(key.count + 1)))
+    }
+    let bytes = Data(text.utf8)
+
+    #expect(encoded.last == 0)
+    #expect(String(data: bytes[try offset("StartFragment") ..< offset("EndFragment")], encoding: .utf8) == "<b>é</b>")
+    #expect(String(data: bytes[try offset("StartHTML") ..< offset("EndHTML")], encoding: .utf8)
+        == "<html><head><style>b{}</style></head><body class=\"x\"><!--StartFragment--><b>é</b><!--EndFragment--></body></html>")
+    #expect(RDPClipboardHTML.decoded(encoded)?.contains("<style>b{}</style>") == true)
+}
+
+/// The envelope Windows writes: Version 0.9 or 1.0, a SourceURL line, CRLF lines.
+@Test func clipboardHTMLDecodesAWindowsEnvelope() {
+    let document = "<html><body>\r\n<!--StartFragment--><p>x</p><!--EndFragment-->\r\n</body></html>"
+    let header = "Version:1.0\r\nStartHTML:000000000\r\nEndHTML:000000000\r\nStartFragment:000000000\r\nEndFragment:000000000\r\nSourceURL:https://example.com/a\r\n"
+    let startHTML = header.utf8.count
+    let startFragment = startHTML + "<html><body>\r\n<!--StartFragment-->".utf8.count
+    let filled = header
+        .replacingOccurrences(of: "StartHTML:000000000", with: "StartHTML:" + String(format: "%09d", startHTML))
+        .replacingOccurrences(of: "EndHTML:000000000", with: "EndHTML:" + String(format: "%09d", startHTML + document.utf8.count))
+        .replacingOccurrences(of: "StartFragment:000000000", with: "StartFragment:" + String(format: "%09d", startFragment))
+        .replacingOccurrences(of: "EndFragment:000000000", with: "EndFragment:" + String(format: "%09d", startFragment + 8))
+
+    #expect(RDPClipboardHTML.decoded(Data((filled + document).utf8) + Data([0])) == document)
+    #expect(RDPClipboardHTML.decoded(Data("<b>no header</b>".utf8)) == "<b>no header</b>")
+}
+
+@Test func clipboardRichTextTravelsNULTerminated() {
+    #expect(RDPClipboardRichText.encoded(Data("{\\rtf1}".utf8)) == Data("{\\rtf1}\u{0}".utf8))
+    #expect(RDPClipboardRichText.encoded(Data("{\\rtf1}\u{0}".utf8)) == Data("{\\rtf1}\u{0}".utf8))
+    #expect(RDPClipboardRichText.decoded(Data("{\\rtf1}\u{0}\u{0}".utf8)) == Data("{\\rtf1}".utf8))
+}
+
+@Test func clipboardBitmapRoundTripsThroughADeviceIndependentBitmap() throws {
+    let width = 3
+    let height = 2
+    // Top row red, bottom row blue, as RGBA.
+    var pixels = [UInt8]()
+    for row in 0 ..< height {
+        for _ in 0 ..< width {
+            pixels += row == 0 ? [255, 0, 0, 255] : [0, 0, 255, 255]
+        }
+    }
+    let provider = try #require(CGDataProvider(data: Data(pixels) as CFData))
+    let colorSpace = try #require(CGColorSpace(name: CGColorSpace.sRGB))
+    let image = try #require(CGImage(
+        width: width,
+        height: height,
+        bitsPerComponent: 8,
+        bitsPerPixel: 32,
+        bytesPerRow: width * 4,
+        space: colorSpace,
+        bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+        provider: provider,
+        decode: nil,
+        shouldInterpolate: false,
+        intent: .defaultIntent
+    ))
+
+    let dib = try #require(RDPClipboardBitmap.deviceIndependentBitmap(from: image))
+    #expect(dib.count == 40 + width * height * 4)
+    #expect(dib.littleEndianUInt32(at: 8) == UInt32(height))
+    // Bottom-up: the first row of pixels is the blue one, as BGRA.
+    #expect(dib[dib.startIndex + 40 ..< dib.startIndex + 44] == Data([255, 0, 0, 255]))
+
+    let decoded = try #require(RDPClipboardBitmap.image(fromDeviceIndependentBitmap: dib))
+    #expect(decoded.width == width)
+    #expect(decoded.height == height)
+    #expect(RDPClipboardBitmap.image(fromDeviceIndependentBitmap: Data([1, 2, 3])) == nil)
 }
 
 @Test func clipboardSessionSendsChunksOfTheNegotiatedSize() throws {
@@ -998,6 +1173,13 @@ private final class ClipboardSentMessages: @unchecked Sendable {
 
     @Sendable func record(_ summary: RDPClipboardMessageSummary, _ packets: Data) {
         lock.withLock { sent.append((summary, packets)) }
+    }
+}
+
+private func sentFormatDataRequestIDs(_ sent: ClipboardSentMessages) throws -> [UInt32] {
+    try sent.packets.compactMap {
+        try RDPClipboardFormatDataRequestPDU.parseIfPresent(from: RDPClipboardPDU.parse(from: clipboardPayload(fromPackets: $0)))?
+            .formatID
     }
 }
 

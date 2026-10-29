@@ -60,6 +60,11 @@ extension RDPClientConnection {
                 callbacks.onClipboardReady?(clipboard)
             case let .text(text):
                 callbacks.onClipboardText?(text)
+            case let .content(content):
+                if let text = content.text {
+                    callbacks.onClipboardText?(text)
+                }
+                callbacks.onClipboardContent?(content)
             case let .fileGroupDescriptor(descriptor):
                 callbacks.onClipboardFileGroupDescriptor?(descriptor)
             case let .fileContents(contents):

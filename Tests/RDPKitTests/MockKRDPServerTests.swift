@@ -1504,6 +1504,30 @@ struct MockKRDPServerTests {
         #expect(sent.contains("clipboard-format-list-response"))
     }
 
+    /// With onClipboardContent the client asks for each format of a remote copy in
+    /// turn and delivers them together; onClipboardText still gets the text.
+    @Test func clientReceivesEveryFormatOfARemoteCopy() throws {
+        let observed = Locked(Observed())
+        let run = try runMock(
+            .init(remoteClipboardText: "remote", remoteClipboardHTML: "<b>remote</b>"),
+            { $0.clipboardEnabled = true },
+            client: {
+                RDPSessionClient().run(
+                    configuration: $0,
+                    onClipboardText: { text in observed.withLock { $0.clipboardTexts.append(text) } },
+                    onClipboardContent: { content in observed.withLock { $0.clipboardContents.append(content) } }
+                )
+            }
+        )
+
+        #expect(run.report.status == "success")
+        #expect(observed.value.clipboardTexts == ["remote"])
+        #expect(observed.value.clipboardContents == [RDPClipboardContent(
+            text: "remote",
+            html: "<html><body><!--StartFragment--><b>remote</b><!--EndFragment--></body></html>"
+        )])
+    }
+
     /// The traffic a Windows server sees once a session is up: input, clipboard
     /// both ways, display control, device redirection and audio. The mock
     /// sends the first frame only after all of it arrived.
@@ -1700,6 +1724,7 @@ private struct Observed {
     var remoteFileSize: UInt64?
     var remoteFileData: Data?
     var clipboardTexts: [String] = []
+    var clipboardContents: [RDPClipboardContent] = []
     var clipboardErrors: [String] = []
     var framesBeforeDisplayControl: Int?
     var audioSamples: [RDPAudioSample] = []

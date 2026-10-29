@@ -2,17 +2,24 @@ import Foundation
 @preconcurrency import NIOCore
 
 enum RDPClipboardFormatID {
+    static let dib: UInt32 = 8
     static let unicodeText: UInt32 = 13
+    static let dibV5: UInt32 = 17
 }
 
 enum RDPClipboardRegisteredFormatName {
     static let fileGroupDescriptorW = "FileGroupDescriptorW"
     static let fileContents = "FileContents"
+    static let html = "HTML Format"
+    static let richText = "Rich Text Format"
 }
 
+/// IDs this client gives the registered formats it offers ([MS-RDPECLIP] 2.2.3.1.1.1).
 enum RDPClipboardLocalFormatID {
     static let fileGroupDescriptorW: UInt32 = 0xC000
     static let fileContents: UInt32 = 0xC001
+    static let html: UInt32 = 0xC002
+    static let richText: UInt32 = 0xC003
 }
 
 public enum RDPClipboardFileDescriptorFlags {
@@ -311,10 +318,35 @@ struct RDPClipboardFormatListPDU: Equatable, Sendable {
     }
 
     var fileGroupDescriptorWFormatID: UInt32? {
-        entries.first { entry in
-            entry.formatName?.caseInsensitiveCompare(RDPClipboardRegisteredFormatName.fileGroupDescriptorW)
-                == .orderedSame
-        }?.formatID
+        formatID(named: RDPClipboardRegisteredFormatName.fileGroupDescriptorW)
+    }
+
+    /// The ID the server gave a registered format; registered names are case-insensitive.
+    func formatID(named name: String) -> UInt32? {
+        entries.first { $0.formatName?.caseInsensitiveCompare(name) == .orderedSame }?.formatID
+    }
+
+    /// The formats of a copy that is not files, in the order they are requested:
+    /// text always, the others when the application takes them.
+    func contentRequests(includingRichFormats: Bool) -> [RDPClipboardRequestedFormatDataResponse] {
+        var requests: [RDPClipboardRequestedFormatDataResponse] = []
+        if formatIDs.contains(RDPClipboardFormatID.unicodeText) {
+            requests.append(.unicodeText)
+        }
+        guard includingRichFormats else {
+            return requests
+        }
+        if let formatID = formatID(named: RDPClipboardRegisteredFormatName.html) {
+            requests.append(.html(formatID: formatID))
+        }
+        if let formatID = formatID(named: RDPClipboardRegisteredFormatName.richText) {
+            requests.append(.richText(formatID: formatID))
+        }
+        // Windows offers CF_DIB beside CF_DIBV5; a server with only the latter gets asked for it.
+        if let formatID = [RDPClipboardFormatID.dib, RDPClipboardFormatID.dibV5].first(where: formatIDs.contains) {
+            requests.append(.bitmap(formatID: formatID))
+        }
+        return requests
     }
 
     static func parseIfPresent(
@@ -776,6 +808,11 @@ public enum RDPClipboardLimits {
     /// Counted after LF line ends become CRLF, as they are sent.
     public static let maximumUnicodeTextUTF16CodeUnitCount = maximumUnicodeTextByteCount / 2 - 1
 
+    /// Largest data of any one other format the session sends or a server can send:
+    /// a cliprdr PDU must fit the 64 MiB a static channel message is reassembled into.
+    public static let maximumFormatDataByteCount = RDPStaticVirtualChannelReassembler.defaultMaximumTotalLength
+        - RDPClipboardPDU.headerByteCount
+
     public static func canPublishUnicodeText(_ text: String) -> Bool {
         var codeUnitCount = 0
         forEachClipboardUnicodeTextCodeUnit(of: text) { _ in codeUnitCount += 1 }
@@ -950,9 +987,17 @@ public final class RDPClipboardSession: @unchecked Sendable {
     private let channel: Channel
     private let sentMessageHandler: RDPClipboardSentMessageHandler?
     private let chunkSize: RDPStaticVirtualChannelChunkSize
+    /// Whether a remote copy is fetched in HTML, RTF and bitmap form as well as text.
+    private let requestsRichFormats: Bool
     private let lock = NSLock()
     private var localContent = RDPClipboardLocalContent.empty
-    private var pendingFormatDataResponses: [RDPClipboardRequestedFormatDataResponse] = []
+    /// Format Data Requests not yet answered, oldest first. They go out one at a time,
+    /// so each response is matched to its request whatever the server's ordering.
+    private var formatDataRequests: [RDPClipboardFormatDataRequestSlot] = []
+    private var isAwaitingFormatData = false
+    /// Each remote Format List is a new copy; answers for an older one are dropped.
+    private var remoteCopyID = 0
+    private var remoteContent = RDPClipboardContent()
     /// nil until the server sends its Clipboard Capabilities PDU.
     private var serverGeneralFlags: UInt32?
     /// Flags this client advertised; 0, the protocol default, when it sent no Capabilities PDU.
@@ -965,17 +1010,24 @@ public final class RDPClipboardSession: @unchecked Sendable {
         staticChannelID: UInt16,
         channel: Channel,
         chunkSize: RDPStaticVirtualChannelChunkSize = RDPStaticVirtualChannelChunkSize(),
+        requestsRichFormats: Bool = false,
         sentMessageHandler: RDPClipboardSentMessageHandler? = nil
     ) {
         self.userChannelID = userChannelID
         self.staticChannelID = staticChannelID
         self.channel = channel
         self.chunkSize = chunkSize
+        self.requestsRichFormats = requestsRichFormats
         self.sentMessageHandler = sentMessageHandler
     }
 
     public func publishLocalUnicodeText(_ text: String?) {
-        publish(text.map { .unicodeText($0) } ?? .empty)
+        publish(text.map { .content(RDPClipboardContent(text: $0)) } ?? .empty)
+    }
+
+    /// Offers every format `content` has; the server asks for the one it wants.
+    public func publishLocalContent(_ content: RDPClipboardContent) {
+        publish(content.isEmpty ? .empty : .content(content))
     }
 
     public func publishLocalFiles(_ files: [RDPClipboardLocalFile]) {
@@ -1008,9 +1060,9 @@ public final class RDPClipboardSession: @unchecked Sendable {
         ) {
             sendFormatListResponse(ok: true)
             if let formatID = formatList.fileGroupDescriptorWFormatID {
-                requestFileGroupDescriptorW(formatID: formatID)
-            } else if formatList.formatIDs.contains(RDPClipboardFormatID.unicodeText) {
-                requestUnicodeText()
+                requestRemoteCopy([.fileGroupDescriptorW(formatID: formatID)])
+            } else {
+                requestRemoteCopy(formatList.contentRequests(includingRichFormats: requestsRichFormats))
             }
             return nil
         }
@@ -1026,18 +1078,60 @@ public final class RDPClipboardSession: @unchecked Sendable {
             return .fileContents(response)
         }
         if let response = try RDPClipboardFormatDataResponsePDU.parseIfPresent(from: pdu) {
-            // A response with no outstanding request has nothing to decode against and is dropped.
-            guard let pending = takePendingFormatDataResponse(), response.ok else {
-                return nil
-            }
-            switch pending {
-            case .unicodeText:
-                return try .text(response.decodedUnicodeText())
-            case .fileGroupDescriptorW:
-                return try .fileGroupDescriptor(response.decodedFileGroupDescriptorW())
-            }
+            return try receiveFormatData(response)
         }
         return nil
+    }
+
+    /// Decodes a Format Data Response for the request it answers. A response with no
+    /// outstanding request has nothing to decode against and is dropped.
+    private func receiveFormatData(_ response: RDPClipboardFormatDataResponsePDU) throws -> RDPClipboardEvent? {
+        let (answered, isCurrentCopy, completesCopy) = lock.withLock { () -> (RDPClipboardRequestedFormatDataResponse?, Bool, Bool) in
+            guard isAwaitingFormatData, !formatDataRequests.isEmpty else {
+                return (nil, false, false)
+            }
+            isAwaitingFormatData = false
+            let slot = formatDataRequests.removeFirst()
+            let isCurrentCopy = slot.copyID == remoteCopyID
+            return (slot.response, isCurrentCopy, isCurrentCopy && !formatDataRequests.contains { $0.copyID == remoteCopyID })
+        }
+        defer {
+            sendNextFormatDataRequest()
+        }
+        guard let answered, isCurrentCopy else {
+            return nil
+        }
+        switch answered {
+        case .unicodeText where !requestsRichFormats:
+            return response.ok ? try .text(response.decodedUnicodeText()) : nil
+        case .fileGroupDescriptorW:
+            return response.ok ? try .fileGroupDescriptor(response.decodedFileGroupDescriptorW()) : nil
+        default:
+            break
+        }
+        // Each format is fetched as a copy's own part: one that fails or does not
+        // decode is left out, and the rest still arrive.
+        return lock.withLock {
+            if response.ok {
+                switch answered {
+                case .unicodeText:
+                    remoteContent.text = try? response.decodedUnicodeText()
+                case .html:
+                    remoteContent.html = RDPClipboardHTML.decoded(response.data)
+                case .richText:
+                    let richText = RDPClipboardRichText.decoded(response.data)
+                    remoteContent.richText = richText.isEmpty ? nil : richText
+                case .bitmap:
+                    remoteContent.bitmap = response.data.isEmpty ? nil : response.data
+                case .fileGroupDescriptorW:
+                    break
+                }
+            }
+            guard completesCopy, !remoteContent.isEmpty else {
+                return nil
+            }
+            return .content(remoteContent)
+        }
     }
 
     /// The server waits for an answer to these even when they cannot be processed, and
@@ -1104,12 +1198,16 @@ public final class RDPClipboardSession: @unchecked Sendable {
         ).encoded())
     }
 
-    func requestUnicodeText() {
-        requestFormatData(formatID: RDPClipboardFormatID.unicodeText, expecting: .unicodeText)
-    }
-
-    func requestFileGroupDescriptorW(formatID: UInt32) {
-        requestFormatData(formatID: formatID, expecting: .fileGroupDescriptorW(formatID: formatID))
+    /// Starts fetching a remote copy: its requests replace those of an older copy that
+    /// have not gone out yet.
+    func requestRemoteCopy(_ requests: [RDPClipboardRequestedFormatDataResponse]) {
+        lock.withLock {
+            remoteCopyID += 1
+            remoteContent = RDPClipboardContent()
+            formatDataRequests = isAwaitingFormatData ? Array(formatDataRequests.prefix(1)) : []
+            formatDataRequests += requests.map { RDPClipboardFormatDataRequestSlot(copyID: remoteCopyID, response: $0) }
+        }
+        sendNextFormatDataRequest()
     }
 
     public func requestRemoteFileSize(streamID: UInt32, fileIndex: Int32) throws {
@@ -1130,30 +1228,59 @@ public final class RDPClipboardSession: @unchecked Sendable {
         ).encoded())
     }
 
-    /// Format Data Responses arrive in request order, so the oldest outstanding request is answered first.
-    func takePendingFormatDataResponse() -> RDPClipboardRequestedFormatDataResponse? {
-        lock.lock()
-        defer { lock.unlock() }
-        return pendingFormatDataResponses.isEmpty ? nil : pendingFormatDataResponses.removeFirst()
+    /// The formats requested and not yet answered, oldest first.
+    var outstandingFormatDataRequests: [RDPClipboardRequestedFormatDataResponse] {
+        lock.withLock { formatDataRequests.map(\.response) }
+    }
+
+    private func sendNextFormatDataRequest() {
+        let next: RDPClipboardRequestedFormatDataResponse? = lock.withLock {
+            guard !isAwaitingFormatData, let first = formatDataRequests.first else {
+                return nil
+            }
+            isAwaitingFormatData = true
+            return first.response
+        }
+        if let next {
+            send(RDPClipboardFormatDataRequestPDU(formatID: next.formatID).encoded())
+        }
     }
 
     private func respondToFormatDataRequest(_ request: RDPClipboardFormatDataRequestPDU) {
         switch currentContent() {
-        case let .unicodeText(text) where request.formatID == RDPClipboardFormatID.unicodeText:
-            guard let response = RDPClipboardFormatDataResponsePDU.unicodeTextIfEncodable(text) else {
+        case let .content(content):
+            guard let data = Self.formatData(request.formatID, of: content) else {
                 send(RDPClipboardFormatDataResponsePDU.failure().encoded())
                 return
             }
-            send(response.encoded())
+            send(RDPClipboardFormatDataResponsePDU(ok: true, data: data).encoded())
         case let .files(files) where request.formatID == RDPClipboardLocalFormatID.fileGroupDescriptorW:
             let descriptors = files.map(\.descriptor)
             let response = RDPClipboardFormatDataResponsePDU.fileGroupDescriptorW(
                 RDPClipboardFileGroupDescriptorW(descriptors: descriptors)
             )
             send(response.encoded())
-        case .empty, .unicodeText, .files:
+        case .empty, .files:
             send(RDPClipboardFormatDataResponsePDU.failure().encoded())
         }
+    }
+
+    /// The data of one format of local content, nil when it has no such format or the
+    /// data is too large to send.
+    private static func formatData(_ formatID: UInt32, of content: RDPClipboardContent) -> Data? {
+        let data: Data? = switch formatID {
+        case RDPClipboardFormatID.unicodeText:
+            content.text.flatMap { RDPClipboardFormatDataResponsePDU.unicodeTextIfEncodable($0)?.data }
+        case RDPClipboardLocalFormatID.html:
+            content.html.map(RDPClipboardHTML.encoded)
+        case RDPClipboardLocalFormatID.richText:
+            content.richText.map(RDPClipboardRichText.encoded)
+        case RDPClipboardFormatID.dib:
+            content.bitmap
+        default:
+            nil
+        }
+        return data.flatMap { $0.count <= RDPClipboardLimits.maximumFormatDataByteCount ? $0 : nil }
     }
 
     func respondToFileContentsRequest(_ request: RDPClipboardFileContentsRequestPDU) {
@@ -1203,8 +1330,23 @@ public final class RDPClipboardSession: @unchecked Sendable {
         let entries: [RDPClipboardFormatListEntry] = switch content {
         case .empty:
             []
-        case .unicodeText:
-            [RDPClipboardFormatListEntry(formatID: RDPClipboardFormatID.unicodeText)]
+        case let .content(content):
+            [
+                content.text.map { _ in RDPClipboardFormatListEntry(formatID: RDPClipboardFormatID.unicodeText) },
+                content.html.map { _ in
+                    RDPClipboardFormatListEntry(
+                        formatID: RDPClipboardLocalFormatID.html,
+                        formatName: RDPClipboardRegisteredFormatName.html
+                    )
+                },
+                content.richText.map { _ in
+                    RDPClipboardFormatListEntry(
+                        formatID: RDPClipboardLocalFormatID.richText,
+                        formatName: RDPClipboardRegisteredFormatName.richText
+                    )
+                },
+                content.bitmap.map { _ in RDPClipboardFormatListEntry(formatID: RDPClipboardFormatID.dib) },
+            ].compactMap { $0 }
         case .files:
             [
                 RDPClipboardFormatListEntry(
@@ -1219,13 +1361,6 @@ public final class RDPClipboardSession: @unchecked Sendable {
         }
         let useLongFormatNames = negotiatedGeneralFlags & RDPClipboardCapabilityFlags.useLongFormatNames != 0
         send(RDPClipboardFormatListPDU(entries: entries).encoded(useLongFormatNames: useLongFormatNames))
-    }
-
-    private func requestFormatData(formatID: UInt32, expecting response: RDPClipboardRequestedFormatDataResponse) {
-        lock.lock()
-        pendingFormatDataResponses.append(response)
-        lock.unlock()
-        send(RDPClipboardFormatDataRequestPDU(formatID: formatID).encoded())
     }
 
     private func currentContent() -> RDPClipboardLocalContent {
@@ -1261,19 +1396,39 @@ public final class RDPClipboardSession: @unchecked Sendable {
 
 private enum RDPClipboardLocalContent: Equatable, Sendable {
     case empty
-    case unicodeText(String)
+    case content(RDPClipboardContent)
     case files([RDPClipboardLocalFile])
 }
 
 enum RDPClipboardRequestedFormatDataResponse: Equatable, Sendable {
     case unicodeText
+    case html(formatID: UInt32)
+    case richText(formatID: UInt32)
+    case bitmap(formatID: UInt32)
     case fileGroupDescriptorW(formatID: UInt32)
+
+    var formatID: UInt32 {
+        switch self {
+        case .unicodeText:
+            RDPClipboardFormatID.unicodeText
+        case let .html(formatID), let .richText(formatID), let .bitmap(formatID), let .fileGroupDescriptorW(formatID):
+            formatID
+        }
+    }
+}
+
+private struct RDPClipboardFormatDataRequestSlot: Equatable, Sendable {
+    var copyID: Int
+    var response: RDPClipboardRequestedFormatDataResponse
 }
 
 enum RDPClipboardEvent: Equatable, Sendable {
     /// Monitor Ready was answered; the session can publish local content.
     case ready
+    /// The text of a remote copy, when only text is fetched.
     case text(String)
+    /// Every format fetched of a remote copy, when rich formats are fetched.
+    case content(RDPClipboardContent)
     case fileGroupDescriptor(RDPClipboardFileGroupDescriptorW)
     case fileContents(RDPClipboardFileContentsResponse)
 }

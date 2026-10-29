@@ -73,6 +73,9 @@ final class MockKRDPServer: LoopbackTestServer {
         var auxiliaryDynamicChannelBehavior = MockKRDPAuxiliaryDynamicChannelBehavior.none
         var dynamicChannelVersion: UInt16 = 2
         var remoteClipboardText: String?
+        /// Offer HTML beside the text of the remote copy, and send the first frame
+        /// only after the client asked for it.
+        var remoteClipboardHTML: String?
         var audioEnabled = false
         var waitForCompatibilityTraffic = false
         var requireBitmapCodecsCapability = false
@@ -317,6 +320,7 @@ private enum MockKRDPConstants {
     static let audioDynamicChannelID: UInt32 = 19
     static let remoteFileGroupDescriptorWFormatID: UInt32 = 0xC006
     static let remoteFileContentsFormatID: UInt32 = 0xC007
+    static let remoteHTMLFormatID: UInt32 = 0xC0B5
     static let frameID: UInt32 = 1
     static let width: UInt16 = 64
     static let height: UInt16 = 32
@@ -1083,7 +1087,7 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
     }
 
     private var clipboardEnabled: Bool {
-        options.clipboardFiles.isEmpty == false || options.remoteClipboardText != nil
+        options.clipboardFiles.isEmpty == false || options.remoteClipboardText != nil || options.remoteClipboardHTML != nil
     }
 
     private var clientRequestedProtocols: RDPSecurityProtocols {
@@ -1199,6 +1203,9 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
             for chunk in MockKRDPFixtures.clipboardPackets(clipboardFormatDataResponse(for: request).encoded()) {
                 write(chunk, context: context)
             }
+            if request.formatID == MockKRDPConstants.remoteHTMLFormatID {
+                releaseGraphicsHandshake(context: context)
+            }
         } else if let formatList = try RDPClipboardFormatListPDU.parseIfPresent(from: clipboardPDU),
                   formatList.formatIDs.contains(RDPClipboardFormatID.unicodeText)
         {
@@ -1219,6 +1226,11 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
            let remoteClipboardText = options.remoteClipboardText
         {
             return .unicodeText(remoteClipboardText)
+        }
+        if request.formatID == MockKRDPConstants.remoteHTMLFormatID,
+           let remoteClipboardHTML = options.remoteClipboardHTML
+        {
+            return RDPClipboardFormatDataResponsePDU(ok: true, data: RDPClipboardHTML.encoded(remoteClipboardHTML))
         }
         guard request.formatID == MockKRDPConstants.remoteFileGroupDescriptorWFormatID else {
             return .failure()
@@ -1277,7 +1289,8 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
             write(
                 MockKRDPFixtures.clipboardFormatList(
                     includeFiles: options.clipboardFiles.isEmpty == false,
-                    includeText: options.remoteClipboardText != nil
+                    includeText: options.remoteClipboardText != nil,
+                    includeHTML: options.remoteClipboardHTML != nil
                 ),
                 context: context
             )
@@ -1310,7 +1323,9 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
             write(MockKRDPFixtures.deactivateAll(), context: context)
             write(MockKRDPFixtures.demandActive(), context: context)
         default:
-            if options.clipboardFiles.isEmpty || options.remoteClipboardText != nil || options.waitForCompatibilityTraffic {
+            if options.remoteClipboardHTML == nil,
+               options.clipboardFiles.isEmpty || options.remoteClipboardText != nil || options.waitForCompatibilityTraffic
+            {
                 releaseGraphicsHandshake(context: context)
             }
         }
@@ -1876,10 +1891,16 @@ private enum MockKRDPFixtures {
         clipboardPacket(RDPClipboardCapabilitiesPDU().encoded())
     }
 
-    static func clipboardFormatList(includeFiles: Bool = true, includeText: Bool = false) -> Data {
+    static func clipboardFormatList(includeFiles: Bool = true, includeText: Bool = false, includeHTML: Bool = false) -> Data {
         var entries: [RDPClipboardFormatListEntry] = []
         if includeText {
             entries.append(RDPClipboardFormatListEntry(formatID: RDPClipboardFormatID.unicodeText))
+        }
+        if includeHTML {
+            entries.append(RDPClipboardFormatListEntry(
+                formatID: MockKRDPConstants.remoteHTMLFormatID,
+                formatName: RDPClipboardRegisteredFormatName.html
+            ))
         }
         if includeFiles {
             entries.append(contentsOf: [

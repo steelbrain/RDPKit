@@ -116,6 +116,29 @@ which runs on the SwiftNIO event loop and must not block. Cancelling from
 transcript keeps server PDUs in full, so store it as you would the session
 itself.
 
+The configuration also sets the keyboard the server assumes and the folders it
+can see, and `onClipboardContent` receives every format of a remote copy:
+
+```swift
+var configuration = RDPConnectionConfiguration(host: "rdp.example.com", credentials: credentials)
+// Windows keyboard layout identifier (KLID): German.
+configuration.keyboardLayout = RDPKeyboardLayout(rawValue: 0x0000_0407)
+// Shown on the server as \\tsclient\Shared.
+configuration.sharedDrives = [
+    RDPSharedDrive(name: "Shared", url: URL(fileURLWithPath: "/Users/me/Shared")),
+]
+
+let report = client.run(
+    configuration: configuration,
+    onClipboardReady: { clipboard in
+        clipboard.publishLocalContent(RDPClipboardContent(text: "Hello", html: "<b>Hello</b>"))
+    },
+    onClipboardContent: { content in
+        print(content.text ?? "", content.html ?? "", content.bitmap.flatMap(RDPClipboardBitmap.image(fromDeviceIndependentBitmap:)) as Any)
+    }
+)
+```
+
 ## Features
 
 ### Graphics
@@ -173,6 +196,10 @@ itself.
 ### Clipboard And Files
 
 - Unicode text clipboard
+- HTML (CF_HTML), RTF, and bitmap (CF_DIB) clipboard content in both
+  directions through `RDPClipboardContent`, with `RDPClipboardBitmap` to
+  convert a DIB to and from `CGImage`. Windows 11 passes text, RTF, and
+  bitmaps but drops HTML in both directions.
 - File Group Descriptor W parsing and encoding
 - File contents requests and responses
 - Local-to-remote and remote-to-local clipboard file transfer plumbing

@@ -71,6 +71,13 @@
   refused. File access runs off the connection thread. A missing folder or a
   drive the server refuses is reported as a warning. Sharing a drive also
   joins rdpsnd, without audio, since Windows starts rdpdr only then.
+- Rich clipboard: `RDPClipboardSession.publishLocalContent` offers text,
+  HTML, RTF and a bitmap (`RDPClipboardContent`) in one copy, and
+  `onClipboardContent` receives every format a remote copy has. HTML travels
+  in the Windows CF_HTML envelope and bitmaps as CF_DIB;
+  `RDPClipboardBitmap` converts a DIB to and from `CGImage`. Without
+  `onClipboardContent` only the text of a remote copy is requested, as
+  before.
 
 ### Compatibility and fixes
 
