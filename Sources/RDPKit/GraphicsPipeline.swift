@@ -234,7 +234,7 @@ extension RDPClientConnection {
         compositor: RDPGFXSurfaceCompositor
     ) -> [RDPPendingGraphicsUpdate] {
         func mapped(_ frame: RDPGraphicsFrameSnapshot) -> RDPPendingGraphicsUpdate? {
-            guard frame.contentKind != .video || compositor.isOnDecoder(surfaceID: frame.surfaceID) else {
+            guard frame.contentKind != .video || compositor.decoderTakesVideo(frame) else {
                 return nil
             }
             var mapped = frame

@@ -119,7 +119,7 @@
   its regions. SurfaceToSurface, SurfaceToCache and CacheToSurface copies of
   video decoded in earlier frames, such as a scroll, are made from the decoded
   pixels. An unmapped surface those copies wrote to gets its own video decoded
-  too, without showing it, for the copies out of it.
+  too, from its next keyframe and without showing it, for the copies out of it.
 - ClearCodec drawn over video no longer paints black where its layers leave the
   pixels underneath, and a ClearCodec glyph stored over video is drawn with that
   video. Alpha over video, which Windows sends for RemoteApp windows, keeps the

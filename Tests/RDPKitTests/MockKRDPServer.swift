@@ -140,6 +140,7 @@ enum MockKRDPGraphicsBehavior: Equatable {
     case copyVideoThroughHiddenSurface
     case deleteSurfacesAfterCopyingOutOfThem
     case sendAlphaOverVideo
+    case sendHiddenSurfaceVideoBeforeAKeyframe
     case sendMultipleBitmapSurfacesInFrame
     case sendMalformedAVCFrame
     case sendInvalidGraphicsPDU
@@ -2117,6 +2118,8 @@ private enum MockKRDPFixtures {
             [graphicsDynamicPacket(segmentedGraphicsData(deletedSourceFrameMessages()))]
         case .sendAlphaOverVideo:
             [graphicsDynamicPacket(segmentedGraphicsData(alphaOverVideoFrameMessages()))]
+        case .sendHiddenSurfaceVideoBeforeAKeyframe:
+            [graphicsDynamicPacket(segmentedGraphicsData(hiddenSurfaceVideoBeforeAKeyframeMessages()))]
         case .sendMalformedAVCFrame:
             [graphicsDynamicPacket(segmentedGraphicsData(malformedAVCFrameMessages()))]
         case .sendInvalidGraphicsPDU:
@@ -2274,6 +2277,22 @@ private enum MockKRDPFixtures {
         messages += startFrameMessage(frameID: 3)
         messages += wireToSurfaceMessage(surfaceID: 1)
         messages += endFrameMessage(frameID: 3)
+        return messages
+    }
+
+    /// Video copied into unmapped surface 2, which then gets a P slice, a keyframe and a P slice.
+    static func hiddenSurfaceVideoBeforeAKeyframeMessages() -> Data {
+        let fullSurface = RDPGFXRect16(left: 0, top: 0, right: MockKRDPConstants.width, bottom: MockKRDPConstants.height)
+        var messages = createSurfaceMessage(surfaceID: 1)
+        messages += createSurfaceMessage(surfaceID: 2)
+        messages += mapSurfaceToOutputMessage(surfaceID: 1, x: 0, y: 0)
+        messages += startFrameMessage(frameID: 1)
+        messages += wireToSurfaceMessage(surfaceID: 1)
+        messages += surfaceToSurfaceMessage(sourceSurfaceID: 1, destinationSurfaceID: 2, sourceRect: fullSurface)
+        messages += wireToSurfaceMessage(surfaceID: 2, bitmapData: avc420BitmapStream(isKeyframe: false))
+        messages += wireToSurfaceMessage(surfaceID: 2)
+        messages += wireToSurfaceMessage(surfaceID: 2, bitmapData: avc420BitmapStream(isKeyframe: false))
+        messages += endFrameMessage(frameID: 1)
         return messages
     }
 
@@ -3036,8 +3055,10 @@ private enum MockKRDPFixtures {
         return encoded
     }
 
+    /// An AVC420 update: a keyframe (SPS, PPS and an IDR slice) or a P slice.
     private static func avc420BitmapStream(
-        regions: [RDPGFXRect16] = [RDPGFXRect16(left: 0, top: 0, right: MockKRDPConstants.width, bottom: MockKRDPConstants.height)]
+        regions: [RDPGFXRect16] = [RDPGFXRect16(left: 0, top: 0, right: MockKRDPConstants.width, bottom: MockKRDPConstants.height)],
+        isKeyframe: Bool = true
     ) -> Data {
         var data = Data()
         data.appendLittleEndianUInt32(UInt32(regions.count))
@@ -3048,11 +3069,11 @@ private enum MockKRDPFixtures {
             data.appendUInt8(24)
             data.appendUInt8(90)
         }
-        data.append(Data([
+        data.append(isKeyframe ? Data([
             0x00, 0x00, 0x00, 0x01, 0x67, 0x64, 0x00, 0x1F,
             0x00, 0x00, 0x01, 0x68, 0xEE, 0x3C, 0x80,
             0x00, 0x00, 0x01, 0x65, 0x88,
-        ]))
+        ]) : Data([0x00, 0x00, 0x00, 0x01, 0x41, 0x9A]))
         return data
     }
 }

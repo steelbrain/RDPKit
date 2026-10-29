@@ -46,6 +46,8 @@ final class RDPGFXSurfaceCompositor {
         /// Whether the decoder holds this surface: it gets the updates of a mapped surface,
         /// and of an unmapped one its copies wrote to.
         var isOnDecoder = false
+        /// Whether the decoder has this surface's video stream from a keyframe on.
+        var decoderHasVideoStream = false
 
         var bytesPerRow: Int {
             width * 4
@@ -429,6 +431,21 @@ final class RDPGFXSurfaceCompositor {
 
     func isOnDecoder(surfaceID: UInt16) -> Bool {
         surfaces[surfaceID]?.isOnDecoder == true
+    }
+
+    /// Whether the decoder takes `frame`, a video update, and notes that it did. An unmapped
+    /// surface's video goes to it from a keyframe on: before one it has nothing to decode against.
+    func decoderTakesVideo(_ frame: RDPGraphicsFrameSnapshot) -> Bool {
+        guard let index = surfaces.index(forKey: frame.surfaceID),
+              surfaces.values[index].isOnDecoder,
+              surfaces.values[index].outputMapping != nil
+              || surfaces.values[index].decoderHasVideoStream
+              || frame.isVideoResyncFrame
+        else {
+            return false
+        }
+        surfaces.values[index].decoderHasVideoStream = true
+        return true
     }
 
     /// Cache slots the decoder stored into, which it drops when the cache is.

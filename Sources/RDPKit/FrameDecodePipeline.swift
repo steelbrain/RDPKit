@@ -83,30 +83,6 @@ private final class RDPFrameDecodeCompletionWaiter: @unchecked Sendable {
     }
 }
 
-private extension RDPGraphicsFrameSnapshot {
-    var isVideoResyncFrame: Bool {
-        guard contentKind == .video else {
-            return false
-        }
-        if avc444SubframeLayout == .chroma420Only {
-            return false
-        }
-
-        let types = videoNalUnitTypes
-        switch videoCodec {
-        case .h264:
-            return types.contains(5)
-                && types.contains(7)
-                && types.contains(8)
-        case .hevc:
-            return (types.contains(19) || types.contains(20) || types.contains(21))
-                && types.contains(32)
-                && types.contains(33)
-                && types.contains(34)
-        }
-    }
-}
-
 final class RDPDecodedVideoSurfaceCompositor {
     private struct Surface {
         var width: Int

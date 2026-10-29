@@ -1118,6 +1118,23 @@ struct MockKRDPServerTests {
         #expect(frames.map(\.deletedSurfaceIDs) == [[], [], [2], [3]])
     }
 
+    /// A hidden surface's video goes to the decoder from a keyframe on: before one it has
+    /// nothing to decode against.
+    @Test func clientHandsHiddenSurfaceVideoToTheDecoderFromAKeyframeOn() throws {
+        let observed = Locked(Observed())
+        let report = try runMock(.init(graphicsBehavior: .sendHiddenSurfaceVideoBeforeAKeyframe), client: {
+            RDPSessionClient().run(configuration: $0, onGraphicsFrame: { frame in
+                observed.withLock { $0.frames.append(frame) }
+            })
+        }).report
+
+        #expect(report.status == "success")
+        let frames = observed.value.frames
+        #expect(frames.map(\.contentKind) == [.video, .surfaceCopy, .video, .video])
+        #expect(frames.map(\.surfaceID) == [1, 2, 2, 2])
+        #expect(frames.filter { $0.surfaceID == 2 && $0.contentKind == .video }.map(\.videoNalUnitTypes) == [[7, 8, 5], [1]])
+    }
+
     /// Alpha over video goes to the decoder, which has the video's colour, instead of
     /// painting the session's never decoded pixels.
     @Test func clientHandsAlphaOverVideoToTheDecoder() throws {
