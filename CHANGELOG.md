@@ -85,14 +85,20 @@
   and nothing is requested. Set it in `onClipboardReady` to cover the
   server's first copy. Joining still announces the client's clipboard, empty
   until it publishes, and Windows 11 then empties its own clipboard;
-  `clipboardEnabled` off leaves it untouched.
+  `clipboardEnabled` off leaves it untouched. Turned back on, it fetches the
+  last copy the server announced meanwhile, unless the client has published
+  since, so a client that decides later, on the main thread for instance,
+  still gets a copy that came in between. `isAwaitingRemoteCopy` tells
+  whether a copy is being fetched.
 - `run` and `connect` take `onClipboardRemoteCopyUnavailable`
   (`RDPClipboardRemoteCopyUnavailableHandler`), called when the server
   announces a copy none of which is fetched, so the copy delivered before is
   no longer the server's. `isEmpty` is true for an empty Format List, which
   Windows 11 sends when its clipboard is emptied, and false for a copy of
   only formats the session does not fetch, such as an image without
-  `onClipboardContent`. It is not called while `fetchesRemoteCopies` is off.
+  `onClipboardContent`. It is not called while `fetchesRemoteCopies` is off;
+  such a copy is reported once fetching is turned back on, unless a newer
+  copy, local or remote, came first.
   gnome-remote-desktop 51 sends nothing when its clipboard is cleared.
 - `RDPRemotePointerBitmap(_:)` turns an `RDPRemotePointerImage` from
   `onRemotePointer` into premultiplied RGBA (`pixels`, `bytesPerRow`) and a
@@ -226,6 +232,10 @@
     came from the server; a local copy made since is kept. A server copy
     RDPClient takes nothing of, such as an image, cancels a remote file
     download in progress.
+  - The server's first copy reaches the Mac even when it comes before the
+    clipboard bridge is ready, and the Mac's older clipboard no longer
+    replaces it on the server; Sync Now sends the Mac's clipboard should
+    that copy never arrive.
   - Remote file downloads:
     - A download no longer replaces text or files copied after it began.
       A remote file copy cancels a local file read still in progress, and
@@ -242,6 +252,9 @@
       had not downloaded yet. They no longer cancel a download in progress.
   - A `\` in a copied file's name is sent as `_`, so Windows does not paste
     the file inside a folder.
+  - On macOS 15 and later the display goes through the display layer's
+    `sampleBufferRenderer` instead of the layer's calls deprecated there;
+    macOS 14 keeps them.
   - Stats for Nerds shows the session's stage, TLS, protocols, channels and
     the rest of its report while it runs, not only once it ends. Frame Acks
     counts every acknowledgement instead of stopping at 8. The viewer's fps
@@ -265,20 +278,28 @@
     ones saved before 0.4.0 are found by their old name instead of by listing
     every Keychain item, then renamed in one step, so Delete Profile meanwhile
     no longer brings one back. RDPClient no longer sets a Keychain
-    accessibility that the login keychain ignores. Connecting before a lookup
-    has answered waits for that answer instead of reading Keychain again, so
-    the saved password is still filled in, or removed with Remember unticked;
-    a password typed or a Remember choice made while the lookup was on its
-    way stands. A password filled in while the Password field has focus is
-    the one used, so the field's older text is no longer sent and then saved
-    over it; typing in the field still changes it. A session window connects
-    by itself only with the fields it opened with; editing a field cancels
+    accessibility that the login keychain ignores.
+  - Connecting before a lookup has answered waits for that answer instead of
+    reading Keychain again, so the saved password is still filled in, or
+    removed with Remember unticked; a password typed or a Remember choice
+    made while the lookup was on its way stands. The Connections window does
+    the same, and a session window opened from it takes the answer that
+    window already had, so connecting reads Keychain once. Delete Profile
+    learns from the deletion whether a password was saved instead of reading
+    it first.
+  - A password filled in while the Password field has focus is the one used,
+    so the field's older text is no longer sent and then saved over it;
+    typing in the field still changes it. A session window connects by
+    itself only with the fields it opened with; editing a field cancels
     that, and any connection still waiting for Keychain.
   - Each saved connection is read on its own. One it cannot read, such as one
     a newer build wrote, no longer empties the list, and saving keeps it and
     any fields a newer build added. Saving a connection typed as `LAB\anees`
     updates the saved one for `anees` in domain LAB, which shares its saved
     password, instead of adding a second.
+- RDPPreflight prints `redirection depth: N` after `target:` when a Server
+  Redirection led to the target, as its JSON's `redirectionDepth` already
+  showed.
 
 ## 0.4.0
 
