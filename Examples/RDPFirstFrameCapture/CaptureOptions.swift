@@ -73,6 +73,44 @@ enum FirstFrameCaptureError: Error, CustomStringConvertible {
             "could not write PNG image to \(path)"
         }
     }
+
+    /// Why a capture decoded no frame. `settleSeconds` is set when the settle window ran
+    /// out, which cancels the session and leaves "cancelled" as the report's error.
+    static func noDecodedFrame(
+        report: RDPConnectionReport,
+        lastDecodeFailure: String?,
+        settleSeconds: Int?
+    ) -> FirstFrameCaptureError {
+        if let settleSeconds {
+            let failure = lastDecodeFailure.map { "; last decode failure: \($0)" } ?? ""
+            return .connectionFailed(
+                "no frame decoded within --settle-seconds \(settleSeconds) (stopped at \(report.stage))\(failure)"
+            )
+        }
+        guard report.status == "success" else {
+            return .connectionFailed(report.error ?? "RDP connection failed at \(report.stage)")
+        }
+        if report.nextStage == "rdp-session-ended" {
+            let missing = report.rdpGraphicsChannelName == nil
+                ? "opening the RDPGFX dynamic channel"
+                : "producing an RDPGFX video frame"
+            return .connectionFailed("remote session ended before \(missing)\(remoteTerminationSuffix(report))")
+        }
+        if let lastDecodeFailure {
+            return .noDecodableFrames(lastDecodeFailure)
+        }
+        return .missingFrames
+    }
+
+    private static func remoteTerminationSuffix(_ report: RDPConnectionReport) -> String {
+        if let errorInfoName = report.rdpRemoteTerminationErrorInfoName {
+            return " (\(errorInfoName))"
+        }
+        if let disconnectReasonName = report.rdpRemoteTerminationDisconnectReasonName {
+            return " (\(disconnectReasonName))"
+        }
+        return ""
+    }
 }
 
 /// Collects results from the decode queue's thread; the main thread reads them after the session.

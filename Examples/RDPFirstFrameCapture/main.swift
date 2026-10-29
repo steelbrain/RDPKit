@@ -77,7 +77,11 @@ private enum FirstFrameCapture {
 
             let capture = recorder.snapshot
             guard let selectedFrame = capture.latest else {
-                throw missingDecodedFrameError(report: report, lastDecodeFailure: capture.lastFailure)
+                throw FirstFrameCaptureError.noDecodedFrame(
+                    report: report,
+                    lastDecodeFailure: capture.lastFailure,
+                    settleSeconds: cancellation.isCancelled ? options.settleSeconds : nil
+                )
             }
             try writePNG(selectedFrame.image, to: outputPath)
             let frame = selectedFrame.frame
@@ -109,34 +113,6 @@ private enum FirstFrameCapture {
             Thread.sleep(forTimeInterval: TimeInterval(seconds))
             cancellation.cancel()
         }
-    }
-
-    private static func missingDecodedFrameError(report: RDPConnectionReport, lastDecodeFailure: String?) -> Error {
-        guard report.status == "success" else {
-            return FirstFrameCaptureError.connectionFailed(report.error ?? "RDP connection failed at \(report.stage)")
-        }
-        if report.nextStage == "rdp-session-ended" {
-            let missing = report.rdpGraphicsChannelName == nil
-                ? "opening the RDPGFX dynamic channel"
-                : "producing an RDPGFX video frame"
-            return FirstFrameCaptureError.connectionFailed(
-                "remote session ended before \(missing)\(remoteTerminationSuffix(report))"
-            )
-        }
-        if let lastDecodeFailure {
-            return FirstFrameCaptureError.noDecodableFrames(lastDecodeFailure)
-        }
-        return FirstFrameCaptureError.missingFrames
-    }
-
-    private static func remoteTerminationSuffix(_ report: RDPConnectionReport) -> String {
-        if let errorInfoName = report.rdpRemoteTerminationErrorInfoName {
-            return " (\(errorInfoName))"
-        }
-        if let disconnectReasonName = report.rdpRemoteTerminationDisconnectReasonName {
-            return " (\(disconnectReasonName))"
-        }
-        return ""
     }
 
     private static func writeTranscript(_ transcript: RDPWireTranscript, to path: String) throws {

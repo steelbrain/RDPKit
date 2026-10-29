@@ -51,6 +51,19 @@ import Testing
     #expect(try options.configuration(environment: [:]).graphicsFrameCaptureLimit == nil)
 }
 
+@Test func firstFrameCaptureExplainsASettleWindowWithoutADecodedFrame() {
+    // The settle window cancels the session, so the report's error is only "cancelled".
+    var report = RDPSessionClient().dryRun(configuration: RDPConnectionConfiguration(host: "server"))
+    report.status = "failure"
+    report.stage = "rdp-graphics-dynamic-channel"
+    report.error = "cancelled"
+
+    let error = FirstFrameCaptureError.noDecodedFrame(report: report, lastDecodeFailure: "bad frame", settleSeconds: 30)
+
+    #expect(error.description == "no frame decoded within --settle-seconds 30 "
+        + "(stopped at rdp-graphics-dynamic-channel); last decode failure: bad frame")
+}
+
 @Test func firstFrameCaptureCanOverrideSettleWindow() throws {
     let options = try FirstFrameCaptureOptions.parse([
         "RDPFirstFrameCapture",
