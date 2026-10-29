@@ -268,13 +268,16 @@ struct RDPLegacyKeyExchangeFallback: Equatable {
     /// Whether a connection to `target` that ended with `failure` is to connect again with RSA
     /// key exchange: once, after the certificate refused ECDHE. RSA key exchange needs only the
     /// keyEncipherment such a certificate allows, and RDPKit never reports this failure with it
-    /// on. The handshake failed before the certificate was checked, so no credential was sent.
+    /// on. The handshake failed before the certificate was checked, so no credential was sent;
+    /// unless a Server Redirection led there (`redirectionDepth` above 0): then `target`, which
+    /// already took the sign-in, is not the server that refused ECDHE, so nothing is retried.
     mutating func shouldRetry(
         _ target: RDPConnectionTarget,
         after failure: RDPConnectionFailure?,
+        redirectionDepth: Int,
         usedRSAKeyExchange: Bool
     ) -> Bool {
-        guard failure == .tlsKeyUsageIncorrect, !usedRSAKeyExchange else {
+        guard failure == .tlsKeyUsageIncorrect, redirectionDepth == 0, !usedRSAKeyExchange else {
             return false
         }
         self.target = target

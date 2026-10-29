@@ -190,14 +190,14 @@ private let bitmapFrame = RDPGraphicsFrameSnapshot(
     var fallback = RDPLegacyKeyExchangeFallback()
 
     #expect(fallback.connect(to: serverA) == false)
-    #expect(fallback.shouldRetry(serverA, after: .tls, usedRSAKeyExchange: false) == false)
-    #expect(fallback.shouldRetry(serverA, after: nil, usedRSAKeyExchange: false) == false)
+    #expect(fallback.shouldRetry(serverA, after: .tls, redirectionDepth: 0, usedRSAKeyExchange: false) == false)
+    #expect(fallback.shouldRetry(serverA, after: nil, redirectionDepth: 0, usedRSAKeyExchange: false) == false)
     #expect(fallback.connect(to: serverA) == false)
 
-    #expect(fallback.shouldRetry(serverA, after: .tlsKeyUsageIncorrect, usedRSAKeyExchange: false) == true)
+    #expect(fallback.shouldRetry(serverA, after: .tlsKeyUsageIncorrect, redirectionDepth: 0, usedRSAKeyExchange: false) == true)
     #expect(fallback.connect(to: serverA) == true)
     // Once only: a connection that already used RSA key exchange is not retried.
-    #expect(fallback.shouldRetry(serverA, after: .tlsKeyUsageIncorrect, usedRSAKeyExchange: true) == false)
+    #expect(fallback.shouldRetry(serverA, after: .tlsKeyUsageIncorrect, redirectionDepth: 0, usedRSAKeyExchange: true) == false)
     // Reconnecting to the same target keeps it.
     #expect(fallback.connect(to: serverA) == true)
     #expect(fallback.target == serverA)
@@ -208,8 +208,14 @@ private let bitmapFrame = RDPGraphicsFrameSnapshot(
     #expect(fallback.connect(to: serverA) == false)
 
     // The port is part of the target.
-    #expect(fallback.shouldRetry(serverA, after: .tlsKeyUsageIncorrect, usedRSAKeyExchange: false) == true)
+    #expect(fallback.shouldRetry(serverA, after: .tlsKeyUsageIncorrect, redirectionDepth: 0, usedRSAKeyExchange: false) == true)
     #expect(fallback.connect(to: serverAOtherPort) == false)
+
+    // A redirection target that refuses ECDHE is not the server typed in, which already took the
+    // sign-in, so that server is not retried with RSA key exchange.
+    #expect(fallback.connect(to: serverB) == false)
+    #expect(fallback.shouldRetry(serverB, after: .tlsKeyUsageIncorrect, redirectionDepth: 1, usedRSAKeyExchange: false) == false)
+    #expect(fallback.connect(to: serverB) == false)
 }
 
 @Test func aViewResizedAndBackBeforeTheDelaySendsNothing() {

@@ -914,6 +914,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                 if controller.legacyKeyExchangeFallback.shouldRetry(
                     target,
                     after: nextReport.failure,
+                    redirectionDepth: nextReport.redirectionDepth,
                     usedRSAKeyExchange: configuration.legacyRSAKeyExchange
                 ) {
                     controller.beginConnection()
