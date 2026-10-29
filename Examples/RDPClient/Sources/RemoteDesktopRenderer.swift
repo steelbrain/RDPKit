@@ -98,7 +98,7 @@ final class RemoteDesktopSampleBufferNSView: NSView {
     }
 
     func clear() {
-        displayLayer.flushAndRemoveImage()
+        flushQueuedSamples(removingImage: true)
         lastPresentationID = nil
         lastPresentation = nil
         didResendLastPresentation = false
@@ -108,8 +108,8 @@ final class RemoteDesktopSampleBufferNSView: NSView {
     private func enqueue(_ presentation: RDPDecodedFramePresentation) -> Bool {
         let disposition = rdpSampleBufferDisplayDisposition(
             displayFormatWillChange: sampleBufferFactory.willChangeDisplayFormat(for: presentation),
-            rendererFailed: displayLayer.status == .failed,
-            requiresFlushToResume: displayLayer.requiresFlushToResumeDecoding
+            rendererFailed: rendererFailed,
+            requiresFlushToResume: rendererRequiresFlushToResume
         )
         switch disposition {
         case .flushAndEnqueue:
@@ -119,8 +119,7 @@ final class RemoteDesktopSampleBufferNSView: NSView {
         }
 
         do {
-            let sampleBuffer = try sampleBufferFactory.makeSampleBuffer(for: presentation)
-            displayLayer.enqueue(sampleBuffer)
+            try enqueueSampleBuffer(sampleBufferFactory.makeSampleBuffer(for: presentation))
             return true
         } catch {
             flushQueuedSamples()
@@ -134,8 +133,8 @@ final class RemoteDesktopSampleBufferNSView: NSView {
         guard rdpShouldResendLastPresentation(
             hasLastPresentation: lastPresentation != nil,
             didResendLastPresentation: didResendLastPresentation,
-            rendererFailed: displayLayer.status == .failed,
-            requiresFlushToResume: displayLayer.requiresFlushToResumeDecoding
+            rendererFailed: rendererFailed,
+            requiresFlushToResume: rendererRequiresFlushToResume
         ),
             let lastPresentation
         else {
@@ -159,11 +158,23 @@ final class RemoteDesktopSampleBufferNSView: NSView {
     /// AVFoundation can post these on its own threads. The observer runs on the posting thread
     /// and only schedules the recovery on the main thread, so the post never waits for it.
     private func observeDisplayLayer() {
-        displayLayerObservers = [
-            NSNotification.Name.AVSampleBufferDisplayLayerFailedToDecode,
-            .AVSampleBufferDisplayLayerRequiresFlushToResumeDecodingDidChange,
-        ].map { name in
-            NotificationCenter.default.addObserver(forName: name, object: displayLayer, queue: nil) { [weak self] _ in
+        let names: [NSNotification.Name]
+        let object: AnyObject
+        if #available(macOS 15, *) {
+            names = [
+                AVSampleBufferVideoRenderer.didFailToDecodeNotification,
+                AVSampleBufferVideoRenderer.requiresFlushToResumeDecodingDidChangeNotification,
+            ]
+            object = displayLayer.sampleBufferRenderer
+        } else {
+            names = [
+                .AVSampleBufferDisplayLayerFailedToDecode,
+                .AVSampleBufferDisplayLayerRequiresFlushToResumeDecodingDidChange,
+            ]
+            object = displayLayer
+        }
+        displayLayerObservers = names.map { name in
+            NotificationCenter.default.addObserver(forName: name, object: object, queue: nil) { [weak self] _ in
                 DispatchQueue.main.async {
                     self?.displayLayerNeedsRecovery()
                 }
@@ -175,10 +186,46 @@ final class RemoteDesktopSampleBufferNSView: NSView {
         displayLayer.contentsScale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 1
     }
 
-    private func flushQueuedSamples() {
-        displayLayer.flush()
+    // macOS 15 deprecates the layer's own queue for its `sampleBufferRenderer`, which these use
+    // there; macOS 14 keeps the layer's calls.
+
+    private var rendererFailed: Bool {
+        if #available(macOS 15, *) {
+            displayLayer.sampleBufferRenderer.status == .failed
+        } else {
+            displayLayer.status == .failed
+        }
     }
 
+    private var rendererRequiresFlushToResume: Bool {
+        if #available(macOS 15, *) {
+            displayLayer.sampleBufferRenderer.requiresFlushToResumeDecoding
+        } else {
+            displayLayer.requiresFlushToResumeDecoding
+        }
+    }
+
+    private func enqueueSampleBuffer(_ sampleBuffer: CMSampleBuffer) {
+        if #available(macOS 15, *) {
+            displayLayer.sampleBufferRenderer.enqueue(sampleBuffer)
+        } else {
+            displayLayer.enqueue(sampleBuffer)
+        }
+    }
+
+    private func flushQueuedSamples(removingImage: Bool = false) {
+        if #available(macOS 15, *) {
+            if removingImage {
+                displayLayer.sampleBufferRenderer.flush(removingDisplayedImage: true, completionHandler: nil)
+            } else {
+                displayLayer.sampleBufferRenderer.flush()
+            }
+        } else if removingImage {
+            displayLayer.flushAndRemoveImage()
+        } else {
+            displayLayer.flush()
+        }
+    }
 }
 
 enum RDPRemoteDesktopSampleBufferDisplayDisposition: Equatable {

@@ -1,7 +1,33 @@
 import AppKit
+import AVFoundation
 @testable import RDPClient
 import RDPKit
 import Testing
+
+/// On macOS 15 and later frames go to the display layer's `sampleBufferRenderer`, before and
+/// after the display is cleared.
+@MainActor
+@Test func framesRenderThroughTheDisplayLayersSampleBufferRenderer() throws {
+    guard #available(macOS 15, *) else {
+        return
+    }
+    let view = RemoteDesktopSampleBufferNSView(frame: CGRect(x: 0, y: 0, width: 64, height: 64))
+    let renderer = try #require(view.layer?.sublayers?.first as? AVSampleBufferDisplayLayer).sampleBufferRenderer
+    var imageBuffer: CVPixelBuffer?
+    #expect(CVPixelBufferCreate(kCFAllocatorDefault, 16, 16, kCVPixelFormatType_32BGRA, nil, &imageBuffer) == kCVReturnSuccess)
+    let presentation = try RDPDecodedFramePresentation(
+        frame: graphicsFrame(width: 16, height: 16),
+        imageBuffer: #require(imageBuffer)
+    )
+    #expect(renderer.status == .unknown)
+
+    view.present(presentation, id: 1)
+    #expect(renderer.status == .rendering)
+    view.clear()
+    view.present(presentation, id: 2)
+    #expect(renderer.status == .rendering)
+    #expect(renderer.error == nil)
+}
 
 @Test
 func unchangedHealthyDisplayEnqueuesWithoutFlushing() {
@@ -141,8 +167,8 @@ func displayResetConditionsFlushBeforeEnqueue(
     #expect(!clock.isDisplayLinkRunning)
 }
 
-private func frameMetadata(width: UInt16, height: UInt16) -> RDPFrameMetadata {
-    RDPFrameMetadata(RDPGraphicsFrameSnapshot(
+private func graphicsFrame(width: UInt16, height: UInt16) -> RDPGraphicsFrameSnapshot {
+    RDPGraphicsFrameSnapshot(
         frameID: nil,
         surfaceID: 0,
         codecID: 0,
@@ -151,7 +177,11 @@ private func frameMetadata(width: UInt16, height: UInt16) -> RDPFrameMetadata {
         destinationRect: RDPFrameRect(left: 0, top: 0, right: width, bottom: height),
         regionRects: [],
         encodedVideoData: Data()
-    ))
+    )
+}
+
+private func frameMetadata(width: UInt16, height: UInt16) -> RDPFrameMetadata {
+    RDPFrameMetadata(graphicsFrame(width: width, height: height))
 }
 
 /// Places `view` one pixel wider than a 1000x700 desktop, whose width Display Control made even:
