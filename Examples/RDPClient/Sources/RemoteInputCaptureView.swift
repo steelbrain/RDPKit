@@ -164,6 +164,13 @@ final class RemoteInputCaptureNSView: NSView {
                layout: keyboardLayout
            )
         {
+            // A dead key's accent ahead of Return or Tab; text never goes with Command or Control.
+            if event.isARepeat == false,
+               event.modifierFlags.isDisjoint(with: [.command, .control]),
+               let text = MacRDPKeyboardMapping.deadKeyText(aheadOf: event.characters)
+            {
+                inputSession?.send(MacRDPKeyboardMapping.unicodeEvents(for: text))
+            }
             sendKeyboardScancode(scancode, isReleased: false)
             return
         }
@@ -632,8 +639,31 @@ enum MacRDPKeyboardMapping {
         guard let characters, characters != charactersIgnoringModifiers else {
             return false
         }
-        return characters.utf16.contains(where: functionKeyCharacters.contains) == false
-            && characters.unicodeScalars.contains { $0.properties.generalCategory == .control } == false
+        return isPrintable(characters)
+    }
+
+    /// The text a dead key left ahead of a key that types a control character, which macOS puts
+    /// in that key's `characters`: after Option-E on US, Return is "´\r", Tab "´\t" and Esc
+    /// "´\u{1B}", and after "^" on German, keypad Enter is "^\u{03}". Those keys go as their
+    /// scancodes, so the text has to go ahead of them. Nil unless `characters` is printable text
+    /// followed by exactly one control character; AppKit gives Delete, the arrows and the other
+    /// function keys characters of its own, with no text ahead.
+    static func deadKeyText(aheadOf characters: String?) -> String? {
+        guard let scalars = characters?.unicodeScalars, let last = scalars.last, isControl(last) else {
+            return nil
+        }
+        let text = String(scalars.dropLast())
+        return text.isEmpty == false && isPrintable(text) ? text : nil
+    }
+
+    /// No control characters and none of AppKit's function-key characters.
+    private static func isPrintable(_ text: String) -> Bool {
+        text.utf16.contains(where: functionKeyCharacters.contains) == false
+            && text.unicodeScalars.contains(where: isControl) == false
+    }
+
+    private static func isControl(_ scalar: Unicode.Scalar) -> Bool {
+        scalar.properties.generalCategory == .control
     }
 
     /// Whether Windows, with `layout`, types what the Mac typed for a character key: then the key

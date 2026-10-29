@@ -501,7 +501,8 @@ private func keyEvent(
     keyCode: Int,
     characters: String = "",
     charactersIgnoringModifiers: String? = nil,
-    modifierFlags: NSEvent.ModifierFlags = []
+    modifierFlags: NSEvent.ModifierFlags = [],
+    isARepeat: Bool = false
 ) throws -> NSEvent {
     try #require(NSEvent.keyEvent(
         with: type,
@@ -512,9 +513,56 @@ private func keyEvent(
         context: nil,
         characters: characters,
         charactersIgnoringModifiers: charactersIgnoringModifiers ?? characters,
-        isARepeat: false,
+        isARepeat: isARepeat,
         keyCode: UInt16(keyCode)
     ))
+}
+
+/// After a dead key, macOS puts its accent ahead of the control character Return, Tab, Esc and
+/// keypad Enter type; those keys go as scancodes, so the accent goes as Unicode first.
+@Test func deadKeyTextAheadOfAControlCharacterIsFound() {
+    #expect(MacRDPKeyboardMapping.deadKeyText(aheadOf: "´\r") == "´")
+    #expect(MacRDPKeyboardMapping.deadKeyText(aheadOf: "´\t") == "´")
+    #expect(MacRDPKeyboardMapping.deadKeyText(aheadOf: "´\u{1B}") == "´")
+    #expect(MacRDPKeyboardMapping.deadKeyText(aheadOf: "^\u{03}") == "^")
+    for characters: String? in [nil, "", "\r", "a", "´", "´a", "´\r\r", "\r´", "\u{F702}", "\u{F702}\r", "\u{F728}"] {
+        #expect(MacRDPKeyboardMapping.deadKeyText(aheadOf: characters) == nil)
+    }
+}
+
+@MainActor
+@Test func aDeadKeysAccentGoesAheadOfReturnTabEscAndKeypadEnter() throws {
+    let returnKey = RDPKeyboardScancode(code: 0x1C)
+    let accent = RDPSlowPathInputEvent.unicode(codeUnit: 0xB4, isReleased: false)
+    let accentUp = RDPSlowPathInputEvent.unicode(codeUnit: 0xB4, isReleased: true)
+    let input = RecordedInput()
+    let view = RemoteInputCaptureNSView()
+    view.inputSession = input
+
+    // US Option-E, then Return; its repeat and key-up send the key alone.
+    view.keyDown(with: try keyEvent(.keyDown, keyCode: kVK_Return, characters: "´\r", charactersIgnoringModifiers: "\r"))
+    view.keyDown(with: try keyEvent(.keyDown, keyCode: kVK_Return, characters: "´\r", isARepeat: true))
+    view.keyUp(with: try keyEvent(.keyUp, keyCode: kVK_Return, characters: "\r"))
+    view.keyDown(with: try keyEvent(.keyDown, keyCode: kVK_Tab, characters: "´\t"))
+    view.keyUp(with: try keyEvent(.keyUp, keyCode: kVK_Tab, characters: "\t"))
+    view.keyDown(with: try keyEvent(.keyDown, keyCode: kVK_Escape, characters: "´\u{1B}"))
+    // German "^", then keypad Enter.
+    view.keyDown(with: try keyEvent(.keyDown, keyCode: kVK_ANSI_KeypadEnter, characters: "^\u{03}"))
+    // With Control, which types no text, the key goes alone.
+    view.keyDown(with: try keyEvent(.keyDown, keyCode: kVK_Tab, characters: "´\t", modifierFlags: .control))
+
+    #expect(input.events == [
+        accent, accentUp, .keyboard(scancode: returnKey, isReleased: false),
+        .keyboard(scancode: returnKey, isReleased: false, wasDown: true),
+        .keyboard(scancode: returnKey, isReleased: true),
+        accent, accentUp, .keyboard(scancode: RDPKeyboardScancode(code: 0x0F), isReleased: false),
+        .keyboard(scancode: RDPKeyboardScancode(code: 0x0F), isReleased: true),
+        accent, accentUp, .keyboard(scancode: RDPKeyboardScancode(code: 0x01), isReleased: false),
+        .unicode(codeUnit: 0x5E, isReleased: false),
+        .unicode(codeUnit: 0x5E, isReleased: true),
+        .keyboard(scancode: RDPKeyboardScancode(code: 0x1C, isExtended: true), isReleased: false),
+        .keyboard(scancode: RDPKeyboardScancode(code: 0x0F), isReleased: false),
+    ])
 }
 
 @MainActor
