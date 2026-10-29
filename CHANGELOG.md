@@ -170,6 +170,15 @@
 - Clipboard: publishing drops the remote copy being fetched, since the
   client's Format List replaces it on the server ([MS-RDPECLIP] 1.3.2.2.1),
   so a late answer is no longer delivered as text, content or a file list.
+- Clipboard: a remote copy that arrives with nothing goes to
+  `onClipboardRemoteCopyUnavailable` with `isEmpty` false, unless a newer
+  copy came first: a copy whose only requested format failed (text only, or
+  a file list), and a rich copy whose formats all failed or came back empty.
+  A rich copy with some formats left still arrives through
+  `onClipboardContent` without the rest.
+- Clipboard: names of local files offered to Windows lose only trailing dots
+  and spaces (U+0020), as Windows path normalization does. Leading spaces,
+  and other whitespace such as U+00A0, U+3000 and U+200B, stay in the name.
 - Clipboard: remote file names saved on the client keep Unicode format
   characters such as ZWNJ, ZWJ, the soft hyphen and bidi marks, so
   "گزارش‌ها.pdf" no longer becomes "گزارش_ها.pdf". Control characters, line
