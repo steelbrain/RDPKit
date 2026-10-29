@@ -158,7 +158,8 @@ private enum RDPClientInfoFlags {
     static let noAudioPlayback: UInt32 = 0x0008_0000
 }
 
-private enum RDPClientInfoLimits {
+/// Field sizes in bytes, terminator included ([MS-RDPBCGR] 2.2.1.11.1.1).
+enum RDPClientInfoLimits {
     static let standardFieldByteCount = 512
     static let passwordCookieByteCount = Int(UInt16.max)
     static let clientAddressByteCount = 80

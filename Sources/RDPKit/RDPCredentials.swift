@@ -1,12 +1,34 @@
 import Foundation
 
+/// A field of ``RDPCredentials``, as a validation error names it.
+public enum RDPCredentialField: Hashable, Sendable {
+    case username
+    case domain
+    case password
+}
+
 public enum RDPCredentialValidationError: Error, Equatable, CustomStringConvertible, Sendable {
     case missingUsernameOrPassword
+    /// The field, as connecting would send it, is longer than
+    /// ``RDPCredentials/maximumFieldLength``: connecting would fail with
+    /// ``RDPConnectionFailure/invalidConfiguration``.
+    case fieldTooLong(RDPCredentialField)
 
     public var description: String {
         switch self {
         case .missingUsernameOrPassword:
             "Username and password are required when credentials are provided."
+        case let .fieldTooLong(field):
+            "\(Self.name(of: field)) is too long: RDP sends at most "
+                + "\(RDPCredentials.maximumFieldLength) characters (UTF-16 code units)."
+        }
+    }
+
+    private static func name(of field: RDPCredentialField) -> String {
+        switch field {
+        case .username: "Username"
+        case .domain: "Domain"
+        case .password: "Password"
         }
     }
 }
@@ -40,6 +62,14 @@ public struct RDPCredentials: Equatable, Sendable {
         return "\(domain)\\\(username)"
     }
 
+    /// The most UTF-16 code units a user name, domain or password can hold. Each goes in a
+    /// 512-byte Client Info PDU field with its terminator ([MS-RDPBCGR] 2.2.1.11.1.1), the
+    /// tightest limit connecting enforces; NTLM's 16-bit lengths allow more.
+    public static let maximumFieldLength = RDPClientInfoLimits.standardFieldByteCount / 2 - 1
+
+    /// Trims the user name and domain, and throws for credentials connecting cannot send:
+    /// a user name or password missing, or a field longer than ``maximumFieldLength`` once
+    /// "DOMAIN\user" is split. Returns nil when every field is empty.
     public static func validated(
         username: String,
         domain: String? = nil,
@@ -55,11 +85,20 @@ public struct RDPCredentials: Equatable, Sendable {
             throw RDPCredentialValidationError.missingUsernameOrPassword
         }
 
-        return RDPCredentials(
+        let credentials = RDPCredentials(
             username: trimmedUsername,
             domain: trimmedDomain,
             password: password
         )
+        let fields: [(field: RDPCredentialField, value: String)] = [
+            (.username, credentials.username),
+            (.domain, credentials.domain ?? ""),
+            (.password, credentials.password),
+        ]
+        if let tooLong = fields.first(where: { $0.value.utf16.count > maximumFieldLength }) {
+            throw RDPCredentialValidationError.fieldTooLong(tooLong.field)
+        }
+        return credentials
     }
 }
 
