@@ -441,6 +441,7 @@ public final class RDPInputSession: Sendable {
     private let ioChannelID: UInt16
     private let channel: Channel
     private let serverInputFlags: UInt16
+    private let deactivation = RDPInputSessionDeactivation()
 
     init(
         shareID: UInt32,
@@ -461,8 +462,12 @@ public final class RDPInputSession: Sendable {
     }
 
     /// Drops events the server's Input Capability Set does not allow and uses fast-path input when advertised
-    /// (MS-RDPBCGR 2.2.7.1.6, INPUT_FLAG_FASTPATH_INPUT/INPUT_FLAG_FASTPATH_INPUT2).
+    /// (MS-RDPBCGR 2.2.7.1.6, INPUT_FLAG_FASTPATH_INPUT/INPUT_FLAG_FASTPATH_INPUT2). Sends nothing once the
+    /// server has deactivated the session.
     public func send(_ events: [RDPSlowPathInputEvent]) {
+        guard !deactivation.isDeactivated else {
+            return
+        }
         let supportedEvents = Self.supportedEvents(events.flatMap(\.wheelEventsSplit), serverInputFlags: serverInputFlags)
         let fastPathFlags = RDPInputCapabilityFlags.fastPathInput | RDPInputCapabilityFlags.fastPathInput2
         guard serverInputFlags & fastPathFlags != 0 else {
@@ -476,6 +481,12 @@ public final class RDPInputSession: Sendable {
                 sendSlowPath(eventChunk)
             }
         }
+    }
+
+    /// After Deactivate All the client MUST stop sending input ([MS-RDPBCGR] 3.2.5.5.1); the
+    /// reactivation hands out a new session.
+    func deactivate() {
+        deactivation.deactivate()
     }
 
     private func sendSlowPath(_ events: [RDPSlowPathInputEvent]) {
@@ -513,6 +524,19 @@ public final class RDPInputSession: Sendable {
             buffer.writeBytes(packet)
             self.channel.writeAndFlush(buffer, promise: nil)
         }
+    }
+}
+
+private final class RDPInputSessionDeactivation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var deactivated = false
+
+    var isDeactivated: Bool {
+        lock.withLock { deactivated }
+    }
+
+    func deactivate() {
+        lock.withLock { deactivated = true }
     }
 }
 

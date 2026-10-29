@@ -147,6 +147,9 @@
   that its `imageBuffer` can be larger than the frame, and RDPFirstFrameCapture
   writes only the frame. RDPFrameBenchmark drops its `cgImageCrop` strategy.
 - Negotiate only PCM rates `AVAudioEngine` can play.
+- An `RDPInputSession` sends nothing once the server sends Deactivate All
+  (MS-RDPBCGR 3.2.5.5.1); the reactivation hands out a new one through
+  `onInputReady`, on which held keys should be resynchronized.
 - `onDisplayControlReady` runs once the first graphics frame has arrived:
   KRdp ignores a monitor layout that arrives before its video stream starts.
 

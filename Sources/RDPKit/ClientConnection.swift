@@ -36,6 +36,8 @@ final class RDPClientConnection {
     var share: RDPActiveShare?
     var awaitingPostConfirmActiveResponse = false
     var isDeactivated = false
+    /// The input session `onInputReady` last handed out.
+    var inputSession: RDPInputSession?
     var termination: RDPRemoteTermination?
     /// A non-zero Set Error Info was followed by Deactivate All: the server is
     /// disconnecting, and only the disconnect reason is still to come.

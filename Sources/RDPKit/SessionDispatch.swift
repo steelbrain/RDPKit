@@ -364,19 +364,23 @@ extension RDPClientConnection {
         guard let channel = transport?.channel else {
             return
         }
-        callbacks.onInputReady?(RDPInputSession(
+        let session = RDPInputSession(
             shareID: share.shareID,
             userChannelID: userChannelID,
             ioChannelID: ioChannelID,
             channel: channel,
             serverInputFlags: share.serverInputFlags
-        ))
+        )
+        inputSession = session
+        callbacks.onInputReady?(session)
     }
 
     /// Deactivate All starts a reactivation, unless a Set Error Info said the
     /// server is disconnecting.
     private func handleDeactivateAll() throws {
         isDeactivated = true
+        inputSession?.deactivate()
+        inputSession = nil
         startPhase()
         if let termination, termination.errorInfo != nil {
             if termination.isClean, graphicsOpened {

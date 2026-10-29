@@ -446,6 +446,23 @@ struct MockKRDPServerTests {
         #expect(report.error == nil)
     }
 
+    /// MS-RDPBCGR 3.2.5.5.1: input sent through a session the server deactivated is dropped.
+    @Test func deactivateAllStopsTheEarlierInputSession() throws {
+        let sessions = Locked([RDPInputSession]())
+        let run = try runMock(.init(finalizationBehavior: .deactivateThenReactivateAfterFontMap), client: {
+            RDPSessionClient().run(configuration: $0, onInputReady: { session in
+                let earlier = sessions.withLock { $0.last }
+                sessions.withLock { $0.append(session) }
+                earlier?.send(.pointerMove(x: 1, y: 1))
+                session.send(.pointerMove(x: 2, y: 2))
+            })
+        })
+
+        #expect(run.report.status == "success")
+        #expect(sessions.value.count == 2)
+        #expect(run.transcript.inputEvents == [.pointerMove(x: 2, y: 2), .pointerMove(x: 2, y: 2)])
+    }
+
     // MARK: Session end before graphics
 
     /// A Deactivate All that no Demand Active follows; the client gives up at
