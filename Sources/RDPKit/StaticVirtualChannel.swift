@@ -89,14 +89,22 @@ struct RDPStaticVirtualChannelPDU: Equatable, Sendable {
         ).encodedTPKT()
     }
 
-    /// `payload` as the MCS Send Data Requests that carry it, split into chunks with
-    /// CHANNEL_FLAG_FIRST and CHANNEL_FLAG_LAST marking the ends ([MS-RDPBCGR] 3.1.5.2.1).
-    /// `flags` go on every chunk.
-    static func encodedTPKTs(payload: Data, flags: UInt32 = 0, initiator: UInt16, channelID: UInt16) -> [Data] {
+    /// `payload` as the MCS Send Data Requests that carry it, split into chunks of at most
+    /// `chunkByteCount` bytes with CHANNEL_FLAG_FIRST and CHANNEL_FLAG_LAST marking the ends
+    /// ([MS-RDPBCGR] 3.1.5.2.1). `flags` go on every chunk.
+    static func encodedTPKTs(
+        payload: Data,
+        flags: UInt32 = 0,
+        chunkByteCount: Int = maximumPayloadByteCount,
+        initiator: UInt16,
+        channelID: UInt16
+    ) -> [Data] {
+        precondition((defaultChunkByteCount ... maximumNegotiatedChunkByteCount).contains(chunkByteCount))
+
         var packets: [Data] = []
         var lowerBound = payload.startIndex
         repeat {
-            let upperBound = min(lowerBound + maximumPayloadByteCount, payload.endIndex)
+            let upperBound = min(lowerBound + chunkByteCount, payload.endIndex)
             var chunkFlags = flags
             if lowerBound == payload.startIndex {
                 chunkFlags |= RDPStaticVirtualChannelFlags.first
@@ -140,6 +148,23 @@ struct RDPStaticVirtualChannelPDU: Equatable, Sendable {
             throw RDPDecodeError.invalidStaticVirtualChannelPDU
         }
         return pdu
+    }
+}
+
+/// The largest chunk the static channels send: CHANNEL_CHUNK_LENGTH until a Demand Active
+/// advertises the server's VCChunkSize, which bounds chunks in both directions
+/// ([MS-RDPBCGR] 2.2.7.1.10, 3.1.5.2.1). The channel sessions send from other threads.
+final class RDPStaticVirtualChannelChunkSize: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedByteCount = RDPStaticVirtualChannelPDU.defaultChunkByteCount
+
+    var byteCount: Int {
+        get {
+            lock.withLock { storedByteCount }
+        }
+        set {
+            lock.withLock { storedByteCount = newValue }
+        }
     }
 }
 

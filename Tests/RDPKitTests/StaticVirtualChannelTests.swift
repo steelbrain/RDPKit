@@ -56,6 +56,33 @@ import Testing
     #expect(reassembled == [message])
 }
 
+@Test func staticVirtualChannelChunksAtTheNegotiatedChunkSize() throws {
+    let message = Data(repeating: 0x5A, count: 20_000)
+
+    let chunks = try RDPStaticVirtualChannelPDU.encodedTPKTs(
+        payload: message,
+        chunkByteCount: RDPStaticVirtualChannelPDU.maximumNegotiatedChunkByteCount,
+        initiator: 1006,
+        channelID: 1007
+    ).map {
+        try RDPStaticVirtualChannelPDU.parse(
+            fromUserData: mcsSendDataRequest(fromTPKT: $0).userData,
+            maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumNegotiatedChunkByteCount
+        )
+    }
+
+    #expect(chunks.map(\.payload.count) == [16_256, 3_744])
+    #expect(chunks.map(\.flags) == [RDPStaticVirtualChannelFlags.first, RDPStaticVirtualChannelFlags.last])
+}
+
+@Test func staticVirtualChannelChunkSizeStartsAtTheDefaultChunkLength() {
+    let chunkSize = RDPStaticVirtualChannelChunkSize()
+    #expect(chunkSize.byteCount == 1_600)
+
+    chunkSize.byteCount = 16_256
+    #expect(chunkSize.byteCount == 16_256)
+}
+
 @Test func staticVirtualChannelParsesFromMCSDataIndication() throws {
     let packet = Data([
         0x03, 0x00, 0x00, 0x1A,

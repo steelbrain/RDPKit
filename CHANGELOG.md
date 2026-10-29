@@ -114,6 +114,9 @@
 - RemoteFX decodes about 20% faster, and planar, interleaved and ClearCodec
   bitmaps 3 to 30 times faster. Partial 4K video updates take about a quarter
   of the time.
+- Clipboard data goes out in chunks of the size the server advertises in its
+  Demand Active (up to 16,256 bytes) instead of always 1,600, so large copies
+  take about a tenth of the channel PDUs.
 
 ### Examples
 

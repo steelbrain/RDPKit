@@ -340,7 +340,7 @@ extension RDPClientConnection {
         report.rdpClientControlRequestHex = requestControl.rdpHexString
         report.rdpClientFontListRequestHex = fontList.rdpHexString
 
-        maximumChunkByteCount = demandActive.serverVirtualChannelChunkSize
+        staticChannelChunkSize.byteCount = demandActive.serverVirtualChannelChunkSize
             ?? RDPStaticVirtualChannelPDU.maximumPayloadByteCount
         fastPathReassembler = RDPFastPathOutputFragmentReassembler(
             maximumBufferedByteCount: confirmActive.multifragmentUpdateMaxRequestSize

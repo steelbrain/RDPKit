@@ -930,6 +930,34 @@ private final class ClipboardPublishRace: @unchecked Sendable {
     _ = try channel.finish()
 }
 
+@Test func clipboardSessionSendsChunksOfTheNegotiatedSize() throws {
+    let channel = EmbeddedChannel()
+    try channel.connect(to: SocketAddress(ipAddress: "127.0.0.1", port: 3389)).wait()
+    let chunkSize = RDPStaticVirtualChannelChunkSize()
+    let session = RDPClipboardSession(userChannelID: 1006, staticChannelID: 1007, channel: channel, chunkSize: chunkSize)
+    session.publishLocalUnicodeText(String(repeating: "x", count: 10_000))
+    // The server's VCChunkSize arrives in the Demand Active, after the session exists.
+    chunkSize.byteCount = 16_256
+
+    _ = try session.receive(RDPClipboardPDU.parse(
+        from: RDPClipboardFormatDataRequestPDU(formatID: RDPClipboardFormatID.unicodeText).encoded()
+    ))
+    channel.embeddedEventLoop.run()
+
+    var chunkPayloadSizes: [Int] = []
+    while var buffer = try channel.readOutbound(as: ByteBuffer.self) {
+        let packet = Data(buffer.readBytes(length: buffer.readableBytes) ?? [])
+        let chunk = try RDPStaticVirtualChannelPDU.parse(
+            fromUserData: mcsSendDataRequest(fromTPKT: packet).userData,
+            maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumNegotiatedChunkByteCount
+        )
+        chunkPayloadSizes.append(chunk.payload.count)
+    }
+    // 8-byte CLIPRDR header plus 10,000 UTF-16 code units and a terminator.
+    #expect(chunkPayloadSizes == [16_256, 3_754])
+    _ = try channel.finish()
+}
+
 @Test func clipboardSessionReturnsRemainingBytesWhenRangeRunsPastEndOfFile() throws {
     let channel = EmbeddedChannel()
     let sent = ClipboardSentMessages()

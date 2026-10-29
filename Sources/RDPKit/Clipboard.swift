@@ -949,6 +949,7 @@ public final class RDPClipboardSession: @unchecked Sendable {
     private let userChannelID: UInt16
     private let channel: Channel
     private let sentMessageHandler: RDPClipboardSentMessageHandler?
+    private let chunkSize: RDPStaticVirtualChannelChunkSize
     private let lock = NSLock()
     private var localContent = RDPClipboardLocalContent.empty
     private var pendingFormatDataResponses: [RDPClipboardRequestedFormatDataResponse] = []
@@ -963,11 +964,13 @@ public final class RDPClipboardSession: @unchecked Sendable {
         userChannelID: UInt16,
         staticChannelID: UInt16,
         channel: Channel,
+        chunkSize: RDPStaticVirtualChannelChunkSize = RDPStaticVirtualChannelChunkSize(),
         sentMessageHandler: RDPClipboardSentMessageHandler? = nil
     ) {
         self.userChannelID = userChannelID
         self.staticChannelID = staticChannelID
         self.channel = channel
+        self.chunkSize = chunkSize
         self.sentMessageHandler = sentMessageHandler
     }
 
@@ -1235,6 +1238,7 @@ public final class RDPClipboardSession: @unchecked Sendable {
         let packets = RDPStaticVirtualChannelPDU.encodedTPKTs(
             payload: payload,
             flags: RDPStaticVirtualChannelFlags.showProtocol,
+            chunkByteCount: chunkSize.byteCount,
             initiator: userChannelID,
             channelID: staticChannelID
         )

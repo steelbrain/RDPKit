@@ -148,6 +148,7 @@ extension RDPClientConnection {
                     userChannelID: userChannelID,
                     staticChannelID: channelID,
                     channel: channel,
+                    chunkSize: staticChannelChunkSize,
                     sentMessageHandler: { summary, _ in log.append(summary) }
                 )
             case RDPStaticVirtualChannel.rdpsnd.name:

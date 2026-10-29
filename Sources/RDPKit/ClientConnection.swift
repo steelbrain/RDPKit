@@ -53,7 +53,7 @@ final class RDPClientConnection {
     var desktopHeight: UInt16
 
     // Static virtual channels.
-    var maximumChunkByteCount = RDPStaticVirtualChannelPDU.maximumPayloadByteCount
+    let staticChannelChunkSize = RDPStaticVirtualChannelChunkSize()
     var staticChannelReassemblers: [UInt16: RDPStaticVirtualChannelReassembler] = [:]
     var clipboard: RDPClipboardSession?
     let clipboardSentLog = RDPClipboardSentLog()

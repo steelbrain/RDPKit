@@ -6,6 +6,7 @@ import Foundation
 extension RDPClientConnection {
     func handleStaticChannel(_ indication: MCSSendDataIndicationPDU, name: String, packet: Data) throws {
         let isDynamicChannelTransport = name == RDPStaticVirtualChannel.drdynvc.name
+        let maximumChunkByteCount = staticChannelChunkSize.byteCount
         let payload: Data
         do {
             let chunk = try RDPStaticVirtualChannelPDU.parse(
