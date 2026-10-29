@@ -336,6 +336,16 @@ private func sendsScancode(
     #expect(windowsTypes("^", ignoringModifiers: " ", scancode: 0x39, layout: 0x0000_0407) == false)
 }
 
+/// A Caps Lock letter goes as its scancode whether or not `charactersIgnoringModifiers` has
+/// Caps Lock in it; Caps Lock with Shift types "A" on the Mac but "a" on Windows.
+@Test func aCapsLockLetterGoesAsItsScancode() {
+    #expect(windowsTypes("A", scancode: 0x1E, .capsLock))
+    #expect(windowsTypes("A", ignoringModifiers: "a", scancode: 0x1E, .capsLock))
+    #expect(windowsTypes("A", ignoringModifiers: "a", scancode: 0x1E) == false)
+    #expect(windowsTypes("A", scancode: 0x1E, [.capsLock, .shift]) == false)
+    #expect(windowsTypes("É", ignoringModifiers: "e", scancode: 0x12, .capsLock) == false)
+}
+
 private func windowsTypes(
     _ characters: String,
     ignoringModifiers: String? = nil,

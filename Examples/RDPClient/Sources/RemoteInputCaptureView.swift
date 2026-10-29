@@ -720,7 +720,9 @@ enum MacRDPKeyboardMapping {
     /// does a character a dead key composed (`characters` differs from
     /// `charactersIgnoringModifiers`). Space types a space on every layout, and a remote IME
     /// commits its candidate with it, so it goes as its scancode unless a dead key composed
-    /// with it, as "^" then Space types "^".
+    /// with it, as "^" then Space types "^". With Caps Lock on, `charactersIgnoringModifiers`
+    /// may leave Caps Lock out, as synthesized events do ("A" and "a"), so the uppercase of it
+    /// counts as the key's own too.
     static func windowsTypes(
         _ characters: String?,
         charactersIgnoringModifiers: String?,
@@ -728,7 +730,10 @@ enum MacRDPKeyboardMapping {
         modifierFlags: NSEvent.ModifierFlags,
         layout: RDPKeyboardLayout
     ) -> Bool {
-        guard let characters, characters == charactersIgnoringModifiers else {
+        guard let characters, let charactersIgnoringModifiers,
+              characters == charactersIgnoringModifiers
+              || modifierFlags.contains(.capsLock) && characters == charactersIgnoringModifiers.uppercased()
+        else {
             return false
         }
         if scancode == spaceScancode {
