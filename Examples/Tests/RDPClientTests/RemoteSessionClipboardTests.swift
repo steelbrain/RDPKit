@@ -329,6 +329,73 @@ private func pasteboardFileURLs(_ pasteboard: NSPasteboard) -> [URL] {
     #expect(clipboard.statusMessage == "Remote file copied: big.bin.")
 }
 
+/// Waits up to two seconds, for a local file read off the main thread.
+@MainActor
+private func waitUntil(_ condition: () -> Bool) async throws {
+    for _ in 0 ..< 200 where condition() == false {
+        try await Task.sleep(nanoseconds: 10_000_000)
+    }
+}
+
+/// Sync Now and another "Share for 30s" send again a local copy that did not reach the
+/// server, such as a file iCloud had not downloaded yet, but not one that did.
+@MainActor
+@Test func syncingSendsAgainALocalCopyThatFailed() async throws {
+    let pasteboard = makePasteboard()
+    defer { pasteboard.releaseGlobally() }
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let session = RecordedClipboard()
+    let clipboard = RDPRemoteSessionClipboard(isSharingEnabled: false, pasteboard: pasteboard)
+    clipboard.attach(session)
+    let failure = "Local file clipboard could not be read; remote clipboard cleared."
+    /// Copies a file that is not there to read yet.
+    func copyMissingFile(named name: String) -> URL {
+        let fileURL = directory.appendingPathComponent(name)
+        pasteboard.clearContents()
+        pasteboard.writeObjects([fileURL as NSURL])
+        return fileURL
+    }
+
+    var fileURL = copyMissingFile(named: "first.txt")
+    clipboard.startTemporarySharing()
+    try await waitUntil { clipboard.statusMessage == failure }
+    #expect(clipboard.statusMessage == failure)
+    try Data("first".utf8).write(to: fileURL)
+    clipboard.startTemporarySharing()
+    try await waitUntil { session.publishedFiles.count == 1 }
+
+    fileURL = copyMissingFile(named: "second.txt")
+    clipboard.poll()
+    try await waitUntil { clipboard.statusMessage == failure }
+    #expect(clipboard.statusMessage == failure)
+    try Data("second".utf8).write(to: fileURL)
+    clipboard.syncNow()
+    try await waitUntil { session.publishedFiles.count == 2 }
+
+    // Sent, so neither sends it again.
+    clipboard.syncNow()
+    clipboard.startTemporarySharing()
+    try await Task.sleep(nanoseconds: 200_000_000)
+    #expect(session.publishedFiles.map { $0.map(\.contents) } == [[Data("first".utf8)], [Data("second".utf8)]])
+
+    // A remote copy after a failed one is newer, so its download is kept.
+    fileURL = copyMissingFile(named: "third.txt")
+    clipboard.poll()
+    try await waitUntil { clipboard.statusMessage == failure }
+    try Data("third".utf8).write(to: fileURL)
+    let contents = Data("remote".utf8)
+    try startRemoteFileDownload(contents, to: clipboard, from: session)
+    clipboard.syncNow()
+    clipboard.startTemporarySharing()
+    try answerRangeRequest(with: contents, to: clipboard, from: session)
+    let downloadedURL = try #require(pasteboardFileURLs(pasteboard).first)
+    defer { try? FileManager.default.removeItem(at: downloadedURL.deletingLastPathComponent()) }
+    #expect(try Data(contentsOf: downloadedURL) == contents)
+    #expect(session.publishedFiles.count == 2)
+}
+
 /// Sync Now and another "Share for 30s" send only a change, so the server's newer copy and
 /// its download are kept.
 @MainActor

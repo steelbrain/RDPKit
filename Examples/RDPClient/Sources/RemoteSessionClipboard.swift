@@ -34,6 +34,10 @@ final class RDPRemoteSessionClipboard {
     private let pasteboard: NSPasteboard
     private var message: String?
     private var pasteboardChangeCount: Int
+    /// Whether the local copy last seen has not reached the server: it could not be read or
+    /// sent, or its read was cut short. A remote copy since is newer, which clears it.
+    private var localCopyIsUnsent = false
+    /// Nil once the read has finished.
     private var localFileRead: Task<Void, Never>?
     private var temporarySharingExpiresAt: Date?
     private var timerTick = Date()
@@ -107,18 +111,21 @@ final class RDPRemoteSessionClipboard {
             pasteboardChangeCount = pasteboard.changeCount
             return
         }
-        // The server may hold a newer copy, or be sending one, that the pasteboard would replace.
+        // Already on, the server may hold a newer copy, or be sending one, that sending the
+        // pasteboard again would replace, so only what Sync Now sends goes.
         guard wasEnabled == false else {
+            syncNow()
             return
         }
         message = session == nil ? nil : "Ready."
         publishPasteboardIfChanged(force: true)
     }
 
-    /// Sends a local copy the next poll would. The pasteboard as last sent or received is
-    /// not sent again, so a newer remote copy, or its download, is kept.
+    /// Sends a local copy the next poll would, or again one that has not reached the server,
+    /// such as a file iCloud had not downloaded yet. A pasteboard the server has, or that a
+    /// newer remote copy replaced, is not sent again, so that copy, or its download, is kept.
     func syncNow() {
-        publishPasteboardIfChanged()
+        publishPasteboardIfChanged(force: localCopyIsUnsent && localFileRead == nil)
     }
 
     func startTemporarySharing() {
@@ -171,6 +178,7 @@ final class RDPRemoteSessionClipboard {
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
         pasteboardChangeCount = pasteboard.changeCount
+        localCopyIsUnsent = false
         message = "Remote text copied."
     }
 
@@ -180,8 +188,10 @@ final class RDPRemoteSessionClipboard {
         }
         cancelLocalFileRead()
         discardFileTransfer()
-        // A local copy the poll has not published yet is older than these files.
+        // A local copy the poll has not published yet, or that never reached the server, is
+        // older than these files.
         pasteboardChangeCount = pasteboard.changeCount
+        localCopyIsUnsent = false
         do {
             let files = try descriptorList.remoteFileTransferFiles(
                 maximumTotalByteCount: UInt64(maximumClipboardFileBytes)
@@ -257,6 +267,7 @@ final class RDPRemoteSessionClipboard {
         }
 
         pasteboardChangeCount = nextChangeCount
+        localCopyIsUnsent = true
         // The local copy is newer than remote files still downloading.
         discardFileTransfer()
         cancelLocalFileRead()
@@ -270,6 +281,7 @@ final class RDPRemoteSessionClipboard {
                 guard Task.isCancelled == false else {
                     return
                 }
+                self?.localFileRead = nil
                 self?.publish(payload)
             }
             return
@@ -284,12 +296,15 @@ final class RDPRemoteSessionClipboard {
         switch payload {
         case let .text(text):
             session.publishLocalUnicodeText(text)
+            localCopyIsUnsent = false
             message = "Local text synced."
         case let .files(files):
             session.publishLocalFiles(files)
+            localCopyIsUnsent = false
             message = files.count == 1 ? "Local file synced." : "\(files.count) local files synced."
         case .empty:
             session.publishLocalUnicodeText(nil)
+            localCopyIsUnsent = false
             message = "Local clipboard has no text."
         case let .unsupported(reason):
             session.publishLocalUnicodeText(nil)
