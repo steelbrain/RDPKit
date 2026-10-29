@@ -674,6 +674,9 @@ enum MacRDPKeyboardMapping {
         // macOS reports the ISO key left of "1" as kVK_ISO_Section; it occupies the grave key's position.
         kVK_ISO_Section: 0x29,
         kVK_JIS_Yen: 0x7D, kVK_JIS_Underscore: 0x73,
+        // PC keypads have no "="; the main "=" key's scancode types it only on some layouts
+        // (German has a dead key there), so the layout check decides.
+        kVK_ANSI_KeypadEquals: 0x0D,
     ]
 
     /// Keys that always go as their scancodes.
@@ -694,7 +697,6 @@ enum MacRDPKeyboardMapping {
         kVK_F19: RDPKeyboardScancode(code: 0x6A), kVK_F20: RDPKeyboardScancode(code: 0x6B),
         // kVK_ANSI_KeypadClear stays unmapped: it sits where PC keypads have Num Lock (0x45), which
         // would turn off the Num Lock state that focus synchronization keeps on.
-        kVK_ANSI_KeypadEquals: RDPKeyboardScancode(code: 0x0D),
         kVK_ANSI_KeypadDivide: RDPKeyboardScancode(code: 0x35, isExtended: true),
         kVK_ANSI_KeypadMultiply: RDPKeyboardScancode(code: 0x37),
         kVK_ANSI_KeypadMinus: RDPKeyboardScancode(code: 0x4A),

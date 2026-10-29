@@ -187,6 +187,16 @@ private func sendsScancode(
     #expect(MacRDPKeyboardMapping.optionTypes("\u{F702}", charactersIgnoringModifiers: "\u{F703}") == false)
     #expect(MacRDPKeyboardMapping.optionTypes("\u{1B}", charactersIgnoringModifiers: "a") == false)
 }
+
+/// PC keypads have no "=", and German has a dead key where the main "=" key is.
+@Test func keypadEqualsSendsTheEqualsKeyScancodeOnlyWhereTheLayoutTypesIt() {
+    #expect(MacRDPKeyboardMapping.scancode(forKeyCode: UInt16(kVK_ANSI_KeypadEquals)) == RDPKeyboardScancode(code: 0x0D))
+    #expect(sendsScancode(kVK_ANSI_KeypadEquals, [], characters: "=") == false)
+    #expect(windowsTypes("=", scancode: 0x0D))
+    #expect(windowsTypes("=", scancode: 0x0D, layout: 0x0000_0407) == false)
+    #expect(windowsTypes("=", scancode: 0x0D, .shift) == false)
+}
+
 /// A remote IME commits its candidate with Space, so it goes as its scancode on every layout,
 /// and as Unicode only when a dead key composed with it.
 @Test func spaceSendsItsScancodeUnlessADeadKeyComposedWithIt() {
@@ -601,6 +611,29 @@ private let rightOptionFlags = NSEvent.ModifierFlags(rawValue: NSEvent.ModifierF
     _ = view.resignFirstResponder()
     view.flagsChanged(with: try keyEvent(.flagsChanged, keyCode: kVK_RightOption))
     #expect(input.events.isEmpty)
+}
+
+/// PC keypads have no "=": the main "=" key's scancode types it on US, but German has a dead
+/// key there.
+@MainActor
+@Test func keypadEqualsGoesAsUnicodeWhereTheLayoutHasNoEqualsKey() throws {
+    let equalsKey = RDPKeyboardScancode(code: 0x0D)
+    let input = RecordedInput()
+    let view = RemoteInputCaptureNSView()
+    view.inputSession = input
+
+    view.keyDown(with: try keyEvent(.keyDown, keyCode: kVK_ANSI_KeypadEquals, characters: "="))
+    view.keyUp(with: try keyEvent(.keyUp, keyCode: kVK_ANSI_KeypadEquals, characters: "="))
+    view.keyboardLayout = RDPKeyboardLayout(rawValue: 0x0000_0407)
+    view.keyDown(with: try keyEvent(.keyDown, keyCode: kVK_ANSI_KeypadEquals, characters: "="))
+    view.keyUp(with: try keyEvent(.keyUp, keyCode: kVK_ANSI_KeypadEquals, characters: "="))
+
+    #expect(input.events == [
+        .keyboard(scancode: equalsKey, isReleased: false),
+        .keyboard(scancode: equalsKey, isReleased: true),
+        .unicode(codeUnit: 0x3D, isReleased: false),
+        .unicode(codeUnit: 0x3D, isReleased: true),
+    ])
 }
 
 // A drag that leaves the letterboxed desktop holds the pointer on its edge; a plain move there
