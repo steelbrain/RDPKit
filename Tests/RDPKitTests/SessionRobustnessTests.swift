@@ -229,6 +229,61 @@ import Testing
     #expect(announced.value.isEmpty)
 }
 
+/// A session for a DisplayControl channel the server replaced sends nothing; the new
+/// channel's session sends ([MS-RDPEDISP] 2.2.2.1).
+@Test func replacedDisplayControlChannelsSessionSendsNothing() throws {
+    func drdynvc(_ payload: Data) -> Data {
+        mcsSendDataIndication(
+            channelID: KRdpCapture.drdynvcChannelID,
+            userData: RDPStaticVirtualChannelPDU(payload: payload).encodedUserData()
+        )
+    }
+    func create(_ channelID: UInt8) -> Data {
+        drdynvc(Data([0x10, channelID]) + Data("Microsoft::Windows::RDS::DisplayControl".utf8) + Data([0]))
+    }
+    var caps = Data()
+    caps.appendLittleEndianUInt32(5)
+    caps.appendLittleEndianUInt32(20)
+    caps.appendLittleEndianUInt32(1)
+    caps.appendLittleEndianUInt32(3840)
+    caps.appendLittleEndianUInt32(2160)
+    func capsPacket(_ channelID: UInt32) -> Data {
+        drdynvc(RDPDynamicVirtualChannelDataPDU(channelID: channelID, payload: caps).encoded())
+    }
+    func layoutData(_ channelID: UInt32) -> Data {
+        RDPDynamicVirtualChannelDataPDU(
+            channelID: channelID,
+            payload: RDPDisplayControlMonitorLayoutPDU.singlePrimary(width: 1280, height: 720).encoded()
+        ).encoded()
+    }
+    // The capture after its CapsConfirm (event 38), up to its first frame.
+    let firstFrame = try KRdpCapture.events()[39...].map { try #require($0.bytes) }
+    let sessions = Locked([RDPDisplayControlSession]())
+    let run = try KRdpCapture.run(
+        prefix: 39,
+        appending: [create(2), capsPacket(2)] + firstFrame + [create(3), capsPacket(3)],
+        frameCaptureLimit: nil,
+        onTrailingClientPacket: { [newLayout = layoutData(3)] channel, packet in
+            if packet.range(of: newLayout) != nil {
+                KRdpCapture.endConnection(channel, .close)
+            }
+        },
+        onDisplayControlReady: { session in
+            let handedOut = sessions.withLock { sessions -> [RDPDisplayControlSession] in
+                sessions.append(session)
+                return sessions
+            }
+            for session in handedOut where handedOut.count == 2 {
+                session.sendSingleMonitorLayout(width: 1280, height: 720)
+            }
+        }
+    )
+
+    #expect(sessions.value.map(\.dynamicChannelID) == [2, 3])
+    #expect(run.clientPackets.contains { $0.range(of: layoutData(3)) != nil })
+    #expect(!run.clientPackets.contains { $0.range(of: layoutData(2)) != nil })
+}
+
 /// Each connection milestone must arrive within the timeout however much
 /// other traffic the server sends; here a pointer update every 200 ms, which
 /// used to reset the wait forever.

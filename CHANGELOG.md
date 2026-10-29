@@ -211,7 +211,9 @@
   instead of wrapping it onto another part of the surface.
 - A second DisplayControl or audio dynamic channel replaces the first, as a
   second RDPGFX channel already did, so the old channel's data and Close no
-  longer reach the new one.
+  longer reach the new one. An `RDPDisplayControlSession` sends nothing once
+  the server has closed or replaced its channel; `onDisplayControlReady` hands
+  out the new channel's session.
 - Cut long clipboard file names between surrogate pairs, not inside one.
 - Name each deleted surface and evicted cache slot once in the next graphics
   snapshot, so the lists stop growing for a server that never shows a frame.

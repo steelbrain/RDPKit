@@ -103,7 +103,7 @@ extension RDPClientConnection {
         case .displayControl:
             report.rdpDisplayControlChannelID = request.channelID
             report.rdpDisplayControlChannelCreateResponseHex = response.rdpHexString
-            pendingDisplayControlSession = nil
+            endDisplayControlSession()
         case .audio:
             guard let channel = transport?.channel, let staticChannelID = drdynvcChannelID else {
                 return
@@ -129,9 +129,16 @@ extension RDPClientConnection {
         case .audio:
             dynamicAudio = nil
         case .displayControl:
-            pendingDisplayControlSession = nil
+            endDisplayControlSession()
         }
         try sendDynamicChannelControl(close.encoded())
+    }
+
+    /// The server closed or replaced the DisplayControl channel: the session for it sends nothing more.
+    private func endDisplayControlSession() {
+        displayControlSession?.end()
+        displayControlSession = nil
+        pendingDisplayControlSession = nil
     }
 
     func discardDynamicChannelState(_ channelID: UInt32) {
@@ -253,6 +260,7 @@ extension RDPClientConnection {
             return
         }
         pendingDisplayControlSession = nil
+        displayControlSession = session
         callbacks.onDisplayControlReady?(session)
     }
 

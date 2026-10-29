@@ -441,7 +441,7 @@ public final class RDPInputSession: Sendable {
     private let ioChannelID: UInt16
     private let channel: Channel
     private let serverInputFlags: UInt16
-    private let deactivation = RDPInputSessionDeactivation()
+    private let deactivation = RDPSendCutoff()
 
     init(
         shareID: UInt32,
@@ -465,7 +465,7 @@ public final class RDPInputSession: Sendable {
     /// (MS-RDPBCGR 2.2.7.1.6, INPUT_FLAG_FASTPATH_INPUT/INPUT_FLAG_FASTPATH_INPUT2). Sends nothing once the
     /// server has deactivated the session.
     public func send(_ events: [RDPSlowPathInputEvent]) {
-        guard !deactivation.isDeactivated else {
+        guard !deactivation.isCutOff else {
             return
         }
         let supportedEvents = Self.supportedEvents(events.flatMap(\.wheelEventsSplit), serverInputFlags: serverInputFlags)
@@ -486,7 +486,7 @@ public final class RDPInputSession: Sendable {
     /// After Deactivate All the client MUST stop sending input ([MS-RDPBCGR] 3.2.5.5.1); the
     /// reactivation hands out a new session.
     func deactivate() {
-        deactivation.deactivate()
+        deactivation.cut()
     }
 
     private func sendSlowPath(_ events: [RDPSlowPathInputEvent]) {
@@ -527,16 +527,18 @@ public final class RDPInputSession: Sendable {
     }
 }
 
-private final class RDPInputSessionDeactivation: @unchecked Sendable {
+/// Stops a session handed to the app from sending once the server has ended what it sends
+/// on; checked from any thread.
+final class RDPSendCutoff: @unchecked Sendable {
     private let lock = NSLock()
-    private var deactivated = false
+    private var cutOff = false
 
-    var isDeactivated: Bool {
-        lock.withLock { deactivated }
+    var isCutOff: Bool {
+        lock.withLock { cutOff }
     }
 
-    func deactivate() {
-        lock.withLock { deactivated = true }
+    func cut() {
+        lock.withLock { cutOff = true }
     }
 }
 

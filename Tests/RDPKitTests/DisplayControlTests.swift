@@ -311,3 +311,25 @@ import Testing
     #expect(dynamicPDU.channelID == 9)
     #expect(try RDPDisplayControlMonitorLayoutPDU.parseIfPresent(from: dynamicPDU.payload) != nil)
 }
+
+@Test func endedDisplayControlSessionSendsNothing() throws {
+    let channel = EmbeddedChannel()
+    try channel.connect(to: SocketAddress(ipAddress: "127.0.0.1", port: 3389)).wait()
+    let session = RDPDisplayControlSession(
+        dynamicChannelID: 2,
+        capabilities: RDPDisplayControlCapabilities(maxNumMonitors: 1, maxMonitorAreaFactorA: 3840, maxMonitorAreaFactorB: 2160),
+        userChannelID: 1007,
+        staticChannelID: 1004,
+        channel: channel
+    )
+
+    session.sendSingleMonitorLayout(width: 1280, height: 720)
+    channel.embeddedEventLoop.run()
+    #expect(try channel.readOutbound(as: ByteBuffer.self) != nil)
+
+    session.end()
+    session.sendSingleMonitorLayout(width: 1280, height: 720)
+    channel.embeddedEventLoop.run()
+    #expect(try channel.readOutbound(as: ByteBuffer.self) == nil)
+    _ = try channel.finish()
+}

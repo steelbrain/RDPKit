@@ -355,6 +355,7 @@ public final class RDPDisplayControlSession: Sendable {
     private let userChannelID: UInt16
     private let staticChannelID: UInt16
     private let channel: Channel
+    private let cutoff = RDPSendCutoff()
 
     init(
         dynamicChannelID: UInt32,
@@ -388,8 +389,10 @@ public final class RDPDisplayControlSession: Sendable {
         send(request.monitorLayoutPDU)
     }
 
+    /// Sends nothing once the server has closed this session's channel or opened another
+    /// DisplayControl channel, whose session `onDisplayControlReady` hands out.
     func send(_ layout: RDPDisplayControlMonitorLayoutPDU) {
-        guard layout.isValid(for: capabilities) else {
+        guard !cutoff.isCutOff, layout.isValid(for: capabilities) else {
             return
         }
 
@@ -410,6 +413,10 @@ public final class RDPDisplayControlSession: Sendable {
             buffer.writeBytes(packet)
             self.channel.writeAndFlush(buffer, promise: nil)
         }
+    }
+
+    func end() {
+        cutoff.cut()
     }
 }
 

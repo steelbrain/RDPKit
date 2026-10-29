@@ -25,6 +25,8 @@ final class RDPClientConnection {
     var drdynvcChannelID: UInt16?
     /// Display control, held back until the first graphics frame.
     var pendingDisplayControlSession: RDPDisplayControlSession?
+    /// The display control session onDisplayControlReady last handed out.
+    var displayControlSession: RDPDisplayControlSession?
     var serverCertificatePublicKey: RDPRSAPublicKey?
     let clientName = MCSConnectInitialConfiguration().clientName
 
