@@ -61,6 +61,71 @@ private func key(username: String) throws -> KeychainCredentialKey {
     #expect(reads.readAccounts.count == 1)
 }
 
+/// Connect asks for the account's password without a delay, and gets it from the lookup pending.
+@MainActor
+@Test func aLookupWithoutADelayEndsTheWaitOfTheOnePendingForItsKey() async throws {
+    let reads = PasswordReads(["anees@desktop.example:3389": "secret"])
+    let lookup = RememberedPasswordLookup { reads.read($0) }
+    let anees = try key(username: "anees")
+
+    let answer = await withCheckedContinuation { continuation in
+        lookup.lookUp(anees, after: .seconds(5)) { continuation.resume(returning: (from: "the first lookup", $0)) }
+        lookup.lookUp(anees, after: .zero) { continuation.resume(returning: (from: "the second lookup", $0)) }
+    }
+
+    #expect(answer.from == "the second lookup")
+    #expect(try answer.1.get() == "secret")
+    #expect(reads.readAccounts.count == 1)
+}
+
+/// A Keychain read that waits, as for the user to allow access, until `finish()`.
+private final class SlowRead: @unchecked Sendable {
+    private let lock = NSLock()
+    private let gate = DispatchSemaphore(value: 0)
+    private let (starts, start) = AsyncStream.makeStream(of: Void.self)
+    private var reads = 0
+
+    var count: Int {
+        lock.withLock { reads }
+    }
+
+    func read() -> String? {
+        lock.withLock { reads += 1 }
+        start.yield()
+        gate.wait()
+        return "secret"
+    }
+
+    func started() async {
+        var iterator = starts.makeAsyncIterator()
+        _ = await iterator.next()
+    }
+
+    func finish() {
+        gate.signal()
+    }
+}
+
+@MainActor
+@Test func aLookupWithoutADelayForTheKeyBeingReadWaitsForThatRead() async throws {
+    let read = SlowRead()
+    let lookup = RememberedPasswordLookup { _ in read.read() }
+    let anees = try key(username: "anees")
+    let (answers, answer) = AsyncStream.makeStream(of: Result<String?, Error>.self)
+
+    lookup.lookUp(anees, after: .milliseconds(1)) { answer.yield($0) }
+    await read.started()
+    lookup.lookUp(anees, after: .zero) { _ in
+        Issue.record("A second lookup for the key being read ran.")
+    }
+    read.finish()
+
+    var iterator = answers.makeAsyncIterator()
+    let result = try #require(await iterator.next())
+    #expect(try result.get() == "secret")
+    #expect(read.count == 1)
+}
+
 @MainActor
 @Test func aCancelledLookupDeliversNothing() async throws {
     let reads = PasswordReads()

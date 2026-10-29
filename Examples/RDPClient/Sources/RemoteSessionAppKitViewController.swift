@@ -25,6 +25,8 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
     private var hasRememberedPassword = false
     /// The form's account while it waits for Keychain's answer; nil once Keychain has answered.
     private var passwordRequest: RememberedPasswordRequest?
+    /// Whether a connection waits for that answer, to start once it comes.
+    private var connectsOncePasswordAnswered = false
     private var keychainMessage: String?
     private var hideCertificateWarnings = false
     private var timeoutSeconds = 10.0
@@ -155,12 +157,8 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         startDiagnosticsLoop()
         startClipboardPollingLoop()
         render()
-        // Connecting saves, keeps or removes a saved password, so the window connects once
-        // Keychain has answered for the account it opened with.
         loadRememberedPasswordIfAvailable(keepingEnteredPassword: true, after: .zero)
-        if passwordRequest == nil {
-            connectAutomaticallyIfNeeded()
-        }
+        connectAutomaticallyIfNeeded()
     }
 
     func closeSession() {
@@ -211,8 +209,10 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
     }
 
     func controlTextDidChange(_: Notification) {
-        // The window connects by itself only with the fields it opened with.
+        // The window connects by itself only with the fields it opened with, and a connection
+        // waiting for Keychain only with the fields it was started with.
         shouldAutoConnect = false
+        connectsOncePasswordAnswered = false
         let previousCredentialLookupSignature = credentialLookupSignature
         syncStateFromFields()
         if previousCredentialLookupSignature != credentialLookupSignature {
@@ -612,7 +612,15 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         certificateRefusal = nil
         certificateTrustMessage = nil
         usesLegacyRSAKeyExchange = false
-        answerPasswordRequestNow()
+        // Connecting saves, keeps or removes a saved password, so it waits for Keychain's answer
+        // about the form's account: the lookup's, never a read of its own, as a read under way
+        // cannot be stopped and a second one could ask the user to allow access again.
+        connectsOncePasswordAnswered = passwordRequest != nil
+        guard passwordRequest == nil else {
+            lookUpRequestedPassword(after: .zero)
+            render()
+            return
+        }
 
         let target: RDPConnectionTarget
         let requestedDesktopSize: RDPDesktopSize
@@ -1138,6 +1146,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
             sessionEndReason = .cancelled
         }
         isConnecting = false
+        connectsOncePasswordAnswered = false
         lookUpRequestedPassword()
         render()
     }
@@ -1424,22 +1433,12 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
             return
         }
         render()
-        connectAutomaticallyIfNeeded()
-    }
-
-    /// Reads Keychain on the main thread for an account the form still waits on, as a connection
-    /// starts: it saves, keeps or removes the saved password, so it needs the answer. Typing
-    /// never reads like this.
-    private func answerPasswordRequestNow() {
-        guard let key = passwordRequest?.key else {
-            return
+        if connectsOncePasswordAnswered {
+            beginConnection()
         }
-        passwordLookup.cancel()
-        applyRememberedPassword(Result { try credentialStore.password(for: key) }, for: key)
     }
 
     /// Applies Keychain's answer for `key`, unless the form has moved on to another account.
-    @discardableResult
     private func applyRememberedPassword(_ result: Result<String?, Error>, for key: KeychainCredentialKey) -> Bool {
         guard let request = passwordRequest, request.key == key else {
             return false

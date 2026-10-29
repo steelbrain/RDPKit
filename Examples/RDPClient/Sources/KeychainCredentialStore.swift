@@ -134,6 +134,8 @@ final class RememberedPasswordLookup {
     private let readPassword: @Sendable (KeychainCredentialKey) throws -> String?
     private var task: Task<Void, Never>?
     private var pendingKey: KeychainCredentialKey?
+    /// Whether the pending lookup still waits out its delay. Once it reads, nothing stops the read.
+    private var isWaiting = false
 
     convenience init(store: KeychainCredentialStore = KeychainCredentialStore()) {
         self.init { try store.password(for: $0) }
@@ -145,17 +147,19 @@ final class RememberedPasswordLookup {
 
     /// Reads `key`'s password after `delay` and passes the result to `apply`, unless `cancel()`
     /// or a lookup for another key comes first. A lookup for the key already pending leaves that
-    /// one running.
+    /// one running, unless that one still waits out its delay and this one has none: this one
+    /// then replaces it. Either way Keychain is read once.
     func lookUp(
         _ key: KeychainCredentialKey,
         after delay: Duration = typingDelay,
         apply: @escaping @MainActor (Result<String?, Error>) -> Void
     ) {
-        guard key != pendingKey else {
+        guard key != pendingKey || (isWaiting && delay == .zero) else {
             return
         }
         task?.cancel()
         pendingKey = key
+        isWaiting = delay > .zero
         let readPassword = readPassword
         task = Task { [weak self] in
             if delay > .zero {
@@ -164,6 +168,7 @@ final class RememberedPasswordLookup {
             guard Task.isCancelled == false else {
                 return
             }
+            self?.isWaiting = false
             let result = await Task.detached(priority: .userInitiated) {
                 Result { try readPassword(key) }
             }.value
@@ -180,6 +185,7 @@ final class RememberedPasswordLookup {
         task?.cancel()
         task = nil
         pendingKey = nil
+        isWaiting = false
     }
 }
 
