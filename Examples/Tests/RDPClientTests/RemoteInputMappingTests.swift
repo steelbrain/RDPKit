@@ -265,6 +265,37 @@ private func windowsTypes(
     #expect(windowsTypes("ф", scancode: 0x1E, layout: 0x0000_0419))
 }
 
+/// Windows' Japanese layout (106/109-key) types the JIS legends, as macOS does on a JIS
+/// keyboard, so those keys go as scancodes.
+@Test func theJapaneseTableTypesTheJISLegends() {
+    let japanese: UInt32 = 0x0000_0411
+    let unshifted: [(String, UInt16)] = [
+        ("2", 0x03), ("-", 0x0C), ("^", 0x0D), ("q", 0x10), ("@", 0x1A), ("[", 0x1B),
+        (";", 0x27), (":", 0x28), ("]", 0x2B), ("/", 0x35), ("\\", 0x73), ("\\", 0x7D),
+    ]
+    for (characters, scancode) in unshifted {
+        #expect(windowsTypes(characters, scancode: scancode, layout: japanese))
+    }
+    let shifted: [(String, UInt16)] = [
+        ("\"", 0x03), ("&", 0x07), ("'", 0x08), ("=", 0x0C), ("~", 0x0D), ("Q", 0x10), ("`", 0x1A),
+        ("{", 0x1B), ("+", 0x27), ("*", 0x28), ("}", 0x2B), ("?", 0x35), ("_", 0x73), ("|", 0x7D),
+    ]
+    for (characters, scancode) in shifted {
+        #expect(windowsTypes(characters, scancode: scancode, .shift, layout: japanese))
+    }
+    #expect(windowsTypes("Q", scancode: 0x10, .capsLock, layout: japanese))
+    // What US types on those keys goes as Unicode, as does what Windows types nothing for:
+    // Shift-0 (the Mac types "0"), and Hankaku/Zenkaku where ANSI keyboards have "`".
+    #expect(windowsTypes("@", scancode: 0x03, .shift, layout: japanese) == false)
+    #expect(windowsTypes("=", scancode: 0x0D, layout: japanese) == false)
+    #expect(windowsTypes("0", scancode: 0x0B, .shift, layout: japanese) == false)
+    #expect(windowsTypes("`", scancode: 0x29, layout: japanese) == false)
+    // The Mac's Yen key types "¥" (U+00A5), not the "\" Windows types there, and its Ro key
+    // types "_" without Shift too.
+    #expect(windowsTypes("¥", scancode: 0x7D, layout: japanese) == false)
+    #expect(windowsTypes("_", scancode: 0x73, layout: japanese) == false)
+}
+
 @Test func macInputSourcesMapToWindowsLayoutsWithCapturedTables() {
     func layout(_ name: String) -> UInt32 {
         MacRDPKeyboardLayout.windowsLayout(forInputSourceID: "com.apple.keylayout." + name).rawValue

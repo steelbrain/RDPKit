@@ -2,7 +2,8 @@
 // Scripts/capture-windows-keyboard-layouts.ps1 read on Windows 11: for every layout
 // MacRDPKeyboardLayout announces, each scancode below mapped with MapVirtualKeyEx and
 // typed with ToUnicodeEx (keyboard state left unchanged), without and with Shift and
-// Caps Lock.
+// Caps Lock. Japanese, announced with a 106/109-key keyboard, is written out in the
+// generator instead.
 
 extension MacRDPWindowsKeyboardLayout {
     /// The character keys, in the order of each layout's strings.
@@ -106,6 +107,12 @@ extension MacRDPWindowsKeyboardLayout {
         0x0000_0410: (
             "1234567890'ìqwertyuiopè+asdfghjklòà\\ùzxcvbnm,.-<\0\0",
             "!\"£$%&/()=?^QWERTYUIOPé*ASDFGHJKLç°|§ZXCVBNM;:_>\0\0",
+            "------------SSSSSSSSSS--SSSSSSSSS----SSSSSSS------"
+        ),
+        // Japanese input sources and JIS keyboards, 106/109-key: written out, not captured
+        0x0000_0411: (
+            "1234567890-^qwertyuiop@[asdfghjkl;:\0]zxcvbnm,./\0\\\\",
+            "!\"#$%&'()\0=~QWERTYUIOP`{ASDFGHJKL+*\0}ZXCVBNM<>?\0_|",
             "------------SSSSSSSSSS--SSSSSSSSS----SSSSSSS------"
         ),
         // 2SetHangul, 390Hangul, 3SetHangul
