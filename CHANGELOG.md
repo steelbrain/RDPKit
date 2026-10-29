@@ -167,6 +167,11 @@
   messages, raw RSA work and every report list that grows during a live
   session. Server-sized data now throws where it used to trap.
 - Keep sanitized remote clipboard file names valid and unique.
+- A live session times out when a reactivation's finalization or a reopened
+  RDPGFX channel's capability confirm never arrives, instead of waiting
+  forever.
+- `RDPWireEvent.bytes` returns nil for signed digits such as `+f` instead of
+  decoding them.
 
 ### Performance and examples
 
