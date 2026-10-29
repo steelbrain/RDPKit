@@ -1552,6 +1552,26 @@ private final class ClipboardPublishRace: @unchecked Sendable {
     ])
 }
 
+/// Windows drops only a name's trailing dots and spaces (U+0020), so leading spaces, and other
+/// whitespace at either end, reach the server as they are.
+@Test func clipboardLocalFileNamesKeepTheWhitespaceWindowsKeeps() throws {
+    let kept = [
+        " leading.txt",
+        "\u{A0}no-break space\u{A0}",
+        "\u{3000}ideographic space.txt\u{3000}",
+        "\u{200B}zero width space\u{200B}",
+        "\u{2003}em space.txt",
+    ]
+    let names = try fileNamesTheServerSees(publishing: kept + [
+        " trailing. . ",
+        " \u{A0} ",
+        "   ",
+        " Folder \\ inner.txt ",
+    ])
+
+    #expect(names == kept + [" trailing", " \u{A0}", "file", " Folder\\ inner.txt"])
+}
+
 /// A file in a folder goes out as a path relative to where the server pastes, as the shell's
 /// FILEGROUPDESCRIPTORW carries it, so Windows recreates the folder around it. Each component
 /// is made valid on its own, and a clash is numbered in the last one.

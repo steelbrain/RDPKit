@@ -220,13 +220,16 @@ enum RDPClipboardFileNameRules {
     }
 
     private func trimmed(_ fileName: String) -> String {
-        var trimmed = fileName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard self == .windows else {
-            return trimmed
+            return fileName.trimmingCharacters(in: .whitespacesAndNewlines)
         }
-        // Windows drops trailing dots and spaces, so "notes.txt." would name "notes.txt".
-        while trimmed.hasSuffix(".") {
-            trimmed = String(trimmed.dropLast()).trimmingCharacters(in: .whitespacesAndNewlines)
+        // Path normalization drops a name's trailing dots and spaces (U+0020), so "notes.txt. "
+        // would name "notes.txt" (File path formats on Windows systems, "Trim characters"). It
+        // drops nothing else: leading spaces, and other whitespace such as U+00A0, U+3000 or
+        // U+200B at either end, stay in the name.
+        var trimmed = fileName
+        while let last = trimmed.unicodeScalars.last, last == "." || last == " " {
+            trimmed.unicodeScalars.removeLast()
         }
         return trimmed
     }
