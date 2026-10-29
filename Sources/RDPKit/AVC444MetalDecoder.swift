@@ -7,6 +7,7 @@ final class RDPAVC444MetalDecoder {
     private struct Parameters {
         var width: UInt32
         var height: UInt32
+        var packedWidth: UInt32
         var layout: UInt32
         var hasAuxiliary: UInt32
         var regionCount: UInt32
@@ -34,7 +35,8 @@ final class RDPAVC444MetalDecoder {
         main: CVPixelBuffer,
         auxiliary: CVPixelBuffer?,
         usesV2Layout: Bool,
-        chromaRegionRects: [RDPFrameRect]
+        chromaRegionRects: [RDPFrameRect],
+        frameWidth: Int? = nil
     ) throws -> CVPixelBuffer {
         let (width, height) = try rdpAVC444FrameSize(main: main, auxiliary: auxiliary)
         defer {
@@ -51,6 +53,7 @@ final class RDPAVC444MetalDecoder {
         var parameters = Parameters(
             width: UInt32(width),
             height: UInt32(height),
+            packedWidth: UInt32(rdpAVC444PackedWidth(frameWidth: frameWidth, codedWidth: width)),
             layout: usesV2Layout ? 2 : 1,
             hasAuxiliary: auxiliary == nil ? 0 : 1,
             regionCount: UInt32(regions.count)
@@ -188,6 +191,7 @@ private extension RDPAVC444MetalDecoder {
     struct Parameters {
         uint width;
         uint height;
+        uint packedWidth;
         uint layout;
         uint hasAuxiliary;
         uint regionCount;
@@ -243,12 +247,13 @@ private extension RDPAVC444MetalDecoder {
 
     inline int2 v2PackedChroma(
         uint2 p,
+        uint packedWidth,
         texture2d<float, access::read> auxiliaryY,
         texture2d<float, access::read> auxiliaryUV
     ) {
         if ((p.x & 1) == 0) {
             uint planeX = p.x / 4;
-            uint planeOffset = auxiliaryY.get_width() / 4;
+            uint planeOffset = packedWidth / 4;
             float2 value = auxiliaryUV.read(uint2(planeX, p.y / 2)).rg;
             float2 alternate = auxiliaryUV.read(uint2(planeOffset + planeX, p.y / 2)).rg;
             return (p.x % 4) == 0
@@ -257,24 +262,25 @@ private extension RDPAVC444MetalDecoder {
         }
         return int2(
             byteValue(auxiliaryY.read(uint2(p.x / 2, p.y)).r),
-            byteValue(auxiliaryY.read(uint2(auxiliaryY.get_width() / 2 + p.x / 2, p.y)).r)
+            byteValue(auxiliaryY.read(uint2(packedWidth / 2 + p.x / 2, p.y)).r)
         );
     }
 
     inline int2 v2Chroma(
         uint2 p,
+        uint packedWidth,
         texture2d<float, access::read> mainUV,
         texture2d<float, access::read> auxiliaryY,
         texture2d<float, access::read> auxiliaryUV
     ) {
         if ((p.x & 1) == 0 && (p.y & 1) == 0) {
             int2 filtered = mainChroma(mainUV, p);
-            int2 right = v2PackedChroma(uint2(p.x + 1, p.y), auxiliaryY, auxiliaryUV);
-            int2 below = v2PackedChroma(uint2(p.x, p.y + 1), auxiliaryY, auxiliaryUV);
-            int2 belowRight = v2PackedChroma(uint2(p.x + 1, p.y + 1), auxiliaryY, auxiliaryUV);
+            int2 right = v2PackedChroma(uint2(p.x + 1, p.y), packedWidth, auxiliaryY, auxiliaryUV);
+            int2 below = v2PackedChroma(uint2(p.x, p.y + 1), packedWidth, auxiliaryY, auxiliaryUV);
+            int2 belowRight = v2PackedChroma(uint2(p.x + 1, p.y + 1), packedWidth, auxiliaryY, auxiliaryUV);
             return reverseFiltered(filtered, 4 * filtered - right - below - belowRight);
         }
-        return v2PackedChroma(p, auxiliaryY, auxiliaryUV);
+        return v2PackedChroma(p, packedWidth, auxiliaryY, auxiliaryUV);
     }
 
     kernel void reconstructAVC444(
@@ -303,7 +309,7 @@ private extension RDPAVC444MetalDecoder {
         int y = byteValue(mainY.read(p).r);
         int2 uv = useAuxiliary
             ? (parameters.layout == 2
-                ? v2Chroma(p, mainUV, auxiliaryY, auxiliaryUV)
+                ? v2Chroma(p, parameters.packedWidth, mainUV, auxiliaryY, auxiliaryUV)
                 : v1Chroma(p, mainUV, auxiliaryY, auxiliaryUV))
             : mainChroma(mainUV, p);
         int r = (256 * y + 403 * (uv.y - 128)) >> 8;

@@ -39,7 +39,8 @@ final class RDPAVC444FrameDecoder {
             main: main,
             auxiliary: auxiliary,
             usesV2Layout: usesV2Layout,
-            chromaRegionRects: chromaRegionRects
+            chromaRegionRects: chromaRegionRects,
+            frameWidth: h264Decoder.frameWidth
         )
         result.imageConversionMilliseconds = Date().timeIntervalSince(conversionStartedAt) * 1000
         result.decodedPixelFormat = kCVPixelFormatType_32BGRA
@@ -50,7 +51,8 @@ final class RDPAVC444FrameDecoder {
         main: CVPixelBuffer,
         auxiliary: CVPixelBuffer?,
         usesV2Layout: Bool,
-        chromaRegionRects: [RDPFrameRect]
+        chromaRegionRects: [RDPFrameRect],
+        frameWidth: Int?
     ) throws -> CVPixelBuffer {
         if let metalDecoder {
             do {
@@ -58,7 +60,8 @@ final class RDPAVC444FrameDecoder {
                     main: main,
                     auxiliary: auxiliary,
                     usesV2Layout: usesV2Layout,
-                    chromaRegionRects: chromaRegionRects
+                    chromaRegionRects: chromaRegionRects,
+                    frameWidth: frameWidth
                 )
             } catch is RDPAVC444MetalDecodeError {
                 // Fall back to the CPU for buffers Metal cannot wrap.
@@ -68,7 +71,8 @@ final class RDPAVC444FrameDecoder {
             main: main,
             auxiliary: auxiliary,
             usesV2Layout: usesV2Layout,
-            chromaRegionRects: chromaRegionRects
+            chromaRegionRects: chromaRegionRects,
+            frameWidth: frameWidth
         )
     }
 
@@ -132,6 +136,16 @@ struct RDPAVC444Views {
     }
 }
 
+/// W of MS-RDPEGFX 3.3.8.3.3, where the YUV444v2 auxiliary view's V halves start: the width
+/// of the frames the encoder was given, which FreeRDP's encoders signal by SPS cropping
+/// (general_RGBToAVC444YUVv2 packs at the frame width), and otherwise the coded width.
+func rdpAVC444PackedWidth(frameWidth: Int?, codedWidth: Int) -> Int {
+    guard let frameWidth, frameWidth > 0, frameWidth <= codedWidth else {
+        return codedWidth
+    }
+    return frameWidth
+}
+
 /// Validates the NV12 views both reconstruction paths read and returns their size. The
 /// auxiliary-view layouts are defined per 16x16 macroblock.
 func rdpAVC444FrameSize(main: CVPixelBuffer, auxiliary: CVPixelBuffer?) throws -> (width: Int, height: Int) {
@@ -159,7 +173,8 @@ func rdpReconstructAVC444OnCPU(
     main: CVPixelBuffer,
     auxiliary: CVPixelBuffer?,
     usesV2Layout: Bool,
-    chromaRegionRects: [RDPFrameRect]
+    chromaRegionRects: [RDPFrameRect],
+    frameWidth: Int? = nil
 ) throws -> CVPixelBuffer {
     let (width, height) = try rdpAVC444FrameSize(main: main, auxiliary: auxiliary)
     let output = try rdpMakeBGRAPixelBuffer(width: width, height: height)
@@ -196,6 +211,7 @@ func rdpReconstructAVC444OnCPU(
             chromaMask: mask.baseAddress,
             width: width,
             height: height,
+            packedWidth: rdpAVC444PackedWidth(frameWidth: frameWidth, codedWidth: width),
             usesV2Layout: usesV2Layout,
             output: outputBase.assumingMemoryBound(to: UInt8.self),
             outputBytesPerRow: CVPixelBufferGetBytesPerRow(output)
@@ -259,6 +275,7 @@ private struct RDPAVC444PixelWriter: @unchecked Sendable {
     var chromaMask: UnsafePointer<Bool>?
     var width: Int
     var height: Int
+    var packedWidth: Int
     var usesV2Layout: Bool
     var output: UnsafeMutablePointer<UInt8>
     var outputBytesPerRow: Int
@@ -324,10 +341,10 @@ private struct RDPAVC444PixelWriter: @unchecked Sendable {
     /// (x % 4 == 0) and V (x % 4 == 2) planes.
     private func v2PackedChroma(x: Int, y: Int, auxiliary: RDPNV12Planes) -> (Int, Int) {
         guard x.isMultiple(of: 2) else {
-            return (auxiliary.luma(x / 2, y), auxiliary.luma(width / 2 + x / 2, y))
+            return (auxiliary.luma(x / 2, y), auxiliary.luma(packedWidth / 2 + x / 2, y))
         }
         let planeX = x / 4
-        let quarterWidth = width / 4
+        let quarterWidth = packedWidth / 4
         return x.isMultiple(of: 4)
             ? (auxiliary.u(planeX, y / 2), auxiliary.u(quarterWidth + planeX, y / 2))
             : (auxiliary.v(planeX, y / 2), auxiliary.v(quarterWidth + planeX, y / 2))

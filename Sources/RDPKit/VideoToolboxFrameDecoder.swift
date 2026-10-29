@@ -272,9 +272,12 @@ final class RDPVideoToolboxSequenceDecoder {
     private(set) var session: VTDecompressionSession?
     private var usesHardwareAcceleration: Bool?
     private let output = VideoToolboxDecodeOutput()
+    /// With `preservesCodedSamples`, the width of the frames the H.264 encoder was given, which
+    /// the coded pictures can exceed.
+    private(set) var frameWidth: Int?
 
-    /// With `preservesCodedSamples`, output is 8-bit NV12 holding the decoded sample values
-    /// unchanged, as AVC444 reconstruction requires.
+    /// With `preservesCodedSamples`, output is 8-bit NV12 holding the whole coded picture's
+    /// decoded sample values unchanged, as AVC444 reconstruction requires.
     init(
         codec: RDPVideoCodec,
         preservesCodedSamples: Bool = false,
@@ -392,11 +395,17 @@ final class RDPVideoToolboxSequenceDecoder {
     }
 
     private func rebuildSession() throws {
-        let parameterSets = parameterSets.compactMap { $0 }
+        var parameterSets = parameterSets.compactMap { $0 }
         guard parameterSets.count == self.parameterSets.count else {
             throw RDPVideoDecodeError.missingParameterSets(codec)
         }
         invalidateSession()
+        if codec == .h264, preservesCodedSamples {
+            // AVC444 views are laid out on the coded picture's macroblocks (MS-RDPEGFX 3.3.8.3.2),
+            // which a cropped picture cuts short.
+            frameWidth = RDPH264SequenceParameterSet.croppedWidth(parameterSets[0])
+            parameterSets[0] = RDPH264SequenceParameterSet.removingFrameCropping(parameterSets[0]) ?? parameterSets[0]
+        }
         let formatDescription: CMVideoFormatDescription
         // The SPS states the colours the samples hold (see signalingSampleColours). If CoreMedia
         // rejects the rewritten SPS, the original still decodes, only with the signalled range.

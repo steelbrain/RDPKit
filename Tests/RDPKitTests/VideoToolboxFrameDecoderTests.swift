@@ -152,6 +152,34 @@ func sequenceParameterSetSignalsFullRangeBT709(originalHex: String, expectedHex:
     #expect(RDPH264SequenceParameterSet.signalingSampleColours(hexData("68 ce 38 80"), encodedByX264: false) == nil)
 }
 
+/// FreeRDP's encoders code 1920x1080 as 1920x1088 pictures cropped in the SPS (freerdp-shadow
+/// fixtures).
+@Test func sequenceParameterSetLosesOnlyItsFrameCropping() throws {
+    let cropped = hexData("67 64 00 28 ac b2 00 f0 04 4f cb 08 00 00 03 00 08 00 00 03 01 e4 78 c1 92 40")
+    let uncropped = try #require(RDPH264SequenceParameterSet.removingFrameCropping(cropped))
+
+    let croppedFormat = try h264FormatDescription(sequenceParameterSet: cropped)
+    let uncroppedFormat = try h264FormatDescription(sequenceParameterSet: uncropped)
+    #expect(CMVideoFormatDescriptionGetDimensions(croppedFormat).height == 1080)
+    #expect(CMVideoFormatDescriptionGetDimensions(uncroppedFormat).width == 1920)
+    #expect(CMVideoFormatDescriptionGetDimensions(uncroppedFormat).height == 1088)
+    #expect(RDPH264SequenceParameterSet.croppedWidth(cropped) == 1920)
+    #expect(RDPH264SequenceParameterSet.removingFrameCropping(uncropped) == uncropped)
+    // The VUI after the cropping is copied whole.
+    #expect(
+        RDPH264SequenceParameterSet.signalingSampleColours(uncropped, encodedByX264: false).flatMap(RDPH264SequenceParameterSet.removingFrameCropping)
+            == RDPH264SequenceParameterSet.signalingSampleColours(cropped, encodedByX264: false).flatMap(RDPH264SequenceParameterSet.removingFrameCropping)
+    )
+}
+
+@Test func sequenceParameterSetCroppedWidthLeavesOutCroppedColumns() throws {
+    let accessUnit = try encodeH264AnnexB(frames: [(luma: 60, chroma: 128)], width: 40, height: 24)[0]
+    let sequenceParameterSet = try #require(RDPH264AnnexB.sample(from: accessUnit).sequenceParameterSet)
+
+    #expect(RDPH264SequenceParameterSet.croppedWidth(sequenceParameterSet) == 40)
+    #expect(RDPH264SequenceParameterSet.croppedWidth(hexData("67 64 08 28 ac")) == nil)
+}
+
 @Test func x264IsIdentifiedByItsVersionSEI() throws {
     #expect(try RDPAnnexB.identifiesX264(firstTranscriptFrame("krdp-colour-chart-transcript").encodedVideoData))
     #expect(try !RDPAnnexB.identifiesX264(firstTranscriptFrame("gnome-negotiation-transcript").encodedVideoData))
@@ -397,14 +425,14 @@ private enum PixelReadError: Error {
     case missingBaseAddress
 }
 
-/// Encodes flat 64x64 video-range NV12 frames as one VideoToolbox H.264 stream and returns
-/// each access unit in Annex B form, with the SPS and PPS ahead of the first.
-func encodeH264AnnexB(frames: [(luma: UInt8, chroma: UInt8)]) throws -> [Data] {
+/// Encodes flat video-range NV12 frames as one VideoToolbox H.264 stream and returns each
+/// access unit in Annex B form, with the SPS and PPS ahead of the first.
+func encodeH264AnnexB(frames: [(luma: UInt8, chroma: UInt8)], width: Int = 64, height: Int = 64) throws -> [Data] {
     var session: VTCompressionSession?
     let status = VTCompressionSessionCreate(
         allocator: kCFAllocatorDefault,
-        width: 64,
-        height: 64,
+        width: Int32(width),
+        height: Int32(height),
         codecType: kCMVideoCodecType_H264,
         encoderSpecification: nil,
         imageBufferAttributes: nil,
@@ -424,7 +452,7 @@ func encodeH264AnnexB(frames: [(luma: UInt8, chroma: UInt8)]) throws -> [Data] {
 
     let encodedFrames = EncodedSampleLog()
     for (index, frame) in frames.enumerated() {
-        let pixelBuffer = try flatVideoRangeNV12(luma: frame.luma, chroma: frame.chroma)
+        let pixelBuffer = try flatVideoRangeNV12(luma: frame.luma, chroma: frame.chroma, width: width, height: height)
         let encodeStatus = VTCompressionSessionEncodeFrame(
             session,
             imageBuffer: pixelBuffer,
@@ -450,12 +478,12 @@ func encodeH264AnnexB(frames: [(luma: UInt8, chroma: UInt8)]) throws -> [Data] {
     }
 }
 
-private func flatVideoRangeNV12(luma: UInt8, chroma: UInt8) throws -> CVPixelBuffer {
+private func flatVideoRangeNV12(luma: UInt8, chroma: UInt8, width: Int, height: Int) throws -> CVPixelBuffer {
     var pixelBuffer: CVPixelBuffer?
     let status = CVPixelBufferCreate(
         kCFAllocatorDefault,
-        64,
-        64,
+        width,
+        height,
         kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
         [kCVPixelBufferIOSurfacePropertiesKey: [:]] as CFDictionary,
         &pixelBuffer

@@ -54,6 +54,50 @@ private let fullFrame = [RDPFrameRect(left: 0, top: 0, right: 16, bottom: 16)]
     #expect(try bgraPixel(x: 0, y: 0, in: reconstructed) == bgra(y: 128, u: 210, v: 70))
 }
 
+/// FreeRDP packs YUV444v2 at the width of the frames its encoder was given
+/// (general_RGBToAVC444YUVv2), which SPS cropping states when the coded picture is wider.
+@Test func reconstructsAVC444v2AtTheFrameWidth() throws {
+    // A 24-column frame coded 32 wide: its V halves start at column 12 of the auxiliary luma
+    // and column 6 of the auxiliary U and V planes.
+    let auxiliaryY = (0 ..< 16).flatMap { _ in (0 ..< 32).map { UInt8($0 * 4) } }
+    let auxiliaryChroma = (0 ..< 8).flatMap { _ in (0 ..< 16).map { UInt8(100 + $0 * 4) } }
+
+    let reconstructed = try rdpReconstructAVC444OnCPU(
+        main: try nv12PixelBuffer(
+            width: 32,
+            y: [UInt8](repeating: 128, count: 512),
+            u: [UInt8](repeating: 128, count: 128),
+            v: [UInt8](repeating: 128, count: 128)
+        ),
+        auxiliary: try nv12PixelBuffer(width: 32, y: auxiliaryY, u: auxiliaryChroma, v: auxiliaryChroma),
+        usesV2Layout: true,
+        chromaRegionRects: [RDPFrameRect(left: 0, top: 0, right: 32, bottom: 16)],
+        frameWidth: 24
+    )
+
+    #expect(try bgraPixel(x: 3, y: 0, in: reconstructed) == bgra(y: 128, u: 4, v: 52))
+    #expect(try bgraPixel(x: 4, y: 1, in: reconstructed) == bgra(y: 128, u: 104, v: 128))
+}
+
+/// freerdp-shadow codes its 1920x1080 AVC444v2 frames as 1920x1088 pictures cropped in the SPS.
+/// The fixture's first frame shows mpv's test pattern in a 1280x720 window at the top left:
+/// six colour bars about 213 pixels wide, of which red, green, and blue are checked.
+@Test func freeRDPAVC444v2FrameDecodesItsColourBars() throws {
+    let frame = try #require(replayTranscriptFixture("freerdp-shadow-avc444v2-transcript").report.rdpGraphicsFirstFrame)
+    #expect(frame.codecID == RDPGFXCodecID.avc444v2)
+    #expect(frame.avc444SubframeLayout == .yuv420AndChroma420)
+
+    let imageBuffer = try RDPVideoToolboxFrameDecoder().decodeDetailed(frame).imageBuffer
+
+    #expect(CVPixelBufferGetWidth(imageBuffer) == 1920)
+    #expect(CVPixelBufferGetHeight(imageBuffer) == 1088)
+    for (bar, colour) in [(0, [253, 23, 0]), (1, [0, 216, 0]), (3, [0, 14, 255])] {
+        let pixel = try bgraPixel(x: bar * 213 + 100, y: 660, in: imageBuffer)
+        let decoded = [Int(pixel[2]), Int(pixel[1]), Int(pixel[0])]
+        #expect(zip(decoded, colour).allSatisfy { abs($0 - $1) <= 6 }, "bar \(bar): \(decoded)")
+    }
+}
+
 @Test func AVC444ReverseFilterAppliesAtThresholdOfThirty() throws {
     // U: 4 * 100 - 3 * 90 = 130 changes the main value by exactly 30, so MS-RDPEGFX
     // 3.3.8.3.2 uses the reversed value; only changes below 30 keep the main value.
@@ -177,25 +221,34 @@ private let fullFrame = [RDPFrameRect(left: 0, top: 0, right: 16, bottom: 16)]
         nil,
         try flatNV12PixelBuffer(y: 40, u: 50, v: 190),
         try flatNV12PixelBuffer(y: 90, u: 90, v: 90),
+        try nv12PixelBuffer(
+            y: (0 ..< 256).map { UInt8($0 % 16 * 8) },
+            u: (0 ..< 64).map { UInt8(100 + $0 % 8 * 10) },
+            v: (0 ..< 64).map { UInt8(60 + $0 % 8 * 12) }
+        ),
     ]
 
     for usesV2Layout in [false, true] {
         for chromaRegions in [[], regions, invertedRegions] {
             for auxiliary in auxiliaries {
-                let expected = try rdpReconstructAVC444OnCPU(
-                    main: main,
-                    auxiliary: auxiliary,
-                    usesV2Layout: usesV2Layout,
-                    chromaRegionRects: chromaRegions
-                )
-                let actual = try metalDecoder.reconstruct(
-                    main: main,
-                    auxiliary: auxiliary,
-                    usesV2Layout: usesV2Layout,
-                    chromaRegionRects: chromaRegions
-                )
+                for frameWidth in [nil, 8] {
+                    let expected = try rdpReconstructAVC444OnCPU(
+                        main: main,
+                        auxiliary: auxiliary,
+                        usesV2Layout: usesV2Layout,
+                        chromaRegionRects: chromaRegions,
+                        frameWidth: frameWidth
+                    )
+                    let actual = try metalDecoder.reconstruct(
+                        main: main,
+                        auxiliary: auxiliary,
+                        usesV2Layout: usesV2Layout,
+                        chromaRegionRects: chromaRegions,
+                        frameWidth: frameWidth
+                    )
 
-                #expect(try bgraData(from: actual) == bgraData(from: expected))
+                    #expect(try bgraData(from: actual) == bgraData(from: expected))
+                }
             }
         }
     }

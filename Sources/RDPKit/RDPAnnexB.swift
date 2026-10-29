@@ -63,19 +63,13 @@ enum RDPH264SequenceParameterSet {
     /// RGB conversion feeds it, limited-range BT.601. KRdp 6.8 sends that (krdp-colour-chart
     /// fixture). Primaries are BT.709 and the transfer sRGB, those of desktop content.
     static func signalingSampleColours(_ nalUnit: Data, encodedByX264: Bool) -> Data? {
-        guard let header = nalUnit.first, header & 0x1F == 7 else {
+        guard let (header, rbsp, stopBitPosition) = rbsp(of: nalUnit) else {
             return nil
         }
-        let rbsp = removingEmulationPrevention(nalUnit.dropFirst())
-        // The last set bit is rbsp_stop_one_bit; anything after it is alignment or trailing zeros.
-        guard let lastByteIndex = rbsp.lastIndex(where: { $0 != 0 }) else {
-            return nil
-        }
-        let stopBitPosition = lastByteIndex * 8 + 7 - rbsp[lastByteIndex].trailingZeroBitCount
         var reader = RBSPBitReader(bytes: rbsp, end: stopBitPosition)
         var writer = RBSPBitWriter()
         do {
-            try reader.skipToVUIParametersPresentFlag()
+            _ = try reader.skipToVUIParametersPresentFlag()
             writer.copy(rbsp, bits: 0 ..< reader.position)
             let hasVUI = try reader.readBits(1) == 1
             writer.write(1, bitCount: 1)
@@ -120,6 +114,52 @@ enum RDPH264SequenceParameterSet {
         }
         writer.write(1, bitCount: 1) // rbsp_stop_one_bit
         return Data([header]) + addingEmulationPrevention(writer.bytes)
+    }
+
+    /// Returns the SPS NAL unit without frame cropping, so a decoder outputs the whole coded
+    /// picture, or nil when the SPS cannot be parsed. MS-RDPEGFX 2.2.4.4 codes pictures at sizes
+    /// aligned to 16 and crops them by the region rectangles; FreeRDP's encoders signal SPS
+    /// cropping as well (freerdp-shadow-avc444v2 fixture: 1920x1088 cropped to 1080 rows).
+    static func removingFrameCropping(_ nalUnit: Data) -> Data? {
+        guard let (header, rbsp, stopBitPosition) = rbsp(of: nalUnit) else {
+            return nil
+        }
+        var reader = RBSPBitReader(bytes: rbsp, end: stopBitPosition)
+        guard let fields = try? reader.skipToVUIParametersPresentFlag() else {
+            return nil
+        }
+        guard fields.frameCroppingBits.count > 1 else {
+            return nalUnit
+        }
+        var writer = RBSPBitWriter()
+        writer.copy(rbsp, bits: 0 ..< fields.frameCroppingBits.lowerBound)
+        writer.write(0, bitCount: 1) // frame_cropping_flag
+        writer.copy(rbsp, bits: fields.frameCroppingBits.upperBound ..< stopBitPosition)
+        writer.write(1, bitCount: 1) // rbsp_stop_one_bit
+        return Data([header]) + addingEmulationPrevention(writer.bytes)
+    }
+
+    /// The SPS's picture width after frame cropping (7.4.2.1.1): the width of the frames the
+    /// encoder was given. Nil when the SPS cannot be parsed.
+    static func croppedWidth(_ nalUnit: Data) -> Int? {
+        guard let (_, rbsp, stopBitPosition) = rbsp(of: nalUnit) else {
+            return nil
+        }
+        var reader = RBSPBitReader(bytes: rbsp, end: stopBitPosition)
+        return (try? reader.skipToVUIParametersPresentFlag())?.croppedWidth
+    }
+
+    /// The SPS's RBSP and the position of its rbsp_stop_one_bit; anything after that bit is
+    /// alignment or trailing zeros.
+    private static func rbsp(of nalUnit: Data) -> (header: UInt8, bytes: [UInt8], stopBitPosition: Int)? {
+        guard let header = nalUnit.first, header & 0x1F == 7 else {
+            return nil
+        }
+        let rbsp = removingEmulationPrevention(nalUnit.dropFirst())
+        guard let lastByteIndex = rbsp.lastIndex(where: { $0 != 0 }) else {
+            return nil
+        }
+        return (header, rbsp, lastByteIndex * 8 + 7 - rbsp[lastByteIndex].trailingZeroBitCount)
     }
 
     private static func removingEmulationPrevention(_ bytes: Data) -> [UInt8] {
@@ -198,15 +238,24 @@ private struct RBSPBitReader {
         return codeNum.isMultiple(of: 2) ? -(codeNum / 2) : (codeNum + 1) / 2
     }
 
+    struct SequenceFields {
+        /// frame_cropping_flag and the offsets that follow it.
+        var frameCroppingBits: Range<Int>
+        /// Nil when the cropping leaves no columns.
+        var croppedWidth: Int?
+    }
+
     /// Reads seq_parameter_set_data() up to vui_parameters_present_flag (7.3.2.1.1).
-    mutating func skipToVUIParametersPresentFlag() throws {
+    mutating func skipToVUIParametersPresentFlag() throws -> SequenceFields {
         let profileIDC = try readBits(8)
         try skipBits(16) // constraint_set flags, reserved_zero_2bits, level_idc
         _ = try readUnsignedExpGolomb() // seq_parameter_set_id
+        var chromaArrayType: UInt32 = 1
         if [100, 110, 122, 244, 44, 83, 86, 118, 128, 138, 139, 134, 135].contains(profileIDC) {
             let chromaFormatIDC = try readUnsignedExpGolomb()
-            if chromaFormatIDC == 3 {
-                try skipBits(1) // separate_colour_plane_flag
+            chromaArrayType = chromaFormatIDC
+            if chromaFormatIDC == 3, try readBits(1) == 1 { // separate_colour_plane_flag
+                chromaArrayType = 0
             }
             _ = try readUnsignedExpGolomb() // bit_depth_luma_minus8
             _ = try readUnsignedExpGolomb() // bit_depth_chroma_minus8
@@ -236,17 +285,25 @@ private struct RBSPBitReader {
         }
         _ = try readUnsignedExpGolomb() // max_num_ref_frames
         try skipBits(1) // gaps_in_frame_num_value_allowed_flag
-        _ = try readUnsignedExpGolomb() // pic_width_in_mbs_minus1
+        let codedWidth = (Int(try readUnsignedExpGolomb()) + 1) * 16 // pic_width_in_mbs_minus1
         _ = try readUnsignedExpGolomb() // pic_height_in_map_units_minus1
         if try readBits(1) == 0 { // frame_mbs_only_flag
             try skipBits(1) // mb_adaptive_frame_field_flag
         }
         try skipBits(1) // direct_8x8_inference_flag
+        let frameCroppingStart = position
+        var croppedColumns = 0
         if try readBits(1) == 1 { // frame_cropping_flag
-            for _ in 0 ..< 4 {
-                _ = try readUnsignedExpGolomb()
-            }
+            // frame_crop_left_offset and frame_crop_right_offset, in units of CropUnitX (7-19, 7-21).
+            let cropUnitX = chromaArrayType == 1 || chromaArrayType == 2 ? 2 : 1
+            croppedColumns = cropUnitX * (Int(try readUnsignedExpGolomb()) + Int(try readUnsignedExpGolomb()))
+            _ = try readUnsignedExpGolomb() // frame_crop_top_offset
+            _ = try readUnsignedExpGolomb() // frame_crop_bottom_offset
         }
+        return SequenceFields(
+            frameCroppingBits: frameCroppingStart ..< position,
+            croppedWidth: croppedColumns < codedWidth ? codedWidth - croppedColumns : nil
+        )
     }
 
     /// scaling_list(), 7.3.2.1.1.1.
