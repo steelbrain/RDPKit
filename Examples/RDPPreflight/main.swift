@@ -267,7 +267,7 @@ func parseArguments(_ values: [String]) throws -> Arguments {
         case "--probe-windows-clipboard-text":
             args.probeWindowsClipboardText = try cursor.value(
                 for: option,
-                expected: "1...96 ASCII letters, digits, or \" -_:.\""
+                expected: "1...96 ASCII letters, digits, or \" -_:.\", not starting with a space"
             ) { isValidWindowsClipboardProbeText($0) ? $0 : nil }
         case "--probe-windows-paste-clipboard":
             args.probeWindowsPasteClipboard = true
@@ -291,9 +291,11 @@ func parseArguments(_ values: [String]) throws -> Arguments {
     return args
 }
 
+/// The text goes through `set /p`, which drops leading spaces, so it could never come back equal.
 func isValidWindowsClipboardProbeText(_ text: String) -> Bool {
     let allowedPunctuation = " -_:."
     return text.isEmpty == false
+        && text.first != " "
         && text.count <= 96
         && text.allSatisfy { character in
             character.isASCII

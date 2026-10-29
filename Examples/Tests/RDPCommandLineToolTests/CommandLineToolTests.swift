@@ -203,6 +203,20 @@ import Testing
     }
 }
 
+@Test func preflightRejectsWindowsClipboardTextThatCannotComeBackUnchanged() throws {
+    let args = try parseArguments(["RDPPreflight", "--probe-windows-clipboard-text", "probe 1: a-b_c."])
+    #expect(args.probeWindowsClipboardText == "probe 1: a-b_c.")
+
+    // `set /p` drops leading spaces, so the clipboard would never match the probe.
+    #expect(throws: RDPCommandLineError.invalidValue(
+        option: "--probe-windows-clipboard-text",
+        value: " probe",
+        expected: "1...96 ASCII letters, digits, or \" -_:.\", not starting with a space"
+    )) {
+        try parseArguments(["RDPPreflight", "--probe-windows-clipboard-text", " probe"])
+    }
+}
+
 @Test func connectionOptionsRejectPortZero() {
     #expect(throws: RDPCommandLineError.invalidValue(option: "--port", value: "0", expected: "1...65535")) {
         try FirstFrameCaptureOptions.parse(["RDPFirstFrameCapture", "--port", "0"])
