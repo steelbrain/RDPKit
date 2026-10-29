@@ -20,6 +20,7 @@ struct ConnectionManagerView: View {
     @State private var rememberPassword = false
     @State private var hasRememberedPassword = false
     @State private var keychainMessage: String?
+    @State private var passwordLookup = RememberedPasswordLookup()
     @State private var hideCertificateWarnings = false
     @State private var timeoutSeconds = 10.0
     @State private var graphicsCapabilityProfile: RDPGraphicsCapabilityProfile = .automatic
@@ -153,7 +154,7 @@ struct ConnectionManagerView: View {
         }
         .onAppear {
             profiles = profileStore.profiles()
-            loadRememberedPasswordIfAvailable()
+            loadRememberedPasswordIfAvailable(after: .zero)
         }
         .onChange(of: selectedProfileID) { _, newValue in
             applySelectedProfile(id: newValue)
@@ -204,7 +205,8 @@ struct ConnectionManagerView: View {
                 selectedProfileID = profile.id
                 applySelectedProfile(id: profile.id)
             }
-            let connectionPassword = wasSelected ? password : try profilePassword(for: profile)
+            // The selected profile's password may still be on its way from Keychain.
+            let connectionPassword = wasSelected && !password.isEmpty ? password : try profilePassword(for: profile)
             let draft = try makeConnectionDraft(from: profile, password: connectionPassword)
             openSession(draft)
         } catch {
@@ -279,7 +281,7 @@ struct ConnectionManagerView: View {
         audioPlaybackEnabled = profile.audioPlaybackEnabled
         profileMessage = nil
         formError = nil
-        loadRememberedPasswordIfAvailable()
+        loadRememberedPasswordIfAvailable(after: .zero)
     }
 
     private func makeConnectionDraft() throws -> RDPConnectionDraft {
@@ -365,29 +367,39 @@ struct ConnectionManagerView: View {
         ].joined(separator: "\u{1f}")
     }
 
-    private func loadRememberedPasswordIfAvailable() {
-        guard let key = KeychainCredentialKey(host: host, portText: port, username: username, domain: domain) else {
-            keychainMessage = nil
-            hasRememberedPassword = false
+    private var credentialKey: KeychainCredentialKey? {
+        KeychainCredentialKey(host: host, portText: port, username: username, domain: domain)
+    }
+
+    /// Looks up the password saved for the form's account, `after` a pause in typing.
+    private func loadRememberedPasswordIfAvailable(after delay: Duration = RememberedPasswordLookup.typingDelay) {
+        keychainMessage = nil
+        hasRememberedPassword = false
+        guard let key = credentialKey else {
+            passwordLookup.cancel()
             return
         }
+        passwordLookup.lookUp(key, after: delay) { result in
+            applyRememberedPassword(result, for: key)
+        }
+    }
 
-        do {
-            guard let savedPassword = try credentialStore.password(for: key) else {
-                hasRememberedPassword = false
-                if password.isEmpty {
-                    rememberPassword = false
-                }
-                keychainMessage = nil
-                return
-            }
-
+    private func applyRememberedPassword(_ result: Result<String?, Error>, for key: KeychainCredentialKey) {
+        // Dropped when the fields changed since the lookup began, as a newer lookup follows.
+        guard key == credentialKey else {
+            return
+        }
+        switch result {
+        case let .success(savedPassword?):
             hasRememberedPassword = true
             rememberPassword = true
             password = savedPassword
             keychainMessage = "Password loaded from Keychain."
-        } catch {
-            hasRememberedPassword = false
+        case .success(nil):
+            if password.isEmpty {
+                rememberPassword = false
+            }
+        case let .failure(error):
             keychainMessage = String(describing: error)
         }
     }

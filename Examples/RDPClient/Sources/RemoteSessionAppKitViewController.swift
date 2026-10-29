@@ -5,6 +5,7 @@ import RDPKit
 @MainActor
 final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegate {
     private let credentialStore = KeychainCredentialStore()
+    private let passwordLookup = RememberedPasswordLookup()
     private let clientLicenseStore = ClientLicenseStore()
     private let trustedCertificateStore = TrustedCertificateStore()
     private let sessionID: UUID
@@ -141,12 +142,10 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         launchStore?.registerDiagnostics(diagnosticsModel, for: sessionID)
         startDiagnosticsLoop()
         startClipboardPollingLoop()
-        loadRememberedPasswordIfAvailable(keepingEnteredPassword: true)
         render()
-        if shouldAutoConnect {
-            shouldAutoConnect = false
-            beginConnection()
-        }
+        // Connecting keeps or removes a saved password, so it waits until the lookup has said
+        // whether there is one.
+        loadRememberedPasswordIfAvailable(keepingEnteredPassword: true, after: .zero)
     }
 
     func closeSession() {
@@ -156,12 +155,14 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         didClose = true
         diagnosticsTask?.cancel()
         clipboardPollingTask?.cancel()
+        passwordLookup.cancel()
         launchStore?.unregisterDiagnostics(for: sessionID)
         cancelConnection(shouldRecordCancellation: false)
         withdrawSessionCommands()
     }
 
     func startSession() {
+        shouldAutoConnect = false
         syncStateFromFields()
         beginConnection()
     }
@@ -1309,38 +1310,65 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         ].joined(separator: "x")
     }
 
+    private var credentialKey: KeychainCredentialKey? {
+        KeychainCredentialKey(host: host, portText: port, username: username, domain: domain)
+    }
+
+    /// Looks up the password saved for the form's account, `after` a pause in typing.
     /// `keepingEnteredPassword` keeps a password the user already entered for this account, and
     /// its Remember choice, over the saved one: the draft's password may be newer than Keychain's.
-    private func loadRememberedPasswordIfAvailable(keepingEnteredPassword: Bool = false) {
-        guard !isConnecting,
-              let key = KeychainCredentialKey(host: host, portText: port, username: username, domain: domain)
-        else {
-            keychainMessage = nil
-            hasRememberedPassword = false
+    private func loadRememberedPasswordIfAvailable(
+        keepingEnteredPassword: Bool = false,
+        after delay: Duration = RememberedPasswordLookup.typingDelay
+    ) {
+        keychainMessage = nil
+        hasRememberedPassword = false
+        guard !isConnecting, let key = credentialKey else {
+            passwordLookup.cancel()
+            connectAutomaticallyIfNeeded()
             return
         }
+        passwordLookup.lookUp(key, after: delay) { [weak self] result in
+            self?.applyRememberedPassword(result, for: key, keepingEnteredPassword: keepingEnteredPassword)
+        }
+    }
 
-        do {
-            guard let savedPassword = try credentialStore.password(for: key) else {
-                hasRememberedPassword = false
-                if password.isEmpty {
-                    rememberPassword = false
-                }
-                keychainMessage = nil
-                return
-            }
-
+    private func applyRememberedPassword(
+        _ result: Result<String?, Error>,
+        for key: KeychainCredentialKey,
+        keepingEnteredPassword: Bool
+    ) {
+        // Dropped when the fields changed since the lookup began, as a newer lookup follows, or
+        // when a connection started meanwhile with what the form had.
+        guard !isConnecting, key == credentialKey else {
+            return
+        }
+        switch result {
+        case let .success(savedPassword?):
             hasRememberedPassword = true
-            guard keepingEnteredPassword == false || password.isEmpty else {
-                return
+            if keepingEnteredPassword == false || password.isEmpty {
+                rememberPassword = true
+                password = savedPassword
+                keychainMessage = "Password loaded from Keychain."
             }
-            rememberPassword = true
-            password = savedPassword
-            keychainMessage = "Password loaded from Keychain."
-        } catch {
-            hasRememberedPassword = false
+        case .success(nil):
+            if password.isEmpty {
+                rememberPassword = false
+            }
+        case let .failure(error):
             keychainMessage = String(describing: error)
         }
+        render()
+        connectAutomaticallyIfNeeded()
+    }
+
+    /// Starts the connection the window opened for, once.
+    private func connectAutomaticallyIfNeeded() {
+        guard shouldAutoConnect else {
+            return
+        }
+        shouldAutoConnect = false
+        beginConnection()
     }
 
     private func credentialPersistenceRequest(

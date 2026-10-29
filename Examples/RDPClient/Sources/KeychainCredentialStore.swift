@@ -40,18 +40,15 @@ struct KeychainCredentialStore: Sendable {
         if let password = try password(account: key.account) {
             return password
         }
-        // Accounts once kept the host's case; adopt one saved that way under the current name.
-        let usernamePrefix = (key.identity.qualifiedUsername ?? "") + "@"
-        guard let legacyAccount = try accounts().first(where: {
-            $0 != key.account && $0.hasPrefix(usernamePrefix) && $0.caseInsensitiveCompare(key.account) == .orderedSame
-        }),
-            let password = try password(account: legacyAccount)
-        else {
-            return nil
+        // A password saved by an earlier release is moved to the current name.
+        for legacyAccount in key.identity.legacyCredentialAccountNames {
+            if let password = try password(account: legacyAccount) {
+                try savePassword(password, for: key)
+                try deletePassword(account: legacyAccount)
+                return password
+            }
         }
-        try savePassword(password, for: key)
-        try deletePassword(account: legacyAccount)
-        return password
+        return nil
     }
 
     func savePassword(_ password: String, for key: KeychainCredentialKey) throws {
@@ -80,6 +77,9 @@ struct KeychainCredentialStore: Sendable {
 
     func deletePassword(for key: KeychainCredentialKey) throws {
         try deletePassword(account: key.account)
+        for legacyAccount in key.identity.legacyCredentialAccountNames {
+            try deletePassword(account: legacyAccount)
+        }
     }
 
     private func password(account: String) throws -> String? {
@@ -110,25 +110,6 @@ struct KeychainCredentialStore: Sendable {
         }
     }
 
-    /// The accounts this app has saved passwords under.
-    private func accounts() throws -> [String] {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecReturnAttributes as String: true,
-            kSecMatchLimit as String: kSecMatchLimitAll,
-        ]
-        var result: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-        if status == errSecItemNotFound {
-            return []
-        }
-        guard status == errSecSuccess else {
-            throw KeychainCredentialError.unexpectedStatus(status)
-        }
-        return (result as? [[String: Any]] ?? []).compactMap { $0[kSecAttrAccount as String] as? String }
-    }
-
     private func baseQuery(for key: KeychainCredentialKey) -> [String: Any] {
         baseQuery(account: key.account)
     }
@@ -139,6 +120,66 @@ struct KeychainCredentialStore: Sendable {
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
         ]
+    }
+}
+
+/// Looks up the saved password for the account a connection form shows while the user edits
+/// it: once the edits pause, and off the main actor, since a Keychain read blocks and can wait
+/// for the user to allow access.
+@MainActor
+final class RememberedPasswordLookup {
+    /// How long the host, port, username and domain must stay unchanged before a lookup.
+    nonisolated static let typingDelay: Duration = .milliseconds(300)
+
+    private let readPassword: @Sendable (KeychainCredentialKey) throws -> String?
+    private var task: Task<Void, Never>?
+    private var pendingKey: KeychainCredentialKey?
+
+    convenience init(store: KeychainCredentialStore = KeychainCredentialStore()) {
+        self.init { try store.password(for: $0) }
+    }
+
+    init(readPassword: @escaping @Sendable (KeychainCredentialKey) throws -> String?) {
+        self.readPassword = readPassword
+    }
+
+    /// Reads `key`'s password after `delay` and passes the result to `apply`, unless `cancel()`
+    /// or a lookup for another key comes first. A lookup for the key already pending leaves that
+    /// one running.
+    func lookUp(
+        _ key: KeychainCredentialKey,
+        after delay: Duration = typingDelay,
+        apply: @escaping @MainActor (Result<String?, Error>) -> Void
+    ) {
+        guard key != pendingKey else {
+            return
+        }
+        task?.cancel()
+        pendingKey = key
+        let readPassword = readPassword
+        task = Task { [weak self] in
+            if delay > .zero {
+                try? await Task.sleep(for: delay)
+            }
+            guard Task.isCancelled == false else {
+                return
+            }
+            let result = await Task.detached(priority: .userInitiated) {
+                Result { try readPassword(key) }
+            }.value
+            guard Task.isCancelled == false, let self else {
+                return
+            }
+            self.task = nil
+            self.pendingKey = nil
+            apply(result)
+        }
+    }
+
+    func cancel() {
+        task?.cancel()
+        task = nil
+        pendingKey = nil
     }
 }
 
