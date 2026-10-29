@@ -111,7 +111,9 @@
   spaces, and shortens a component past 255 UTF-16 code units before its
   extension. A path past cFileName's 259 has its last component shortened,
   or goes to the top level when its folders leave no room. Paths that differ
-  only in case are numbered in their last component.
+  only in case are numbered in their last component. A folder numbered to
+  differ from another folder or a file of its name keeps its number for
+  everything inside it.
 
 ### Examples
 
@@ -137,12 +139,14 @@
     character goes as Unicode without Alt; other keys still get Alt, and
     right Option released alone still taps Alt. Left Option goes as Alt at
     once, for shortcuts.
-  - With a Japanese input source, or a JIS keyboard on ABC or US, announces
-    Windows' Japanese layout (0x00000411) on a 106/109-key keyboard (type 7,
-    subtype 2), so the server starts its Japanese IME and the JIS keys go as
-    their scancodes. Eisu and Kana go as that layout's 英数 and ひらがな keys
-    (0x3A and 0x70; LANG2 and LANG1 with other layouts) to switch the remote
-    IME, instead of typing a space.
+  - With a Japanese input source on a JIS keyboard that types with ABC or
+    US, announces Windows' Japanese layout (0x00000411) on a 106/109-key
+    keyboard (type 7, subtype 2), so the server starts its Japanese IME and
+    the JIS keys go as their scancodes; every other input source and
+    keyboard announces the input source's own layout. Eisu and Kana go as
+    that layout's 英数 and ひらがな keys (0x3A and 0x70; LANG2 and LANG1 with
+    other layouts) to switch the remote IME, instead of typing a space.
+    Shift-Eisu sends nothing there, since Shift-英数 is Caps Lock on Windows.
   - Scrolling with Command held sends the Windows key with the wheel, so
     releasing Command no longer opens the server's Start menu. Keypad "="
     goes as Unicode where the remote layout has no "=" on the main "=" key,
@@ -168,8 +172,9 @@
       they open. They stay on disk while the pasteboard lists them, even if
       a newer download fails, and are removed once a newer copy replaces
       them, when the session closes, or at the next launch.
-    - Sync Now and another "Share for 30s" send the clipboard only when it
-      changed, so they no longer cancel a download in progress.
+    - Sync Now and another "Share for 30s" send the clipboard when it
+      changed, or again when it could not be sent, such as a file iCloud
+      had not downloaded yet. They no longer cancel a download in progress.
   - A `\` in a copied file's name is sent as `_`, so Windows does not paste
     the file inside a folder.
   - Only a refused certificate offers trust; other warnings are listed in
