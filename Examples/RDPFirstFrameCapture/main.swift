@@ -20,11 +20,7 @@ private enum FirstFrameCapture {
         do {
             let options = try FirstFrameCaptureOptions.parse(CommandLine.arguments)
             let outputPath = try options.requiredOutputPath()
-            let configuration = try options.connection.configuration(
-                credentials: options.connection.credentials(),
-                graphicsFrameCaptureLimit: FirstFrameCaptureOptions.maximumFrameCaptureLimit,
-                clipboardEnabled: false
-            )
+            let configuration = try options.configuration()
 
             let imageContext = CIContext()
             let recorder = LatestDecodedFrameRecorder<DecodedFrameSelection>()
@@ -70,6 +66,10 @@ private enum FirstFrameCapture {
                 cancellation: cancellation
             )
             decodeQueue.cancel()
+            // A live session reports graphics decode errors as warnings and keeps going.
+            for warning in report.warnings {
+                fputs("warning[\(warning.code)]: \(warning.message)\n", stderr)
+            }
 
             if let transcriptPath = options.transcriptPath, let wireTranscript {
                 try writeTranscript(wireTranscript, to: transcriptPath)

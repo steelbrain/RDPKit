@@ -44,6 +44,13 @@ import Testing
     #expect(options.connection.timeoutSeconds == 30)
 }
 
+@Test func firstFrameCaptureRunsUntilTheSettleWindowEnds() throws {
+    let options = try FirstFrameCaptureOptions.parse(["RDPFirstFrameCapture", "--host", "server"])
+
+    // A frame limit would end the session before the settle window on a busy desktop.
+    #expect(try options.configuration(environment: [:]).graphicsFrameCaptureLimit == nil)
+}
+
 @Test func firstFrameCaptureCanOverrideSettleWindow() throws {
     let options = try FirstFrameCaptureOptions.parse([
         "RDPFirstFrameCapture",

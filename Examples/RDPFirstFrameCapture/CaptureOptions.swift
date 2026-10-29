@@ -3,9 +3,6 @@ import RDPCommandLineSupport
 import RDPKit
 
 struct FirstFrameCaptureOptions: Equatable {
-    /// The most frames RDPConnectionConfiguration records in a report.
-    static let maximumFrameCaptureLimit = 120
-
     var connection = RDPCommandLineConnectionOptions(timeoutSeconds: 30)
     var settleSeconds = 30
     var outputPath: String?
@@ -37,6 +34,18 @@ struct FirstFrameCaptureOptions: Equatable {
             throw RDPCommandLineError.missingRequiredOption("--output")
         }
         return outputPath
+    }
+
+    /// A live session with no frame limit: a capture limit would end it after that many
+    /// frames, seconds into the settle window on a server that sends 30 a second.
+    func configuration(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) throws -> RDPConnectionConfiguration {
+        try connection.configuration(
+            credentials: connection.credentials(environment: environment),
+            graphicsFrameCaptureLimit: nil,
+            clipboardEnabled: false
+        )
     }
 }
 
