@@ -771,6 +771,30 @@ struct MockKRDPServerTests {
         #expect(report.error == nil)
     }
 
+    /// gnome-remote-desktop in extend mode hides the client's pointer before it opens the RDPGFX
+    /// channel (PR #5); a pointer the server cached then still resolves afterwards.
+    @Test func clientForwardsPointerUpdatesSentBeforeTheGraphicsChannelOpens() throws {
+        let pointerUpdates = Locked<[RDPRemotePointerUpdate]>([])
+        let report = try runMock(.init(graphicsBehavior: .sendFastPathPointerUpdatesBeforeGraphicsChannel), client: {
+            RDPSessionClient().run(configuration: $0, onRemotePointer: { update in
+                pointerUpdates.withLock { $0.append(update) }
+            })
+        }).report
+
+        let image = RDPRemotePointerImage(
+            cacheIndex: 2,
+            hotSpot: RDPRemotePoint(x: 0, y: 0),
+            width: 1,
+            height: 1,
+            xorBitsPerPixel: 24,
+            xorMaskData: Data([0xaa, 0xbb, 0xcc, 0x00]),
+            andMaskData: Data([0xff, 0x00])
+        )
+        #expect(report.status == "success")
+        #expect(pointerUpdates.value == [.hidden, .image(image), .cachedImage(image)])
+        #expect(report.error == nil)
+    }
+
     @Test func clientReportsFailingGraphicsUpdateFromMockServer() throws {
         let report = try runMock(.init(graphicsBehavior: .sendInvalidGraphicsPDU)).report
 

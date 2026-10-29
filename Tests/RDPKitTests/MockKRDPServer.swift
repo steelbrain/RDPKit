@@ -114,6 +114,7 @@ enum MockKRDPSecurityProtocol {
 enum MockKRDPGraphicsBehavior: Equatable {
     case sendFirstFrame
     case sendPointerUpdatesBeforeFirstFrame
+    case sendFastPathPointerUpdatesBeforeGraphicsChannel
     case sendCompressedCapsConfirmFirstFrame
     case sendFragmentedCompressedCapsConfirmFirstFrame
     case stallAfterFragmentedCapsConfirm
@@ -865,6 +866,10 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
                     write(createPacket, context: context)
                 }
             } else {
+                if options.graphicsBehavior == .sendFastPathPointerUpdatesBeforeGraphicsChannel {
+                    write(MockKRDPFixtures.fastPathPointerUpdate(updateCode: 0x5, data: Data()), context: context)
+                    write(MockKRDPFixtures.fastPathPointerUpdate(updateCode: 0x9, data: MockKRDPFixtures.colorPointerData()), context: context)
+                }
                 write(MockKRDPFixtures.graphicsCreateRequest(), context: context)
             }
             stage = .graphicsCreateResponse(auxiliaryChannels.count + 1)
@@ -1791,16 +1796,32 @@ private enum MockKRDPFixtures {
         var payload = Data()
         payload.appendLittleEndianUInt16(0x0006)
         payload.appendLittleEndianUInt16(0)
-        payload.appendLittleEndianUInt16(2)
-        payload.appendLittleEndianUInt16(1)
-        payload.appendLittleEndianUInt16(3)
-        payload.appendLittleEndianUInt16(1)
-        payload.appendLittleEndianUInt16(1)
-        payload.appendLittleEndianUInt16(2)
-        payload.appendLittleEndianUInt16(4)
-        payload.append(Data([0xaa, 0xbb, 0xcc, 0x00]))
-        payload.append(Data([0xff, 0x00]))
+        payload.append(colorPointerData())
         return shareDataPacket(pduType2: 0x1B, payload: payload)
+    }
+
+    /// TS_COLORPOINTERATTRIBUTE for a 1x1 pointer in cache slot 2 ([MS-RDPBCGR] 2.2.9.1.1.4.4).
+    static func colorPointerData() -> Data {
+        var data = Data()
+        data.appendLittleEndianUInt16(2)
+        data.appendLittleEndianUInt16(1)
+        data.appendLittleEndianUInt16(3)
+        data.appendLittleEndianUInt16(1)
+        data.appendLittleEndianUInt16(1)
+        data.appendLittleEndianUInt16(2)
+        data.appendLittleEndianUInt16(4)
+        data.append(Data([0xaa, 0xbb, 0xcc, 0x00]))
+        data.append(Data([0xff, 0x00]))
+        return data
+    }
+
+    /// One fast-path pointer update ([MS-RDPBCGR] 2.2.9.1.2.1): 0x5 hides the pointer, 0x9
+    /// sets a colour pointer.
+    static func fastPathPointerUpdate(updateCode: UInt8, data: Data) -> Data {
+        var update = Data([updateCode])
+        update.appendLittleEndianUInt16(UInt16(data.count))
+        update.append(data)
+        return Data([0x00, UInt8(2 + update.count)]) + update
     }
 
     static func cachedPointerUpdate() -> Data {
@@ -2057,6 +2078,8 @@ private enum MockKRDPFixtures {
             [graphicsDynamicPacket(segmentedGraphicsData(avc420FrameMessages()))]
         case .sendPointerUpdatesBeforeFirstFrame:
             [pointerColorUpdate(), cachedPointerUpdate(), graphicsDynamicPacket(segmentedGraphicsData(avc420FrameMessages()))]
+        case .sendFastPathPointerUpdatesBeforeGraphicsChannel:
+            [cachedPointerUpdate(), graphicsDynamicPacket(segmentedGraphicsData(avc420FrameMessages()))]
         case .setErrorInfoLogoffBeforeFrame:
             [
                 setErrorInfo(0x0000_000C),
