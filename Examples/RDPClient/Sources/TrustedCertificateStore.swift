@@ -1,6 +1,14 @@
 import Foundation
 import RDPKit
 
+/// Why RDPClient refuses a server's certificate before any credential is sent.
+enum CertificateRefusal: Equatable {
+    /// Neither the system nor the user trusts it.
+    case untrusted
+    /// The user trusted another certificate for this host.
+    case changed
+}
+
 /// Sendable because UserDefaults is thread-safe; the session thread checks certificates.
 struct TrustedCertificateStore: @unchecked Sendable {
     private let defaults: UserDefaults
@@ -34,6 +42,22 @@ struct TrustedCertificateStore: @unchecked Sendable {
         let hostAndPort = Self.hostAndPort(of: key.storageIdentifier)
         return certificateIDs.contains(key.storageIdentifier) == false
             && certificateIDs.contains { Self.hostAndPort(of: $0) == hostAndPort }
+    }
+
+    /// Why `certificate` must be refused before credentials are sent, or nil to go ahead.
+    /// `acceptsUntrusted` (Hide certificate warnings) lets through a certificate nobody trusts,
+    /// but never one that replaced a certificate the user trusted.
+    func refusal(of certificate: RDPServerCertificateInfo, port: UInt16, acceptsUntrusted: Bool) -> CertificateRefusal? {
+        if isChanged(certificate, port: port) {
+            return .changed
+        }
+        guard certificate.trusted == false,
+              acceptsUntrusted == false,
+              isTrusted(host: certificate.host, port: port, sha256: certificate.sha256) == false
+        else {
+            return nil
+        }
+        return .untrusted
     }
 
     /// Replaces the certificate trusted for the key's host, if any.

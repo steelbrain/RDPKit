@@ -53,7 +53,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
     private var renderMetricsStore = RDPRenderMetricsStore()
     private let diagnosticsModel = RemoteSessionDiagnosticsModel()
     private var certificateTrustedByApp = false
-    private var certificateChanged = false
+    private var certificateRefusal: CertificateRefusal?
     private var certificateTrustMessage: String?
     private var formError: String?
     private var controlsVisible = false
@@ -460,14 +460,27 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                 action: .forgetCertificate
             )
         }
-        if certificateChanged {
+        switch certificateRefusal {
+        case .changed:
             return RDPAppKitNoticeState(
                 title: "Certificate Changed",
                 message: "Trust the new certificate only if you know why the server's certificate changed.",
                 systemImage: "lock.trianglebadge.exclamationmark.fill",
-                actionTitle: "Trust Certificate",
+                actionTitle: "Trust and Connect",
                 action: .trustCertificate
             )
+        case .untrusted:
+            let fingerprint = serverCertificateInfo?.sha256.map { " SHA-256: \($0)" } ?? ""
+            return RDPAppKitNoticeState(
+                title: "Untrusted Certificate",
+                message: "This Mac does not trust the server's certificate. Trust it only if you expect it, "
+                    + "such as a server's self-signed certificate.\(fingerprint)",
+                systemImage: "lock.trianglebadge.exclamationmark.fill",
+                actionTitle: "Trust and Connect",
+                action: .trustCertificate
+            )
+        case nil:
+            break
         }
         if let warning = report?.warnings.first ?? serverCertificateInfo?.warnings.first {
             return RDPAppKitNoticeState(
@@ -575,7 +588,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         resetFramePresentationState()
         renderMetricsStore.reset()
         certificateTrustedByApp = false
-        certificateChanged = false
+        certificateRefusal = nil
         certificateTrustMessage = nil
 
         let target: RDPConnectionTarget
@@ -651,6 +664,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         let credentialStore = credentialStore
         let clientLicenseStore = clientLicenseStore
         let trustedCertificateStore = trustedCertificateStore
+        let acceptsUntrustedCertificates = hideCertificateWarnings
         // RDPSessionClient.run blocks for the whole session, so it gets its own thread
         // rather than holding a Swift concurrency worker.
         let sessionThread = Thread {
@@ -790,8 +804,12 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                 },
                 onCertificate: { certificateInfo in
                     // Cancelling here closes the connection before any credential is sent.
-                    let isChanged = trustedCertificateStore.isChanged(certificateInfo, port: target.port)
-                    if isChanged {
+                    let refusal = trustedCertificateStore.refusal(
+                        of: certificateInfo,
+                        port: target.port,
+                        acceptsUntrusted: acceptsUntrustedCertificates
+                    )
+                    if refusal != nil {
                         cancellation.cancel()
                     }
                     sink.apply { controller in
@@ -802,8 +820,8 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                             port: target.port,
                             sha256: certificateInfo.sha256
                         )
-                        if isChanged {
-                            controller.rejectChangedCertificate()
+                        if let refusal {
+                            controller.refuseCertificate(refusal)
                         }
                         controller.render()
                     }
@@ -1003,12 +1021,15 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         remoteDesktopRenderer.clear()
     }
 
-    private func rejectChangedCertificate() {
-        certificateChanged = true
+    private func refuseCertificate(_ refusal: CertificateRefusal) {
+        certificateRefusal = refusal
+        let reason = switch refusal {
+        case .changed: "The server's certificate is not the one trusted for this host."
+        case .untrusted: "Neither this Mac nor RDPClient trusts the server's certificate."
+        }
         sessionEndReason = RDPSessionEndReason(
             kind: .failed,
-            message: "The server's certificate is not the one trusted for this host. "
-                + "The connection was closed before any credential was sent."
+            message: reason + " The connection was closed before any credential was sent."
         )
         cancelConnection(shouldRecordCancellation: false)
     }
@@ -1205,6 +1226,11 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
             return
         }
         trustedCertificateStore.trust(key)
+        // A connection refused for this certificate connects again now that it is trusted.
+        guard certificateRefusal == nil else {
+            beginConnection()
+            return
+        }
         certificateTrustedByApp = true
         certificateTrustMessage = "Certificate trusted for this host."
         render()
