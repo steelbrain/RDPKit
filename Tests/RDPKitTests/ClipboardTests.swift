@@ -725,6 +725,31 @@ import Testing
     }
 }
 
+/// Format characters (Unicode Cf) spell names: ZWNJ in Persian, ZWJ in emoji sequences and
+/// Indic scripts, the soft hyphen, bidi marks. Neither side replaces them; this side still
+/// replaces control characters, line separators and the bidi controls that reorder a name.
+@Test func clipboardFileNamesKeepFormatCharacters() throws {
+    let names = [
+        "\u{06AF}\u{0632}\u{0627}\u{0631}\u{0634}\u{200C}\u{0647}\u{0627}.pdf",
+        "\u{1F469}\u{200D}\u{1F4BB} notes.txt",
+        "\u{0915}\u{094D}\u{200D}\u{0937}.txt",
+        "co\u{00AD}operate.txt",
+        "\u{200F}\u{05E9}\u{05DC}\u{05D5}\u{05DD} (1).txt",
+    ]
+    let unsafeNames = [
+        "tab\tline\nfeed\u{7F}\u{85}\u{9F}\u{2028}.txt",
+        "x\u{202E}fdp.command",
+        "\u{2067}isolated\u{2069}.txt",
+    ]
+
+    let remoteNames = try RDPClipboardFileGroupDescriptorW(descriptors: (names + unsafeNames).map { fileDescriptor(fileName: $0) })
+        .remoteFileTransferFiles()
+        .map(\.fileName)
+
+    #expect(remoteNames == names + ["tab_line_feed____.txt", "x_fdp.command", "_isolated_.txt"])
+    #expect(try fileNamesTheServerSees(publishing: names + unsafeNames.dropFirst()) == names + unsafeNames.dropFirst())
+}
+
 @Test func clipboardRemoteFileTransferFilesRejectInvalidPlans() {
     #expect(throws: RDPClipboardRemoteFileTransferPlanningError.emptyFileList) {
         try RDPClipboardFileGroupDescriptorW(descriptors: []).remoteFileTransferFiles()

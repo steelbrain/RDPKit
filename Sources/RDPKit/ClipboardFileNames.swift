@@ -3,7 +3,10 @@ import Foundation
 /// The file names the side a clipboard file is copied to accepts: `apple` for remote files
 /// saved on this device, `windows` for local files the server pastes.
 enum RDPClipboardFileNameRules {
-    /// APFS and HFS+: no "/" or ":", at most 255 UTF-8 bytes.
+    /// APFS and HFS+: no "/" or ":", at most 255 UTF-8 bytes. Control characters and line
+    /// separators go too, so a name shows on one line, and so do the bidi embeddings,
+    /// overrides and isolates, which can show "x\u{202E}fdp.command" as "xdnammoc.pdf".
+    /// Other format characters, such as ZWNJ, ZWJ and bidi marks, spell names and are kept.
     case apple
     /// Windows (Naming Files, Paths, and Namespaces), for a path relative to where the server
     /// pastes: cFileName carries a file inside a folder as "folder\file", as the shell's
@@ -13,9 +16,13 @@ enum RDPClipboardFileNameRules {
     /// most the 259 code units cFileName holds before its terminator.
     case windows
 
+    // Not `.controlCharacters`: that is Cf as well as Cc.
     private static let invalidAppleScalars = CharacterSet(charactersIn: ":")
-        .union(.controlCharacters)
+        .union(CharacterSet(charactersIn: Unicode.Scalar(0x00) ... Unicode.Scalar(0x1F)))
+        .union(CharacterSet(charactersIn: Unicode.Scalar(0x7F) ... Unicode.Scalar(0x9F)))
         .union(.newlines)
+        .union(CharacterSet(charactersIn: "\u{202A}" ... "\u{202E}"))
+        .union(CharacterSet(charactersIn: "\u{2066}" ... "\u{2069}"))
     private static let invalidWindowsScalars = CharacterSet(charactersIn: "\\/:*?\"<>|")
         .union(CharacterSet(charactersIn: Unicode.Scalar(0x00) ... Unicode.Scalar(0x1F)))
 
