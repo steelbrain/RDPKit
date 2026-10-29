@@ -92,6 +92,11 @@ final class RDPClientConnection {
     var deletedGraphicsSurfaceIDs: Set<UInt16> = []
     var evictedGraphicsCacheSlots: Set<UInt16> = []
     var graphicsFramesDecoded: UInt32 = 0
+    /// The `onGraphicsFrame` handler showed a frame: it returned without throwing
+    /// `RDPGraphicsFrameNotPresented`. Until then a live session awaits its first frame.
+    var hasPresentedFrame = false
+    /// Why the handler last could not show a frame, for the error when none is shown in time.
+    var frameNotPresentedReason: String?
     /// Created on first use at the current desktop size, again after a resize.
     private var primarySurfaceStorage: RDPPrimarySurfaceCompositor?
     var fastPathReassembler = RDPFastPathOutputFragmentReassembler(

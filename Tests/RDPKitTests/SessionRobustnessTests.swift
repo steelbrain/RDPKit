@@ -476,6 +476,65 @@ func liveSessionWaitsIndefinitelyAfterItsFirstFrame(chatty: Bool) throws {
     #expect(run.report.error == "cancelled")
 }
 
+/// A frame the handler cannot show, such as video it fails to decode, is acknowledged and the
+/// session goes on, but the frame is not the first a live session waits for: frames that keep
+/// failing end it at the timeout, whether they come through RDPGFX or as bitmap updates.
+@Test(arguments: [
+    // The capture's own first frame, then a video frame every 200 ms.
+    (nil, KRdpCapture.graphicsPacket(KRdpCapture.startFrame(id: 2) + KRdpCapture.avc420Update() + KRdpCapture.endFrame(id: 2))),
+    // Finalization done (event 28), then a bitmap update every 200 ms.
+    (29, KRdpCapture.fastPathSurfaceBits(left: 0, top: 0, pixel: Data([1, 2, 3, 0xFF]))),
+] as [(Int?, Data)])
+func liveSessionEndsWhenTheHandlerShowsNoFrameInTime(prefix: Int?, frame: Data) throws {
+    let handled = Locked(0)
+    let run = try KRdpCapture.run(
+        prefix: prefix,
+        frameCaptureLimit: nil,
+        timeoutSeconds: 1,
+        guardSeconds: 8,
+        onEnd: KRdpCapture.repeatedly(frame, every: .milliseconds(200)),
+        onGraphicsFrame: { _ in
+            handled.withLock { $0 += 1 }
+            throw RDPGraphicsFrameNotPresented(reason: "awaiting a keyframe")
+        }
+    )
+
+    #expect(run.report.rdpGraphicsFirstFrame != nil)
+    #expect(handled.value > 2)
+    if prefix == nil {
+        #expect((run.report.rdpGraphicsFrameAcknowledgeCount ?? 0) > 2)
+    }
+    #expect(run.report.failure == .graphicsFrameHandler)
+    #expect(run.report.error == "graphics frame handler showed no frame within 1 seconds: awaiting a keyframe")
+}
+
+/// The first frame the handler shows ends the wait, as any frame does for a handler that never
+/// throws `RDPGraphicsFrameNotPresented`.
+@Test func aFrameTheHandlerShowsEndsALiveSessionsWaitForItsFirstFrame() throws {
+    let handled = Locked(0)
+    let run = try KRdpCapture.run(
+        frameCaptureLimit: nil,
+        timeoutSeconds: 1,
+        guardSeconds: 3,
+        onEnd: KRdpCapture.repeatedly(
+            KRdpCapture.graphicsPacket(KRdpCapture.startFrame(id: 2) + KRdpCapture.avc420Update() + KRdpCapture.endFrame(id: 2)),
+            every: .milliseconds(200)
+        ),
+        onGraphicsFrame: { _ in
+            // The capture's frame, then the first repeated one, fail to show.
+            if handled.withLock({ count in
+                count += 1
+                return count <= 2
+            }) {
+                throw RDPGraphicsFrameNotPresented(reason: "awaiting a keyframe")
+            }
+        }
+    )
+
+    #expect(handled.value > 2)
+    #expect(run.report.error == "cancelled")
+}
+
 /// A live session keeps the first 8 frame acknowledgements, and counts them all.
 @Test func liveSessionCountsEveryFrameAcknowledgement() throws {
     let frameIDs = UInt32(0x5EED_0001) ... 0x5EED_000C
@@ -693,6 +752,7 @@ enum KRdpCapture {
         guardSeconds: Double = 20,
         onEnd: (@Sendable (Channel) -> Void)? = nil,
         onTrailingClientPacket: (@Sendable (Channel, Data) -> Void)? = nil,
+        onGraphicsFrame: RDPGraphicsFrameHandler? = nil,
         onInputReady: RDPInputSessionHandler? = nil,
         onDisplayControlReady: RDPDisplayControlSessionHandler? = nil,
         liveReport: RDPLiveConnectionReport? = nil
@@ -736,6 +796,7 @@ enum KRdpCapture {
                 clipboardEnabled: false,
                 graphicsCapabilityProfile: .avcThinClient
             ),
+            onGraphicsFrame: onGraphicsFrame,
             onInputReady: onInputReady,
             onDisplayControlReady: onDisplayControlReady,
             liveReport: liveReport,

@@ -343,9 +343,8 @@ extension RDPClientConnection {
     private func finishGraphicsFrame(_ frameID: UInt32) throws {
         let frames = endedFrameSnapshots(frameID: frameID)
         pendingGraphicsUpdates = []
-        try deliver(frames)
-        // A capture run counts every frame; a live session's first frame is one it can show.
-        if targetFrameCount != nil || !frames.isEmpty {
+        // A capture run counts every frame; a live session's first frame is one it shows.
+        if try deliver(frames) || targetFrameCount != nil {
             startPhase(awaitingFrame: true)
         }
         guard let graphicsChannelID else {
@@ -360,25 +359,34 @@ extension RDPClientConnection {
         }
     }
 
-    /// Records the snapshots, then calls the application. A throwing handler
-    /// ends the session; the frame is not acknowledged.
-    private func deliver(_ frames: [RDPGraphicsFrameSnapshot]) throws {
+    /// Records the snapshots, then calls the application; returns whether it
+    /// showed any. A throwing handler ends the session and the frame is not
+    /// acknowledged, unless it throws `RDPGraphicsFrameNotPresented`.
+    private func deliver(_ frames: [RDPGraphicsFrameSnapshot]) throws -> Bool {
         for frame in frames {
             if report.rdpGraphicsFirstFrame == nil {
                 report.rdpGraphicsFirstFrame = frame
             }
             report.rdpGraphicsFrames.appendCapped(frame, limit: recordedGraphicsFrameLimit(targetFrameCount: targetFrameCount))
         }
+        var presented = false
         for frame in frames {
             do {
                 try callbacks.onGraphicsFrame?(frame)
+                presented = true
+            } catch let notPresented as RDPGraphicsFrameNotPresented {
+                frameNotPresentedReason = notPresented.reason
             } catch {
                 throw RDPConnectionError.graphicsFrameHandler(error)
             }
         }
+        hasPresentedFrame = hasPresentedFrame || presented
+        // The server's video has started, whether or not the handler could show it: a
+        // layout sent now gets a keyframe from Windows and gnome-remote-desktop.
         if !frames.isEmpty {
             announceDisplayControl()
         }
+        return presented
     }
 
     private func recordGraphicsUpdatePacket(_ packet: Data) {
@@ -462,8 +470,7 @@ extension RDPClientConnection {
             appendWarning(code: "graphics-decode-error", message: String(describing: error))
             return
         }
-        try deliver(frames)
-        if !frames.isEmpty {
+        if try deliver(frames) || (targetFrameCount != nil && !frames.isEmpty) {
             startPhase(awaitingFrame: true)
         }
         primaryFramesCaptured += frames.count

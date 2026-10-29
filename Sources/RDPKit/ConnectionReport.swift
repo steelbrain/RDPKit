@@ -412,7 +412,9 @@ public enum RDPConnectionFailure: Encodable, Equatable, Sendable {
     /// RDPKit failed on this device: the system could not generate random
     /// bytes, or RDPKit broke its own sequence. The server was not at fault.
     case clientFailure
-    /// The `onGraphicsFrame` handler threw.
+    /// The `onGraphicsFrame` handler threw, or a live session's handler showed none of the
+    /// frames that came within `RDPConnectionConfiguration.timeoutSeconds`, throwing
+    /// `RDPGraphicsFrameNotPresented` for each.
     case graphicsFrameHandler
 }
 

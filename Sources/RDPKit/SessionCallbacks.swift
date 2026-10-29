@@ -3,8 +3,28 @@ import Foundation
 // Threading: see `RDPSessionClient`.
 
 /// Receives each decoded graphics frame. Throwing ends the session with
-/// `RDPConnectionFailure.graphicsFrameHandler`; the frame is not acknowledged.
+/// `RDPConnectionFailure.graphicsFrameHandler`; the frame is not acknowledged. Throwing
+/// `RDPGraphicsFrameNotPresented` instead goes on with the session.
 public typealias RDPGraphicsFrameHandler = (RDPGraphicsFrameSnapshot) throws -> Void
+
+/// Thrown by an `onGraphicsFrame` handler for a frame it could not show, such as video that
+/// failed to decode and waits for a keyframe. The session goes on and acknowledges the frame,
+/// so the server keeps sending, but the frame does not count as shown. A live session waits
+/// for its first frame only within `RDPConnectionConfiguration.timeoutSeconds`, and that is
+/// the first frame the handler returns from; when none is shown in time, the session ends
+/// with `RDPConnectionFailure.graphicsFrameHandler` and the last `reason`.
+public struct RDPGraphicsFrameNotPresented: Error, CustomStringConvertible, Sendable {
+    public var reason: String
+
+    public init(reason: String) {
+        self.reason = reason
+    }
+
+    public var description: String {
+        reason
+    }
+}
+
 public typealias RDPRemotePointerHandler = @Sendable (RDPRemotePointerUpdate) -> Void
 /// Called after connection finalization, and again with a new session after a
 /// server deactivation-reactivation (MS-RDPBCGR 1.3.1.3). A session sends nothing

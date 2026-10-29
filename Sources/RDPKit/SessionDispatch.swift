@@ -46,21 +46,21 @@ extension RDPClientConnection {
     /// timeout, however much other traffic arrives; that includes a live
     /// session's reactivation or new RDPGFX channel after its first frame.
     /// `awaitingFrame` marks a milestone whose next step is a frame: a capture
-    /// run waits for each, a live session only for its first. Once a live
-    /// session shows frames it awaits nothing, and TCP keepalive notices a
-    /// dead peer.
+    /// run waits for each, a live session only for its first, the first the
+    /// `onGraphicsFrame` handler shows. Once a live session shows frames it
+    /// awaits nothing, and TCP keepalive notices a dead peer.
     func startPhase(awaitingFrame: Bool = false) {
-        phaseDeadline = awaitingFrame && targetFrameCount == nil && report.rdpGraphicsFirstFrame != nil
+        phaseDeadline = awaitingFrame && targetFrameCount == nil && hasPresentedFrame
             ? nil
             : .now() + .seconds(Int64(configuration.timeoutSeconds))
     }
 
-    /// Live sessions wait indefinitely once frames flow; TCP keepalive notices a dead peer.
+    /// Live sessions wait indefinitely once they show frames; TCP keepalive notices a dead peer.
     private var receiveTimeout: TimeAmount? {
         if isTerminating {
             return .seconds(1)
         }
-        let waitsIndefinitely = targetFrameCount == nil && report.rdpGraphicsFirstFrame != nil && !isDeactivated
+        let waitsIndefinitely = targetFrameCount == nil && hasPresentedFrame && !isDeactivated
         return waitsIndefinitely ? nil : .seconds(Int64(configuration.timeoutSeconds))
     }
 
@@ -499,6 +499,14 @@ extension RDPClientConnection {
                 throw RDPConnectionError(.timedOut, description: graphicsChannelID.flatMap { dynamicChannelFragments[$0] } != nil
                     ? "server did not complete fragmented RDPGFX capabilities data"
                     : "server did not confirm RDPGFX capabilities")
+            }
+            // Frames came, but the handler could show none of them.
+            if targetFrameCount == nil, !hasPresentedFrame, let frameNotPresentedReason {
+                throw RDPConnectionError(
+                    .graphicsFrameHandler,
+                    description: "graphics frame handler showed no frame within \(configuration.timeoutSeconds) seconds: "
+                        + frameNotPresentedReason
+                )
             }
         default:
             break
