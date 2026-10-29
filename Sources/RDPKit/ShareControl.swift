@@ -23,12 +23,6 @@ enum RDPSaveSessionInfoType: UInt32, Sendable {
     case logonExtendedInfo = 0x0000_0003
 }
 
-struct RDPServerAutoReconnectPacket: Equatable, Sendable {
-    var version: UInt32
-    var logonID: UInt32
-    var arcRandomBits: Data
-}
-
 struct RDPLogonErrorInfo: Equatable, Sendable {
     var errorNotificationType: UInt32
     var errorNotificationData: UInt32
@@ -36,7 +30,7 @@ struct RDPLogonErrorInfo: Equatable, Sendable {
 
 struct RDPSaveSessionInfoPDU: Equatable, Sendable {
     var infoTypeRawValue: UInt32
-    var autoReconnectPacket: RDPServerAutoReconnectPacket?
+    var autoReconnectPacket: RDPAutoReconnectCookie?
     var logonErrorInfo: RDPLogonErrorInfo?
 
     var infoType: RDPSaveSessionInfoType? {
@@ -46,7 +40,7 @@ struct RDPSaveSessionInfoPDU: Equatable, Sendable {
     static func parsePayload(_ payload: Data) throws -> RDPSaveSessionInfoPDU {
         var cursor = ByteCursor(payload)
         let infoTypeRawValue = try cursor.readLittleEndianUInt32()
-        var autoReconnectPacket: RDPServerAutoReconnectPacket?
+        var autoReconnectPacket: RDPAutoReconnectCookie?
         var logonErrorInfo: RDPLogonErrorInfo?
 
         switch RDPSaveSessionInfoType(rawValue: infoTypeRawValue) {
@@ -136,7 +130,7 @@ struct RDPSaveSessionInfoPDU: Equatable, Sendable {
 
     private static func parseExtendedInfoPayload(
         _ cursor: inout ByteCursor
-    ) throws -> (RDPServerAutoReconnectPacket?, RDPLogonErrorInfo?) {
+    ) throws -> (RDPAutoReconnectCookie?, RDPLogonErrorInfo?) {
         let payloadLength = cursor.remaining
         let length = try cursor.readLittleEndianUInt16()
         let fieldsPresent = try cursor.readLittleEndianUInt32()
@@ -149,7 +143,7 @@ struct RDPSaveSessionInfoPDU: Equatable, Sendable {
 
         let fieldsPayload = try cursor.readData(count: Int(length) - 6)
         var fieldsCursor = ByteCursor(fieldsPayload)
-        var autoReconnectPacket: RDPServerAutoReconnectPacket?
+        var autoReconnectPacket: RDPAutoReconnectCookie?
         var logonErrorInfo: RDPLogonErrorInfo?
 
         if fieldsPresent & 0x0000_0001 != 0 {
@@ -162,21 +156,20 @@ struct RDPSaveSessionInfoPDU: Equatable, Sendable {
         return (autoReconnectPacket, logonErrorInfo)
     }
 
-    private static func parseAutoReconnectField(_ cursor: inout ByteCursor) throws -> RDPServerAutoReconnectPacket {
+    /// ARC_SC_PRIVATE_PACKET ([MS-RDPBCGR] 2.2.4.2).
+    private static func parseAutoReconnectField(_ cursor: inout ByteCursor) throws -> RDPAutoReconnectCookie {
         let fieldData = try readLogonFieldData(&cursor)
         var fieldCursor = ByteCursor(fieldData)
         let cbLen = try fieldCursor.readLittleEndianUInt32()
         let version = try fieldCursor.readLittleEndianUInt32()
         let logonID = try fieldCursor.readLittleEndianUInt32()
         let arcRandomBits = try fieldCursor.readData(count: 16)
-        guard cbLen == 28, version == 1, fieldCursor.remaining == 0 else {
+        guard cbLen == 28, version == 1, fieldCursor.remaining == 0,
+              let cookie = RDPAutoReconnectCookie(logonID: logonID, arcRandomBits: arcRandomBits)
+        else {
             throw RDPDecodeError.invalidShareDataHeader
         }
-        return RDPServerAutoReconnectPacket(
-            version: version,
-            logonID: logonID,
-            arcRandomBits: arcRandomBits
-        )
+        return cookie
     }
 
     private static func parseLogonErrorField(_ cursor: inout ByteCursor) throws -> RDPLogonErrorInfo {

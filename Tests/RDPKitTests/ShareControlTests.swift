@@ -355,11 +355,7 @@ import Testing
     let saveSessionInfo = try #require(pdu.saveSessionInfo)
     #expect(saveSessionInfo.infoType == .logonExtendedInfo)
     #expect(saveSessionInfo.infoTypeRawValue == 0x0000_0003)
-    #expect(saveSessionInfo.autoReconnectPacket == RDPServerAutoReconnectPacket(
-        version: 1,
-        logonID: 2,
-        arcRandomBits: randomBits
-    ))
+    #expect(saveSessionInfo.autoReconnectPacket == RDPAutoReconnectCookie(logonID: 2, arcRandomBits: randomBits))
 }
 
 @Test func shareDataParsesSaveSessionInfoLogonStringsWithTerminators() throws {

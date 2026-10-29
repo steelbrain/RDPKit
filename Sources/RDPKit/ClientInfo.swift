@@ -19,19 +19,23 @@ struct RDPClientInfoPDU: Equatable, Sendable {
     var clientAddress: String
     var clientDirectory: String
     var audioPlaybackEnabled: Bool
+    /// Asks the server to reconnect to the cookie's session ([MS-RDPBCGR] 5.5).
+    var autoReconnectCookie: RDPAutoReconnectCookie?
 
     init(
         credentials: RDPCredentials?,
         passwordCookie: Data? = nil,
         clientAddress: String = "0.0.0.0",
         clientDirectory: String = "RDPKit",
-        audioPlaybackEnabled: Bool = false
+        audioPlaybackEnabled: Bool = false,
+        autoReconnectCookie: RDPAutoReconnectCookie? = nil
     ) {
         self.credentials = credentials
         self.passwordCookie = passwordCookie
         self.clientAddress = clientAddress
         self.clientDirectory = clientDirectory
         self.audioPlaybackEnabled = audioPlaybackEnabled
+        self.autoReconnectCookie = autoReconnectCookie
     }
 
     var credentialsIncluded: Bool {
@@ -104,7 +108,9 @@ struct RDPClientInfoPDU: Equatable, Sendable {
         data.append(clientTimeZone)
         data.appendLittleEndianUInt32(0) // clientSessionId
         data.appendLittleEndianUInt32(0) // performanceFlags
-        data.appendLittleEndianUInt16(0) // cbAutoReconnectCookie
+        let autoReconnectPacket = autoReconnectCookie?.clientPacket ?? Data()
+        data.appendLittleEndianUInt16(UInt16(autoReconnectPacket.count)) // cbAutoReconnectCookie: 0 or 28
+        data.append(autoReconnectPacket)
         return data
     }
 

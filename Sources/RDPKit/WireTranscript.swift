@@ -27,8 +27,9 @@ public enum RDPWireLayer: String, Codable, Equatable, Sendable {
 /// Server→client application PDUs carry their full plaintext ``hex`` so a replay
 /// server can feed them back verbatim. Client→server application PDUs are
 /// recorded as length-only markers (``hex`` is `nil`): their payload can contain
-/// credentials (the Client Info PDU) and, for replay purposes, the client side
-/// is only needed as an ordering barrier — not asserted byte-for-byte.
+/// credentials and an auto-reconnect cookie (the Client Info PDU) and, for replay
+/// purposes, the client side is only needed as an ordering barrier — not
+/// asserted byte-for-byte.
 public struct RDPWireEvent: Codable, Equatable, Sendable {
     public var sequence: Int
     public var direction: RDPWireDirection
@@ -71,6 +72,8 @@ public struct RDPWireEvent: Codable, Equatable, Sendable {
 /// names. Store and share it as you would the session itself. The secrets a
 /// server sends in the clear are zeroed in ``events``: a Server Redirection
 /// PDU's Password field and a Save Session Info PDU's auto-reconnect cookie.
+/// The client's own application PDUs, which carry its credentials and
+/// auto-reconnect cookie, are recorded by length only.
 public final class RDPWireTranscript: @unchecked Sendable {
     private struct Record {
         var direction: RDPWireDirection

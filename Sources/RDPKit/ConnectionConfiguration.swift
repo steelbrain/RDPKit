@@ -21,6 +21,10 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
     public var earlyUserAuthorizationEnabled: Bool
     public var graphicsCapabilityProfile: RDPGraphicsCapabilityProfile
     public var storedClientLicense: RDPStoredClientLicense?
+    /// An earlier session's ``RDPConnectionReport/rdpAutoReconnectCookie``, which asks the
+    /// server to reconnect to that session ([MS-RDPBCGR] 5.5). It does not replace the
+    /// credentials CredSSP needs.
+    public var autoReconnectCookie: RDPAutoReconnectCookie?
     public var keyboardLayout: RDPKeyboardLayout
     public var keyboardType: RDPKeyboardType
     /// An OEM-dependent value; 0 for most keyboards.
@@ -58,6 +62,7 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
         earlyUserAuthorizationEnabled: Bool = false,
         graphicsCapabilityProfile: RDPGraphicsCapabilityProfile = .automatic,
         storedClientLicense: RDPStoredClientLicense? = nil,
+        autoReconnectCookie: RDPAutoReconnectCookie? = nil,
         keyboardLayout: RDPKeyboardLayout = .unitedStates,
         keyboardType: RDPKeyboardType = .ibmEnhanced,
         keyboardSubType: UInt32 = 0,
@@ -81,6 +86,7 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
         self.earlyUserAuthorizationEnabled = earlyUserAuthorizationEnabled
         self.graphicsCapabilityProfile = graphicsCapabilityProfile
         self.storedClientLicense = storedClientLicense
+        self.autoReconnectCookie = autoReconnectCookie
         self.keyboardLayout = keyboardLayout
         self.keyboardType = keyboardType
         self.keyboardSubType = keyboardSubType
@@ -108,6 +114,7 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
         earlyUserAuthorizationEnabled: Bool = false,
         graphicsCapabilityProfile: RDPGraphicsCapabilityProfile = .automatic,
         storedClientLicense: RDPStoredClientLicense? = nil,
+        autoReconnectCookie: RDPAutoReconnectCookie? = nil,
         keyboardLayout: RDPKeyboardLayout = .unitedStates,
         keyboardType: RDPKeyboardType = .ibmEnhanced,
         keyboardSubType: UInt32 = 0,
@@ -132,6 +139,7 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
             earlyUserAuthorizationEnabled: earlyUserAuthorizationEnabled,
             graphicsCapabilityProfile: graphicsCapabilityProfile,
             storedClientLicense: storedClientLicense,
+            autoReconnectCookie: autoReconnectCookie,
             keyboardLayout: keyboardLayout,
             keyboardType: keyboardType,
             keyboardSubType: keyboardSubType,

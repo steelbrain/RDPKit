@@ -109,7 +109,8 @@ extension RDPClientConnection {
         let clientInfo = RDPClientInfoPDU(
             credentials: configuration.credentials,
             passwordCookie: configuration.redirectionPasswordCookie,
-            audioPlaybackEnabled: configuration.audioPlaybackEnabled
+            audioPlaybackEnabled: configuration.audioPlaybackEnabled,
+            autoReconnectCookie: configuration.autoReconnectCookie
         )
         report.rdpClientInfoCredentialsIncluded = clientInfo.credentialsIncluded
         let packet = try clientInfo.encodedTPKT(userChannelID: userChannelID, ioChannelID: ioChannelID)

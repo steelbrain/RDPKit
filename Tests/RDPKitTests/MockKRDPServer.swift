@@ -303,6 +303,8 @@ struct MockKRDPServerTranscript: Equatable, Sendable {
     var credSSPGates: [String] = []
     var disconnectUltimatumReasons: [UInt8] = []
     var frameAcknowledgeIDs: [UInt32] = []
+    /// The Client Info PDU's user data, security header included.
+    var clientInfo: Data?
     /// The ClientMachineName of a Client New License Request, without its terminator.
     var licenseMachineName: String?
 }
@@ -788,7 +790,8 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
             stage = index + 1 == joinChannelIDs.count ? .clientInfo : .channelJoin(index + 1)
 
         case .clientInfo:
-            try MockKRDPFixtures.expectSendDataRequest(packet, channelID: MockKRDPConstants.ioChannelID)
+            let request = try MockKRDPFixtures.expectSendDataRequest(packet, channelID: MockKRDPConstants.ioChannelID)
+            transcript.withLock { $0.clientInfo = request.userData }
             if options.autoDetectBehavior == .noReplyRequestOnly {
                 write(MockKRDPFixtures.autoDetectRequest(requestType: 0x1014), context: context)
                 write(MockKRDPFixtures.licenseValidClient(), context: context)

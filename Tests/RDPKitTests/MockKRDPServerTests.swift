@@ -147,6 +147,26 @@ struct MockKRDPServerTests {
         #expect(run.transcript.licenseMachineName == "Conference-Room")
     }
 
+    /// The auto-reconnect cookie ends the Client Info PDU ([MS-RDPBCGR] 2.2.1.11.1.1.1). A wire
+    /// transcript records the client's PDUs, and so its cookie, by length only.
+    @Test func clientSendsItsAutoReconnectCookie() throws {
+        let cookie = try #require(RDPAutoReconnectCookie(
+            logonID: 0x1234_5678,
+            arcRandomBits: Data((1 ... 16).map { UInt8($0 * 11) })
+        ))
+        let wireTranscript = RDPWireTranscript()
+        let run = try runMock(.init(), { $0.autoReconnectCookie = cookie }, client: {
+            RDPSessionClient().run(configuration: $0, wireTranscript: wireTranscript)
+        })
+        let clientEvents = wireTranscript.events.filter { $0.direction == .clientToServer && $0.layer == .application }
+
+        #expect(run.report.status == "success")
+        #expect(run.transcript.clientInfo?.suffix(30) == hexData("1c 00") + cookie.clientPacket)
+        #expect(!clientEvents.isEmpty)
+        #expect(clientEvents.allSatisfy { $0.hex == nil })
+        #expect(!wireTranscript.events.contains { $0.bytes?.range(of: cookie.securityVerifier) != nil })
+    }
+
     @Test func clientConsumesSuccessfulEarlyUserAuthorizationResult() throws {
         let report = try runMock(.init(securityProtocol: .credSSPWithEarlyUserAuth(
             credentials: mockCredentials,

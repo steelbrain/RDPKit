@@ -172,6 +172,9 @@ extension RDPClientConnection {
             termination.errorInfo = errorInfo
             self.termination = termination
         }
+        if let cookie = shareData.saveSessionInfo?.autoReconnectPacket {
+            report.rdpAutoReconnectCookie = cookie
+        }
         if let update = shareData.graphicsUpdate {
             try handleSlowPathGraphics(update, packet: packet)
         }

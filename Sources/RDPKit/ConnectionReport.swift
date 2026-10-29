@@ -52,6 +52,10 @@ public struct RDPConnectionReport: Encodable, Equatable, Sendable {
     public var rdpLicensingResponseType: String?
     public var rdpLicensingErrorCode: UInt32?
     public var rdpIssuedClientLicense: RDPStoredClientLicense?
+    /// The latest auto-reconnect cookie the server sent, for reconnecting to the session
+    /// through ``RDPConnectionConfiguration/autoReconnectCookie``. It is a secret, and
+    /// the report's encoding keeps only its logon ID.
+    public var rdpAutoReconnectCookie: RDPAutoReconnectCookie?
     public var rdpPostLicensingResponseHex: String?
     public var rdpPostLicensingResponseType: String?
     public var rdpDemandActiveShareID: UInt32?
@@ -149,6 +153,7 @@ public struct RDPConnectionReport: Encodable, Equatable, Sendable {
         rdpLicensingResponseType: String? = nil,
         rdpLicensingErrorCode: UInt32? = nil,
         rdpIssuedClientLicense: RDPStoredClientLicense? = nil,
+        rdpAutoReconnectCookie: RDPAutoReconnectCookie? = nil,
         rdpPostLicensingResponseHex: String? = nil,
         rdpPostLicensingResponseType: String? = nil,
         rdpDemandActiveShareID: UInt32? = nil,
@@ -245,6 +250,7 @@ public struct RDPConnectionReport: Encodable, Equatable, Sendable {
         self.rdpLicensingResponseType = rdpLicensingResponseType
         self.rdpLicensingErrorCode = rdpLicensingErrorCode
         self.rdpIssuedClientLicense = rdpIssuedClientLicense
+        self.rdpAutoReconnectCookie = rdpAutoReconnectCookie
         self.rdpPostLicensingResponseHex = rdpPostLicensingResponseHex
         self.rdpPostLicensingResponseType = rdpPostLicensingResponseType
         self.rdpDemandActiveShareID = rdpDemandActiveShareID
