@@ -37,12 +37,13 @@ extension RDPClientConnection {
     }
 
     /// Bounds the wait for the next connection milestone by the configured
-    /// timeout, however much other traffic arrives. A live session that shows
-    /// frames awaits nothing: TCP keepalive notices a dead peer. `captureOnly`
-    /// marks a milestone only a capture run waits for, its next frame.
+    /// timeout, however much other traffic arrives; that includes a live
+    /// session's reactivation or new RDPGFX channel after its first frame.
+    /// `captureOnly` marks a milestone only a capture run waits for, its next
+    /// frame: a live session that shows frames awaits nothing, and TCP
+    /// keepalive notices a dead peer.
     func startPhase(captureOnly: Bool = false) {
-        let isLive = targetFrameCount == nil
-        phaseDeadline = isLive && (captureOnly || report.rdpGraphicsFirstFrame != nil)
+        phaseDeadline = targetFrameCount == nil && captureOnly
             ? nil
             : .now() + .seconds(Int64(configuration.timeoutSeconds))
     }

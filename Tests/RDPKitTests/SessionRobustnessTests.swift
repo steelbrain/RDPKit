@@ -102,6 +102,28 @@ import Testing
     ])
 }
 
+/// A live session that has shown frames still bounds a reactivation: a
+/// Demand Active the server never finalizes ends the session at the timeout
+/// instead of leaving it waiting forever.
+@Test func liveReactivationThatNeverFinalizesTimesOut() throws {
+    let events = try KRdpCapture.events()
+    var deactivate = Data()
+    deactivate.appendLittleEndianUInt32(KRdpCapture.shareID)
+    deactivate.append(contentsOf: [0x01, 0x00, 0x00])
+    let run = try KRdpCapture.run(
+        appending: [
+            KRdpCapture.ioPacket(KRdpCapture.shareControl(type: 0x6, body: deactivate)),
+            #require(events[19].bytes),
+        ],
+        frameCaptureLimit: nil,
+        timeoutSeconds: 1,
+        guardSeconds: 8
+    )
+
+    #expect(run.report.rdpGraphicsFirstFrame != nil)
+    #expect(run.report.error == "server did not grant control during connection finalization")
+}
+
 /// Video updates are held until the frame ends, so a server that never ends
 /// its frame must not grow them without bound.
 @Test func frameThatNeverEndsIsBounded() throws {
