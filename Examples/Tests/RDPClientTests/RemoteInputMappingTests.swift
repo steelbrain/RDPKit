@@ -800,6 +800,33 @@ private func keyEvent(
     ])
 }
 
+// With no session the view still tracks what it would have sent, so a session attached later
+// gets nothing stale: a focus loss with no session lets go of the Windows key a Command chord
+// took down, so Command released with a session sends no Windows key release.
+@MainActor
+@Test func inputMadeWithNoSessionLeavesNothingStaleForTheNextOne() throws {
+    let keyA = RDPKeyboardScancode(code: 0x1E)
+    let view = RemoteInputCaptureNSView()
+    view.flagsChanged(with: try keyEvent(.flagsChanged, keyCode: kVK_Command, modifierFlags: .command))
+    view.keyDown(with: try keyEvent(.keyDown, keyCode: kVK_ANSI_A, characters: "a", modifierFlags: .command))
+    _ = view.resignFirstResponder()
+    let first = RecordedInput()
+    view.inputSession = first
+    view.flagsChanged(with: try keyEvent(.flagsChanged, keyCode: kVK_Command))
+    #expect(first.events.isEmpty)
+
+    // A key pressed with a session, released after the session went, then pressed with another.
+    view.keyDown(with: try keyEvent(.keyDown, keyCode: kVK_ANSI_A, characters: "a"))
+    view.inputSession = nil
+    view.keyUp(with: try keyEvent(.keyUp, keyCode: kVK_ANSI_A, characters: "a"))
+    let second = RecordedInput()
+    view.inputSession = second
+    view.keyDown(with: try keyEvent(.keyDown, keyCode: kVK_ANSI_A, characters: "a"))
+
+    #expect(first.events == [.keyboard(scancode: keyA, isReleased: false), .keyboard(scancode: keyA, isReleased: true)])
+    #expect(second.events == [.keyboard(scancode: keyA, isReleased: false)])
+}
+
 // A modifier released while a menu is open never reaches the view as flagsChanged.
 @MainActor
 @Test func aModifierReleaseTheViewMissedIsSentBeforeTheNextEvent() throws {

@@ -157,7 +157,7 @@ final class RemoteInputCaptureNSView: NSView {
         guard events.isEmpty == false else {
             return
         }
-        inputSession?.send(deferredModifierKeys.flush(&inputState) + events)
+        sendInput(deferredModifierKeys.flush(&inputState) + events)
     }
 
     override func keyDown(with event: NSEvent) {
@@ -191,7 +191,7 @@ final class RemoteInputCaptureNSView: NSView {
                event.modifierFlags.isDisjoint(with: [.command, .control]),
                let text = MacRDPKeyboardMapping.deadKeyText(aheadOf: characters)
             {
-                inputSession?.send(MacRDPKeyboardMapping.unicodeEvents(for: text))
+                sendInput(MacRDPKeyboardMapping.unicodeEvents(for: text))
             }
             sendKeyboardScancode(scancode, isReleased: false)
             // A dead key that went as a chord, as left Option-E goes as Alt-E.
@@ -209,7 +209,7 @@ final class RemoteInputCaptureNSView: NSView {
         guard events.isEmpty == false else {
             return
         }
-        inputSession?.send(events)
+        sendInput(events)
     }
 
     override func keyUp(with event: NSEvent) {
@@ -243,10 +243,10 @@ final class RemoteInputCaptureNSView: NSView {
                 if change.isDown {
                     deferredModifierKeys.press(change.scancode, inputState: inputState)
                 } else {
-                    inputSession?.send(deferredModifierKeys.release(change.scancode))
+                    sendInput(deferredModifierKeys.release(change.scancode))
                 }
             } else if change.isDown {
-                inputSession?.send(
+                sendInput(
                     deferredModifierKeys.flushWindowsKeys(&inputState)
                         + [inputState.keyboard(scancode: change.scancode, isReleased: false)]
                 )
@@ -306,7 +306,7 @@ final class RemoteInputCaptureNSView: NSView {
     /// MS-RDPBCGR 2.2.8.1.1.3.1.1.5: on focus gain, send the toggle-key state followed by the
     /// keys still held, since the server's state may have changed while focus was elsewhere.
     private func synchronizeToggleKeys(_ modifierFlags: NSEvent.ModifierFlags) {
-        inputSession?.send(inputState.synchronizationEvents(
+        sendInput(inputState.synchronizationEvents(
             toggleFlags: MacRDPKeyboardMapping.toggleFlags(for: modifierFlags)
         ))
     }
@@ -334,7 +334,7 @@ final class RemoteInputCaptureNSView: NSView {
             deferredModifierKeys.discard(modifier.scancode)
         }
         if events.isEmpty == false {
-            inputSession?.send(events)
+            sendInput(events)
         }
     }
 
@@ -343,7 +343,7 @@ final class RemoteInputCaptureNSView: NSView {
         guard let point = remotePoint(from: event, clampingToDesktop: isDragging) else {
             return
         }
-        inputSession?.send([inputState.pointerMove(to: point)])
+        sendInput([inputState.pointerMove(to: point)])
     }
 
     private func sendPointerButton(_ button: RDPPointerButton, isDown: Bool, event: NSEvent) {
@@ -352,7 +352,7 @@ final class RemoteInputCaptureNSView: NSView {
             return
         }
         let heldKeyEvents = isDown ? deferredModifierKeys.flush(&inputState) : []
-        inputSession?.send(heldKeyEvents + [inputEvent])
+        sendInput(heldKeyEvents + [inputEvent])
     }
 
     private func pointerButton(for event: NSEvent) -> RDPPointerButton? {
@@ -370,14 +370,21 @@ final class RemoteInputCaptureNSView: NSView {
 
     private func sendKeyboardScancode(_ scancode: RDPKeyboardScancode, isReleased: Bool) {
         let heldKeyEvents = isReleased ? [] : deferredModifierKeys.flush(&inputState)
-        inputSession?.send(heldKeyEvents + [inputState.keyboard(scancode: scancode, isReleased: isReleased)])
+        sendInput(heldKeyEvents + [inputState.keyboard(scancode: scancode, isReleased: isReleased)])
+    }
+
+    /// Every send goes through here, not `inputSession?.send(...)`, so that its events are built,
+    /// and the key and button state updated, with no session too: the optional chain skips both,
+    /// which left a key released with no session pressed for the next session.
+    private func sendInput(_ events: [RDPSlowPathInputEvent]) {
+        inputSession?.send(events)
     }
 
     /// A key still held back never reached the server, so nothing is sent for it.
     private func releasePressedInputs() {
         deferredModifierKeys.reset()
         followsChordedDeadKey = false
-        inputSession?.send(inputState.releasePressedInputs())
+        sendInput(inputState.releasePressedInputs())
     }
 
     /// `clampingToDesktop` moves a point outside the desktop, such as a drag's past the
