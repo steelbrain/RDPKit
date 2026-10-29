@@ -1278,6 +1278,22 @@ struct MockKRDPServerTests {
         #expect(cancelled.transcript.disconnectUltimatumReasons == [3])
     }
 
+    /// The server ends the session while the client still handles its frame: the frame
+    /// acknowledgement then meets a closed connection, which must not hide the clean end
+    /// the server sent before closing.
+    @Test func liveSessionEndsCleanlyWhenTheServerEndsItDuringAFrame() throws {
+        let report = try runMock(.init(graphicsBehavior: .endSessionLikeGnomeAfterFirstFrame), {
+            $0.graphicsFrameCaptureLimit = nil
+        }, client: {
+            RDPSessionClient().run(configuration: $0, onGraphicsFrame: { _ in Thread.sleep(forTimeInterval: 0.3) })
+        }).report
+
+        #expect(report.status == "success")
+        #expect(report.error == nil)
+        #expect(report.rdpRemoteTerminationErrorInfoName == "ERRINFO_RPC_INITIATED_DISCONNECT")
+        #expect(report.rdpRemoteTerminationDisconnectReason == 3)
+    }
+
     /// A close after a non-clean Set Error Info is the server ending the session
     /// with that error, not a clean disconnect ([MS-RDPBCGR] 2.2.5.1.1).
     @Test func liveSessionReportsNonCleanSetErrorInfoBeforeCloseAsFailure() throws {

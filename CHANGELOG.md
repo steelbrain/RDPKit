@@ -172,6 +172,9 @@
   forever.
 - `RDPWireEvent.bytes` returns nil for signed digits such as `+f` instead of
   decoding them.
+- A live session the server ends while a frame is still being handled ends
+  as the server said, for example gnome-remote-desktop's clean logoff, instead
+  of failing on the frame acknowledgement that meets the closed connection.
 
 ### Performance and examples
 

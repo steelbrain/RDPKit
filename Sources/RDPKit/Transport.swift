@@ -484,6 +484,12 @@ final class RDPTransport {
             if let rejection = serverRejection() {
                 throw rejection
             }
+            // The server closed the connection: receiving reports how, after the
+            // messages it sent first, such as a Set Error Info and its Disconnect
+            // Provider Ultimatum (gnome-remote-desktop ends sessions with those).
+            guard channel.isActive else {
+                return
+            }
             throw RDPConnectionError.send(connectionErrorDescription(error))
         }
     }

@@ -154,6 +154,11 @@ enum MockKRDPGraphicsBehavior: Equatable {
     case sendFastPathEmptyFramesBeforeFirstFrame
     case closeAfterFirstFrame
     case setErrorInfoThenCloseAfterFirstFrame
+    /// gnome-remote-desktop 51 when its session ends: Set Error Info
+    /// ERRINFO_RPC_INITIATED_DISCONNECT and a user-requested Disconnect Provider
+    /// Ultimatum right behind the frame, then a close that does not wait for the
+    /// frame acknowledgement.
+    case endSessionLikeGnomeAfterFirstFrame
     case setErrorInfoLogoffBeforeFrame
 }
 
@@ -1356,6 +1361,11 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
             write(packet, context: context)
         }
         stage = .graphicsFrameAcknowledge
+        if options.graphicsBehavior == .endSessionLikeGnomeAfterFirstFrame {
+            write(MockKRDPFixtures.setErrorInfo(0x0000_0001), context: context)
+            write(MockKRDPFixtures.disconnectProviderUltimatum(reason: 3), context: context)
+            context.close(promise: nil)
+        }
     }
 
     private func write(_ packet: Data, context: ChannelHandlerContext) {
@@ -2066,7 +2076,8 @@ private enum MockKRDPFixtures {
              .sendCompressedCapsConfirmFirstFrame,
              .sendFragmentedCompressedCapsConfirmFirstFrame,
              .closeAfterFirstFrame,
-             .setErrorInfoThenCloseAfterFirstFrame:
+             .setErrorInfoThenCloseAfterFirstFrame,
+             .endSessionLikeGnomeAfterFirstFrame:
             [graphicsDynamicPacket(segmentedGraphicsData(avc420FrameMessages()))]
         case .sendPointerUpdatesBeforeFirstFrame:
             [pointerColorUpdate(), cachedPointerUpdate(), graphicsDynamicPacket(segmentedGraphicsData(avc420FrameMessages()))]
