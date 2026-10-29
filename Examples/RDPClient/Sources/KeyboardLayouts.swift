@@ -27,7 +27,7 @@ enum MacRDPKeyboardLayout {
 
     /// The layout of the current input source; an input method such as a CJK IME
     /// reports the layout it types with. Unknown layouts fall back to US English. A Japanese
-    /// input source on a JIS keyboard may get Windows' Japanese layout instead; see
+    /// input source typing with US English gets Windows' Japanese layout instead; see
     /// `windowsKeyboard(_:isJapaneseInputSource:isJISKeyboard:)`.
     @MainActor
     static func current() -> MacRDPWindowsKeyboard {
@@ -53,29 +53,36 @@ enum MacRDPKeyboardLayout {
         }
     }
 
-    /// Windows' Japanese layout only for a Japanese input source on a JIS keyboard that types
-    /// with US English (ABC, US): macOS then types the JIS legends, which the Japanese table
-    /// matches scancode for scancode, and the server's Japanese IME gets the keys. Any other
-    /// case announces the input source's own layout, for two reasons:
+    /// Windows' Japanese layout only for a Japanese input source that types with US English
+    /// (ABC, US), so the server's Japanese IME gets the keys: on a JIS keyboard as a 106/109-key
+    /// keyboard (kbd106.dll), whose table matches the JIS legends macOS types there scancode for
+    /// scancode, and on an ANSI or ISO keyboard as a 101-key one (kbd101.dll), which types what
+    /// US types on every key and gives those keyboards' keys US's virtual keys (live,
+    /// 2026-10-29). Any other case announces the input source's own layout, for two reasons:
     /// - Command and Control chords always go as scancodes, which the server reads with the
-    ///   announced layout, so one the Mac does not type with moves shortcuts: with Japanese,
-    ///   German Ctrl-Z would arrive as Ctrl-Y, and US Ctrl-` as Hankaku/Zenkaku (0x29).
+    ///   announced layout, so one the Mac does not type with moves shortcuts: with kbd106,
+    ///   German Ctrl-Z would arrive as Ctrl-Y, and US Ctrl-` as Hankaku/Zenkaku (0x29). With
+    ///   kbd101, Ctrl-` arrives as VK_DBE_DBCSCHAR and Alt-` as VK_KANJI (live, 2026-10-29).
     /// - The server may keep its own layout. Windows kept a reconnected session's, and
     ///   gnome-remote-desktop and KRdp use their own keymaps (live, 2026-10-29). There, a key
     ///   sent as its scancode because the Japanese table matched types that layout's
-    ///   character instead (Shift-2 types "@" on US), a risk taken only where the IME needs it.
+    ///   character instead (Shift-2 types "@" on US), a risk taken only where the IME needs it;
+    ///   kbd101's table is US's, so it adds none.
     ///
-    /// Under kbd106, Shift-英数 is Caps Lock, so the input view sends nothing for Shift-Eisu,
-    /// which would otherwise toggle the server's Caps Lock out of step with the Mac's.
+    /// Microsoft's Japanese IME turns on and off with Alt-` on a 101-key keyboard (its
+    /// documented shortcut), which kbd101 sends as VK_KANJI: from the Mac, left Option, which
+    /// goes as Alt at once, and the key left of 1, which goes as 0x29 on ANSI and ISO keyboards
+    /// alike. Under kbd106, Shift-英数 is Caps Lock, so the input view sends nothing for
+    /// Shift-Eisu, which would otherwise toggle the server's Caps Lock out of step with the Mac's.
     static func windowsKeyboard(
         _ inputSourceLayout: RDPKeyboardLayout,
         isJapaneseInputSource: Bool,
         isJISKeyboard: Bool
     ) -> MacRDPWindowsKeyboard {
-        if isJapaneseInputSource, isJISKeyboard, inputSourceLayout == .unitedStates {
-            return .japanese106
+        guard isJapaneseInputSource, inputSourceLayout == .unitedStates else {
+            return MacRDPWindowsKeyboard(layout: inputSourceLayout)
         }
-        return MacRDPWindowsKeyboard(layout: inputSourceLayout)
+        return isJISKeyboard ? .japanese106 : .japanese101
     }
 
     /// A source whose first language is Japanese, as the kana modes of Japanese input methods

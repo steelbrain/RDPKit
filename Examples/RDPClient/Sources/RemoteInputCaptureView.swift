@@ -814,9 +814,10 @@ enum MacRDPKeyboardMapping {
         kVK_JIS_KeypadComma: RDPKeyboardScancode(code: 0x7E),
         // Apple's JIS keyboards send Eisu and Kana as HID LANG2 and LANG1, which a PC reads as
         // 0x71 and 0x72 (set 1's F1 and F2, which have no break code), and FreeRDP's SDL
-        // client sends them so. With Windows' Japanese layout they go as its own keys instead
-        // (see japaneseInputModeKeys). The Mac layouts type a space with them, which must not
-        // reach the server as text.
+        // client sends them so. Windows' Japanese 101-key layout turns them into VK_IME_OFF
+        // and VK_IME_ON (live, 2026-10-29); with its 106/109-key one they go as its own keys
+        // instead (see japaneseInputModeKeys). The Mac layouts type a space with them, which
+        // must not reach the server as text.
         kVK_JIS_Eisu: RDPKeyboardScancode(code: 0x71),
         kVK_JIS_Kana: RDPKeyboardScancode(code: 0x72),
         kVK_ANSI_Keypad7: RDPKeyboardScancode(code: 0x47), kVK_ANSI_Keypad8: RDPKeyboardScancode(code: 0x48),

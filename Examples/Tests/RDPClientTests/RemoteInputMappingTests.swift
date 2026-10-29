@@ -488,10 +488,11 @@ private func windowsTypes(
     }
 }
 
-/// Only a Japanese input source on a JIS keyboard that types with US English gets Windows'
-/// Japanese layout, as a 106/109-key keyboard; everything else keeps the input source's
-/// layout, so Command and Control chords reach the server on the keys the Mac puts them on.
-@Test func onlyAJapaneseInputSourceOnAJISKeyboardAnnouncesTheJapaneseKeyboard() {
+/// Only a Japanese input source that types with US English gets Windows' Japanese layout: as
+/// a 106/109-key keyboard on a JIS keyboard, and as a 101-key one, which types what US types,
+/// on an ANSI or ISO keyboard. Everything else keeps the input source's layout, so Command and
+/// Control chords reach the server on the keys the Mac puts them on.
+@Test func onlyAJapaneseInputSourceTypingWithUSEnglishAnnouncesAJapaneseKeyboard() {
     let german = RDPKeyboardLayout(rawValue: 0x0000_0407)
     let french = RDPKeyboardLayout(rawValue: 0x0000_080C)
     let dvorak = RDPKeyboardLayout(rawValue: 0x0001_0409)
@@ -500,21 +501,25 @@ private func windowsTypes(
         MacRDPKeyboardLayout.windowsKeyboard(inputSourceLayout, isJapaneseInputSource: isJapanese, isJISKeyboard: isJIS)
     }
     #expect(keyboard(.unitedStates, isJapanese: true, isJIS: true) == .japanese106)
-    // A Japanese input method typing with another layout, or on an ANSI or ISO keyboard.
+    #expect(keyboard(.unitedStates, isJapanese: true, isJIS: false) == .japanese101)
+    // A Japanese input method typing with another layout, on any keyboard.
     for other in [german, french, dvorak] {
         #expect(keyboard(other, isJapanese: true, isJIS: true) == MacRDPWindowsKeyboard(layout: other))
         #expect(keyboard(other, isJapanese: true, isJIS: false) == MacRDPWindowsKeyboard(layout: other))
     }
-    #expect(keyboard(.unitedStates, isJapanese: true, isJIS: false) == .unitedStates)
-    // A JIS keyboard with an input source that is not Japanese.
+    // An input source that is not Japanese, on any keyboard.
     #expect(keyboard(.unitedStates, isJapanese: false, isJIS: true) == .unitedStates)
     #expect(keyboard(korean, isJapanese: false, isJIS: true) == MacRDPWindowsKeyboard(layout: korean))
     #expect(keyboard(.unitedStates, isJapanese: false, isJIS: false) == .unitedStates)
 
-    // Type 7, subtype 2 is kbd106.dll; other layouts go as IBM enhanced keyboards.
+    // Type 7 with subtype 2 is kbd106.dll, with subtype 0 kbd101.dll; other layouts go as IBM
+    // enhanced keyboards.
     #expect(MacRDPWindowsKeyboard.japanese106.layout == MacRDPKeyboardLayout.japanese)
     #expect(MacRDPWindowsKeyboard.japanese106.type == .japanese)
     #expect(MacRDPWindowsKeyboard.japanese106.subType == 2)
+    #expect(MacRDPWindowsKeyboard.japanese101.layout == MacRDPKeyboardLayout.japanese)
+    #expect(MacRDPWindowsKeyboard.japanese101.type == .japanese)
+    #expect(MacRDPWindowsKeyboard.japanese101.subType == 0)
     for other in [.unitedStates, german, korean] {
         #expect(keyboard(other, isJapanese: false, isJIS: false).type == .ibmEnhanced)
         #expect(keyboard(other, isJapanese: false, isJIS: false).subType == 0)
@@ -607,6 +612,69 @@ private func windowsTypes(
     view.keyboard = .unitedStates
     view.keyDown(with: try keyEvent(.keyDown, keyCode: kVK_JIS_Eisu, characters: " ", modifierFlags: .shift))
     #expect(input.events == [.keyboard(scancode: RDPKeyboardScancode(code: 0x71), isReleased: false)])
+}
+
+/// With Windows' Japanese 101-key layout, what a Mac typing with US English types goes as
+/// scancodes, and Eisu and Kana, which that layout turns into IME Off and On, go as LANG2 and
+/// LANG1, Shift-Eisu too.
+@MainActor
+@Test func theViewSendsUSKeysAsScancodesWithTheJapanese101KeyLayout() throws {
+    let input = RecordedInput()
+    let view = RemoteInputCaptureNSView()
+    view.inputSession = input
+    view.keyboard = .japanese101
+
+    view.keyDown(with: try keyEvent(.keyDown, keyCode: kVK_ANSI_2, characters: "@", charactersIgnoringModifiers: "@", modifierFlags: .shift))
+    view.keyDown(with: try keyEvent(.keyDown, keyCode: kVK_ANSI_LeftBracket, characters: "["))
+    view.keyDown(with: try keyEvent(.keyDown, keyCode: kVK_ANSI_Quote, characters: "'"))
+    view.keyDown(with: try keyEvent(.keyDown, keyCode: kVK_JIS_Kana, characters: " "))
+    view.keyDown(with: try keyEvent(.keyDown, keyCode: kVK_JIS_Eisu, characters: " ", modifierFlags: .shift))
+
+    #expect(input.events == [
+        .keyboard(scancode: RDPKeyboardScancode(code: 0x03), isReleased: false),
+        .keyboard(scancode: RDPKeyboardScancode(code: 0x1A), isReleased: false),
+        .keyboard(scancode: RDPKeyboardScancode(code: 0x28), isReleased: false),
+        .keyboard(scancode: RDPKeyboardScancode(code: 0x72), isReleased: false),
+        .keyboard(scancode: RDPKeyboardScancode(code: 0x71), isReleased: false),
+    ])
+}
+
+/// Alt-` turns Microsoft's Japanese IME on and off on a 101-key keyboard: left Option, which
+/// goes as Alt at once, and the key left of 1 (kVK_ISO_Section on ISO keyboards, sent as 0x29
+/// like the ANSI grave key) go as that, though Option makes the key a dead key on the Mac.
+@MainActor
+@Test func leftOptionAndTheKeyLeftOfOneGoAsAltGraveWithTheJapanese101KeyLayout() throws {
+    let leftAlt = RDPKeyboardScancode(code: 0x38)
+    let grave = RDPKeyboardScancode(code: 0x29)
+    let input = RecordedInput()
+    let view = RemoteInputCaptureNSView()
+    view.inputSession = input
+    view.keyboard = .japanese101
+
+    view.flagsChanged(with: try keyEvent(.flagsChanged, keyCode: kVK_Option, modifierFlags: leftOptionFlags))
+    view.keyDown(with: try keyEvent(.keyDown, keyCode: kVK_ISO_Section, charactersIgnoringModifiers: "§", modifierFlags: leftOptionFlags))
+    view.keyUp(with: try keyEvent(.keyUp, keyCode: kVK_ISO_Section, charactersIgnoringModifiers: "§", modifierFlags: leftOptionFlags))
+    view.flagsChanged(with: try keyEvent(.flagsChanged, keyCode: kVK_Option))
+
+    #expect(input.events == [
+        .keyboard(scancode: leftAlt, isReleased: false),
+        .keyboard(scancode: grave, isReleased: false),
+        .keyboard(scancode: grave, isReleased: true),
+        .keyboard(scancode: leftAlt, isReleased: true),
+    ])
+    #expect(MacRDPKeyboardMapping.scancode(forKeyCode: UInt16(kVK_ANSI_Grave), keyboard: .japanese101, isISOKeyboard: false) == grave)
+}
+
+/// On an ISO keyboard the key between left Shift and Z goes as 0x56, where Windows' Japanese
+/// 101-key layout types "\" and "|" as US does, so what the Mac types there goes as Unicode, as
+/// does what the key left of 1 types.
+@Test func theISOKeysGoAsUnicodeWithTheJapanese101KeyLayout() {
+    let keyboard = MacRDPWindowsKeyboard.japanese101
+    #expect(MacRDPKeyboardMapping.scancode(forKeyCode: UInt16(kVK_ANSI_Grave), keyboard: keyboard, isISOKeyboard: true) == RDPKeyboardScancode(code: 0x56))
+    #expect(windowsTypes("`", scancode: 0x56, keyboard: keyboard) == false)
+    #expect(windowsTypes("~", scancode: 0x56, .shift, keyboard: keyboard) == false)
+    #expect(windowsTypes("§", scancode: 0x29, keyboard: keyboard) == false)
+    #expect(windowsTypes("±", scancode: 0x29, .shift, keyboard: keyboard) == false)
 }
 
 @Test func aKeyHeldAsAScancodeRepeatsAsThatScancodeAfterItsModifierIsReleased() {
