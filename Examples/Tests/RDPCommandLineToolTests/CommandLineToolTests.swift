@@ -136,6 +136,7 @@ import Testing
     #expect(failed.error == "captured 0 of 10 requested frames: connection refused")
 
     report.error = "cancelled"
+    report.failure = .cancelled
     let stoppedAfterCapture = RDPFrameBenchmark.captureOutcome(
         capturedFrameCount: 10,
         requestedFrameCount: 10,
@@ -146,6 +147,7 @@ import Testing
 
     report.status = "success"
     report.error = nil
+    report.failure = nil
     let ended = RDPFrameBenchmark.captureOutcome(capturedFrameCount: 3, requestedFrameCount: 10, report: report)
     #expect(ended.status == "incomplete")
     #expect(ended.error == "captured 3 of 10 requested frames")

@@ -279,7 +279,7 @@ enum RDPFrameBenchmark {
             }
             return ("failure", "\(shortfall): \(report.error ?? "RDP connection failed at \(report.stage)")")
         }
-        if report.error == "cancelled" {
+        if report.failure == .cancelled {
             return ("success", nil)
         }
         return (report.status, report.error)

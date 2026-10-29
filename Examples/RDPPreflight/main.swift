@@ -514,6 +514,9 @@ func printReport(_ report: RDPConnectionReport, probes: PreflightProbeResults = 
         if let disconnectReasonName = report.rdpRemoteTerminationDisconnectReasonName {
             print("rdp remote termination disconnect reason: \(disconnectReasonName)")
         }
+        if let termination = report.remoteTermination {
+            print("rdp remote termination category: \(termination.category.rawValue)")
+        }
         if let rdpDisplayControlChannelID = report.rdpDisplayControlChannelID {
             print("rdp display control channel id: \(rdpDisplayControlChannelID)")
         }
