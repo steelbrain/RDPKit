@@ -152,6 +152,11 @@
   `onInputReady`, on which held keys should be resynchronized.
 - `onDisplayControlReady` runs once the first graphics frame has arrived:
   KRdp ignores a monitor layout that arrives before its video stream starts.
+- Clipboard text is sent as CF_UNICODETEXT with CRLF line ends and delivered
+  with LF line ends. A Format List, Format Data Request or File Contents
+  Request the session cannot parse is answered with a failure response
+  (MS-RDPECLIP 3.1.5.2.2, 3.1.5.4.3, 3.1.5.4.6) instead of none.
+- Stop advertising TSSNDCAPS_VOLUME: the client never applies Volume PDUs.
 
 ### Security and robustness
 
@@ -175,6 +180,13 @@
 - A live session the server ends while a frame is still being handled ends
   as the server said, for example gnome-remote-desktop's clean logoff, instead
   of failing on the frame acknowledgement that meets the closed connection.
+- A server that closes the connection before TLS starts fails the TLS
+  handshake instead of trapping on a leaked promise in debug builds, and one
+  that closes it at once fails the connect with "the server closed the
+  connection" instead of SwiftNIO's `notFound`.
+- `RDPAudioPlayer` drops audio queued while its engine is stopped, so the next
+  sample restarts playback instead of audio staying silent after an
+  interruption.
 
 ### Performance and examples
 
@@ -195,6 +207,10 @@
   Cmd-. to the server instead of ending the session, and pins a redirected
   server's certificate under its own host. The command-line
   tools share argument parsing through `RDPCommandLineSupport`.
+- RDPFirstFrameCapture captures for the whole settle window and says why none
+  decoded. RDPFrameBenchmark validates its sizes, reports why a profile failed
+  and exits 1, and reports stages `cgImage` does not time as n/a. Both tools
+  and RDPPreflight reject frame counts above 120.
 
 ## 0.3.1
 
