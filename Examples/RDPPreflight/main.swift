@@ -319,7 +319,14 @@ func printUsage() {
     """)
 }
 
-func printReport(_ report: RDPConnectionReport, probes: PreflightProbeResults = PreflightProbeResults(), json: Bool) throws {
+/// Prints `report` as text, or as JSON with `json`, through `print`, which tests replace to
+/// read the output.
+func printReport(
+    _ report: RDPConnectionReport,
+    probes: PreflightProbeResults = PreflightProbeResults(),
+    json: Bool,
+    print: (String) -> Void = { Swift.print($0) }
+) throws {
     if json {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -333,6 +340,9 @@ func printReport(_ report: RDPConnectionReport, probes: PreflightProbeResults = 
         print("status: \(report.status)")
         print("stage: \(report.stage)")
         print("target: \(report.target)")
+        if report.redirectionDepth != 0 {
+            print("redirection depth: \(report.redirectionDepth)")
+        }
         if let username = report.username {
             if let domain = report.domain {
                 print("username: \(domain)\\\(username)")
@@ -752,6 +762,11 @@ func failureReport(args: Arguments?, error: Error) -> RDPConnectionReport {
         .flatMap { ProcessInfo.processInfo.environment[$0] }?.isEmpty == false
     report.nextStage = nil
     report.error = String(describing: error)
+    // A redirection's target that failed is named, with how many redirections led there.
+    if let connectionError = error as? RDPConnectionError, let target = connectionError.target {
+        report.target = target
+        report.redirectionDepth = connectionError.redirectionDepth
+    }
     return report
 }
 

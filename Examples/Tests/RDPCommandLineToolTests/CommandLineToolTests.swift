@@ -219,6 +219,34 @@ import Testing
     }
 }
 
+/// A failure at a Server Redirection's target names that target and the redirection depth, in
+/// text and JSON; the configured server's own report prints no depth.
+@Test func preflightPrintsTheRedirectionDepthWhenARedirectionLedToTheTarget() throws {
+    let configured = RDPSessionClient().dryRun(configuration: RDPConnectionConfiguration(host: "configured.example"))
+    var redirected = configured
+    redirected.target = "target.example:3389"
+    redirected.redirectionDepth = 2
+    let error = RDPConnectionError(.tls, description: "TLS handshake failed", report: redirected)
+    let report = failureReport(args: nil, error: error)
+    #expect(report.target == "target.example:3389")
+    #expect(report.redirectionDepth == 2)
+
+    func printedLines(_ report: RDPConnectionReport, json: Bool) throws -> [String] {
+        var lines: [String] = []
+        try printReport(report, json: json) { lines.append($0) }
+        return lines
+    }
+    let lines = try printedLines(report, json: false)
+    #expect(lines.prefix(4) == [
+        "status: failure",
+        "stage: x224-rdp-negotiation",
+        "target: target.example:3389",
+        "redirection depth: 2",
+    ])
+    #expect(try printedLines(configured, json: false).contains { $0.hasPrefix("redirection depth:") } == false)
+    #expect(try printedLines(report, json: true).joined().contains("\"redirectionDepth\" : 2"))
+}
+
 @Test func connectionOptionsRejectPortZero() {
     #expect(throws: RDPCommandLineError.invalidValue(option: "--port", value: "0", expected: "1...65535")) {
         try FirstFrameCaptureOptions.parse(["RDPFirstFrameCapture", "--port", "0"])
