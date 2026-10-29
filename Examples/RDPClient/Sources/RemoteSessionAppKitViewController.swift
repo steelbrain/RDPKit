@@ -46,6 +46,8 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
     private var report: RDPConnectionReport?
     private var serverCertificateInfo: RDPServerCertificateInfo?
     private var previewFrame: RDPFrameMetadata?
+    /// The newest presented frame, for the diagnostics timer to publish its codec.
+    private var latestPresentedFrame: RDPGraphicsFrameSnapshot?
     private var previewFrameCount = 0
     private var viewerMetricsSummary: String?
     private var previewDecodeError: String?
@@ -517,6 +519,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         diagnosticsTask?.cancel()
         diagnosticsTask = Task { @MainActor [weak self] in
             while Task.isCancelled == false {
+                self?.publishLatestFrameMetadata()
                 self?.syncDiagnosticsSnapshot()
                 try? await Task.sleep(nanoseconds: 250_000_000)
             }
@@ -580,6 +583,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         report = nil
         serverCertificateInfo = nil
         previewFrame = nil
+        latestPresentedFrame = nil
         previewFrameCount = 0
         viewerMetricsSummary = nil
         previewDecodeError = nil
@@ -677,6 +681,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                 },
                 onDecoded: { presentation, receivedAt, decodedAt, timing in
                     sink.apply { controller in
+                        let decodeErrorCleared = controller.previewDecodeError != nil
                         controller.previewDecodeError = nil
                         let shouldForceMetricsSnapshot = !controller.hasPresentedFrame
                         controller.renderMetricsStore.recordDecodedFrame(
@@ -690,20 +695,24 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                             at: decodedAt
                         )
                         let presentationChanged = controller.presentDecodedFrame(presentation)
-                        if metricsChanged || presentationChanged {
+                        if decodeErrorCleared || metricsChanged || presentationChanged {
                             controller.render()
                         }
                     }
                 },
                 onDecodeFailed: { receivedAt, errorDescription in
                     sink.apply { controller in
+                        // Video waiting for a keyframe fails every frame with the same error.
+                        let decodeErrorChanged = controller.previewDecodeError != errorDescription
                         controller.previewDecodeError = errorDescription
                         controller.renderMetricsStore.recordDecodeFailure(
                             receivedAt: receivedAt,
                             errorDescription: errorDescription
                         )
-                        controller.publishRenderMetricsSnapshotIfNeeded(at: receivedAt)
-                        controller.render()
+                        let metricsChanged = controller.publishRenderMetricsSnapshotIfNeeded(at: receivedAt)
+                        if decodeErrorChanged || metricsChanged {
+                            controller.render()
+                        }
                     }
                 }
             )
@@ -981,28 +990,42 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         return applyFramePresentation(pendingFramePresentation)
     }
 
+    /// Returns whether the view needs a render: for the first frame, or a new desktop size that
+    /// the canvas and input mapping follow.
     @discardableResult
     private func applyFramePresentation(_ presentation: RDPDecodedFramePresentation) -> Bool {
         let wasFirstPresentedFrame = hasPresentedFrame == false
-        let shouldUpdateFrameMetadata = shouldPublishFrameMetadata(presentation.frame)
+        let sizeChanged = previewFrame.map {
+            $0.width != presentation.frame.width || $0.height != presentation.frame.height
+        } ?? true
         remoteDesktopRenderer.present(presentation, id: renderMetricsStore.metrics.decodedFrameCount)
-        if shouldUpdateFrameMetadata {
+        if sizeChanged {
             previewFrame = RDPFrameMetadata(presentation.frame)
+            latestPresentedFrame = nil
+        } else {
+            latestPresentedFrame = presentation.frame
         }
         if wasFirstPresentedFrame {
             hasPresentedFrame = true
         }
-        return wasFirstPresentedFrame || shouldUpdateFrameMetadata
+        return wasFirstPresentedFrame || sizeChanged
     }
 
-    private func shouldPublishFrameMetadata(_ frame: RDPGraphicsFrameSnapshot) -> Bool {
-        guard let currentFrame = previewFrame else {
-            return true
+    /// AVC444 and mixed content switch codec names from frame to frame, as direct and composed
+    /// presentations alternate, so the codec is published at the diagnostics rate.
+    private func publishLatestFrameMetadata() {
+        guard let latestPresentedFrame else {
+            return
         }
-        return currentFrame.width != frame.width
-            || currentFrame.height != frame.height
-            || currentFrame.codecName != frame.codecName
-            || currentFrame.videoCodec != frame.videoCodec
+        self.latestPresentedFrame = nil
+        guard let previewFrame,
+              previewFrame.codecName != latestPresentedFrame.codecName
+              || previewFrame.videoCodec != latestPresentedFrame.videoCodec
+        else {
+            return
+        }
+        self.previewFrame = RDPFrameMetadata(latestPresentedFrame)
+        render()
     }
 
     @discardableResult
