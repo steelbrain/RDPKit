@@ -124,6 +124,36 @@ import Testing
     #expect(run.report.error == "server did not grant control during connection finalization")
 }
 
+/// A deactivated session waits for the next Demand Active: a close or silence
+/// before it fails the session as that close or that timeout.
+@Test(arguments: [
+    (true, RDPConnectionFailure.connectionClosed),
+    (false, RDPConnectionFailure.timedOut),
+])
+func deactivatedSessionThatNeverReactivatesFails(closes: Bool, failure: RDPConnectionFailure) throws {
+    var deactivate = Data()
+    deactivate.appendLittleEndianUInt32(KRdpCapture.shareID)
+    deactivate.append(contentsOf: [0x01, 0x00, 0x00])
+    // Closed once the client acknowledges the frame, which comes before the
+    // Deactivate All, so the close finds nothing unread.
+    let run = try KRdpCapture.run(
+        appending: [KRdpCapture.ioPacket(KRdpCapture.shareControl(type: 0x6, body: deactivate))],
+        frameCaptureLimit: nil,
+        timeoutSeconds: 1,
+        guardSeconds: 8,
+        onTrailingClientPacket: { channel, packet in
+            if closes, packet.containsSubsequence(KRdpCapture.frameAcknowledgeHeader) {
+                KRdpCapture.endConnection(channel, .close)
+            }
+        }
+    )
+
+    #expect(run.report.rdpGraphicsFirstFrame != nil)
+    #expect(run.report.status == "failure")
+    #expect(run.report.error == "server deactivated the session during RDP graphics updates")
+    #expect(run.report.failure == failure)
+}
+
 /// Video updates are held until the frame ends, so a server that never ends
 /// its frame must not grow them without bound.
 @Test func frameThatNeverEndsIsBounded() throws {

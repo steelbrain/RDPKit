@@ -599,6 +599,7 @@ struct MockKRDPServerTests {
         #expect(report.rdpFinalizationResponseTypes?.contains("font-map") == true)
         #expect(report.rdpDynamicChannelRequestTypes == [])
         #expect(report.error == "server deactivated the session before opening RDPGFX dynamic channel")
+        #expect(report.failure == .timedOut)
     }
 
     @Test func clientRejectsSetErrorInfoLogoffBeforeGraphics() throws {

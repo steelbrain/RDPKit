@@ -433,7 +433,7 @@ extension RDPClientConnection {
             throw RDPConnectionError.receive("connection lost: \(connectionErrorDescription(error))")
         }
         if isDeactivated {
-            throw RDPConnectionError.protocolViolation(deactivatedMessage)
+            throw RDPConnectionError(.connectionClosed, description: deactivatedMessage)
         }
         if stage == .graphics, report.rdpGraphicsFirstFrame != nil, !hasPartialGraphicsData {
             sessionEnded = true
@@ -448,7 +448,7 @@ extension RDPClientConnection {
             return
         }
         if isDeactivated {
-            throw RDPConnectionError.protocolViolation(deactivatedMessage)
+            throw RDPConnectionError(.timedOut, description: deactivatedMessage)
         }
         switch stage {
         case .confirmActive, .finalization:
