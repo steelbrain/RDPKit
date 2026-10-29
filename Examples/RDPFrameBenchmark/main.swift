@@ -140,8 +140,8 @@ private final class LiveCaptureAccumulator: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
 
-        // A copy among the decoder's surfaces has nothing to decode on its own.
-        guard frame.contentKind != .surfaceCopy else {
+        // Updates of the decoder's own pixels have nothing to decode on their own.
+        guard frame.contentKind != .surfaceCopy, frame.contentKind != .alpha else {
             return false
         }
         guard capturedFrames.count < frameLimit else {

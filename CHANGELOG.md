@@ -25,8 +25,9 @@
   carry, in `surfaceCopy`, a copy among the decoder's surfaces, cache and
   ClearCodec glyphs of pixels only the decoder holds, such as decoded video. `evictedCacheSlots`
   names the cache entries such copies stored that the server has since evicted.
-  `RDPFrameDecodeQueue` applies both; a client that decodes snapshots itself
-  must make these copies, or the copied areas keep stale pixels.
+  Snapshots of the new content kind `.alpha` set the alpha of such pixels.
+  `RDPFrameDecodeQueue` applies all of them; a client that decodes snapshots
+  itself must too, or those areas keep stale pixels.
 - `RDPGFXMessageSummary`: remove the per-command detail fields nothing read,
   such as the cache, fill, surface-to-surface, monitor and ClearCodec subcodec
   fields.
@@ -121,7 +122,8 @@
   too, without showing it, for the copies out of it.
 - ClearCodec drawn over video no longer paints black where its layers leave the
   pixels underneath, and a ClearCodec glyph stored over video is drawn with that
-  video.
+  video. Alpha over video, which Windows sends for RemoteApp windows, keeps the
+  video's colour.
 - Acknowledge every RDPGFX EndFrame and every surface frame marker, including
   after an update that fails to decode, and ignore cosmetic RDPGFX and DVC
   fields instead of ending the session.

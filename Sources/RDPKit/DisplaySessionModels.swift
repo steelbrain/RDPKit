@@ -124,7 +124,7 @@ public struct RDPFrameMetadata: Equatable, Sendable {
     public var regionCount: Int
 
     public var payloadByteCount: Int {
-        contentKind == .bitmap ? bitmapByteCount : videoByteCount
+        contentKind == .video ? videoByteCount : bitmapByteCount
     }
 
     public init(_ frame: RDPGraphicsFrameSnapshot) {

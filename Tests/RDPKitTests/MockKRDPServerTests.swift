@@ -1114,6 +1114,21 @@ struct MockKRDPServerTests {
         #expect(frames.map(\.deletedSurfaceIDs) == [[], [], [2], [3]])
     }
 
+    /// Alpha over video goes to the decoder, which has the video's colour, instead of
+    /// painting the session's never decoded pixels.
+    @Test func clientHandsAlphaOverVideoToTheDecoder() throws {
+        let observed = Locked(Observed())
+        let report = try runMock(.init(graphicsBehavior: .sendAlphaOverVideo), client: {
+            RDPSessionClient().run(configuration: $0, onGraphicsFrame: { frame in
+                observed.withLock { $0.frames.append(frame) }
+            })
+        }).report
+
+        #expect(report.status == "success")
+        #expect(observed.value.frames.map(\.contentKind) == [.video, .alpha])
+        #expect(observed.value.frames.map(\.frameID) == [1, 1])
+    }
+
     // MARK: Live sessions
 
     /// An empty frame is acknowledged but delivers no image; with no frame to

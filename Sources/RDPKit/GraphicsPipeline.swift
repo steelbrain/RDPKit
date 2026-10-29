@@ -111,13 +111,14 @@ extension RDPClientConnection {
                 compositor: compositor
             )
         }
-        let copy = try compositor.process(message, clearCodec: clearCodec)
+        let decoderUpdate = try compositor.process(message, clearCodec: clearCodec)
         // No PDU both evicts one of the decoder's cache entries and copies.
         for slot in compositor.takeEvictedDecoderCacheSlots() {
             try appendPendingGraphicsUpdate(.evictedCacheSlot(slot))
         }
-        if let copy {
-            try appendPendingGraphicsUpdate(.frame(surfaceCopyFrame(copy, typeName: message.typeName)))
+        if var decoderUpdate {
+            decoderUpdate.frameID = graphicsFrameTracker.activeFrameID
+            try appendPendingGraphicsUpdate(.frame(decoderUpdate))
         }
 
         switch message.commandID {
@@ -281,38 +282,6 @@ extension RDPClientConnection {
             }
         }
         return resolved
-    }
-
-    private func surfaceCopyFrame(_ copy: RDPGraphicsSurfaceCopy, typeName: String) -> RDPGraphicsFrameSnapshot {
-        // The surface copied into, or else out of.
-        let surfaceID: UInt16 = switch (copy.destination, copy.source) {
-        case let (.surface(surfaceID), _), let (_, .surface(surfaceID)):
-            surfaceID
-        default:
-            0
-        }
-        let destinations = copy.destination == .surface(surfaceID) ? copy.blocks.map(\.destination) : []
-        return RDPGraphicsFrameSnapshot(
-            frameID: graphicsFrameTracker.activeFrameID,
-            surfaceID: surfaceID,
-            codecID: RDPGFXCodecID.uncompressed,
-            codecName: typeName,
-            pixelFormat: RDPGFXPixelFormat.xrgb8888,
-            destinationRect: destinations.first.map { first in
-                destinations.dropFirst().reduce(first) {
-                    RDPFrameRect(
-                        left: min($0.left, $1.left),
-                        top: min($0.top, $1.top),
-                        right: max($0.right, $1.right),
-                        bottom: max($0.bottom, $1.bottom)
-                    )
-                }
-            } ?? RDPFrameRect(left: 0, top: 0, right: 0, bottom: 0),
-            regionRects: destinations,
-            encodedVideoData: Data(),
-            contentKind: .surfaceCopy,
-            surfaceCopy: copy
-        )
     }
 
     private func videoFrame(

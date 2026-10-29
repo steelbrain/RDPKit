@@ -268,10 +268,11 @@ final class RDPGFXSurfaceCompositor {
         self.maximumCacheSlot = maximumCacheSlot
     }
 
-    /// Applies one RDPGFX PDU. Returns the copy the decoder must make itself when the PDU
-    /// copies pixels only the decoder holds.
+    /// Applies one RDPGFX PDU. Returns the update the decoder must make itself when the PDU
+    /// copies pixels only the decoder holds, or sets their alpha; its frame ID is the
+    /// caller's to set.
     @discardableResult
-    func process(_ message: RDPGFXHeader, clearCodec: RDPClearCodecDecoder) throws -> RDPGraphicsSurfaceCopy? {
+    func process(_ message: RDPGFXHeader, clearCodec: RDPClearCodecDecoder) throws -> RDPGraphicsFrameSnapshot? {
         switch message.commandID {
         case RDPGFXCommandID.resetGraphics:
             resetGraphics(try RDPGFXResetGraphicsPDU.parse(from: message))
@@ -293,10 +294,13 @@ final class RDPGFXSurfaceCompositor {
             try solidFill(RDPGFXSolidFillPDU.parse(from: message))
         case RDPGFXCommandID.surfaceToSurface:
             return try surfaceToSurface(RDPGFXSurfaceToSurfacePDU.parse(from: message))
+                .map { decoderCopyFrame($0, codecName: message.typeName) }
         case RDPGFXCommandID.surfaceToCache:
             return try surfaceToCache(RDPGFXSurfaceToCachePDU.parse(from: message))
+                .map { decoderCopyFrame($0, codecName: message.typeName) }
         case RDPGFXCommandID.cacheToSurface:
             return try cacheToSurface(RDPGFXCacheToSurfacePDU.parse(from: message))
+                .map { decoderCopyFrame($0, codecName: message.typeName) }
         case RDPGFXCommandID.evictCacheEntry:
             try evictCacheEntry(RDPGFXEvictCacheEntryPDU.parse(from: message))
         default:
@@ -380,6 +384,39 @@ final class RDPGFXSurfaceCompositor {
             contentKind: .bitmap,
             decodedBitmapData: surface.data,
             decodedBitmapBytesPerRow: surface.bytesPerRow
+        )
+    }
+
+    /// The snapshot of a copy the decoder makes; `surfaceID` is the surface it copies into,
+    /// or else out of, and its regions are where it writes a surface.
+    private func decoderCopyFrame(_ copy: RDPGraphicsSurfaceCopy, codecName: String) -> RDPGraphicsFrameSnapshot {
+        let surfaceID: UInt16 = switch (copy.destination, copy.source) {
+        case let (.surface(surfaceID), _), let (_, .surface(surfaceID)):
+            surfaceID
+        default:
+            0
+        }
+        let destinations = copy.destination == .surface(surfaceID) ? copy.blocks.map(\.destination) : []
+        return RDPGraphicsFrameSnapshot(
+            frameID: nil,
+            surfaceID: surfaceID,
+            codecID: RDPGFXCodecID.uncompressed,
+            codecName: codecName,
+            pixelFormat: RDPGFXPixelFormat.xrgb8888,
+            destinationRect: destinations.first.map { first in
+                destinations.dropFirst().reduce(first) {
+                    RDPFrameRect(
+                        left: min($0.left, $1.left),
+                        top: min($0.top, $1.top),
+                        right: max($0.right, $1.right),
+                        bottom: max($0.bottom, $1.bottom)
+                    )
+                }
+            } ?? RDPFrameRect(left: 0, top: 0, right: 0, bottom: 0),
+            regionRects: destinations,
+            encodedVideoData: Data(),
+            contentKind: .surfaceCopy,
+            surfaceCopy: copy
         )
     }
 
@@ -504,7 +541,7 @@ final class RDPGFXSurfaceCompositor {
     private func wireToSurface(
         _ pdu: RDPGFXWireToSurface1PDU,
         clearCodec: RDPClearCodecDecoder
-    ) throws -> RDPGraphicsSurfaceCopy? {
+    ) throws -> RDPGraphicsFrameSnapshot? {
         let rect = pdu.destinationRect
         let x = Int(rect.left)
         let y = Int(rect.top)
@@ -541,10 +578,30 @@ final class RDPGFXSurfaceCompositor {
             }
         case RDPGFXCodecID.clearCodec:
             return try drawClearCodec(pdu, clearCodec: clearCodec)
+                .map { decoderCopyFrame($0, codecName: RDPGFXCodecID.name(for: pdu.codecID)) }
         case RDPGFXCodecID.alpha:
             let alphaStream = try RDPGFXAlphaBitmapStream.parse(from: pdu.bitmapData, pixelCount: width * height)
-            try modifySurface(pdu.surfaceID) {
-                try $0.setAlpha(alphaStream.alphaValues, x: x, y: y, width: width, height: height)
+            return try modifySurface(pdu.surfaceID) { surface in
+                try surface.setAlpha(alphaStream.alphaValues, x: x, y: y, width: width, height: height)
+                // Only the decoder has the colour of pixels video wrote last; it takes their alpha.
+                let decoded = surface.decodedRects.clipped(to: rect)
+                [rect].subtracting(decoded).forEach { surface.markDirty($0) }
+                guard surface.isOnDecoder, !decoded.isEmpty else {
+                    return nil
+                }
+                return RDPGraphicsFrameSnapshot(
+                    frameID: nil,
+                    surfaceID: pdu.surfaceID,
+                    codecID: pdu.codecID,
+                    codecName: RDPGFXCodecID.name(for: pdu.codecID),
+                    pixelFormat: surface.pixelFormat,
+                    destinationRect: RDPFrameRect(rect),
+                    regionRects: decoded.map(RDPFrameRect.init),
+                    encodedVideoData: Data(),
+                    contentKind: .alpha,
+                    decodedBitmapData: try surface.pixels(in: rect),
+                    decodedBitmapBytesPerRow: width * 4
+                )
             }
         case RDPGFXCodecID.cavideo:
             try writeRemoteFXTiles(pdu)

@@ -266,11 +266,23 @@ final class RDPDecodedVideoSurfaceCompositor {
         return try presentation(from: frame, surface: surface, surfaceRect: surfaceRect)
     }
 
-    /// Makes a ``RDPGraphicsSurfaceCopy`` among this compositor's surfaces and cache. Returns
-    /// the presentation of a mapped destination surface, and nil for anything else, or when
-    /// the source is one this compositor never got.
-    func presentation(copying frame: RDPGraphicsFrameSnapshot) throws -> RDPDecodedFramePresentation? {
+    /// Applies an update the session made of this compositor's own pixels: a
+    /// ``RDPGraphicsSurfaceCopy``, or alpha for its decoded pixels. Returns the presentation
+    /// of a mapped surface it changed, and nil for anything else, or when it reads pixels
+    /// this compositor never got.
+    func presentation(applying frame: RDPGraphicsFrameSnapshot) throws -> RDPDecodedFramePresentation? {
         forgetDeletedState(before: frame)
+        switch frame.contentKind {
+        case .surfaceCopy:
+            return try makeCopy(frame)
+        case .alpha:
+            return try setAlpha(frame)
+        case .video, .bitmap:
+            return nil
+        }
+    }
+
+    private func makeCopy(_ frame: RDPGraphicsFrameSnapshot) throws -> RDPDecodedFramePresentation? {
         guard let surfaceCopy = frame.surfaceCopy else {
             return nil
         }
@@ -286,39 +298,82 @@ final class RDPDecodedVideoSurfaceCompositor {
             storedBlocks[surfaceCopy.destination] = blocks.last?.pixels
             return nil
         }
+        return try presentation(of: frame, changing: surfaceID, in: blocks.map(\.destination)) { surface in
+            for (pixels, destination) in blocks {
+                copy(
+                    source: pixels.data,
+                    sourceBytesPerRow: pixels.bytesPerRow,
+                    destination: &surface.data,
+                    destinationBytesPerRow: surface.bytesPerRow,
+                    sourceX: 0,
+                    sourceY: 0,
+                    destinationX: Int(destination.left),
+                    destinationY: Int(destination.top),
+                    width: min(pixels.width, Int(destination.width)),
+                    height: min(pixels.height, Int(destination.height))
+                )
+            }
+        }
+    }
 
+    private func setAlpha(_ frame: RDPGraphicsFrameSnapshot) throws -> RDPDecodedFramePresentation? {
+        guard let alpha = bitmapSurface(from: frame),
+              surfaces[frame.surfaceID] != nil || directSurfaces[frame.surfaceID] != nil
+        else {
+            return nil
+        }
+        let rect = frame.destinationRect
+        return try presentation(of: frame, changing: frame.surfaceID, in: frame.regionRects) { surface in
+            let bytesPerRow = surface.bytesPerRow
+            let surfaceWidth = surface.width
+            let surfaceHeight = surface.height
+            surface.data.withUnsafeMutableBytes { pixels in
+                alpha.data.withUnsafeBytes { alphaPixels in
+                    for region in frame.regionRects {
+                        let left = max(Int(region.left), Int(rect.left))
+                        let top = max(Int(region.top), Int(rect.top))
+                        let right = min(Int(region.right), Int(rect.right), surfaceWidth)
+                        let bottom = min(Int(region.bottom), Int(rect.bottom), surfaceHeight)
+                        for y in top ..< max(top, bottom) {
+                            for x in left ..< max(left, right) {
+                                pixels[y * bytesPerRow + x * 4 + 3] = alphaPixels[
+                                    (y - Int(rect.top)) * alpha.bytesPerRow + (x - Int(rect.left)) * 4 + 3
+                                ]
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Changes the surface's pixels in `regions`, in surface coordinates, and keeps the
+    /// pixels this compositor holds everywhere else; presents the surface when it is mapped.
+    private func presentation(
+        of frame: RDPGraphicsFrameSnapshot,
+        changing surfaceID: UInt16,
+        in regions: [RDPFrameRect],
+        _ change: (inout Surface) -> Void
+    ) throws -> RDPDecodedFramePresentation? {
         if let outputRect = frame.graphicsOutputRect, frame.surfaceRect != nil {
             try materializeDirectGraphicsOutputIfNeeded(outputRect: outputRect, excludingSurfaceID: surfaceID)
         }
         try materializeDirectSurface(surfaceID: surfaceID)
         var surface = takeSurface(
             for: surfaceID,
-            width: blocks.map { Int($0.destination.right) }.reduce(Int(frame.surfaceRect?.width ?? 0), max),
-            height: blocks.map { Int($0.destination.bottom) }.reduce(Int(frame.surfaceRect?.height ?? 0), max)
+            width: regions.map { Int($0.right) }.reduce(Int(frame.surfaceRect?.width ?? 0), max),
+            height: regions.map { Int($0.bottom) }.reduce(Int(frame.surfaceRect?.height ?? 0), max)
         )
-        for (pixels, destination) in blocks {
-            copy(
-                source: pixels.data,
-                sourceBytesPerRow: pixels.bytesPerRow,
-                destination: &surface.data,
-                destinationBytesPerRow: surface.bytesPerRow,
-                sourceX: 0,
-                sourceY: 0,
-                destinationX: Int(destination.left),
-                destinationY: Int(destination.top),
-                width: min(pixels.width, Int(destination.width)),
-                height: min(pixels.height, Int(destination.height))
-            )
-        }
+        change(&surface)
         surfaces[surfaceID] = surface
         surfacesWithBitmapContent.insert(surfaceID)
         guard frame.graphicsOutputRect != nil, let surfaceRect = frame.surfaceRect else {
             return nil
         }
-        var copied = frame
-        copied.destinationRect = RDPFrameRect(left: 0, top: 0, right: surfaceRect.width, bottom: surfaceRect.height)
-        copied.regionRects = blocks.map(\.destination)
-        return try presentation(from: copied, surface: surface, surfaceRect: surfaceRect)
+        var changed = frame
+        changed.destinationRect = RDPFrameRect(left: 0, top: 0, right: surfaceRect.width, bottom: surfaceRect.height)
+        changed.regionRects = regions
+        return try presentation(from: changed, surface: surface, surfaceRect: surfaceRect)
     }
 
     private func forgetDeletedState(before frame: RDPGraphicsFrameSnapshot) {
@@ -1148,9 +1203,9 @@ public final class RDPFrameDecodeQueue: @unchecked Sendable {
         return autoreleasepool {
             let decodeStartedAt = Date()
             do {
-                if frame.contentKind == .surfaceCopy {
+                if frame.contentKind == .surfaceCopy || frame.contentKind == .alpha {
                     decoder.discardSurfaces(frame.deletedSurfaceIDs)
-                    if let presentation = try videoCompositor.presentation(copying: frame) {
+                    if let presentation = try videoCompositor.presentation(applying: frame) {
                         let presentedAt = Date()
                         onDecoded(presentation, receivedAt, presentedAt, RDPFrameDecodeTiming(
                             samplePreparationMilliseconds: 0,

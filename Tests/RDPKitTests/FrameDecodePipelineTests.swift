@@ -436,7 +436,7 @@ import Testing
         decodedImageBuffer: try yuvPixelBuffer(width: 32, height: 32, darkRows: 0 ..< 8)
     )
 
-    let presentation = try #require(try compositor.presentation(copying: surfaceCopyFrame(
+    let presentation = try #require(try compositor.presentation(applying: surfaceCopyFrame(
         id: 2,
         outputRect: outputRect,
         copy: RDPGraphicsSurfaceCopy(source: .surface(1), destination: .surface(1), blocks: [.init(
@@ -471,11 +471,11 @@ import Testing
         destination: RDPFrameRect(left: 0, top: 24, right: 32, bottom: 32)
     )])
 
-    #expect(try compositor.presentation(copying: surfaceCopyFrame(id: 2, outputRect: outputRect, copy: store)) == nil)
-    let presentation = try #require(try compositor.presentation(copying: surfaceCopyFrame(id: 2, outputRect: outputRect, copy: restore)))
+    #expect(try compositor.presentation(applying: surfaceCopyFrame(id: 2, outputRect: outputRect, copy: store)) == nil)
+    let presentation = try #require(try compositor.presentation(applying: surfaceCopyFrame(id: 2, outputRect: outputRect, copy: restore)))
     #expect(try bgraPixel(atX: 3, y: 25, in: presentation.imageBuffer)[1] < 40)
     #expect(try bgraPixel(atX: 3, y: 29, in: presentation.imageBuffer)[1] > 215)
-    #expect(try compositor.presentation(copying: surfaceCopyFrame(
+    #expect(try compositor.presentation(applying: surfaceCopyFrame(
         id: 3,
         outputRect: outputRect,
         copy: restore,
@@ -492,7 +492,7 @@ import Testing
         for: videoFrame(id: 1, surfaceID: 2, graphicsOutputRect: outputRect, destinationRect: outputRect, regionRects: [outputRect]),
         decodedImageBuffer: try yuvPixelBuffer(width: 32, height: 32, darkRows: 0 ..< 8)
     ) == nil)
-    let presentation = try #require(try compositor.presentation(copying: surfaceCopyFrame(
+    let presentation = try #require(try compositor.presentation(applying: surfaceCopyFrame(
         id: 1,
         outputRect: outputRect,
         copy: RDPGraphicsSurfaceCopy(source: .surface(2), destination: .surface(1), blocks: [.init(
@@ -516,12 +516,12 @@ import Testing
     )
     let glyph = RDPFrameRect(left: 0, top: 0, right: 4, bottom: 4)
 
-    #expect(try compositor.presentation(copying: surfaceCopyFrame(
+    #expect(try compositor.presentation(applying: surfaceCopyFrame(
         id: 2,
         outputRect: outputRect,
         copy: RDPGraphicsSurfaceCopy(source: .surface(1), destination: .clearCodecGlyph(5), blocks: [.init(source: glyph, destination: glyph)])
     )) == nil)
-    let presentation = try #require(try compositor.presentation(copying: surfaceCopyFrame(
+    let presentation = try #require(try compositor.presentation(applying: surfaceCopyFrame(
         id: 2,
         outputRect: outputRect,
         copy: RDPGraphicsSurfaceCopy(source: .clearCodecGlyph(5), destination: .surface(1), blocks: [.init(
@@ -532,6 +532,28 @@ import Testing
 
     #expect(try bgraPixel(atX: 9, y: 25, in: presentation.imageBuffer)[1] < 40)
     #expect(try bgraPixel(atX: 13, y: 25, in: presentation.imageBuffer)[1] > 215)
+}
+
+/// Alpha for decoded video keeps the video's colour.
+@Test func decodedVideoCompositorSetsTheAlphaOfDecodedVideo() throws {
+    let compositor = RDPDecodedVideoSurfaceCompositor()
+    let outputRect = RDPFrameRect(left: 0, top: 0, right: 32, bottom: 32)
+    _ = try compositor.presented(
+        for: videoFrame(id: 1, graphicsOutputRect: outputRect, surfaceRect: outputRect, destinationRect: outputRect, regionRects: [outputRect]),
+        decodedImageBuffer: try yuvPixelBuffer(width: 32, height: 32, darkRows: 0 ..< 8)
+    )
+    var alpha = bitmapFrame(id: 2, width: 4, height: 4, pixel: [0, 0, 0, 0x40], graphicsOutputRect: outputRect)
+    alpha.contentKind = .alpha
+    alpha.surfaceRect = outputRect
+    alpha.regionRects = [RDPFrameRect(left: 0, top: 0, right: 2, bottom: 2)]
+
+    let presentation = try #require(try compositor.presentation(applying: alpha))
+
+    #expect(presentation.frame.regionRects == [RDPFrameRect(left: 0, top: 0, right: 2, bottom: 2)])
+    let changed = try bgraPixel(atX: 1, y: 1, in: presentation.imageBuffer)
+    #expect(changed[1] < 40)
+    #expect(changed[3] == 0x40)
+    #expect(try bgraPixel(atX: 3, y: 3, in: presentation.imageBuffer)[3] == 0xFF)
 }
 
 @Test func decodedVideoCompositorClearsStaleSurfaceOnFullResyncFrame() throws {
@@ -710,7 +732,7 @@ import Testing
     queue.cancel()
 }
 
-@Test func frameDecodeQueuePresentsSurfaceCopiesWithoutDecoding() throws {
+@Test func frameDecodeQueuePresentsUpdatesOfItsOwnPixelsWithoutDecoding() throws {
     let presented = Locked<[RDPGraphicsFrameSnapshot]>([])
     let queue = RDPFrameDecodeQueue(
         shouldCancel: { false },
@@ -732,6 +754,12 @@ import Testing
     #expect(queue.submitAndWait(bitmap, receivedAt: Date(), shouldContinue: { true }) == .decoded)
     #expect(queue.submitAndWait(copy, receivedAt: Date(), shouldContinue: { true }) == .decoded)
     #expect(presented.value.map(\.regionRects).last == [RDPFrameRect(left: 2, top: 2, right: 4, bottom: 4)])
+    var alpha = bitmapFrame(id: 1, width: 4, height: 4, pixel: [0, 0, 0, 0x40], graphicsOutputRect: outputRect)
+    alpha.contentKind = .alpha
+    alpha.surfaceRect = outputRect
+    alpha.regionRects = [RDPFrameRect(left: 0, top: 0, right: 1, bottom: 1)]
+    #expect(queue.submitAndWait(alpha, receivedAt: Date(), shouldContinue: { true }) == .decoded)
+    #expect(presented.value.map(\.regionRects).last == [RDPFrameRect(left: 0, top: 0, right: 1, bottom: 1)])
     queue.cancel()
 }
 

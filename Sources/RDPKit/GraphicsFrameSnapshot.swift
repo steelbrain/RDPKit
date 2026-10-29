@@ -28,6 +28,11 @@ public enum RDPGraphicsFrameContentKind: String, Encodable, Equatable, Sendable 
     case bitmap
     /// A copy among the decoder's own surfaces and cache, in ``RDPGraphicsFrameSnapshot/surfaceCopy``.
     case surfaceCopy
+    /// Alpha ([MS-RDPEGFX] 2.2.4.3) for pixels only the decoder holds: in each of
+    /// ``RDPGraphicsFrameSnapshot/regionRects`` the decoder's pixels take the alpha channel of
+    /// ``RDPGraphicsFrameSnapshot/decodedBitmapData``, the BGRA pixels of
+    /// ``RDPGraphicsFrameSnapshot/destinationRect``; both are in surface coordinates.
+    case alpha
 }
 
 /// A copy the decoder makes itself ([MS-RDPEGFX] 2.2.2.6-2.2.2.8) because the copied area
@@ -206,7 +211,7 @@ public struct RDPGraphicsFrameSnapshot: Encodable, Equatable, Sendable {
     }
 
     public var payloadByteCount: Int {
-        contentKind == .bitmap ? bitmapByteCount : videoByteCount
+        contentKind == .video ? videoByteCount : bitmapByteCount
     }
 
     enum CodingKeys: String, CodingKey {

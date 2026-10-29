@@ -139,6 +139,7 @@ enum MockKRDPGraphicsBehavior: Equatable {
     case copyDecodedVideoThroughSurfacesAndCache
     case copyVideoThroughHiddenSurface
     case deleteSurfacesAfterCopyingOutOfThem
+    case sendAlphaOverVideo
     case sendMultipleBitmapSurfacesInFrame
     case sendMalformedAVCFrame
     case sendInvalidGraphicsPDU
@@ -2114,6 +2115,8 @@ private enum MockKRDPFixtures {
             [graphicsDynamicPacket(segmentedGraphicsData(hiddenSurfaceVideoFrameMessages()))]
         case .deleteSurfacesAfterCopyingOutOfThem:
             [graphicsDynamicPacket(segmentedGraphicsData(deletedSourceFrameMessages()))]
+        case .sendAlphaOverVideo:
+            [graphicsDynamicPacket(segmentedGraphicsData(alphaOverVideoFrameMessages()))]
         case .sendMalformedAVCFrame:
             [graphicsDynamicPacket(segmentedGraphicsData(malformedAVCFrameMessages()))]
         case .sendInvalidGraphicsPDU:
@@ -2271,6 +2274,23 @@ private enum MockKRDPFixtures {
         messages += startFrameMessage(frameID: 3)
         messages += wireToSurfaceMessage(surfaceID: 1)
         messages += endFrameMessage(frameID: 3)
+        return messages
+    }
+
+    /// Video, then its alpha, as Windows sends for RemoteApp windows.
+    static func alphaOverVideoFrameMessages() -> Data {
+        // One run-length segment of 0x80 for every pixel (MS-RDPEGFX 2.2.4.3.1).
+        var alpha = Data()
+        alpha.appendLittleEndianUInt16(0x414C)
+        alpha.appendLittleEndianUInt16(1)
+        alpha.append(contentsOf: [0x80, 0xFF])
+        alpha.appendLittleEndianUInt16(MockKRDPConstants.width * MockKRDPConstants.height)
+        var messages = createSurfaceMessage(surfaceID: 1)
+        messages += mapSurfaceToOutputMessage(surfaceID: 1, x: 0, y: 0)
+        messages += startFrameMessage(frameID: 1)
+        messages += wireToSurfaceMessage(surfaceID: 1)
+        messages += wireToSurfaceMessage(surfaceID: 1, codecID: RDPGFXCodecID.alpha, bitmapData: alpha)
+        messages += endFrameMessage(frameID: 1)
         return messages
     }
 

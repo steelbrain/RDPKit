@@ -368,7 +368,7 @@ import Testing
         ),
         clearCodec: clearCodec
     )
-    #expect(scroll == RDPGraphicsSurfaceCopy(source: .surface(0), destination: .surface(0), blocks: [.init(
+    #expect(scroll?.surfaceCopy == RDPGraphicsSurfaceCopy(source: .surface(0), destination: .surface(0), blocks: [.init(
         source: RDPFrameRect(left: 0, top: 0, right: 64, bottom: 16),
         destination: RDPFrameRect(left: 0, top: 16, right: 64, bottom: 32)
     )]))
@@ -416,7 +416,7 @@ import Testing
         ),
         clearCodec: clearCodec
     )
-    #expect(copyBack?.source == .surface(2))
+    #expect(copyBack?.surfaceCopy?.source == .surface(2))
     #expect(compositor.makeFrames(frameID: 4).isEmpty)
 }
 
@@ -433,7 +433,7 @@ import Testing
         try surfaceToCacheMessage(surfaceID: 0, cacheKey: 1, cacheSlot: 3, sourceRect: RDPGFXRect16(left: 0, top: 0, right: 16, bottom: 16)),
         clearCodec: clearCodec
     )
-    #expect(store == RDPGraphicsSurfaceCopy(source: .surface(0), destination: .cacheSlot(3), blocks: [.init(
+    #expect(store?.surfaceCopy == RDPGraphicsSurfaceCopy(source: .surface(0), destination: .cacheSlot(3), blocks: [.init(
         source: RDPFrameRect(left: 0, top: 0, right: 16, bottom: 16),
         destination: RDPFrameRect(left: 0, top: 0, right: 16, bottom: 16)
     )]))
@@ -441,7 +441,7 @@ import Testing
         try cacheToSurfaceMessage(cacheSlot: 3, surfaceID: 0, points: [RDPGFXPoint16(x: 48, y: 16)]),
         clearCodec: clearCodec
     )
-    #expect(restore == RDPGraphicsSurfaceCopy(source: .cacheSlot(3), destination: .surface(0), blocks: [.init(
+    #expect(restore?.surfaceCopy == RDPGraphicsSurfaceCopy(source: .cacheSlot(3), destination: .surface(0), blocks: [.init(
         source: RDPFrameRect(left: 0, top: 0, right: 16, bottom: 16),
         destination: RDPFrameRect(left: 48, top: 16, right: 64, bottom: 32)
     )]))
@@ -514,7 +514,7 @@ import Testing
         ),
         clearCodec: clearCodec
     )
-    #expect(stored == RDPGraphicsSurfaceCopy(source: .surface(0), destination: .clearCodecGlyph(5), blocks: [.init(
+    #expect(stored?.surfaceCopy == RDPGraphicsSurfaceCopy(source: .surface(0), destination: .clearCodecGlyph(5), blocks: [.init(
         source: glyphRect,
         destination: glyphRect
     )]))
@@ -530,12 +530,42 @@ import Testing
         ),
         clearCodec: clearCodec
     )
-    #expect(hit == RDPGraphicsSurfaceCopy(source: .clearCodecGlyph(5), destination: .surface(0), blocks: [.init(
+    #expect(hit?.surfaceCopy == RDPGraphicsSurfaceCopy(source: .clearCodecGlyph(5), destination: .surface(0), blocks: [.init(
         source: glyphRect,
         destination: RDPFrameRect(left: 4, top: 4, right: 6, bottom: 6)
     )]))
     // The decoder's glyph lacks the covered pixel, which the session paints.
     #expect(compositor.makeFrames(frameID: 2).map(\.regionRects) == [[RDPFrameRect(left: 4, top: 4, right: 5, bottom: 5)]])
+}
+
+/// Alpha over video, as Windows sends for RemoteApp windows: only the decoder has the
+/// colour of what video wrote last, so it takes the alpha there itself.
+@Test func compositorHandsAlphaOverVideoToTheDecoder() throws {
+    let compositor = RDPGFXSurfaceCompositor(outputWidth: 4, outputHeight: 4)
+    let clearCodec = RDPClearCodecDecoder()
+    try compositor.process(try createSurfaceMessage(surfaceID: 0, width: 4, height: 4), clearCodec: clearCodec)
+    try compositor.process(try mapSurfaceToOutputMessage(surfaceID: 0, x: 0, y: 0), clearCodec: clearCodec)
+    var video = fullSurfaceVideo(surfaceID: 0, width: 4, height: 4)
+    video.regionRects = [RDPFrameRect(left: 0, top: 1, right: 4, bottom: 4)]
+    compositor.noteVideo(video)
+
+    let alpha = try #require(try compositor.process(
+        try wireToSurface1Message(
+            surfaceID: 0,
+            codecID: RDPGFXCodecID.alpha,
+            pixelFormat: RDPGFXPixelFormat.argb8888,
+            destinationRect: RDPGFXRect16(left: 0, top: 0, right: 4, bottom: 4),
+            bitmapData: alphaBitmapStream(compressed: 0, payload: Data(repeating: 0x40, count: 16))
+        ),
+        clearCodec: clearCodec
+    ))
+
+    #expect(alpha.contentKind == .alpha)
+    #expect(alpha.destinationRect == RDPFrameRect(left: 0, top: 0, right: 4, bottom: 4))
+    #expect(alpha.regionRects == [RDPFrameRect(left: 0, top: 1, right: 4, bottom: 4)])
+    #expect(pixel(atX: 2, y: 3, data: try #require(alpha.decodedBitmapData), bytesPerRow: 16)[3] == 0x40)
+    // The row video never wrote is the session's, colour and alpha.
+    #expect(compositor.makeFrames(frameID: 1).map(\.regionRects) == [[RDPFrameRect(left: 0, top: 0, right: 4, bottom: 1)]])
 }
 
 @Test func compositorCollapsesHeldBackDirtyRectsIntoBoundingBox() throws {
