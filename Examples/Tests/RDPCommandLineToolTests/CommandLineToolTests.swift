@@ -3,6 +3,7 @@ import RDPCommandLineSupport
 @testable import RDPFirstFrameCapture
 @testable import RDPFrameBenchmark
 import RDPKit
+@testable import RDPPreflight
 import Testing
 
 @Test func connectionOptionsParseSharedFlagsAndLeaveToolFlags() throws {
@@ -187,6 +188,19 @@ import Testing
     #expect(cgImage.samplePreparationAverageMilliseconds == nil)
     #expect(cgImage.videoToolboxAverageMilliseconds == nil)
     #expect(cgImage.imageConversionAverageMilliseconds == nil)
+}
+
+@Test func frameCountsStayWithinWhatASessionCaptures() throws {
+    #expect(try parseArguments(["RDPPreflight", "--graphics-frames", "120"]).graphicsFrames == 120)
+    #expect(try RDPFrameBenchmark.parseArguments(["RDPFrameBenchmark", "--frames", "120"]).frames == 120)
+
+    // RDPConnectionConfiguration would otherwise clamp the session's frame limit to 120 without a word.
+    #expect(throws: RDPCommandLineError.invalidValue(option: "--graphics-frames", value: "121", expected: "1...120")) {
+        try parseArguments(["RDPPreflight", "--graphics-frames", "121"])
+    }
+    #expect(throws: RDPCommandLineError.invalidValue(option: "--frames", value: "500", expected: "1...120")) {
+        try RDPFrameBenchmark.parseArguments(["RDPFrameBenchmark", "--frames", "500"])
+    }
 }
 
 @Test func connectionOptionsRejectPortZero() {

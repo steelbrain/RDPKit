@@ -254,7 +254,7 @@ func parseArguments(_ values: [String]) throws -> Arguments {
         }
         switch option {
         case "--graphics-frames":
-            args.graphicsFrames = try cursor.positiveInteger(for: option)
+            args.graphicsFrames = try cursor.graphicsFrameCount(for: option)
         case "--early-user-authorization":
             args.earlyUserAuthorizationEnabled = true
         case "--audio":

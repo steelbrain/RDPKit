@@ -507,7 +507,7 @@ enum RDPFrameBenchmark {
             }
             switch option {
             case "--frames":
-                args.frames = try cursor.positiveInteger(for: option)
+                args.frames = try cursor.graphicsFrameCount(for: option)
             case "--desktop-size":
                 let size = try cursor.size(
                     for: option,

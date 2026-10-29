@@ -73,6 +73,7 @@ let package = Package(
                 "RDPCommandLineSupport",
                 "RDPFirstFrameCapture",
                 "RDPFrameBenchmark",
+                "RDPPreflight",
             ],
             path: "Tests/RDPCommandLineToolTests"
         ),
