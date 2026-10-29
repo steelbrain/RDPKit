@@ -206,6 +206,8 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
     }
 
     func controlTextDidChange(_: Notification) {
+        // The window connects by itself only with the fields it opened with.
+        shouldAutoConnect = false
         let previousCredentialLookupSignature = credentialLookupSignature
         syncStateFromFields()
         if previousCredentialLookupSignature != credentialLookupSignature {
