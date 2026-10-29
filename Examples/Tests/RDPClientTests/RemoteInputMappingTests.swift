@@ -144,8 +144,9 @@ import Testing
     }
 }
 
-/// Eisu and Kana go as LANG2 and LANG1 whatever the Mac types with them (a space), and Yen
-/// and Ro as the PC JIS keys, where the layout check decides.
+/// Eisu and Kana go as LANG2 and LANG1 whatever the Mac types with them (a space), or with
+/// Windows' Japanese layout as its 英数 and ひらがな keys, and Yen and Ro as the PC JIS keys,
+/// where the layout check decides.
 @Test func jisKeysMapToThePCJISScancodes() {
     let expected: [Int: RDPKeyboardScancode] = [
         kVK_JIS_Eisu: RDPKeyboardScancode(code: 0x71),
@@ -156,6 +157,10 @@ import Testing
     for (keyCode, scancode) in expected {
         #expect(MacRDPKeyboardMapping.scancode(forKeyCode: UInt16(keyCode)) == scancode)
     }
+    let japanese = MacRDPKeyboardLayout.japanese
+    #expect(MacRDPKeyboardMapping.scancode(forKeyCode: UInt16(kVK_JIS_Eisu), layout: japanese) == RDPKeyboardScancode(code: 0x3A))
+    #expect(MacRDPKeyboardMapping.scancode(forKeyCode: UInt16(kVK_JIS_Kana), layout: japanese) == RDPKeyboardScancode(code: 0x70))
+    #expect(MacRDPKeyboardMapping.scancode(forKeyCode: UInt16(kVK_JIS_Yen), layout: japanese) == RDPKeyboardScancode(code: 0x7D))
     #expect(sendsScancode(kVK_JIS_Eisu, [], characters: " "))
     #expect(sendsScancode(kVK_JIS_Kana, [], characters: " "))
     #expect(sendsScancode(kVK_JIS_Yen, [], characters: "¥") == false)
@@ -423,13 +428,13 @@ private func windowsTypes(
     view.keyDown(with: try keyEvent(.keyDown, keyCode: kVK_JIS_Eisu, characters: " "))
 
     #expect(input.events == [
-        .keyboard(scancode: RDPKeyboardScancode(code: 0x72), isReleased: false),
-        .keyboard(scancode: RDPKeyboardScancode(code: 0x72), isReleased: true),
+        .keyboard(scancode: RDPKeyboardScancode(code: 0x70), isReleased: false),
+        .keyboard(scancode: RDPKeyboardScancode(code: 0x70), isReleased: true),
         .keyboard(scancode: RDPKeyboardScancode(code: 0x1A), isReleased: false),
         .unicode(codeUnit: 0xA5, isReleased: false),
         .unicode(codeUnit: 0xA5, isReleased: true),
         .keyboard(scancode: RDPKeyboardScancode(code: 0x7D), isReleased: false),
-        .keyboard(scancode: RDPKeyboardScancode(code: 0x71), isReleased: false),
+        .keyboard(scancode: RDPKeyboardScancode(code: 0x3A), isReleased: false),
     ])
 }
 

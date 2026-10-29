@@ -148,7 +148,7 @@ final class RemoteInputCaptureNSView: NSView {
 
     override func keyDown(with event: NSEvent) {
         releaseModifiers(missingFrom: event.modifierFlags)
-        if let scancode = MacRDPKeyboardMapping.scancode(forKeyCode: event.keyCode),
+        if let scancode = MacRDPKeyboardMapping.scancode(forKeyCode: event.keyCode, layout: keyboardLayout),
            MacRDPKeyboardMapping.shouldSendScancode(
                forKeyCode: event.keyCode,
                characters: event.characters,
@@ -181,7 +181,7 @@ final class RemoteInputCaptureNSView: NSView {
 
     override func keyUp(with event: NSEvent) {
         releaseModifiers(missingFrom: event.modifierFlags)
-        guard let scancode = MacRDPKeyboardMapping.scancode(forKeyCode: event.keyCode),
+        guard let scancode = MacRDPKeyboardMapping.scancode(forKeyCode: event.keyCode, layout: keyboardLayout),
               inputState.isScancodePressed(scancode)
         else {
             return
@@ -568,6 +568,7 @@ enum MacRDPKeyboardMapping {
     /// `isISOKeyboard` defaults to the type of the keyboard in use.
     static func scancode(
         forKeyCode keyCode: UInt16,
+        layout: RDPKeyboardLayout = .unitedStates,
         isISOKeyboard: Bool = KBGetLayoutType(Int16(LMGetKbdType())) == kKeyboardISO
     ) -> RDPKeyboardScancode? {
         // On ISO keyboards macOS reports the key between left Shift and Z as kVK_ANSI_Grave; it
@@ -575,8 +576,20 @@ enum MacRDPKeyboardMapping {
         if isISOKeyboard, Int(keyCode) == kVK_ANSI_Grave {
             return RDPKeyboardScancode(code: 0x56)
         }
+        if layout == MacRDPKeyboardLayout.japanese, let scancode = japaneseInputModeKeys[Int(keyCode)] {
+            return scancode
+        }
         return scancodes[Int(keyCode)]
     }
+
+    /// Eisu and Kana with Windows' Japanese 106/109-key layout (kbd106.dll), which gives 0x71
+    /// and 0x72 no virtual key: its 英数 key, 0x3A (VK_DBE_ALPHANUMERIC; Caps Lock only with
+    /// Shift), and its ひらがな key, 0x70 (VK_DBE_HIRAGANA), switch the IME to Latin and kana
+    /// input, as Eisu and Kana do on the Mac. Captured on Windows 11, 2026-10-29.
+    private static let japaneseInputModeKeys: [Int: RDPKeyboardScancode] = [
+        kVK_JIS_Eisu: RDPKeyboardScancode(code: 0x3A),
+        kVK_JIS_Kana: RDPKeyboardScancode(code: 0x70),
+    ]
 
     /// A key the server holds keeps auto-repeating as its scancode after the modifier that sent it
     /// there is released; repeating it as text would type on top of the held key. With Option down
@@ -707,10 +720,9 @@ enum MacRDPKeyboardMapping {
         kVK_JIS_KeypadComma: RDPKeyboardScancode(code: 0x7E),
         // Apple's JIS keyboards send Eisu and Kana as HID LANG2 and LANG1, which a PC reads as
         // 0x71 and 0x72 (set 1's F1 and F2, which have no break code), and FreeRDP's SDL
-        // client sends them so. Windows' Japanese layout makes them VK_IME_OFF and VK_IME_ON
-        // (WinPR's Japanese keyboard table lists those for F1 and F2), which turn the IME off
-        // and on, as the keys do on the Mac. The Mac layouts type a space with them, which
-        // must not reach the server as text.
+        // client sends them so. With Windows' Japanese layout they go as its own keys instead
+        // (see japaneseInputModeKeys). The Mac layouts type a space with them, which must not
+        // reach the server as text.
         kVK_JIS_Eisu: RDPKeyboardScancode(code: 0x71),
         kVK_JIS_Kana: RDPKeyboardScancode(code: 0x72),
         kVK_ANSI_Keypad7: RDPKeyboardScancode(code: 0x47), kVK_ANSI_Keypad8: RDPKeyboardScancode(code: 0x48),
