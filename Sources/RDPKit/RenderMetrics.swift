@@ -89,6 +89,8 @@ public struct RDPRenderMetrics: Equatable, Sendable {
         return Double(decodedFrameCount - 1) / elapsed
     }
 
+    /// The rate as of the last decoded frame, so it holds when frames stop.
+    @available(*, deprecated, message: "Use rollingFramesPerSecond(at:), which falls when frames stop.")
     public var rollingFramesPerSecond: Double? {
         guard recentFrameDecodedAt.count > 1,
               let first = recentFrameDecodedAt.first,
@@ -103,8 +105,56 @@ public struct RDPRenderMetrics: Equatable, Sendable {
         return Double(recentFrameDecodedAt.count - 1) / elapsed
     }
 
+    /// The rate as of the last wire sample, so it holds when traffic stops.
+    @available(*, deprecated, message: "Use rollingWireMegabitsPerSecond(at:), which falls when traffic stops.")
     public var rollingWireMegabitsPerSecond: Double? {
         rollingWireMegabitsPerSecondValue
+    }
+
+    /// Frames decoded per second in the 5 s up to `date`. It falls as `date`
+    /// moves past the last frame, to 0 once fewer than two frames are left in
+    /// that window. Nil until two frames have been decoded.
+    public func rollingFramesPerSecond(at date: Date) -> Double? {
+        guard decodedFrameCount > 1 else {
+            return nil
+        }
+        let cutoff = date.addingTimeInterval(-Self.rollingWindowSeconds)
+        let recent = recentFrameDecodedAt.drop { $0 < cutoff }
+        guard recent.count > 1, let first = recent.first, let last = recent.last else {
+            return 0
+        }
+        let elapsed = max(date, last).timeIntervalSince(first)
+        guard elapsed > 0 else {
+            return nil
+        }
+        return Double(recent.count - 1) / elapsed
+    }
+
+    /// Megabits received per second in the 5 s up to `date`. It falls as
+    /// `date` moves past the last sample, to 0 once none is left in that
+    /// window. Nil until bytes have been received.
+    public func rollingWireMegabitsPerSecond(at date: Date) -> Double? {
+        guard wireByteCount > 0 else {
+            return nil
+        }
+        let cutoff = date.addingTimeInterval(-Self.rollingWindowSeconds)
+        var firstIndex = firstRecentWireReceiveRecordIndex
+        var byteCount = recentWireByteCount
+        while firstIndex < recentWireReceiveRecords.count,
+              recentWireReceiveRecords[firstIndex].receivedAt < cutoff
+        {
+            byteCount -= recentWireReceiveRecords[firstIndex].byteCount
+            firstIndex += 1
+        }
+        guard firstIndex < recentWireReceiveRecords.count, let last = recentWireReceiveRecords.last else {
+            return 0
+        }
+        let first = recentWireReceiveRecords[firstIndex]
+        let elapsed = min(
+            Self.rollingWindowSeconds,
+            max(0.25, max(date, last.receivedAt).timeIntervalSince(first.receivedAt))
+        )
+        return megabitsPerSecond(byteCount: byteCount, elapsedSeconds: elapsed) ?? 0
     }
 
     public var averageWireMegabitsPerSecond: Double? {

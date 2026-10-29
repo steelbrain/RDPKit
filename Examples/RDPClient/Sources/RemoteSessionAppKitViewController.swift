@@ -540,6 +540,10 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         diagnosticsTask = Task { @MainActor [weak self] in
             while Task.isCancelled == false {
                 self?.publishLatestFrameMetadata()
+                // The overlay's rolling rates fall when traffic stops, which records nothing.
+                if self?.publishRenderMetricsSnapshotIfNeeded() == true {
+                    self?.render()
+                }
                 self?.syncDiagnosticsSnapshot()
                 try? await Task.sleep(nanoseconds: 250_000_000)
             }
@@ -566,6 +570,8 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
     }
 
     private func syncDiagnosticsSnapshot() {
+        let renderMetrics = renderMetricsStore.metrics
+        let now = Date()
         let nextSnapshot = RemoteSessionDiagnosticsSnapshot(
             title: sessionDisplayName,
             report: report,
@@ -573,7 +579,9 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
             previewFrameCount: previewFrameCount,
             presentedFrameCount: presentedFrameCount,
             previewDecodeError: previewDecodeError,
-            renderMetrics: renderMetricsStore.metrics,
+            renderMetrics: renderMetrics,
+            rollingFramesPerSecond: renderMetrics.rollingFramesPerSecond(at: now),
+            rollingWireMegabitsPerSecond: renderMetrics.rollingWireMegabitsPerSecond(at: now),
             framePacing: framePacing,
             sessionEndReason: sessionEndReason,
             serverCertificateInfo: serverCertificateInfo,
@@ -1118,7 +1126,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
 
     @discardableResult
     private func updateViewerMetricsSummary(_ metrics: RDPRenderMetrics) -> Bool {
-        let nextSummary = compactViewerMetricsSummary(metrics: metrics, framePacing: framePacing)
+        let nextSummary = compactViewerMetricsSummary(metrics: metrics, framePacing: framePacing, at: Date())
         if viewerMetricsSummary != nextSummary {
             viewerMetricsSummary = nextSummary
             return true

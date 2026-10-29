@@ -77,19 +77,21 @@ private func metricBytes(_ value: Int) -> String {
     ByteCountFormatter.string(fromByteCount: Int64(value), countStyle: .file)
 }
 
+/// The rates are those of the 5 s up to `date`, so they fall once traffic stops.
 func compactViewerMetricsSummary(
     metrics: RDPRenderMetrics,
-    framePacing: RDPFramePacingState
+    framePacing: RDPFramePacingState,
+    at date: Date
 ) -> String? {
     var parts: [String] = []
-    let framesPerSecond = metrics.rollingFramesPerSecond ?? metrics.averageFramesPerSecond
+    let framesPerSecond = metrics.rollingFramesPerSecond(at: date) ?? metrics.averageFramesPerSecond
     if let framesPerSecond {
         parts.append(metricFramesPerSecond(framesPerSecond))
     }
     if let lastDecodeMilliseconds = metrics.lastDecodeMilliseconds {
         parts.append("decode \(metricMilliseconds(lastDecodeMilliseconds))")
     }
-    if let wireMegabitsPerSecond = metrics.rollingWireMegabitsPerSecond {
+    if let wireMegabitsPerSecond = metrics.rollingWireMegabitsPerSecond(at: date) {
         parts.append("rx \(metricMegabitsPerSecond(wireMegabitsPerSecond))")
     }
     if let displayLinkFramesPerSecond = framePacing.displayLinkFramesPerSecond {
@@ -103,6 +105,8 @@ func compactViewerMetricsSummary(
 
 private struct PerformanceMetricsView: View {
     var metrics: RDPRenderMetrics
+    var rollingFramesPerSecond: Double?
+    var rollingWireMegabitsPerSecond: Double?
     var framePacing: RDPFramePacingState
 
     var body: some View {
@@ -116,11 +120,11 @@ private struct PerformanceMetricsView: View {
                 DiagnosticRow("Display Max", metricHertz(framePacing.maximumRefreshRate))
                 DiagnosticRow("Display Link", metricFramesPerSecond(framePacing.displayLinkFramesPerSecond))
                 DiagnosticRow("Refresh Range", refreshRange(framePacing))
-                DiagnosticRow("Wire RX", metricMegabitsPerSecond(metrics.rollingWireMegabitsPerSecond))
+                DiagnosticRow("Wire RX", metricMegabitsPerSecond(rollingWireMegabitsPerSecond))
                 DiagnosticRow("Wire RX Average", metricMegabitsPerSecond(metrics.averageWireMegabitsPerSecond))
                 DiagnosticRow("Wire RX Total", metricBytes(metrics.wireByteCount))
                 DiagnosticRow("First Frame Latency", metricMilliseconds(metrics.firstFrameLatencyMilliseconds))
-                DiagnosticRow("Rolling FPS", metricFramesPerSecond(metrics.rollingFramesPerSecond))
+                DiagnosticRow("Rolling FPS", metricFramesPerSecond(rollingFramesPerSecond))
                 DiagnosticRow("Average FPS", metricFramesPerSecond(metrics.averageFramesPerSecond))
                 DiagnosticRow("Decode Last", metricMilliseconds(metrics.lastDecodeMilliseconds))
                 DiagnosticRow("Decode Average", metricMilliseconds(metrics.averageDecodeMilliseconds))
@@ -172,6 +176,10 @@ struct RemoteSessionDiagnosticsSnapshot: Equatable {
     var presentedFrameCount = 0
     var previewDecodeError: String?
     var renderMetrics = RDPRenderMetrics()
+    /// `renderMetrics`' rolling rates when the snapshot was taken: they fall once traffic
+    /// stops, which records nothing new in `renderMetrics`.
+    var rollingFramesPerSecond: Double?
+    var rollingWireMegabitsPerSecond: Double?
     var framePacing = RDPFramePacingState()
     var sessionEndReason: RDPSessionEndReason?
     var serverCertificateInfo: RDPServerCertificateInfo?
@@ -231,7 +239,12 @@ struct RemoteSessionDiagnosticsWindowContent: View {
                 }
 
                 if snapshot.renderMetrics.hasActivity || snapshot.isConnecting {
-                    PerformanceMetricsView(metrics: snapshot.renderMetrics, framePacing: snapshot.framePacing)
+                    PerformanceMetricsView(
+                        metrics: snapshot.renderMetrics,
+                        rollingFramesPerSecond: snapshot.rollingFramesPerSecond,
+                        rollingWireMegabitsPerSecond: snapshot.rollingWireMegabitsPerSecond,
+                        framePacing: snapshot.framePacing
+                    )
                 }
 
                 Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 24, verticalSpacing: 10) {
@@ -463,8 +476,8 @@ struct RemoteSessionDiagnosticsWindowContent: View {
         [
             statusText(snapshot),
             snapshot.report?.stage ?? "not started",
-            metricFramesPerSecond(snapshot.renderMetrics.rollingFramesPerSecond),
-            metricMegabitsPerSecond(snapshot.renderMetrics.rollingWireMegabitsPerSecond),
+            metricFramesPerSecond(snapshot.rollingFramesPerSecond),
+            metricMegabitsPerSecond(snapshot.rollingWireMegabitsPerSecond),
         ].joined(separator: " - ")
     }
 
