@@ -1323,63 +1323,68 @@ final class RDPRemoteFXDecoder {
     }
 
     /// Reduce-Extrapolate inverse DWT (MS-RDPEGFX), using the
-    /// `reduceExtrapolateBands` layout.
+    /// `reduceExtrapolateBands` layout. Like the classic DWT, it runs on buffer pointers.
     static func decodeProgressiveDWT(_ buffer: inout [Int16]) {
-        let level3 = inverseProgressiveDWTBlock(
-            buffer,
-            start: 3807,
-            lowWidth: 9,
-            lowHeight: 9,
-            serializedHighWidth: 8,
-            serializedHighHeight: 8
-        )
-        buffer.replaceSubrange(3807 ..< 4096, with: level3)
-
-        let level2 = inverseProgressiveDWTBlock(
-            buffer,
-            start: 3007,
-            lowWidth: 17,
-            lowHeight: 17,
-            serializedHighWidth: 16,
-            serializedHighHeight: 16
-        )
-        buffer.replaceSubrange(3007 ..< 4096, with: level2)
-
-        let level1 = inverseProgressiveDWTBlock(
-            buffer,
-            start: 0,
-            lowWidth: 33,
-            lowHeight: 33,
-            serializedHighWidth: 31,
-            serializedHighHeight: 31
-        )
-        buffer.replaceSubrange(0 ..< 4096, with: level1)
+        precondition(buffer.count == tileCoefficientCount)
+        var temp = [Int16](repeating: 0, count: tileCoefficientCount)
+        buffer.withUnsafeMutableBufferPointer { buffer in
+            temp.withUnsafeMutableBufferPointer { temp in
+                inverseProgressiveDWTLevel(
+                    buffer,
+                    start: 3807,
+                    temp: temp,
+                    lowWidth: 9,
+                    lowHeight: 9,
+                    serializedHighWidth: 8,
+                    serializedHighHeight: 8
+                )
+                inverseProgressiveDWTLevel(
+                    buffer,
+                    start: 3007,
+                    temp: temp,
+                    lowWidth: 17,
+                    lowHeight: 17,
+                    serializedHighWidth: 16,
+                    serializedHighHeight: 16
+                )
+                inverseProgressiveDWTLevel(
+                    buffer,
+                    start: 0,
+                    temp: temp,
+                    lowWidth: 33,
+                    lowHeight: 33,
+                    serializedHighWidth: 31,
+                    serializedHighHeight: 31
+                )
+            }
+        }
     }
 
-    private static func inverseProgressiveDWTBlock(
-        _ buffer: [Int16],
+    /// Transforms the level's sub-bands, from `start` to the end of the buffer, into the
+    /// level's output, which takes their place.
+    private static func inverseProgressiveDWTLevel(
+        _ buffer: UnsafeMutableBufferPointer<Int16>,
         start: Int,
+        temp: UnsafeMutableBufferPointer<Int16>,
         lowWidth: Int,
         lowHeight: Int,
         serializedHighWidth: Int,
         serializedHighHeight: Int
-    ) -> [Int16] {
+    ) {
         let totalWidth = lowWidth + serializedHighWidth
-        let totalHeight = lowHeight + serializedHighHeight
         let hlBase = start
         let lhBase = hlBase + serializedHighWidth * lowHeight
         let hhBase = lhBase + lowWidth * serializedHighHeight
         let llBase = hhBase + serializedHighWidth * serializedHighHeight
-        var horizontal = [Int16](repeating: 0, count: totalWidth * totalHeight)
         inverseProgressiveDWTLines(
-            source: buffer,
+            source: UnsafeBufferPointer(buffer),
             lowBase: llBase,
             lowElementStep: 1,
             lowLineStep: lowWidth,
             highBase: hlBase,
             highElementStep: 1,
             highLineStep: serializedHighWidth,
-            destination: &horizontal,
+            destination: temp,
             destinationBase: 0,
             destinationElementStep: 1,
             destinationLineStep: totalWidth,
@@ -1388,14 +1393,14 @@ final class RDPRemoteFXDecoder {
             lineCount: lowHeight
         )
         inverseProgressiveDWTLines(
-            source: buffer,
+            source: UnsafeBufferPointer(buffer),
             lowBase: lhBase,
             lowElementStep: 1,
             lowLineStep: lowWidth,
             highBase: hhBase,
             highElementStep: 1,
             highLineStep: serializedHighWidth,
-            destination: &horizontal,
+            destination: temp,
             destinationBase: lowHeight * totalWidth,
             destinationElementStep: 1,
             destinationLineStep: totalWidth,
@@ -1403,36 +1408,33 @@ final class RDPRemoteFXDecoder {
             highCount: serializedHighWidth,
             lineCount: serializedHighHeight
         )
-
-        var output = [Int16](repeating: 0, count: totalWidth * totalHeight)
         inverseProgressiveDWTLines(
-            source: horizontal,
+            source: UnsafeBufferPointer(temp),
             lowBase: 0,
             lowElementStep: totalWidth,
             lowLineStep: 1,
             highBase: lowHeight * totalWidth,
             highElementStep: totalWidth,
             highLineStep: 1,
-            destination: &output,
-            destinationBase: 0,
+            destination: buffer,
+            destinationBase: start,
             destinationElementStep: totalWidth,
             destinationLineStep: 1,
             lowCount: lowHeight,
             highCount: serializedHighHeight,
             lineCount: totalWidth
         )
-        return output
     }
 
     private static func inverseProgressiveDWTLines(
-        source: [Int16],
+        source: UnsafeBufferPointer<Int16>,
         lowBase: Int,
         lowElementStep: Int,
         lowLineStep: Int,
         highBase: Int,
         highElementStep: Int,
         highLineStep: Int,
-        destination: inout [Int16],
+        destination: UnsafeMutableBufferPointer<Int16>,
         destinationBase: Int,
         destinationElementStep: Int,
         destinationLineStep: Int,
@@ -1493,20 +1495,27 @@ final class RDPRemoteFXDecoder {
         }
     }
 
+    /// The passes index fixed positions of whole tiles, so they run on buffer pointers,
+    /// which spares them a bounds check per coefficient.
     private static func inverseDWTLevel(
         _ buffer: inout [Int16],
         start: Int,
         temp: inout [Int16],
         subbandWidth: Int
     ) {
-        inverseHorizontal(buffer: buffer, start: start, temp: &temp, subbandWidth: subbandWidth)
-        inverseVertical(buffer: &buffer, start: start, temp: temp, subbandWidth: subbandWidth)
+        precondition(buffer.count == tileCoefficientCount && temp.count == tileCoefficientCount)
+        buffer.withUnsafeMutableBufferPointer { buffer in
+            temp.withUnsafeMutableBufferPointer { temp in
+                inverseHorizontal(buffer: UnsafeBufferPointer(buffer), start: start, temp: temp, subbandWidth: subbandWidth)
+                inverseVertical(buffer: buffer, start: start, temp: UnsafeBufferPointer(temp), subbandWidth: subbandWidth)
+            }
+        }
     }
 
     private static func inverseHorizontal(
-        buffer: [Int16],
+        buffer: UnsafeBufferPointer<Int16>,
         start: Int,
-        temp: inout [Int16],
+        temp: UnsafeMutableBufferPointer<Int16>,
         subbandWidth: Int
     ) {
         let totalWidth = subbandWidth * 2
@@ -1564,9 +1573,9 @@ final class RDPRemoteFXDecoder {
     }
 
     private static func inverseVertical(
-        buffer: inout [Int16],
+        buffer: UnsafeMutableBufferPointer<Int16>,
         start: Int,
-        temp: [Int16],
+        temp: UnsafeBufferPointer<Int16>,
         subbandWidth: Int
     ) {
         let totalWidth = subbandWidth * 2
@@ -1607,17 +1616,24 @@ final class RDPRemoteFXDecoder {
     /// Converts 11.5 fixed-point YCbCr (Y offset by -4096) to BGRA with the
     /// fixed-point ICT coefficients of MS-RDPRFX 3.1.8.2.5 scaled by 2^16.
     private static func bgraData(y: [Int16], cb: [Int16], cr: [Int16]) -> Data {
+        precondition(y.count == tileCoefficientCount && cb.count == y.count && cr.count == y.count)
         var data = Data(count: tileCoefficientCount * 4)
         data.withUnsafeMutableBytes { bytes in
-            for index in 0 ..< tileCoefficientCount {
-                let luma = (Int(y[index]) + 4096) << 16
-                let blueDifference = Int(cb[index])
-                let redDifference = Int(cr[index])
-                let offset = index * 4
-                bytes[offset] = clip((luma + blueDifference * 115_992) >> 21)
-                bytes[offset + 1] = clip((luma - blueDifference * 22_527 - redDifference * 46_819) >> 21)
-                bytes[offset + 2] = clip((luma + redDifference * 91_916) >> 21)
-                bytes[offset + 3] = 0xFF
+            y.withUnsafeBufferPointer { y in
+                cb.withUnsafeBufferPointer { cb in
+                    cr.withUnsafeBufferPointer { cr in
+                        for index in 0 ..< tileCoefficientCount {
+                            let luma = (Int(y[index]) + 4096) << 16
+                            let blueDifference = Int(cb[index])
+                            let redDifference = Int(cr[index])
+                            let offset = index * 4
+                            bytes[offset] = clip((luma + blueDifference * 115_992) >> 21)
+                            bytes[offset + 1] = clip((luma - blueDifference * 22_527 - redDifference * 46_819) >> 21)
+                            bytes[offset + 2] = clip((luma + redDifference * 91_916) >> 21)
+                            bytes[offset + 3] = 0xFF
+                        }
+                    }
+                }
             }
         }
         return data
