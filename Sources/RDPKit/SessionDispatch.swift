@@ -39,11 +39,12 @@ extension RDPClientConnection {
     /// Bounds the wait for the next connection milestone by the configured
     /// timeout, however much other traffic arrives; that includes a live
     /// session's reactivation or new RDPGFX channel after its first frame.
-    /// `captureOnly` marks a milestone only a capture run waits for, its next
-    /// frame: a live session that shows frames awaits nothing, and TCP
-    /// keepalive notices a dead peer.
-    func startPhase(captureOnly: Bool = false) {
-        phaseDeadline = targetFrameCount == nil && captureOnly
+    /// `awaitingFrame` marks a milestone whose next step is a frame: a capture
+    /// run waits for each, a live session only for its first. Once a live
+    /// session shows frames it awaits nothing, and TCP keepalive notices a
+    /// dead peer.
+    func startPhase(awaitingFrame: Bool = false) {
+        phaseDeadline = awaitingFrame && targetFrameCount == nil && report.rdpGraphicsFirstFrame != nil
             ? nil
             : .now() + .seconds(Int64(configuration.timeoutSeconds))
     }
@@ -361,7 +362,7 @@ extension RDPClientConnection {
 
     private func finishActivation(_ share: RDPActiveShare) {
         stage = .graphics
-        startPhase(captureOnly: true)
+        startPhase(awaitingFrame: true)
         guard let channel = transport?.channel else {
             return
         }

@@ -286,25 +286,62 @@ import Testing
 
 /// Each connection milestone must arrive within the timeout however much
 /// other traffic the server sends; here a pointer update every 200 ms, which
-/// used to reset the wait forever.
+/// used to reset the wait forever. A live session's first frame is such a
+/// milestone too.
 @Test(arguments: [
     // Demand Active answered (event 20), no Synchronize/Control/Font Map.
-    (21, "server did not grant control during connection finalization"),
+    (21, 1, "server did not grant control during connection finalization"),
     // RDPGFX caps advertised (event 34), no CapsConfirm.
-    (35, "server did not confirm RDPGFX capabilities"),
+    (35, 1, "server did not confirm RDPGFX capabilities"),
     // CapsConfirm, but no frame for a capture run.
-    (39, "receive failed: RDP Graphics Update timed out after 1 seconds"),
-])
-func chattyServerStillMissesTheMilestoneDeadline(prefix: Int, error: String) throws {
+    (39, 1, "receive failed: RDP Graphics Update timed out after 1 seconds"),
+    // Finalization done (event 28), but no RDPGFX channel or other frame for a live session.
+    (29, nil, "receive failed: RDP Graphics Update timed out after 1 seconds"),
+    // CapsConfirm, but no first frame for a live session.
+    (39, nil, "receive failed: RDP Graphics Update timed out after 1 seconds"),
+] as [(Int, Int?, String)])
+func chattyServerStillMissesTheMilestoneDeadline(prefix: Int, frameCaptureLimit: Int?, error: String) throws {
     // Without a deadline the run lasts until the guard cancels it.
     let run = try KRdpCapture.run(
         prefix: prefix,
+        frameCaptureLimit: frameCaptureLimit,
         timeoutSeconds: 1,
         guardSeconds: 8,
         onEnd: KRdpCapture.repeatedly(KRdpCapture.pointerHidden, every: .milliseconds(200))
     )
 
     #expect(run.report.error == error)
+}
+
+/// An empty frame gives a live session nothing to show, so it does not put
+/// off the deadline for the first frame.
+@Test func emptyFramesDoNotPostponeALiveSessionsFirstFrame() throws {
+    let run = try KRdpCapture.run(
+        prefix: 39,
+        frameCaptureLimit: nil,
+        timeoutSeconds: 1,
+        guardSeconds: 8,
+        onEnd: KRdpCapture.repeatedly(KRdpCapture.emptyGraphicsFrame(id: 1), every: .milliseconds(200))
+    )
+
+    #expect(run.report.rdpGraphicsFirstFrame == nil)
+    #expect(run.report.rdpGraphicsFrameAcknowledgeHexes?.isEmpty == false)
+    #expect(run.report.error == "receive failed: RDP Graphics Update timed out after 1 seconds")
+}
+
+/// Once a live session shows frames it waits for the next one indefinitely,
+/// through silence or other traffic, until the guard cancels it.
+@Test(arguments: [false, true])
+func liveSessionWaitsIndefinitelyAfterItsFirstFrame(chatty: Bool) throws {
+    let run = try KRdpCapture.run(
+        frameCaptureLimit: nil,
+        timeoutSeconds: 1,
+        guardSeconds: 3,
+        onEnd: chatty ? KRdpCapture.repeatedly(KRdpCapture.pointerHidden, every: .milliseconds(200)) : nil
+    )
+
+    #expect(run.report.rdpGraphicsFirstFrame != nil)
+    #expect(run.report.error == "cancelled")
 }
 
 /// How a live session's connection ends decides the outcome: a close, with

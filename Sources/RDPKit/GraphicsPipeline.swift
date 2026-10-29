@@ -93,7 +93,7 @@ extension RDPClientConnection {
             outputWidth: desktopWidth,
             outputHeight: desktopHeight
         )
-        startPhase(captureOnly: true)
+        startPhase(awaitingFrame: true)
     }
 
     /// Applies one RDPGFX PDU; returns the frame ID when it ends a frame.
@@ -344,7 +344,10 @@ extension RDPClientConnection {
         let frames = endedFrameSnapshots(frameID: frameID)
         pendingGraphicsUpdates = []
         try deliver(frames)
-        startPhase(captureOnly: true)
+        // A capture run counts every frame; a live session's first frame is one it can show.
+        if targetFrameCount != nil || !frames.isEmpty {
+            startPhase(awaitingFrame: true)
+        }
         guard let graphicsChannelID else {
             return
         }
@@ -456,7 +459,7 @@ extension RDPClientConnection {
         }
         try deliver(frames)
         if !frames.isEmpty {
-            startPhase(captureOnly: true)
+            startPhase(awaitingFrame: true)
         }
         primaryFramesCaptured += frames.count
         if let targetFrameCount, primaryFramesCaptured >= targetFrameCount {
