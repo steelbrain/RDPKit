@@ -312,11 +312,51 @@ private func windowsTypes(
     for klid in Set(MacRDPKeyboardLayout.windowsLayouts.values) {
         #expect(MacRDPWindowsKeyboardLayout.layout(RDPKeyboardLayout(rawValue: klid)) != nil)
     }
+    #expect(MacRDPWindowsKeyboardLayout.layout(MacRDPKeyboardLayout.japanese) != nil)
     for table in MacRDPWindowsKeyboardLayout.layouts.values {
         #expect(table.unshifted.unicodeScalars.count == MacRDPWindowsKeyboardLayout.scancodes.count)
         #expect(table.shifted.unicodeScalars.count == MacRDPWindowsKeyboardLayout.scancodes.count)
         #expect(table.capsLock.unicodeScalars.count == MacRDPWindowsKeyboardLayout.scancodes.count)
     }
+}
+
+/// A Japanese input source gets Windows' Japanese layout on any keyboard, and a JIS keyboard
+/// gets it in place of US English, but keeps other layouts; Japanese goes as a 106/109-key
+/// keyboard, the one its table describes.
+@Test func japaneseInputSourcesAndJISKeyboardsAnnounceTheJapaneseKeyboard() {
+    let japanese = MacRDPKeyboardLayout.japanese
+    let german = RDPKeyboardLayout(rawValue: 0x0000_0407)
+    let korean = RDPKeyboardLayout(rawValue: 0x0000_0412)
+    func layout(_ inputSourceLayout: RDPKeyboardLayout, isJapanese: Bool, isJIS: Bool) -> RDPKeyboardLayout {
+        MacRDPKeyboardLayout.windowsLayout(inputSourceLayout, isJapaneseInputSource: isJapanese, isJISKeyboard: isJIS)
+    }
+    #expect(layout(.unitedStates, isJapanese: true, isJIS: true) == japanese)
+    #expect(layout(.unitedStates, isJapanese: true, isJIS: false) == japanese)
+    #expect(layout(german, isJapanese: true, isJIS: false) == japanese)
+    #expect(layout(.unitedStates, isJapanese: false, isJIS: true) == japanese)
+    #expect(layout(german, isJapanese: false, isJIS: true) == german)
+    #expect(layout(korean, isJapanese: false, isJIS: true) == korean)
+    #expect(layout(.unitedStates, isJapanese: false, isJIS: false) == .unitedStates)
+
+    #expect(MacRDPKeyboardLayout.keyboardType(for: japanese) == .japanese)
+    #expect(MacRDPKeyboardLayout.keyboardSubType(for: japanese) == 2)
+    #expect(MacRDPKeyboardLayout.keyboardType(for: .unitedStates) == .ibmEnhanced)
+    #expect(MacRDPKeyboardLayout.keyboardSubType(for: korean) == 0)
+}
+
+/// Apple's Japanese input method counts in every mode, though its Latin mode (英字) reports
+/// English; other sources count when their first language is Japanese.
+@Test func japaneseInputSourcesAreRecognized() {
+    func isJapanese(_ identifier: String, _ languages: [String]) -> Bool {
+        MacRDPKeyboardLayout.isJapanese(inputSourceID: identifier, languages: languages)
+    }
+    #expect(isJapanese("com.apple.inputmethod.Kotoeri.RomajiTyping.Japanese", ["ja"]))
+    #expect(isJapanese("com.apple.inputmethod.Kotoeri.RomajiTyping.Roman", ["en"]))
+    #expect(isJapanese("com.apple.inputmethod.Kotoeri.KanaTyping.Japanese.Katakana", ["ja"]))
+    #expect(isJapanese("com.example.inputmethod.Japanese", ["ja", "en"]))
+    #expect(isJapanese("com.apple.keylayout.ABC", ["en", "fr"]) == false)
+    #expect(isJapanese("com.apple.inputmethod.Korean.2SetKorean", ["ko"]) == false)
+    #expect(isJapanese("com.example.inputmethod.Multilingual", ["en", "ja"]) == false)
 }
 
 @MainActor

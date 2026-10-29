@@ -4,16 +4,70 @@ import RDPKit
 /// The Windows keyboard layout to announce for the Mac's current one, so the server turns
 /// scancodes into the characters the keys are labelled with.
 enum MacRDPKeyboardLayout {
+    static let japanese = RDPKeyboardLayout(rawValue: 0x0000_0411)
+
     /// The layout of the current input source; an input method such as a CJK IME
-    /// reports the layout it types with. Unknown layouts fall back to US English.
+    /// reports the layout it types with. Unknown layouts fall back to US English. Japanese
+    /// input sources and JIS keyboards may get Windows' Japanese layout instead; see
+    /// `windowsLayout(_:isJapaneseInputSource:isJISKeyboard:)`.
     @MainActor
     static func current() -> RDPKeyboardLayout {
-        guard let source = TISCopyCurrentKeyboardLayoutInputSource()?.takeRetainedValue(),
-              let property = TISGetInputSourceProperty(source, kTISPropertyInputSourceID)
-        else {
-            return .unitedStates
+        let layoutSourceID: String? = TISCopyCurrentKeyboardLayoutInputSource().flatMap {
+            property(kTISPropertyInputSourceID, of: $0.takeRetainedValue())
         }
-        return windowsLayout(forInputSourceID: Unmanaged<CFString>.fromOpaque(property).takeUnretainedValue() as String)
+        let inputSource = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue()
+        return windowsLayout(
+            layoutSourceID.map(windowsLayout(forInputSourceID:)) ?? .unitedStates,
+            isJapaneseInputSource: inputSource.map {
+                isJapanese(
+                    inputSourceID: property(kTISPropertyInputSourceID, of: $0) ?? "",
+                    languages: property(kTISPropertyInputSourceLanguages, of: $0) ?? []
+                )
+            } ?? false,
+            isJISKeyboard: KBGetLayoutType(Int16(LMGetKbdType())) == kKeyboardJIS
+        )
+    }
+
+    private static func property<Value>(_ key: CFString, of source: TISInputSource) -> Value? {
+        TISGetInputSourceProperty(source, key).flatMap {
+            Unmanaged<AnyObject>.fromOpaque($0).takeUnretainedValue() as? Value
+        }
+    }
+
+    /// Windows' Japanese layout for a Japanese input source, whatever the keyboard, since the
+    /// server starts its Japanese IME with that layout. On a JIS keyboard it replaces US
+    /// English too (ABC, US, or a layout with no Windows one): macOS types the JIS legends
+    /// with those there, and Windows' Japanese layout types them for the same scancodes,
+    /// while its US layout differs on most punctuation keys and types nothing on Yen and Ro.
+    /// A JIS keyboard keeps any other layout, such as Korean, whose IME needs its own.
+    static func windowsLayout(
+        _ inputSourceLayout: RDPKeyboardLayout,
+        isJapaneseInputSource: Bool,
+        isJISKeyboard: Bool
+    ) -> RDPKeyboardLayout {
+        if isJapaneseInputSource || (isJISKeyboard && inputSourceLayout == .unitedStates) {
+            return japanese
+        }
+        return inputSourceLayout
+    }
+
+    /// A source whose first language is Japanese, as the kana modes of Japanese input methods
+    /// report, or any mode of Apple's Japanese input method: its Latin mode (英字) reports
+    /// English, but the Eisu and Kana keys switch modes mid-session, while the layout is
+    /// announced only at connection. FreeRDP's keyboard_apple.c maps that mode to Japanese too.
+    static func isJapanese(inputSourceID: String, languages: [String]) -> Bool {
+        languages.first == "ja" || inputSourceID.hasPrefix("com.apple.inputmethod.Kotoeri.")
+    }
+
+    /// The Japanese table is what Windows types with a 106/109-key keyboard (kbd106.dll), so
+    /// the server is told that keyboard: type 7, subtype 2, as Windows identifies one (subtype
+    /// 0 is the 101-key kbd101.dll). Function keys stay at RDPKit's default of 12.
+    static func keyboardType(for layout: RDPKeyboardLayout) -> RDPKeyboardType {
+        layout == japanese ? .japanese : .ibmEnhanced
+    }
+
+    static func keyboardSubType(for layout: RDPKeyboardLayout) -> UInt32 {
+        layout == japanese ? 2 : 0
     }
 
     static func windowsLayout(forInputSourceID identifier: String) -> RDPKeyboardLayout {

@@ -683,6 +683,8 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
             graphicsCapabilityProfile: graphicsCapabilityProfile,
             storedClientLicense: storedClientLicense,
             keyboardLayout: keyboardLayout,
+            keyboardType: MacRDPKeyboardLayout.keyboardType(for: keyboardLayout),
+            keyboardSubType: MacRDPKeyboardLayout.keyboardSubType(for: keyboardLayout),
             legacyRSAKeyExchange: usesLegacyRSAKeyExchange,
             // The Mac's name, as servers list clients; RDPKit cuts it to 15 characters.
             clientName: SCDynamicStoreCopyComputerName(nil, nil) as String? ?? "RDPKIT"
