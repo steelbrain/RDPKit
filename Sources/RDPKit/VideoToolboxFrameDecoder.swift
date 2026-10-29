@@ -21,9 +21,11 @@ public final class RDPVideoToolboxFrameDecoder {
 
     public init() {}
 
+    /// Drops every surface's decoder state, as for a new session.
     public func reset() {
         sequenceDecoders.removeAll()
         avc444Decoders.removeAll()
+        sawKPipeWire = false
     }
 
     /// Decodes `frame` into the picture it shows: the top-left `width` x `height` of the

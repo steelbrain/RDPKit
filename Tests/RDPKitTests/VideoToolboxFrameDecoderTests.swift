@@ -80,6 +80,22 @@ import VideoToolbox
     #expect(decoder.decoderContextCount == 2)
 }
 
+/// A decoder reset for another session forgets that the last one came from KPipeWire, whose
+/// limited-range colours would otherwise be read into the next server's full-range video.
+@Test func videoToolboxFrameDecoderResetForgetsTheEncoder() throws {
+    let decoder = RDPVideoToolboxFrameDecoder()
+    func matrix(_ imageBuffer: CVImageBuffer) -> String? {
+        CVBufferCopyAttachment(imageBuffer, kCVImageBufferYCbCrMatrixKey, nil) as? String
+    }
+    let krdp = try decoder.decodeDetailed(firstTranscriptFrame("krdp-colour-chart-transcript")).imageBuffer
+    #expect(matrix(krdp) == kCVImageBufferYCbCrMatrix_ITU_R_601_4 as String)
+
+    decoder.reset()
+    let gnome = try decoder.decodeDetailed(firstTranscriptFrame("gnome-negotiation-transcript")).imageBuffer
+
+    #expect(matrix(gnome) == kCVImageBufferYCbCrMatrix_ITU_R_709_2 as String)
+}
+
 @Test func sequenceDecoderDecodesEncodedH264Stream() throws {
     let accessUnits = try encodeH264AnnexB(frames: [(luma: 60, chroma: 128), (luma: 60, chroma: 128)])
     let decoder = RDPVideoToolboxSequenceDecoder(codec: .h264)
