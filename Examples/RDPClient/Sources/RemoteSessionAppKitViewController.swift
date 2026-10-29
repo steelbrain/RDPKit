@@ -141,6 +141,9 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         clipboard = RDPRemoteSessionClipboard(isSharingEnabled: draft.clipboardSharingEnabled)
         audioPlaybackEnabled = draft.audioPlaybackEnabled
         super.init(nibName: nil, bundle: nil)
+        if let passwordAnswer = draft.passwordAnswer {
+            passwordLookup.take(passwordAnswer)
+        }
     }
 
     @available(*, unavailable)

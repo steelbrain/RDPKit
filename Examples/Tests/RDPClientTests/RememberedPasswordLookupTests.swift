@@ -145,6 +145,102 @@ private final class SlowRead: @unchecked Sendable {
     #expect(reads.readAccounts.count == 1)
 }
 
+/// The answers a form's lookup and a connection joining it got, in order.
+@MainActor
+private final class Answers {
+    var received: [(to: String, result: Result<String?, Error>)] = []
+}
+
+/// The manager's Connect, pressed while the form's lookup is on its way, waits for that lookup
+/// and passes its answer on, instead of reading Keychain again.
+@MainActor
+@Test func aConnectionJoiningThePendingLookupGetsItsAnswerWithoutAnotherRead() async throws {
+    let reads = PasswordReads(["anees@desktop.example:3389": "secret"])
+    let lookup = RememberedPasswordLookup { reads.read($0) }
+    let anees = try key(username: "anees")
+    let answers = Answers()
+
+    await withCheckedContinuation { continuation in
+        lookup.lookUp(anees, after: .seconds(60)) { answers.received.append(("the form", $0)) }
+        let joined = lookup.join(anees) {
+            answers.received.append(("the connection", $0))
+            continuation.resume()
+        }
+        #expect(joined)
+    }
+
+    #expect(answers.received.map(\.to) == ["the form", "the connection"])
+    #expect(try answers.received.map { try $0.result.get() } == ["secret", "secret"])
+    #expect(reads.readAccounts.count == 1)
+}
+
+@MainActor
+@Test func aConnectionGetsNoAnswerFromALookupForAnotherAccountOrOneReplaced() async throws {
+    let reads = PasswordReads()
+    let lookup = RememberedPasswordLookup { reads.read($0) }
+    let anees = try key(username: "anees")
+    let other = try key(username: "other")
+    #expect(lookup.join(anees) { _ in Issue.record("A connection joined no lookup.") } == false)
+
+    let result = await withCheckedContinuation { continuation in
+        lookup.lookUp(anees, after: .seconds(60)) { _ in Issue.record("A replaced lookup delivered its result.") }
+        #expect(lookup.join(other) { _ in Issue.record("A connection joined another account's lookup.") } == false)
+        #expect(lookup.join(anees) { _ in Issue.record("A connection got a replaced lookup's answer.") })
+        // The form's account changes before Keychain answers.
+        lookup.lookUp(other, after: .zero) { continuation.resume(returning: $0) }
+    }
+
+    #expect(try result.get() == nil)
+    #expect(reads.readAccounts == ["other@desktop.example:3389"])
+}
+
+/// A session window takes the answer the manager had for its account, once, instead of reading.
+@MainActor
+@Test func aLookupPassesOnTheAnswerItWasGivenOnceInsteadOfReading() async throws {
+    let reads = PasswordReads(["anees@desktop.example:3389": "newer"])
+    let lookup = RememberedPasswordLookup { reads.read($0) }
+    let anees = try key(username: "anees")
+    lookup.take(RememberedPasswordAnswer(key: anees, result: .success("secret")))
+
+    let given = await withCheckedContinuation { continuation in
+        lookup.lookUp(anees, after: .zero) { continuation.resume(returning: $0) }
+    }
+    #expect(try given.get() == "secret")
+    #expect(reads.readAccounts.isEmpty)
+
+    let read = await withCheckedContinuation { continuation in
+        lookup.lookUp(anees, after: .zero) { continuation.resume(returning: $0) }
+    }
+    #expect(try read.get() == "newer")
+    #expect(reads.readAccounts.count == 1)
+
+    // An error Keychain gave the manager is passed on in its words, not asked again.
+    let denied = KeychainCredentialError.unexpectedStatus(errSecAuthFailed)
+    lookup.take(RememberedPasswordAnswer(key: anees, result: .failure(denied)))
+    let failed = await withCheckedContinuation { continuation in
+        lookup.lookUp(anees, after: .zero) { continuation.resume(returning: $0) }
+    }
+    #expect(throws: RememberedPasswordError(description: denied.description)) { try failed.get() }
+    #expect(reads.readAccounts.count == 1)
+}
+
+@MainActor
+@Test func aLookupOfAnotherAccountDropsTheAnswerGiven() async throws {
+    let reads = PasswordReads()
+    let lookup = RememberedPasswordLookup { reads.read($0) }
+    let anees = try key(username: "anees")
+    let other = try key(username: "other")
+    lookup.take(RememberedPasswordAnswer(key: anees, result: .success("secret")))
+
+    for key in [other, anees] {
+        let result = await withCheckedContinuation { continuation in
+            lookup.lookUp(key, after: .zero) { continuation.resume(returning: $0) }
+        }
+        #expect(try result.get() == nil)
+    }
+    #expect(reads.readAccounts == ["other@desktop.example:3389", "anees@desktop.example:3389"])
+}
+
 private func choice(_ password: String, remember: Bool) -> RememberedPasswordChoice {
     RememberedPasswordChoice(password: password, rememberPassword: remember)
 }

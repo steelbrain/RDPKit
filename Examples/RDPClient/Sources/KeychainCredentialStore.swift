@@ -70,11 +70,15 @@ struct KeychainCredentialStore: Sendable {
         try passwords.savePassword(password, account: key.account)
     }
 
-    func deletePassword(for key: KeychainCredentialKey) throws {
-        try passwords.deletePassword(account: key.account)
+    /// Deletes `key`'s password, under its current name and any earlier one, and returns whether
+    /// there was one: no read is needed to tell.
+    @discardableResult
+    func deletePassword(for key: KeychainCredentialKey) throws -> Bool {
+        var deleted = try passwords.deletePassword(account: key.account)
         for legacyAccount in key.identity.legacyCredentialAccountNames {
-            try passwords.deletePassword(account: legacyAccount)
+            deleted = try passwords.deletePassword(account: legacyAccount) || deleted
         }
+        return deleted
     }
 }
 
@@ -86,8 +90,9 @@ protocol KeychainPasswords: Sendable {
     func savePassword(_ password: String, account: String) throws
     /// Moves the password saved under `account` to `newAccount`, in one step.
     func rename(account: String, to newAccount: String) throws -> KeychainPasswordRename
-    /// Deletes the password saved under `account`, if there is one.
-    func deletePassword(account: String) throws
+    /// Deletes the password saved under `account`, and returns whether there was one.
+    @discardableResult
+    func deletePassword(account: String) throws -> Bool
 }
 
 enum KeychainPasswordRename {
@@ -164,11 +169,12 @@ struct LoginKeychainPasswords: KeychainPasswords {
         }
     }
 
-    func deletePassword(account: String) throws {
+    func deletePassword(account: String) throws -> Bool {
         let status = SecItemDelete(baseQuery(account: account) as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else {
             throw KeychainCredentialError.unexpectedStatus(status)
         }
+        return status == errSecSuccess
     }
 
     private func baseQuery(account: String) -> [String: Any] {
@@ -193,6 +199,10 @@ final class RememberedPasswordLookup {
     private var pendingKey: KeychainCredentialKey?
     /// Whether the pending lookup still waits out its delay. Once it reads, nothing stops the read.
     private var isWaiting = false
+    /// Who gets the pending lookup's answer: its `apply`, then whoever joined it.
+    private var recipients: [@MainActor (Result<String?, Error>) -> Void] = []
+    /// An answer another form had, for the next lookup of its account.
+    private var givenAnswer: RememberedPasswordAnswer?
 
     convenience init(store: KeychainCredentialStore = KeychainCredentialStore()) {
         self.init { try store.password(for: $0) }
@@ -214,9 +224,57 @@ final class RememberedPasswordLookup {
         guard key != pendingKey || (isWaiting && delay == .zero) else {
             return
         }
+        // A lookup that replaces one for its key keeps those who joined that one.
+        let joined = key == pendingKey ? recipients.dropFirst() : []
+        start(key, after: delay, recipients: [apply] + joined)
+    }
+
+    /// Passes the answer of the lookup pending for `key` to `answered` as well, after that
+    /// lookup's own `apply`, ends that lookup's delay, and returns true. Returns false when no
+    /// lookup for `key` is pending. Nothing is passed if the lookup is cancelled, or replaced by
+    /// one for another key.
+    func join(
+        _ key: KeychainCredentialKey,
+        answered: @escaping @MainActor (Result<String?, Error>) -> Void
+    ) -> Bool {
+        guard key == pendingKey else {
+            return false
+        }
+        recipients.append(answered)
+        if isWaiting {
+            start(key, after: .zero, recipients: recipients)
+        }
+        return true
+    }
+
+    /// Takes Keychain's answer another form already had, such as the one that opened a session
+    /// window. The next lookup of its account passes it on instead of reading Keychain; a lookup
+    /// of another account drops it.
+    func take(_ answer: RememberedPasswordAnswer) {
+        givenAnswer = answer
+    }
+
+    func cancel() {
+        task?.cancel()
+        task = nil
+        pendingKey = nil
+        isWaiting = false
+        recipients = []
+        givenAnswer = nil
+    }
+
+    private func start(
+        _ key: KeychainCredentialKey,
+        after delay: Duration,
+        recipients: [@MainActor (Result<String?, Error>) -> Void]
+    ) {
         task?.cancel()
         pendingKey = key
         isWaiting = delay > .zero
+        self.recipients = recipients
+        if givenAnswer?.key != key {
+            givenAnswer = nil
+        }
         let readPassword = readPassword
         task = Task { [weak self] in
             if delay > .zero {
@@ -226,24 +284,52 @@ final class RememberedPasswordLookup {
                 return
             }
             self?.isWaiting = false
-            let result = await Task.detached(priority: .userInitiated) {
-                Result { try readPassword(key) }
-            }.value
+            let result: Result<String?, Error>
+            if let givenAnswer = self?.takeGivenAnswer() {
+                result = givenAnswer
+            } else {
+                result = await Task.detached(priority: .userInitiated) {
+                    Result { try readPassword(key) }
+                }.value
+            }
             guard Task.isCancelled == false, let self else {
                 return
             }
+            let recipients = self.recipients
             self.task = nil
             self.pendingKey = nil
-            apply(result)
+            self.recipients = []
+            for recipient in recipients {
+                recipient(result)
+            }
         }
     }
 
-    func cancel() {
-        task?.cancel()
-        task = nil
-        pendingKey = nil
-        isWaiting = false
+    private func takeGivenAnswer() -> Result<String?, Error>? {
+        defer { givenAnswer = nil }
+        return givenAnswer?.result.mapError { $0 }
     }
+}
+
+/// Keychain's answer about an account: the password saved for it, nil for none, or the error
+/// Keychain gave.
+struct RememberedPasswordAnswer: Equatable, Sendable {
+    let key: KeychainCredentialKey
+    let result: Result<String?, RememberedPasswordError>
+
+    init(key: KeychainCredentialKey, result: Result<String?, Error>) {
+        self.key = key
+        self.result = result.mapError { RememberedPasswordError(description: String(describing: $0)) }
+    }
+
+    var savedPassword: String? {
+        try? result.get()
+    }
+}
+
+/// An error Keychain gave, in words.
+struct RememberedPasswordError: Error, Equatable, CustomStringConvertible {
+    let description: String
 }
 
 /// A connection form's password and its Remember choice.

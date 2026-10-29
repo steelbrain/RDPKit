@@ -16,6 +16,9 @@ struct RDPConnectionDraft: Equatable, Sendable {
     var clipboardSharingEnabled: Bool
     var audioPlaybackEnabled: Bool
     var rememberPassword: Bool
+    /// Keychain's answer for the account, when the form that made the draft had it: the session
+    /// window then takes it rather than asking Keychain again.
+    var passwordAnswer: RememberedPasswordAnswer?
 
     var displayName: String {
         RDPConnectionIdentity(host: host, port: port, username: username, domain: domain).displayName

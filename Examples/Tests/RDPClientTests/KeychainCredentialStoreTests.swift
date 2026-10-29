@@ -6,6 +6,7 @@ import Testing
 /// could between two calls; the tests make every call from one thread.
 private final class Passwords: KeychainPasswords, @unchecked Sendable {
     private(set) var saved: [String: String]
+    private(set) var reads = 0
     var interruption: (afterCall: Int, run: () -> Void)?
     private var calls = 0
 
@@ -15,6 +16,7 @@ private final class Passwords: KeychainPasswords, @unchecked Sendable {
 
     func password(account: String) -> String? {
         defer { called() }
+        reads += 1
         return saved[account]
     }
 
@@ -36,9 +38,9 @@ private final class Passwords: KeychainPasswords, @unchecked Sendable {
         return .renamed
     }
 
-    func deletePassword(account: String) {
-        saved[account] = nil
-        called()
+    func deletePassword(account: String) -> Bool {
+        defer { called() }
+        return saved.removeValue(forKey: account) != nil
     }
 
     private func called() {
@@ -73,7 +75,7 @@ private func typedKey() throws -> KeychainCredentialKey {
     for call in 1 ... 10 {
         let passwords = Passwords([legacyAccount: "secret"])
         let store = KeychainCredentialStore(passwords: passwords)
-        passwords.interruption = (call, { try? store.deletePassword(for: key) })
+        passwords.interruption = (call, { _ = try? store.deletePassword(for: key) })
 
         let password = try store.password(for: key)
 
@@ -96,4 +98,23 @@ private func typedKey() throws -> KeychainCredentialKey {
 
     #expect(try store.password(for: key) == "newer")
     #expect(passwords.saved == [currentAccount: "newer"])
+}
+
+/// Delete Profile learns from the deletion whether the profile had a saved password, under
+/// either name, so it reads nothing beside a lookup that may be on its way.
+@Test func deletingAPasswordTellsWhetherOneWasSavedWithoutReading() throws {
+    let key = try typedKey()
+    let savedPasswords = [
+        [currentAccount: "secret"],
+        [legacyAccount: "secret"],
+        [currentAccount: "newer", legacyAccount: "older"],
+        [:],
+    ]
+    for saved in savedPasswords {
+        let passwords = Passwords(saved)
+
+        #expect(try KeychainCredentialStore(passwords: passwords).deletePassword(for: key) == !saved.isEmpty)
+        #expect(passwords.saved.isEmpty)
+        #expect(passwords.reads == 0)
+    }
 }

@@ -19,7 +19,8 @@ struct ConnectionManagerView: View {
     @State private var domain = ""
     @State private var password = ""
     @State private var rememberPassword = false
-    @State private var hasRememberedPassword = false
+    /// Keychain's answer for the form's account, once its lookup has answered.
+    @State private var passwordAnswer: RememberedPasswordAnswer?
     @State private var keychainMessage: String?
     @State private var passwordLookup = RememberedPasswordLookup()
     @State private var hideCertificateWarnings = false
@@ -189,7 +190,8 @@ struct ConnectionManagerView: View {
         domain = ""
         password = ""
         rememberPassword = false
-        hasRememberedPassword = false
+        passwordAnswer = nil
+        passwordLookup.cancel()
         keychainMessage = nil
         hideCertificateWarnings = false
         timeoutSeconds = 10
@@ -198,29 +200,52 @@ struct ConnectionManagerView: View {
         audioPlaybackEnabled = false
     }
 
+    /// Connects with the form. A connection reads Keychain once: it waits for the form's lookup
+    /// on its way, and the session window takes the form's answer rather than asking again.
     private func connect() {
+        if let credentialKey, passwordLookup.join(credentialKey, answered: { _ in connect() }) {
+            return
+        }
         do {
-            let draft = try makeConnectionDraft()
+            let profile = try makeConnectionProfile()
+            let draft = try makeConnectionDraft(from: profile, password: password, answer: answer(for: profile))
             openSession(draft)
         } catch {
             formError = String(describing: error)
         }
     }
 
+    /// Connects with a saved profile, shown in the form, as `connect()` does. While the form
+    /// shows another account, its password is not the profile's, and the session window looks
+    /// the profile's up itself.
     private func connect(_ profile: ConnectionProfile) {
+        if selectedProfileID != profile.id {
+            selectedProfileID = profile.id
+            applySelectedProfile(id: profile.id)
+        }
+        let key = KeychainCredentialKey(identity: profile.identity)
+        let formShowsAccount = key == credentialKey
+        if formShowsAccount, let key, passwordLookup.join(key, answered: { _ in connect(profile) }) {
+            return
+        }
         do {
-            let wasSelected = selectedProfileID == profile.id
-            if !wasSelected {
-                selectedProfileID = profile.id
-                applySelectedProfile(id: profile.id)
-            }
-            // The selected profile's password may still be on its way from Keychain.
-            let connectionPassword = wasSelected && !password.isEmpty ? password : try profilePassword(for: profile)
-            let draft = try makeConnectionDraft(from: profile, password: connectionPassword)
+            let draft = try makeConnectionDraft(
+                from: profile,
+                password: formShowsAccount ? password : "",
+                answer: answer(for: profile)
+            )
             openSession(draft)
         } catch {
             formError = String(describing: error)
         }
+    }
+
+    /// The form's Keychain answer, when it is for `profile`'s account.
+    private func answer(for profile: ConnectionProfile) -> RememberedPasswordAnswer? {
+        guard let passwordAnswer, passwordAnswer.key == KeychainCredentialKey(identity: profile.identity) else {
+            return nil
+        }
+        return passwordAnswer
     }
 
     private func openSession(_ draft: RDPConnectionDraft) {
@@ -313,21 +338,22 @@ struct ConnectionManagerView: View {
         }
     }
 
-    private func makeConnectionDraft() throws -> RDPConnectionDraft {
-        let profile = try makeConnectionProfile()
-        let trimmedPassword = password
-        return try makeConnectionDraft(from: profile, password: trimmedPassword)
-    }
-
     private func makeConnectionDraft(
         from profile: ConnectionProfile,
-        password: String
+        password: String,
+        answer: RememberedPasswordAnswer?
     ) throws -> RDPConnectionDraft {
-        _ = try RDPCredentials.validated(
-            username: profile.username,
-            domain: profile.domain,
-            password: password
-        )
+        // Without Keychain's answer, the session window looks up a remembered password the form
+        // does not have, and checks the credentials once it has it.
+        let windowLooksUpPassword = answer == nil && password.isEmpty && profile.rememberPassword
+            && KeychainCredentialKey(identity: profile.identity) != nil
+        if !windowLooksUpPassword {
+            _ = try RDPCredentials.validated(
+                username: profile.username,
+                domain: profile.domain,
+                password: password
+            )
+        }
 
         return RDPConnectionDraft(
             host: profile.host,
@@ -342,7 +368,8 @@ struct ConnectionManagerView: View {
             graphicsCapabilityProfile: profile.graphicsCapabilityProfile,
             clipboardSharingEnabled: profile.clipboardSharingEnabled,
             audioPlaybackEnabled: profile.audioPlaybackEnabled,
-            rememberPassword: profile.rememberPassword
+            rememberPassword: profile.rememberPassword,
+            passwordAnswer: answer
         )
     }
 
@@ -403,7 +430,7 @@ struct ConnectionManagerView: View {
     /// Looks up the password saved for the form's account, `after` a pause in typing.
     private func loadRememberedPasswordIfAvailable(after delay: Duration = RememberedPasswordLookup.typingDelay) {
         keychainMessage = nil
-        hasRememberedPassword = false
+        passwordAnswer = nil
         guard let key = credentialKey else {
             passwordLookup.cancel()
             return
@@ -418,9 +445,9 @@ struct ConnectionManagerView: View {
         guard key == credentialKey else {
             return
         }
+        passwordAnswer = RememberedPasswordAnswer(key: key, result: result)
         switch result {
         case let .success(savedPassword?):
-            hasRememberedPassword = true
             rememberPassword = true
             password = savedPassword
             keychainMessage = "Password loaded from Keychain."
@@ -433,13 +460,8 @@ struct ConnectionManagerView: View {
         }
     }
 
-    private func profilePassword(for profile: ConnectionProfile) throws -> String {
-        guard profile.rememberPassword,
-              let key = KeychainCredentialKey(identity: profile.identity)
-        else {
-            return ""
-        }
-        return try credentialStore.password(for: key) ?? ""
+    private var hasRememberedPassword: Bool {
+        passwordAnswer?.savedPassword != nil
     }
 
     private func credentialPersistenceRequest(
@@ -472,17 +494,13 @@ struct ConnectionManagerView: View {
         return result
     }
 
-    @discardableResult
+    /// Deletes `profile`'s saved password, and returns whether it had one. Deleting tells, so
+    /// Keychain is not read first.
     private func deleteStoredCredentials(for profile: ConnectionProfile) throws -> Bool {
         guard let key = KeychainCredentialKey(identity: profile.identity) else {
             return false
         }
-        let hadStoredPassword = try credentialStore.password(for: key) != nil
-        guard hadStoredPassword else {
-            return false
-        }
-        let result = try persistCredentialChangeIfNeeded(.delete(key: key))
-        return result != nil
+        return try credentialStore.deletePassword(for: key)
     }
 
     private func applyCredentialPersistenceResult(
@@ -490,11 +508,11 @@ struct ConnectionManagerView: View {
     ) {
         switch result {
         case .success(.saved):
-            hasRememberedPassword = true
+            passwordAnswer = credentialKey.map { RememberedPasswordAnswer(key: $0, result: .success(password)) }
             rememberPassword = true
             keychainMessage = "Password saved to Keychain."
         case .success(.deleted):
-            hasRememberedPassword = false
+            passwordAnswer = credentialKey.map { RememberedPasswordAnswer(key: $0, result: .success(nil)) }
             keychainMessage = "Saved password removed from Keychain."
         case let .failure(error):
             keychainMessage = String(describing: error)
