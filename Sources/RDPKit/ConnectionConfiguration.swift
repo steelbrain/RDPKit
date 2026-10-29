@@ -50,9 +50,10 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
     public var legacyRSAKeyExchange: Bool
     /// Local folders the server sees as drives. Sharing one joins the rdpsnd channel too.
     public var sharedDrives: [RDPSharedDrive]
-    /// The name servers show for this client, in session lists and for per-device
-    /// licensing: at most 15 characters ([MS-RDPBCGR] 2.2.1.3.2). Control characters are
-    /// dropped and a longer name is cut; with nothing left it is "RDPKIT".
+    /// The name servers show for this client, in session lists, for per-device licensing
+    /// and as the NTLM workstation of a Network Level Authentication logon: at most 15
+    /// characters ([MS-RDPBCGR] 2.2.1.3.2). Control characters are dropped and a longer
+    /// name is cut; with nothing left it is "RDPKIT".
     public var clientName: String
     var redirectionRoutingToken: Data?
     var redirectionSessionID: UInt32?

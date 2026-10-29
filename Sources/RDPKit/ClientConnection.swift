@@ -29,7 +29,8 @@ final class RDPClientConnection {
     var displayControlSession: RDPDisplayControlSession?
     var serverCertificatePublicKey: RDPRSAPublicKey?
     /// The configuration's client name, made valid again in case it was set after init, so
-    /// the Client Core Data, licensing and the rdpdr Client Name Request send the same one.
+    /// the NTLM workstation, the Client Core Data, licensing and the rdpdr Client Name
+    /// Request send the same one.
     let clientName: String
 
     // Licensing and activation.

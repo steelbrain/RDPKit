@@ -44,6 +44,7 @@ final class RDPCredSSPNTLMContext {
     private let username: String
     private let domain: String
     private let responseKey: Data
+    /// The client's NetBIOS name, sent as the AUTHENTICATE_MESSAGE Workstation.
     private let workstationName: String
     private let channelBindingsHash: Data?
     private let randomBytes: (Int) throws -> Data
@@ -193,9 +194,12 @@ final class RDPCredSSPNTLMContext {
         guard domainName.count <= UInt16.max, userName.count <= UInt16.max else {
             throw RDPCredSSPError.credentialsTooLong
         }
-        let workstation = negotiatedFlags & Self.negotiateVersion != 0
-            ? Data(utf16LittleEndian: workstationName)
-            : Data()
+        // A client that sets NTLMSSP_NEGOTIATE_VERSION in its NEGOTIATE_MESSAGE, as this one
+        // does, sends its NetBIOS name as the Workstation (MS-NLMP 3.1.5.1.2), whatever the
+        // server negotiated: only the Version field follows the negotiated flags (2.2.1.3).
+        // No flag marks it: Windows 11 records it as RemoteClientMachine (NTLM/Operational
+        // event 4022, 2026-10-29) without NTLMSSP_NEGOTIATE_OEM_WORKSTATION_SUPPLIED.
+        let workstation = Data(utf16LittleEndian: workstationName)
         // Payload in Windows order; the header below lists the fields in MS-NLMP 2.2.1.3 order.
         let payload = [
             domainName,
@@ -255,6 +259,9 @@ final class RDPCredSSPNTLMContext {
         receiveSealingKey = RDPRC4(key: Self.md5(sealingMaterial + Self.serverSealingMagic))
     }
 
+    /// MS-NLMP 2.2.1.1 NEGOTIATE_MESSAGE. Without NTLMSSP_NEGOTIATE_OEM_DOMAIN_SUPPLIED and
+    /// NTLMSSP_NEGOTIATE_OEM_WORKSTATION_SUPPLIED its OEM-encoded domain and workstation stay
+    /// empty; the AUTHENTICATE_MESSAGE sends both in Unicode.
     private static func makeNegotiateMessage() -> Data {
         var message = signatureBytes
         message.appendLittleEndianUInt32(1)

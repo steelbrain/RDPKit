@@ -329,7 +329,32 @@ import Testing
 
     #expect(token.littleEndianUInt32(at: 60) == serverFlags | 0x0000_1000)
     #expect(Data(token[64 ..< 72]) == Data(repeating: 0, count: 8))
-    #expect(securityBuffer(token, at: 44).isEmpty)
+    // Without NTLMSSP_NEGOTIATE_VERSION only the Version is zeroed: this client set the flag
+    // in its NEGOTIATE_MESSAGE, so it still sends its name ([MS-NLMP] 3.1.5.1.2).
+    #expect(securityBuffer(token, at: 44) == utf16LittleEndian("RDPKIT"))
+}
+
+/// The MIC is HMAC_MD5 of the ExportedSessionKey over the NEGOTIATE, CHALLENGE and
+/// AUTHENTICATE messages, the last with its MIC zeroed ([MS-NLMP] 3.1.5.1.2): the Workstation
+/// in the payload is covered.
+@Test func ntlmContextMICCoversTheWorkstation() throws {
+    let context = RDPCredSSPNTLMContext(
+        credentials: RDPCredentials(username: "User", domain: "Domain", password: "Password"),
+        workstationName: "MACBOOK",
+        randomBytes: { count in Data(repeating: count == 8 ? 0xAA : 0x55, count: count) },
+        currentFileTime: { 0 }
+    )
+    let negotiate = try #require(context.initialize(inputToken: nil).outputToken)
+    let challenge = localChallengeMessage()
+    let token = try #require(context.initialize(inputToken: challenge).outputToken)
+    var zeroedMIC = token
+    zeroedMIC.replaceSubrange(72 ..< 88, with: Data(count: 16))
+    // NTLMSSP_NEGOTIATE_KEY_EXCH is negotiated, so the ExportedSessionKey is the client's random key.
+    let exportedSessionKey = SymmetricKey(data: Data(repeating: 0x55, count: 16))
+    let mic = HMAC<Insecure.MD5>.authenticationCode(for: negotiate + challenge + zeroedMIC, using: exportedSessionKey)
+
+    #expect(securityBuffer(token, at: 44) == utf16LittleEndian("MACBOOK"))
+    #expect(Data(token[72 ..< 88]) == Data(mic))
 }
 
 @Test func ntlmContextSealingKeyFollowsNegotiatedKeyStrength() throws {

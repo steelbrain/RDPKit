@@ -113,12 +113,29 @@ struct MockKRDPServerTests {
             "authenticate-client-nonce",
             "raw-ntlm-authenticate-token",
             "ntlm-channel-bindings",
+            "ntlm-mic",
             "nonce-bound-pubkeyauth",
             "credentials-client-nonce",
         ])
+        #expect(run.transcript.ntlmWorkstation == utf16LittleEndian("RDPKIT"))
         #expect(run.report.rdpGraphicsFirstFrame?.codecName == "avc420")
         #expect(run.report.error == nil)
         #expect(run.report.failure == nil)
+    }
+
+    /// NTLM names the client as Client Core Data does: the configured client name, made valid
+    /// even when set after the initializer, is the AUTHENTICATE_MESSAGE Workstation, and the
+    /// MIC covers it ([MS-NLMP] 2.2.1.3, 3.1.5.1.2).
+    @Test func clientSendsItsNameAsTheNTLMWorkstation() throws {
+        let run = try runMock(.init(securityProtocol: .credSSP(credentials: mockCredentials))) {
+            $0.clientName = "Conference-Room-Mac"
+        }
+        let core = try clientCoreData(fromMCSConnectInitialHex: run.report.mcsConnectInitialHex)
+
+        #expect(run.report.status == "success")
+        #expect(run.transcript.ntlmWorkstation == utf16LittleEndian("Conference-Room"))
+        #expect(run.transcript.credSSPGates.contains("ntlm-mic"))
+        #expect(core[24 ..< 56] == utf16LENullTerminated("Conference-Room"))
     }
 
     /// A wrong password gets the NTSTATUS the server answers it with, as Windows does.

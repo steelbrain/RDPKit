@@ -319,6 +319,8 @@ struct MockKRDPServerTranscript: Equatable, Sendable {
     var clientInfo: Data?
     /// The ClientMachineName of a Client New License Request, without its terminator.
     var licenseMachineName: String?
+    /// The Workstation of the NTLM AUTHENTICATE_MESSAGE, as sent.
+    var ntlmWorkstation: Data?
     /// The MCS Connect Initial's client data blocks, headers included, in the order sent.
     var clientDataBlocks: [Data] = []
 }
@@ -369,6 +371,9 @@ final class MockCredSSPServer {
     private let timestamp: UInt64 = 0x01DA_0000_0000_0000
     private var stage = Stage.negotiate
     private var clientNonce = Data()
+    /// The NEGOTIATE_MESSAGE and CHALLENGE_MESSAGE, which the client's MIC covers.
+    private var negotiateMessage = Data()
+    private var challenge = Data()
     private var negotiatedFlags: UInt32 = 0
     private var sendSigningKey = Data()
     private var receiveSigningKey = Data()
@@ -408,11 +413,13 @@ final class MockCredSSPServer {
             }
             record(gate: "initial-client-nonce")
             clientNonce = nonce
+            negotiateMessage = Data(negotiateToken ?? Data())
+            challenge = challengeMessage()
             stage = .authenticate
             return RDPCredSSPTSRequest(
                 version: 6,
                 // Windows and FreeRDP-based servers send the raw NTLM challenge.
-                negoTokens: [challengeMessage()]
+                negoTokens: [challenge]
             ).encoded()
 
         case .authenticate:
@@ -546,6 +553,16 @@ final class MockCredSSPServer {
         if negotiatedFlags & Self.negotiateKeyExchange != 0 {
             exportedSessionKey = try RDPRC4(key: keyExchangeKey).process(readSecurityBuffer(authenticate, at: 52))
         }
+        // The MIC covers all three messages, this one with its MIC zeroed ([MS-NLMP] 3.2.5.1.2).
+        var zeroedMIC = Data(authenticate)
+        zeroedMIC.replaceSubrange(72 ..< 88, with: Data(count: 16))
+        if try Self.hmacMD5(key: exportedSessionKey, data: negotiateMessage + challenge + zeroedMIC)
+            == readData(authenticate, at: 72, count: 16)
+        {
+            record(gate: "ntlm-mic")
+        }
+        let workstation = try readSecurityBuffer(authenticate, at: 44)
+        transcript.withLock { $0.ntlmWorkstation = workstation }
         sendSigningKey = Self.md5(exportedSessionKey + Self.serverSigningMagic)
         receiveSigningKey = Self.md5(exportedSessionKey + Self.clientSigningMagic)
         sendSealingKey = RDPRC4(key: Self.md5(exportedSessionKey + Self.serverSealingMagic))

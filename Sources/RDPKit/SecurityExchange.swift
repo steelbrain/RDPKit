@@ -68,7 +68,7 @@ extension RDPClientConnection {
         let subjectPublicKey = try RDPCredSSPCertificate.subjectPublicKey(fromCertificateDER: certificateDER)
         let ntlm = try RDPCredSSPNTLMContext(
             credentials: credentials,
-            workstationName: "",
+            workstationName: clientName,
             channelBindingsHash: RDPCredSSPCertificate.ntlmChannelBindingsHash(fromCertificateDER: certificateDER)
         )
         try transport.setFraming(.credSSP)
