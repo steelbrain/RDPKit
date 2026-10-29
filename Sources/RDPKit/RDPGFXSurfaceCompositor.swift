@@ -1,11 +1,6 @@
 import Foundation
 
 final class RDPGFXSurfaceCompositor {
-    private struct CodecContextKey: Hashable {
-        var surfaceID: UInt16
-        var codecContextID: UInt32
-    }
-
     private struct OutputMapping {
         var x: UInt32
         var y: UInt32
@@ -241,7 +236,6 @@ final class RDPGFXSurfaceCompositor {
     /// What each ClearCodec glyph holds beside its pixels, which the ClearCodec decoder keeps:
     /// as for a cache entry, in glyph coordinates.
     private var glyphs: [UInt16: (decoded: [RDPGFXRect16], decoderLacks: [RDPGFXRect16]?)] = [:]
-    private var codecContexts: Set<CodecContextKey> = []
     private var cachedByteCount = 0
     private var evictedDecoderCacheSlots: [UInt16] = []
     private var graphicsOutputRect: RDPFrameRect?
@@ -532,13 +526,11 @@ final class RDPGFXSurfaceCompositor {
         guard surfaces.removeValue(forKey: pdu.surfaceID) != nil else {
             throw RDPDecodeError.invalidRDPGFXPDU
         }
-        codecContexts = codecContexts.filter { $0.surfaceID != pdu.surfaceID }
         remoteFX.removeProgressiveState(surfaceID: pdu.surfaceID)
     }
 
     // Deleting an unknown context is ignored, as FreeRDP does.
     private func deleteEncodingContext(_ pdu: RDPGFXDeleteEncodingContextPDU) {
-        codecContexts.remove(CodecContextKey(surfaceID: pdu.surfaceID, codecContextID: pdu.codecContextID))
         remoteFX.removeProgressiveState(
             surfaceID: pdu.surfaceID,
             codecContextID: pdu.codecContextID
@@ -748,15 +740,12 @@ final class RDPGFXSurfaceCompositor {
             throw RDPDecodeError.invalidRDPGFXPDU
         }
 
-        let contextKey = CodecContextKey(surfaceID: pdu.surfaceID, codecContextID: pdu.codecContextID)
         let frame = try remoteFX.decodeProgressive(
             pdu.bitmapData,
             surfaceID: pdu.surfaceID,
             codecContextID: pdu.codecContextID,
-            permitsUpgrade: codecContexts.contains(contextKey),
             surfaceSize: surfaces[pdu.surfaceID].map { (width: $0.width, height: $0.height) }
         )
-        codecContexts.insert(contextKey)
         try modifySurface(pdu.surfaceID) { surface in
             // Tiles may carry pixels outside the region; only the region rects are updated
             // (MS-RDPEGFX 2.2.4.2.1.5). Progressive tiles are in surface coordinates.

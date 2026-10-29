@@ -339,7 +339,6 @@ final class RDPRemoteFXDecoder {
         _ data: Data,
         surfaceID: UInt16 = 0,
         codecContextID: UInt32 = 0,
-        permitsUpgrade: Bool = true,
         surfaceSize: (width: Int, height: Int)? = nil
     ) throws -> RDPRemoteFXDecodedFrame {
         var cursor = ByteCursor(data)
@@ -382,7 +381,6 @@ final class RDPRemoteFXDecoder {
                     block.body,
                     surfaceID: surfaceID,
                     codecContextID: codecContextID,
-                    permitsUpgrade: permitsUpgrade,
                     surfaceSize: surfaceSize
                 )
                 decodedTiles += region.tiles
@@ -459,7 +457,6 @@ final class RDPRemoteFXDecoder {
         _ data: Data,
         surfaceID: UInt16,
         codecContextID: UInt32,
-        permitsUpgrade: Bool,
         surfaceSize: (width: Int, height: Int)?
     ) throws -> (tiles: [RDPRemoteFXDecodedTile], rectangles: [RDPFrameRect]) {
         var cursor = ByteCursor(data)
@@ -509,8 +506,7 @@ final class RDPRemoteFXDecoder {
             try Self.parseProgressiveTile(
                 from: &$0,
                 quantCount: quants.count,
-                progressiveQuantCount: progressiveQuants.count,
-                permitsUpgrade: permitsUpgrade
+                progressiveQuantCount: progressiveQuants.count
             )
         }
         guard tiles.count == expectedTileCount else {
@@ -545,8 +541,7 @@ final class RDPRemoteFXDecoder {
     private static func parseProgressiveTile(
         from cursor: inout ByteCursor,
         quantCount: Int,
-        progressiveQuantCount: Int,
-        permitsUpgrade: Bool
+        progressiveQuantCount: Int
     ) throws -> ProgressiveTile {
         let block = try readBlock(from: &cursor)
         let kind: ProgressiveTile.Kind
@@ -555,7 +550,7 @@ final class RDPRemoteFXDecoder {
             kind = .simple
         case ProgressiveBlockType.tileFirst:
             kind = .first
-        case ProgressiveBlockType.tileUpgrade where permitsUpgrade:
+        case ProgressiveBlockType.tileUpgrade:
             kind = .upgrade
         default:
             throw RDPDecodeError.invalidRDPGFXPDU

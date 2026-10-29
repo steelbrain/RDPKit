@@ -2113,6 +2113,46 @@ import Testing
     )
 }
 
+@Test func compositorUpgradesProgressiveTileFirstSentEarlierInTheSamePDU() throws {
+    let compositor = RDPGFXSurfaceCompositor()
+    let clearCodec = RDPClearCodecDecoder()
+    try compositor.process(try createSurfaceMessage(surfaceID: 1, width: 64, height: 64), clearCodec: clearCodec)
+    let quantTables = [Data([50] + Array(repeating: UInt8(0x11), count: 15))]
+    let stream = caprogressiveRemoteFXRegionsStream(regions: [
+        caprogressiveRemoteFXGrayRegionBlock(
+            progressiveQuantTables: quantTables,
+            tiles: [CAPROGRESSIVERemoteFXGrayTile(blockType: 0xCCC6, xIndex: 0, yIndex: 0, progressiveQuality: 0)]
+        ),
+        caprogressiveRemoteFXGrayRegionBlock(
+            progressiveQuantTables: quantTables,
+            tiles: [CAPROGRESSIVERemoteFXGrayTile(
+                blockType: 0xCCC7,
+                xIndex: 0,
+                yIndex: 0,
+                progressiveQuality: 0xFF,
+                ySrlData: srlAllZeroComponent(count: 4015),
+                yRawData: Data(repeating: 0, count: 11),
+                cbSrlData: srlAllZeroComponent(count: 4015),
+                cbRawData: Data(repeating: 0, count: 11),
+                crSrlData: srlAllZeroComponent(count: 4015),
+                crRawData: Data(repeating: 0, count: 11)
+            )]
+        ),
+    ])
+
+    // The codec context is new, but its first pass of the tile precedes the upgrade.
+    try compositor.process(
+        try wireToSurface2Message(
+            surfaceID: 1,
+            codecID: RDPGFXCodecID.caProgressive,
+            codecContextID: 9,
+            pixelFormat: 0x20,
+            bitmapData: stream
+        ),
+        clearCodec: clearCodec
+    )
+}
+
 @Test func compositorRejectsProgressiveUpdateWithMissingSurface() throws {
     let compositor = RDPGFXSurfaceCompositor()
     let clearCodec = RDPClearCodecDecoder()
