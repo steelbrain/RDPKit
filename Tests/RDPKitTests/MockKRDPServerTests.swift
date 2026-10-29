@@ -1118,6 +1118,23 @@ struct MockKRDPServerTests {
         #expect(frames.map(\.deletedSurfaceIDs) == [[], [], [2], [3]])
     }
 
+    /// A deletion maps only the deleted surface's queued updates early; the others are mapped
+    /// as the frame ends, after a mapping that came later in it.
+    @Test func clientMapsUpdatesOfOtherSurfacesAtTheFrameEndAfterADeletion() throws {
+        let observed = Locked(Observed())
+        let report = try runMock(.init(graphicsBehavior: .mapSurfaceAfterDeletingAnotherInTheFrame), client: {
+            RDPSessionClient().run(configuration: $0, onGraphicsFrame: { frame in
+                observed.withLock { $0.frames.append(frame) }
+            })
+        }).report
+
+        #expect(report.status == "success")
+        let frames = observed.value.frames
+        #expect(frames.map(\.contentKind) == [.video, .video, .surfaceCopy])
+        #expect(frames.map(\.surfaceID) == [3, 2, 1])
+        #expect(frames.map { $0.surfaceRect != nil } == [true, true, true])
+    }
+
     /// A hidden surface's video goes to the decoder from a keyframe on: before one it has
     /// nothing to decode against.
     @Test func clientHandsHiddenSurfaceVideoToTheDecoderFromAKeyframeOn() throws {

@@ -162,21 +162,25 @@ extension RDPClientConnection {
         pendingGraphicsUpdates.append(update)
     }
 
-    /// Settles what is queued for a surface the server is deleting while it is still there.
-    /// The updates writing it that no later copy reads have nowhere to go; when others
-    /// remain, the queue is resolved as the surfaces are now, so the copies still read it.
+    /// Settles what is queued for a surface the server is deleting, while it is still there.
+    /// Staged copies to or from it take their video now. The updates writing it that no
+    /// later copy reads have nowhere to go; the others are mapped as the surface is now.
     private func settlePendingGraphicsUpdates(beforeDeleting surfaceID: UInt16, compositor: RDPGFXSurfaceCompositor) {
+        pendingGraphicsUpdates = expandingStagedVideoCopies(pendingGraphicsUpdates) {
+            $0.sourceSurfaceID == surfaceID || $0.destinationSurfaceID == surfaceID
+        }
         var isReadLater = false
         for index in pendingGraphicsUpdates.indices.reversed() {
             let update = pendingGraphicsUpdates[index]
-            if update.writes(surfaceID: surfaceID), !isReadLater {
-                pendingGraphicsUpdates.remove(at: index)
+            if update.writes(surfaceID: surfaceID) {
+                if isReadLater, let mapped = mapped(update, compositor: compositor) {
+                    pendingGraphicsUpdates[index] = mapped
+                } else {
+                    pendingGraphicsUpdates.remove(at: index)
+                }
             } else if update.reads(surfaceID: surfaceID) {
                 isReadLater = true
             }
-        }
-        if isReadLater {
-            pendingGraphicsUpdates = resolved(pendingGraphicsUpdates, compositor: compositor)
         }
     }
 
@@ -211,15 +215,15 @@ extension RDPClientConnection {
             evictedGraphicsCacheSlots = []
             frames.append(frame)
         }
-        for update in resolved(pendingGraphicsUpdates, compositor: compositor) {
-            switch update {
-            case let .resolved(frame):
+        for update in expandingStagedVideoCopies(pendingGraphicsUpdates) {
+            switch mapped(update, compositor: compositor) {
+            case let .resolved(frame)?:
                 append(frame)
-            case let .deletedSurface(surfaceID):
+            case let .deletedSurface(surfaceID)?:
                 deletedGraphicsSurfaceIDs.append(surfaceID)
-            case let .evictedCacheSlot(slot):
+            case let .evictedCacheSlot(slot)?:
                 evictedGraphicsCacheSlots.append(slot)
-            case .frame, .stagedVideoCopy:
+            case .frame?, .stagedVideoCopy?, nil:
                 break
             }
         }
@@ -227,61 +231,61 @@ extension RDPClientConnection {
         return frames
     }
 
-    /// `updates` mapped to the output as the surfaces are now, with gnome's staged video
-    /// resolved and video for surfaces the decoder does not hold dropped.
-    private func resolved(
-        _ updates: [RDPPendingGraphicsUpdate],
-        compositor: RDPGFXSurfaceCompositor
-    ) -> [RDPPendingGraphicsUpdate] {
-        func mapped(_ frame: RDPGraphicsFrameSnapshot) -> RDPPendingGraphicsUpdate? {
-            guard frame.contentKind != .video || compositor.decoderTakesVideo(frame) else {
-                return nil
-            }
-            var mapped = frame
-            mapped.graphicsOutputRect = compositor.outputRect()
-            mapped.surfaceRect = compositor.surfaceRect(surfaceID: frame.surfaceID)
-            mapped.mappedOutputRect = compositor.mappedOutputRect(surfaceID: frame.surfaceID)
-            return .resolved(mapped)
+    /// A queued frame mapped to the output as the surfaces are now; nil for video its
+    /// surface's decoder does not take. Anything else stays as it is.
+    private func mapped(_ update: RDPPendingGraphicsUpdate, compositor: RDPGFXSurfaceCompositor) -> RDPPendingGraphicsUpdate? {
+        guard case let .frame(frame) = update else {
+            return update
         }
-        var resolved: [RDPPendingGraphicsUpdate] = []
-        // Where each access unit went per destination surface, so it is decoded there once.
+        guard frame.contentKind != .video || compositor.decoderTakesVideo(frame) else {
+            return nil
+        }
+        var mapped = frame
+        mapped.graphicsOutputRect = compositor.outputRect()
+        mapped.surfaceRect = compositor.surfaceRect(surfaceID: frame.surfaceID)
+        mapped.mappedOutputRect = compositor.mappedOutputRect(surfaceID: frame.surfaceID)
+        return .resolved(mapped)
+    }
+
+    /// `updates` with the staged copies `isExpanded` picks replaced by the video they copy:
+    /// each access unit once per destination surface, with the regions of all its copies.
+    private func expandingStagedVideoCopies(
+        _ updates: [RDPPendingGraphicsUpdate],
+        where isExpanded: (RDPGFXSurfaceToSurfacePDU) -> Bool = { _ in true }
+    ) -> [RDPPendingGraphicsUpdate] {
+        var expanded: [RDPPendingGraphicsUpdate] = []
         var stagedIndices: [StagedVideoKey: Int] = [:]
         for (index, update) in updates.enumerated() {
-            switch update {
-            case let .frame(frame):
-                resolved += [mapped(frame)].compactMap(\.self)
-            case .resolved, .deletedSurface, .evictedCacheSlot:
-                resolved.append(update)
-            case let .stagedVideoCopy(copy):
-                for (videoIndex, earlier) in updates[..<index].enumerated() {
-                    guard case let .frame(video) = earlier, video.contentKind == .video, video.surfaceID == copy.sourceSurfaceID
+            guard case let .stagedVideoCopy(copy) = update, isExpanded(copy) else {
+                expanded.append(update)
+                continue
+            }
+            for (videoIndex, earlier) in updates[..<index].enumerated() {
+                guard case let .frame(video) = earlier, video.contentKind == .video, video.surfaceID == copy.sourceSurfaceID
+                else {
+                    continue
+                }
+                for point in copy.destinationPoints {
+                    guard let staged = stagedVideoCopy(of: video, sourceRect: copy.sourceRect, to: point, surfaceID: copy.destinationSurfaceID)
                     else {
                         continue
                     }
-                    for point in copy.destinationPoints {
-                        guard let staged = stagedVideoCopy(of: video, sourceRect: copy.sourceRect, to: point, surfaceID: copy.destinationSurfaceID)
-                        else {
-                            continue
-                        }
-                        let key = StagedVideoKey(videoIndex: videoIndex, surfaceID: copy.destinationSurfaceID)
-                        guard let stagedIndex = stagedIndices[key] else {
-                            if let mapped = mapped(staged) {
-                                stagedIndices[key] = resolved.count
-                                resolved.append(mapped)
-                            }
-                            continue
-                        }
-                        // A second offset would decode the access unit twice; the first one wins.
-                        if case var .resolved(first) = resolved[stagedIndex], first.destinationRect == staged.destinationRect {
-                            first.regionRects += staged.regionRects
-                            first.auxiliaryRegionRects += staged.auxiliaryRegionRects
-                            resolved[stagedIndex] = .resolved(first)
-                        }
+                    let key = StagedVideoKey(videoIndex: videoIndex, surfaceID: copy.destinationSurfaceID)
+                    guard let stagedIndex = stagedIndices[key] else {
+                        stagedIndices[key] = expanded.count
+                        expanded.append(.frame(staged))
+                        continue
+                    }
+                    // A second offset would decode the access unit twice; the first one wins.
+                    if case var .frame(first) = expanded[stagedIndex], first.destinationRect == staged.destinationRect {
+                        first.regionRects += staged.regionRects
+                        first.auxiliaryRegionRects += staged.auxiliaryRegionRects
+                        expanded[stagedIndex] = .frame(first)
                     }
                 }
             }
         }
-        return resolved
+        return expanded
     }
 
     private func videoFrame(
@@ -481,7 +485,8 @@ extension RDPClientConnection {
 /// An update for the decoder, held until its RDPGFX frame ends.
 enum RDPPendingGraphicsUpdate {
     case frame(RDPGraphicsFrameSnapshot)
-    /// A frame mapped to the output already, as the surfaces were before a deletion.
+    /// A frame mapped to the output already: one for a surface deleted later in the frame
+    /// is mapped as the surface was.
     case resolved(RDPGraphicsFrameSnapshot)
     /// A SurfaceToSurface out of a surface the decoder does not hold, after video for it.
     case stagedVideoCopy(RDPGFXSurfaceToSurfacePDU)
