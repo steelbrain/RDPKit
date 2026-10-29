@@ -354,10 +354,7 @@ extension RDPClientConnection {
         graphicsFramesDecoded &+= 1
         let acknowledge = RDPGFXFrameAcknowledgePDU(frameID: frameID, totalFramesDecoded: graphicsFramesDecoded)
         let packet = try sendDynamicChannelData(acknowledge.encoded(), channelID: graphicsChannelID)
-        report.rdpGraphicsFrameAcknowledgeHexes.appendIfRoom(
-            packet.rdpHexString,
-            limit: recordedGraphicsAcknowledgeLimit(targetFrameCount: targetFrameCount)
-        )
+        recordFrameAcknowledge(packet)
         if let targetFrameCount, graphicsFramesDecoded >= UInt32(clamping: targetFrameCount) {
             disconnect()
         }
@@ -387,6 +384,14 @@ extension RDPClientConnection {
     private func recordGraphicsUpdatePacket(_ packet: Data) {
         report.rdpGraphicsUpdateResponseCount = (report.rdpGraphicsUpdateResponseCount ?? 0) + 1
         report.rdpGraphicsUpdateResponseHexes.appendIfRoom(packet.rdpHexString, limit: RDPRecordLimit.packets)
+    }
+
+    private func recordFrameAcknowledge(_ packet: Data) {
+        report.rdpGraphicsFrameAcknowledgeCount = (report.rdpGraphicsFrameAcknowledgeCount ?? 0) + 1
+        report.rdpGraphicsFrameAcknowledgeHexes.appendIfRoom(
+            packet.rdpHexString,
+            limit: recordedGraphicsAcknowledgeLimit(targetFrameCount: targetFrameCount)
+        )
     }
 
     /// Keeps the start of the first failing update, for diagnosing the server's bytes.
@@ -477,10 +482,7 @@ extension RDPClientConnection {
         for frameID in frameIDs {
             let packet = RDPClientFrameAcknowledgePDU(shareID: share.shareID, frameID: frameID)
                 .encodedTPKT(userChannelID: userChannelID, ioChannelID: ioChannelID)
-            report.rdpGraphicsFrameAcknowledgeHexes.appendIfRoom(
-                packet.rdpHexString,
-                limit: recordedGraphicsAcknowledgeLimit(targetFrameCount: targetFrameCount)
-            )
+            recordFrameAcknowledge(packet)
             try send(packet)
         }
     }

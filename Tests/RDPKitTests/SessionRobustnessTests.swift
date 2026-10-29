@@ -23,6 +23,7 @@ import Testing
     #expect(run.report.error == nil)
     #expect(run.report.status == "success")
     #expect(run.report.rdpGraphicsFrameAcknowledgeHexes?.count == 2)
+    #expect(run.report.rdpGraphicsFrameAcknowledgeCount == 2)
     #expect(run.report.warnings.contains { $0.code == "informational-redirection" })
 }
 
@@ -373,6 +374,27 @@ func liveSessionWaitsIndefinitelyAfterItsFirstFrame(chatty: Bool) throws {
 
     #expect(run.report.rdpGraphicsFirstFrame != nil)
     #expect(run.report.error == "cancelled")
+}
+
+/// A live session keeps the first 8 frame acknowledgements, and counts them all.
+@Test func liveSessionCountsEveryFrameAcknowledgement() throws {
+    let frameIDs = UInt32(0x5EED_0001) ... 0x5EED_000C
+    let lastFrameID = withUnsafeBytes(of: frameIDs.upperBound.littleEndian) { Data($0) }
+    let run = try KRdpCapture.run(
+        appending: frameIDs.map { KRdpCapture.emptyGraphicsFrame(id: $0) },
+        frameCaptureLimit: nil,
+        onTrailingClientPacket: { channel, packet in
+            if packet.containsSubsequence(KRdpCapture.frameAcknowledgeHeader), packet.containsSubsequence(lastFrameID) {
+                KRdpCapture.endConnection(channel, .close)
+            }
+        }
+    )
+    let acknowledgements = run.clientPackets.filter { $0.containsSubsequence(KRdpCapture.frameAcknowledgeHeader) }
+
+    #expect(run.report.status == "success")
+    #expect(acknowledgements.count > frameIDs.count)
+    #expect(run.report.rdpGraphicsFrameAcknowledgeCount == acknowledgements.count)
+    #expect(run.report.rdpGraphicsFrameAcknowledgeHexes?.count == 8)
 }
 
 /// How a live session's connection ends decides the outcome: a close, with

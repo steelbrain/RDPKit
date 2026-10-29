@@ -152,6 +152,7 @@ extension RDPClientConnection {
         report.rdpFastPathUpdateMessages = []
         report.rdpGraphicsFailureUpdateMessages = []
         report.rdpGraphicsFrameAcknowledgeHexes = []
+        report.rdpGraphicsFrameAcknowledgeCount = 0
         report.rdpGraphicsFrames = []
         report.rdpClipboardMessages = []
         report.rdpClipboardSentMessages = []

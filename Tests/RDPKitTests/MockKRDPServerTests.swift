@@ -1573,6 +1573,8 @@ struct MockKRDPServerTests {
 
         #expect(run.report.status == "success")
         #expect(run.transcript.frameAcknowledgeIDs == [5, 6])
+        // Those two, and the RDPGFX frame's.
+        #expect(run.report.rdpGraphicsFrameAcknowledgeCount == 3)
         #expect(run.report.error == nil)
     }
 
@@ -1599,6 +1601,7 @@ struct MockKRDPServerTests {
         #expect(report.stage == "rdp-graphics-dynamic-channel")
         #expect(report.rdpGraphicsFrames?.isEmpty == false)
         #expect(report.rdpGraphicsFrameAcknowledgeHexes == [])
+        #expect(report.rdpGraphicsFrameAcknowledgeCount == 0)
         #expect(report.error?.contains("mock graphics frame handler failed") == true)
         #expect(report.failure == .graphicsFrameHandler)
     }

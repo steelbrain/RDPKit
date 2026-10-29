@@ -103,7 +103,12 @@ public struct RDPConnectionReport: Encodable, Equatable, Sendable {
     public var rdpGraphicsFailureUpdatePayloadHex: String?
     public var rdpGraphicsFailureUpdateMessages: [RDPGFXMessageSummary]?
     public var rdpGraphicsFailureUpdateMessageIndex: Int?
+    /// The first frame acknowledgements sent: as many as a capture run's
+    /// frames, 8 in a live session.
     public var rdpGraphicsFrameAcknowledgeHexes: [String]?
+    /// How many frame acknowledgements the session sent: RDPGFX_FRAME_ACKNOWLEDGE_PDU
+    /// ([MS-RDPEGFX] 2.2.2.13) and TS_FRAME_ACKNOWLEDGE_PDU ([MS-RDPRFX] 2.2.3.3).
+    public var rdpGraphicsFrameAcknowledgeCount: Int?
     public var rdpGraphicsFrames: [RDPGraphicsFrameSnapshot]?
     public var rdpGraphicsFirstFrame: RDPGraphicsFrameSnapshot?
     public var rdpRemoteTerminationErrorInfo: UInt32?
@@ -207,6 +212,7 @@ public struct RDPConnectionReport: Encodable, Equatable, Sendable {
         rdpGraphicsFailureUpdateMessages: [RDPGFXMessageSummary]? = nil,
         rdpGraphicsFailureUpdateMessageIndex: Int? = nil,
         rdpGraphicsFrameAcknowledgeHexes: [String]? = nil,
+        rdpGraphicsFrameAcknowledgeCount: Int? = nil,
         rdpGraphicsFrames: [RDPGraphicsFrameSnapshot]? = nil,
         rdpGraphicsFirstFrame: RDPGraphicsFrameSnapshot? = nil,
         rdpRemoteTerminationErrorInfo: UInt32? = nil,
@@ -307,6 +313,7 @@ public struct RDPConnectionReport: Encodable, Equatable, Sendable {
         self.rdpGraphicsFailureUpdateMessages = rdpGraphicsFailureUpdateMessages
         self.rdpGraphicsFailureUpdateMessageIndex = rdpGraphicsFailureUpdateMessageIndex
         self.rdpGraphicsFrameAcknowledgeHexes = rdpGraphicsFrameAcknowledgeHexes
+        self.rdpGraphicsFrameAcknowledgeCount = rdpGraphicsFrameAcknowledgeCount
         self.rdpGraphicsFrames = rdpGraphicsFrames
         self.rdpGraphicsFirstFrame = rdpGraphicsFirstFrame ?? rdpGraphicsFrames?.first
         self.rdpRemoteTerminationErrorInfo = rdpRemoteTerminationErrorInfo

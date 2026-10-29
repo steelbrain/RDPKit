@@ -314,7 +314,7 @@ struct RemoteSessionDiagnosticsWindowContent: View {
                                 ?? snapshot.report?.rdpGraphicsFirstFrame.map(RDPFrameMetadata.init)
                         )
                     )
-                    DiagnosticRow("Frame Acks", countSummary(snapshot.report?.rdpGraphicsFrameAcknowledgeHexes))
+                    DiagnosticRow("Frame Acks", countSummary(snapshot.report?.rdpGraphicsFrameAcknowledgeCount))
                     DiagnosticRow("Next", snapshot.report?.nextStage ?? "none")
                 }
 
@@ -744,13 +744,6 @@ struct RemoteSessionDiagnosticsWindowContent: View {
             parts.append("nal \(frame.videoNalUnitTypes.map(String.init).joined(separator: "/"))")
         }
         return parts.joined(separator: ", ")
-    }
-
-    private func countSummary(_ values: [String]?) -> String {
-        guard let values, !values.isEmpty else {
-            return "none"
-        }
-        return "\(values.count)"
     }
 
     private func countSummary(_ value: Int?) -> String {
