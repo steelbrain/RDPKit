@@ -93,7 +93,7 @@ let report = client.run(
     },
     onWireReceive: { sample in
         metricsStore.recordWireReceive(sample)
-        if let mbps = metricsStore.metrics.rollingWireMegabitsPerSecond {
+        if let mbps = metricsStore.metrics.rollingWireMegabitsPerSecond(at: sample.receivedAt) {
             print("rx \(mbps) Mbps")
         }
     }
@@ -117,8 +117,10 @@ configured server.
 `RDPSessionClient` exposes callbacks for graphics frames, remote pointer
 updates, input readiness, display control, clipboard messages, audio
 samples, TLS certificate inspection, wire bandwidth samples, and cancellation.
-It also accepts an `RDPWireTranscript` for recording the connection flow. The
-macOS example app builds a full viewer on top of these APIs.
+It also accepts an `RDPWireTranscript` for recording the connection flow, and
+an `RDPLiveConnectionReport` whose `snapshot` any thread can read for
+diagnostics while the session runs. The macOS example app builds a full viewer
+on top of these APIs.
 
 `run` and `connect` block the calling thread until the session ends, so call
 them from a dedicated thread, never from a SwiftNIO event loop or a Swift

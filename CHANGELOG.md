@@ -105,6 +105,21 @@
 - `RDPRemoteDisplayViewport.remotePoint(from:contentRect:)` maps a point with
   the desktop drawn in a given rect, such as `contentRect` aligned to the
   screen's pixels.
+- `RDPLiveConnectionReport` reads a connection's report while `run` or
+  `connect` runs. Pass one as `liveReport`, then read `snapshot` from any
+  thread: a copy of the report so far, with `status` "running", the stage
+  the connection is in, and no `nextStage`. It follows a Server Redirection
+  to its target. Once the call returns, it is the report the call returned
+  or attached to the error `connect` threw.
+- `RDPConnectionReport.rdpGraphicsFrameAcknowledgeCount` counts every frame
+  acknowledgement the session sent, RDPGFX and fast-path.
+  `rdpGraphicsFrameAcknowledgeHexes` still keeps only the first ones: as many
+  as a capture run's frames, 8 in a live session.
+- `RDPRenderMetrics.rollingFramesPerSecond(at:)` and
+  `rollingWireMegabitsPerSecond(at:)` read the rates of the 5 s up to a given
+  time, so they fall once traffic stops, to 0 when that window holds none.
+  The `rollingFramesPerSecond` and `rollingWireMegabitsPerSecond` properties
+  are deprecated: they keep the rate as of the last frame or sample.
 - `RDPInputSession.supportsUnicodeInput` tells whether the server takes
   Unicode keyboard events (INPUT_FLAG_UNICODE). `send` drops `.unicode`
   events when it does not, so an app can send scancodes instead.
@@ -227,6 +242,12 @@
       had not downloaded yet. They no longer cancel a download in progress.
   - A `\` in a copied file's name is sent as `_`, so Windows does not paste
     the file inside a folder.
+  - Stats for Nerds shows the session's stage, TLS, protocols, channels and
+    the rest of its report while it runs, not only once it ends. Frame Acks
+    counts every acknowledgement instead of stopping at 8. The viewer's fps
+    and rx overlay, and Stats for Nerds' Rolling FPS and Wire RX, fall to 0
+    within 5 s of the screen going still instead of keeping the last
+    burst's rates.
   - Only a refused certificate offers trust; other warnings are listed in
     Stats for Nerds. "Hide certificate warnings" is renamed "Accept untrusted
     certificates" and explains its risk.
