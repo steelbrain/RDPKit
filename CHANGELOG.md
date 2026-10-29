@@ -157,6 +157,18 @@
   Request the session cannot parse is answered with a failure response
   (MS-RDPECLIP 3.1.5.2.2, 3.1.5.4.3, 3.1.5.4.6) instead of none.
 - Stop advertising TSSNDCAPS_VOLUME: the client never applies Volume PDUs.
+- Decode AVC444 and AVC444v2 from encoders that crop the coded picture in the
+  SPS, such as FreeRDP 3, and place AVC444v2 chroma at the width the encoder
+  packed it at.
+- Present FreeRDP's x264 video in the specified full-range BT.709. The
+  limited-range BT.601 colours apply only to KPipeWire's libx264 encoder
+  (KRdp), which `RDPVideoToolboxFrameDecoder.reset()` now also forgets.
+- Keep a surface's pixels outside a keyframe's region rectangles instead of
+  clearing them to black.
+- Video the decoder drops for a hidden surface before its first keyframe no
+  longer counts as drawn, so copies out of that area carry what was there.
+- Reject a SurfaceToSurface or CacheToSurface whole when any destination is
+  outside the surface.
 
 ### Security and robustness
 
@@ -187,6 +199,11 @@
 - `RDPAudioPlayer` drops audio queued while its engine is stopped, so the next
   sample restarts playback instead of audio staying silent after an
   interruption.
+- Bound the changed areas held for a primary-surface frame the server never
+  ends, and stop walking nested CAVideo tile sets in diagnostic summaries,
+  which a server could nest deep enough to overflow the stack.
+- `RDPFrameDecodeQueue` drops deleted surfaces and evicted cache entries even
+  when the frame that reports them fails to decode.
 
 ### Performance and examples
 
@@ -198,8 +215,8 @@
   draws presentation buffers from a pool. A partial 4K update now takes about a
   quarter of the time. The frames of composed presentations no longer carry
   `decodedBitmapData`; their pixels are in `imageBuffer`.
-- Bitmap snapshots list an area drawn again, or inside one already drawn, once,
-  so it is merged once.
+- Bitmap snapshots list an area drawn again, or inside or partly over one
+  already drawn, once, so its pixels are merged once.
 - `RDPScrollWheelAccumulator` turns scroll deltas into wheel events.
 - The RDPClient example runs sessions on a dedicated thread, fixes modifier,
   focus-loss, toggle-key, Windows-key and keypad input, keeps a key held as a
