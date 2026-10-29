@@ -23,8 +23,6 @@ import Testing
 
 @Test func staticVirtualChannelDefaultChunkSizeMatchesSpec() {
     #expect(RDPStaticVirtualChannelPDU.maximumPayloadByteCount == 1_600)
-    #expect(RDPStaticVirtualChannelPDU.canEncodeSinglePayload(Data(repeating: 0xAA, count: 1_600)))
-    #expect(!RDPStaticVirtualChannelPDU.canEncodeSinglePayload(Data(repeating: 0xAA, count: 1_601)))
 }
 
 @Test func staticVirtualChannelChunksAndReassemblesMessagesLargerThanOneChunk() throws {
@@ -189,7 +187,6 @@ import Testing
 
     #expect(!pdu.isComplete)
     #expect(pdu.isStandalone)
-    #expect(pdu.canDispatchPayload)
     #expect(pdu.payload == Data([0x50, 0x00, 0x02, 0x00]))
 }
 
@@ -206,10 +203,12 @@ import Testing
             payload: Data([0x00])
         ), maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumPayloadByteCount)
 
+        var reassembler = RDPStaticVirtualChannelReassembler()
+
         #expect(empty.isFlowControl)
-        #expect(!empty.canDispatchPayload)
+        #expect(try reassembler.append(empty, maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumPayloadByteCount) == nil)
         #expect(withDataFlags.isFlowControl)
-        #expect(!withDataFlags.canDispatchPayload)
+        #expect(try reassembler.append(withDataFlags, maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumPayloadByteCount) == nil)
     }
 }
 

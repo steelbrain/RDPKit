@@ -69,16 +69,8 @@ struct RDPStaticVirtualChannelPDU: Equatable, Sendable {
         !isFirst && !isLast && !isFlowControl && totalLength == payload.count
     }
 
-    var canDispatchPayload: Bool {
-        !isFlowControl && (isComplete || isStandalone)
-    }
-
     var isFlowControl: Bool {
         flags & RDPStaticVirtualChannelFlags.flowControl != 0
-    }
-
-    static func canEncodeSinglePayload(_ payload: Data) -> Bool {
-        payload.count <= maximumPayloadByteCount
     }
 
     func encodedUserData() -> Data {

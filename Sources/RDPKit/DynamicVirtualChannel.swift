@@ -455,32 +455,6 @@ struct RDPDynamicVirtualChannelCompressedDataPDU: Equatable, Sendable {
     }
 }
 
-/// DYNVC_SOFT_SYNC_REQUEST ([MS-RDPEDYC] 2.2.5.1). Soft-Sync only switches
-/// channels onto multitransport tunnels, which this client never creates, so
-/// the request is recognized and otherwise ignored.
-struct RDPDynamicVirtualChannelSoftSyncPDU: Equatable, Sendable {
-    var typeName: String {
-        RDPDynamicVirtualChannelCommand.softSyncRequest.typeName
-    }
-
-    static func parseIfPresent(from data: Data) throws -> RDPDynamicVirtualChannelSoftSyncPDU? {
-        guard data.count >= 2 else {
-            return nil
-        }
-
-        var cursor = ByteCursor(data)
-        let header = try RDPDynamicVirtualChannelHeader(byte: cursor.readUInt8())
-        guard header.command == .softSyncRequest else {
-            return nil
-        }
-        _ = try cursor.readUInt8()
-        guard try cursor.readLittleEndianUInt32() == UInt32(data.count - 2) else {
-            throw RDPDecodeError.invalidDynamicVirtualChannelPDU
-        }
-        return RDPDynamicVirtualChannelSoftSyncPDU()
-    }
-}
-
 func dynamicVirtualChannelIDLengthCode(_ channelID: UInt32) -> UInt8 {
     if channelID <= UInt8.max {
         return 0

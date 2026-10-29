@@ -122,48 +122,6 @@ import Testing
     }
 }
 
-@Test func detectsDynamicVirtualChannelSoftSyncRequest() throws {
-    let request = try #require(try RDPDynamicVirtualChannelSoftSyncPDU.parseIfPresent(
-        from: Data([
-            0x80, 0x00,
-            0x08, 0x00, 0x00, 0x00,
-            0x01, 0x00,
-            0x00, 0x00,
-        ])
-    ))
-    let requestWithChannelList = try RDPDynamicVirtualChannelSoftSyncPDU.parseIfPresent(
-        from: Data([
-            0x80, 0x00,
-            0x16, 0x00, 0x00, 0x00,
-            0x03, 0x00,
-            0x01, 0x00,
-            0x01, 0x00, 0x00, 0x00,
-            0x02, 0x00,
-            0x07, 0x00, 0x00, 0x00,
-            0x08, 0x00, 0x00, 0x00,
-        ])
-    )
-
-    #expect(request.typeName == "dynvc-soft-sync-request")
-    #expect(requestWithChannelList != nil)
-    #expect(try RDPDynamicVirtualChannelSoftSyncPDU.parseIfPresent(
-        from: Data([0x90, 0x00, 0x00, 0x00, 0x00, 0x00])
-    ) == nil)
-}
-
-@Test func rejectsDynamicVirtualChannelSoftSyncRequestWithWrongLength() {
-    #expect(throws: RDPDecodeError.invalidDynamicVirtualChannelPDU) {
-        try RDPDynamicVirtualChannelSoftSyncPDU.parseIfPresent(
-            from: Data([
-                0x80, 0x00,
-                0x0e, 0x00, 0x00, 0x00,
-                0x01, 0x00,
-                0x00, 0x00,
-            ])
-        )
-    }
-}
-
 @Test func encodesDynamicVirtualChannelCapabilitiesResponse() {
     let response = RDPDynamicVirtualChannelCapabilitiesResponse(version: 2)
 
