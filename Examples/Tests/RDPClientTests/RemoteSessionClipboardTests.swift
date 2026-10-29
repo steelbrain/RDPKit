@@ -200,3 +200,78 @@ private func startRemoteFileDownload(
     #expect(session.rangeRequests.isEmpty)
     #expect(clipboard.statusMessage == "Remote file transfer was incomplete.")
 }
+
+/// Answers the range request a download of `contents`, all asked for at once, is waiting on.
+@MainActor
+private func answerRangeRequest(
+    with contents: Data,
+    to clipboard: RDPRemoteSessionClipboard,
+    from session: RecordedClipboard
+) throws {
+    let request = try #require(session.rangeRequests.last)
+    session.rangeRequests.removeAll()
+    clipboard.receiveFileContents(RDPClipboardFileContentsResponse(streamID: request.streamID, ok: true, data: contents))
+}
+
+@MainActor
+private func pasteboardFileURLs(_ pasteboard: NSPasteboard) -> [URL] {
+    pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+}
+
+@MainActor
+@Test func aFinishedDownloadNeverReplacesANewerCopy() throws {
+    let pasteboard = makePasteboard()
+    defer { pasteboard.releaseGlobally() }
+    let session = RecordedClipboard()
+    let clipboard = RDPRemoteSessionClipboard(isSharingEnabled: true, pasteboard: pasteboard)
+    clipboard.attach(session)
+    let contents = Data("remote".utf8)
+
+    // Remote text copied during the download.
+    try startRemoteFileDownload(contents, to: clipboard, from: session)
+    clipboard.receiveText("remote text")
+    try answerRangeRequest(with: contents, to: clipboard, from: session)
+    #expect(pasteboard.string(forType: .string) == "remote text")
+    #expect(clipboard.statusMessage == "Remote text copied.")
+
+    // A local copy the next poll has not seen yet.
+    try startRemoteFileDownload(contents, to: clipboard, from: session)
+    pasteboard.clearContents()
+    pasteboard.setString("local text", forType: .string)
+    try answerRangeRequest(with: contents, to: clipboard, from: session)
+    #expect(pasteboard.string(forType: .string) == "local text")
+    #expect(pasteboardFileURLs(pasteboard).isEmpty)
+    #expect(clipboard.statusMessage == "Clipboard changed; remote files were not copied.")
+
+    // A local copy the poll has published.
+    try startRemoteFileDownload(contents, to: clipboard, from: session)
+    pasteboard.clearContents()
+    pasteboard.setString("newer local text", forType: .string)
+    clipboard.poll()
+    try answerRangeRequest(with: contents, to: clipboard, from: session)
+    #expect(session.publishedTexts.last == "newer local text")
+    #expect(pasteboard.string(forType: .string) == "newer local text")
+    #expect(clipboard.statusMessage == "Local text synced.")
+}
+
+@MainActor
+@Test func aDownloadTheServerStopsAnsweringTimesOut() throws {
+    let pasteboard = makePasteboard()
+    defer { pasteboard.releaseGlobally() }
+    let session = RecordedClipboard()
+    let clipboard = RDPRemoteSessionClipboard(isSharingEnabled: true, pasteboard: pasteboard)
+    clipboard.attach(session)
+    let contents = Data("remote".utf8)
+    let changeCount = pasteboard.changeCount
+
+    try startRemoteFileDownload(contents, to: clipboard, from: session)
+    clipboard.poll(now: Date().addingTimeInterval(25))
+    #expect(clipboard.statusMessage == "Downloading remote file: big.bin.")
+    clipboard.poll(now: Date().addingTimeInterval(31))
+    #expect(clipboard.statusMessage == "Remote file transfer timed out.")
+
+    // The answer that comes too late changes nothing.
+    try answerRangeRequest(with: contents, to: clipboard, from: session)
+    #expect(pasteboard.changeCount == changeCount)
+    #expect(clipboard.statusMessage == "Remote file transfer timed out.")
+}
