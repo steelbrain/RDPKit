@@ -383,8 +383,6 @@ final class RDPRemoteSessionClipboard {
             session.publishLocalUnicodeText(nil)
             serverHoldsLocalCopy = false
             message = reason
-        case let .ignored(reason):
-            message = reason
         }
     }
 
@@ -395,8 +393,11 @@ final class RDPRemoteSessionClipboard {
 
     private func localTextPayload() -> LocalPayload {
         if let text = pasteboard.string(forType: .string) {
+            // Too large to send, it still replaces the server's older copy, with an empty
+            // clipboard, as text sent would: that copy is neither fetched once sharing turns on
+            // nor applied should it reach this thread late.
             guard RDPClipboardLimits.canPublishUnicodeText(text) else {
-                return .ignored("Local text is too large to sync.")
+                return .unsupported("Local text is too large to sync; remote clipboard cleared.")
             }
             return .text(text)
         }
@@ -700,7 +701,6 @@ private enum LocalPayload: Equatable, Sendable {
     case files([RDPClipboardLocalFile])
     case empty
     case unsupported(String)
-    case ignored(String)
 }
 
 /// The folder of a download put on the pasteboard.

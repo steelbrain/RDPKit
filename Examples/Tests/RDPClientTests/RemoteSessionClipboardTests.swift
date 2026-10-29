@@ -270,6 +270,32 @@ private func copyFile(_ contents: Data, in directory: URL, to pasteboard: NSPast
     pasteboard.writeObjects([fileURL as NSURL])
 }
 
+/// Text too large to send replaces the server's copy with an empty clipboard, as files too
+/// large do. So with it on the pasteboard, turning sharing back on neither fetches the copy the
+/// server announced while sharing was off, nor applies one handed over before sharing went off
+/// that reaches the main thread late.
+@MainActor
+@Test func textTooLargeToSendEmptiesTheServersClipboard() {
+    let pasteboard = makePasteboard()
+    defer { pasteboard.releaseGlobally() }
+    let session = RecordedClipboard()
+    let clipboard = RDPRemoteSessionClipboard(isSharingEnabled: true, pasteboard: pasteboard)
+    clipboard.attach(session)
+    let largeText = String(repeating: "a", count: RDPClipboardLimits.maximumUnicodeTextUTF16CodeUnitCount + 1)
+
+    let olderRemoteText = session.announceRemoteCopy()
+    pasteboard.clearContents()
+    pasteboard.setString(largeText, forType: .string)
+    clipboard.setSharingEnabled(false)
+    session.unfetchedRemoteCopy = true
+    clipboard.setSharingEnabled(true)
+    #expect(session.isAwaitingRemoteCopy == false)
+    clipboard.receiveText("older remote", copyNumber: olderRemoteText)
+    #expect(pasteboard.string(forType: .string)?.utf16.count == largeText.utf16.count)
+    #expect(session.publishedTexts == [nil, nil])
+    #expect(clipboard.statusMessage == "Local text is too large to sync; remote clipboard cleared.")
+}
+
 /// Turning sharing on sends copied files as it sends text, though they take a while to read:
 /// the copy the server announced while sharing was off is not fetched in their place.
 @MainActor
