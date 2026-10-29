@@ -65,6 +65,14 @@
   without fetching the server's copies: their Format Lists are acknowledged
   and nothing is requested. Set it in `onClipboardReady` to cover the
   server's first copy.
+- `RDPRemotePointerBitmap(_:)` turns an `RDPRemotePointerImage` from
+  `onRemotePointer` into premultiplied RGBA (`pixels`, `bytesPerRow`) and a
+  hot spot clamped into the image, with a `cgImage` for
+  `NSCursor(image:hotSpot:)` or a UIKit pointer style. It reads 1, 16
+  (RGB565), 24 and 32 bpp masks; a 32-bpp shape with alpha uses that alpha
+  alone, and pixels that would invert the screen become black with a white
+  outline. It is nil for 4 and 8 bpp, empty images and masks of the wrong
+  length.
 - `RDPRemoteDisplayViewport.remotePoint(from:contentRect:)` maps a point with
   the desktop drawn in a given rect, such as `contentRect` aligned to the
   screen's pixels.

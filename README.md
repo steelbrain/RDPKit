@@ -208,7 +208,9 @@ let report = client.run(
 - Configurable keyboard layout (KLID), type, subtype, and function key count,
   announced in the Client Core Data and the Input Capability Set
 - Pointer motion, buttons, extended buttons, vertical wheel, and horizontal wheel
-- Remote pointer shapes, system pointers, and pointer-cache updates
+- Remote pointer shapes, system pointers, and pointer-cache updates, with
+  `RDPRemotePointerBitmap` to turn a shape into premultiplied RGBA or a
+  `CGImage` and a hot spot for a native cursor
 - Display control channel support for resize and monitor layout updates
 - Connect-time desktop and device scale factors and physical size, for servers
   without display control
