@@ -353,13 +353,14 @@ final class RemoteInputCaptureNSView: NSView {
             return nil
         }
         let viewport = RDPRemoteDisplayViewport(frame: rdpFrame, bounds: bounds, coordinateOrigin: .bottomLeft)
+        // Where the canvas draws the desktop.
+        let desktop = backingAlignedDesktopRect(of: viewport)
         var localPoint = convert(event.locationInWindow, from: nil)
         if clampingToDesktop {
-            let desktop = viewport.contentRect
             localPoint.x = min(max(localPoint.x, desktop.minX), desktop.maxX.nextDown)
             localPoint.y = min(max(localPoint.y, desktop.minY), desktop.maxY.nextDown)
         }
-        return viewport.remotePoint(from: localPoint)
+        return viewport.remotePoint(from: localPoint, contentRect: desktop)
     }
 }
 

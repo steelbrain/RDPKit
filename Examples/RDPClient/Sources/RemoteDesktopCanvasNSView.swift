@@ -24,7 +24,7 @@ final class RemoteDesktopCanvasNSView: NSView {
 
     override func layout() {
         super.layout()
-        displayView.frame = bounds
+        displayView.frame = desktopRect
         inputView.frame = bounds
 
         let progressSize = NSSize(width: 32, height: 32)
@@ -76,6 +76,21 @@ final class RemoteDesktopCanvasNSView: NSView {
         emptyLabel.stringValue = emptyMessage
         emptyStack.isHidden = shouldShowDesktop || isConnecting
         needsLayout = true
+    }
+
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        needsLayout = true
+    }
+
+    /// Where the remote desktop is drawn: the view's bounds until a frame gives its size.
+    private var desktopRect: CGRect {
+        guard let frame = inputView.rdpFrame else {
+            return bounds
+        }
+        return backingAlignedDesktopRect(
+            of: RDPRemoteDisplayViewport(frame: frame, bounds: bounds, coordinateOrigin: .bottomLeft)
+        )
     }
 
     private func configure() {
@@ -130,5 +145,21 @@ final class RemoteDesktopCanvasNSView: NSView {
             }
             self?.onSurfaceSizeChange?(nextSize)
         }
+    }
+}
+
+extension NSView {
+    /// `viewport`'s desktop on whole screen pixels. Display Control makes desktop widths even, so
+    /// a desktop sized to a view of odd width would be centered half a pixel off and blurred. The
+    /// origin and size are aligned separately, so a desktop shown at 1:1 keeps its size.
+    func backingAlignedDesktopRect(of viewport: RDPRemoteDisplayViewport) -> CGRect {
+        let contentRect = viewport.contentRect
+        guard contentRect.isEmpty == false else {
+            return contentRect
+        }
+        return backingAlignedRect(
+            contentRect,
+            options: [.alignMinXNearest, .alignMinYNearest, .alignWidthNearest, .alignHeightNearest]
+        )
     }
 }

@@ -60,12 +60,23 @@ public struct RDPRemoteDisplayViewport: Equatable, Sendable {
     }
 
     public func remotePoint(from localPoint: CGPoint) -> RDPRemotePoint? {
-        guard localPoint.x.isFinite, localPoint.y.isFinite else {
-            return nil
-        }
+        remotePoint(from: localPoint, contentRect: contentRect)
+    }
 
-        let contentRect = contentRect
-        guard contentRect.contains(localPoint) else {
+    /// Maps `localPoint` with the desktop drawn in `contentRect` rather than in ``contentRect``:
+    /// a view that aligns ``contentRect`` to the screen's pixels passes the rect it draws in.
+    public func remotePoint(from localPoint: CGPoint, contentRect: CGRect) -> RDPRemotePoint? {
+        guard localPoint.x.isFinite,
+              localPoint.y.isFinite,
+              [contentRect.minX, contentRect.minY, contentRect.width, contentRect.height].allSatisfy(\.isFinite),
+              contentRect.width > 0,
+              contentRect.height > 0,
+              remotePixelSize.width.isFinite,
+              remotePixelSize.height.isFinite,
+              remotePixelSize.width > 0,
+              remotePixelSize.height > 0,
+              contentRect.contains(localPoint)
+        else {
             return nil
         }
 
