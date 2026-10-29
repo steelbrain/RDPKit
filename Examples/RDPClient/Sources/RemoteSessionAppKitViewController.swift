@@ -1,4 +1,5 @@
 import AppKit
+import os
 import QuartzCore
 import RDPKit
 
@@ -675,11 +676,13 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         // rather than holding a Swift concurrency worker.
         let sessionThread = Thread {
             var keyframeRequests = RDPKeyframeRequestThrottle()
+            let didPresentFrame = OSAllocatedUnfairLock(initialState: false)
             let decodeQueue = RDPFrameDecodeQueue(
                 shouldCancel: {
                     cancellation.isCancelled
                 },
                 onDecoded: { presentation, receivedAt, decodedAt, timing in
+                    didPresentFrame.withLock { $0 = true }
                     sink.apply { controller in
                         let decodeErrorCleared = controller.previewDecodeError != nil
                         controller.previewDecodeError = nil
@@ -870,7 +873,10 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                 return
             }
             let finalWireReceiveSample = wireReceiveCoalescer.takePendingSample()
-            let firstFrameDecodeResult = nextReport.rdpGraphicsFirstFrame.map(decodeReportFirstFrame)
+            // The report's first frame is shown only when the session presented none.
+            let firstFrameDecodeResult = didPresentFrame.withLock { $0 }
+                ? nil
+                : nextReport.rdpGraphicsFirstFrame.map(decodeReportFirstFrame)
             sink.apply { controller in
                 if let finalWireReceiveSample {
                     controller.renderMetricsStore.recordWireReceive(finalWireReceiveSample)
