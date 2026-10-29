@@ -1,0 +1,99 @@
+import Foundation
+@testable import RDPClient
+import Testing
+
+/// Stands in for Keychain. `interruption` runs once, after the call it names, as another thread
+/// could between two calls; the tests make every call from one thread.
+private final class Passwords: KeychainPasswords, @unchecked Sendable {
+    private(set) var saved: [String: String]
+    var interruption: (afterCall: Int, run: () -> Void)?
+    private var calls = 0
+
+    init(_ saved: [String: String]) {
+        self.saved = saved
+    }
+
+    func password(account: String) -> String? {
+        defer { called() }
+        return saved[account]
+    }
+
+    func savePassword(_ password: String, account: String) {
+        saved[account] = password
+        called()
+    }
+
+    func rename(account: String, to newAccount: String) -> KeychainPasswordRename {
+        defer { called() }
+        guard let password = saved[account] else {
+            return .notFound
+        }
+        guard saved[newAccount] == nil else {
+            return .newNameTaken
+        }
+        saved[account] = nil
+        saved[newAccount] = password
+        return .renamed
+    }
+
+    func deletePassword(account: String) {
+        saved[account] = nil
+        called()
+    }
+
+    private func called() {
+        calls += 1
+        if let interruption, interruption.afterCall == calls {
+            self.interruption = nil
+            interruption.run()
+        }
+    }
+}
+
+private let currentAccount = "anees@desktop.example:3389"
+/// The name RDPKit 0.1 to 0.3 gave the account, with the host as typed.
+private let legacyAccount = "anees@Desktop.Example:3389"
+
+private func typedKey() throws -> KeychainCredentialKey {
+    try #require(KeychainCredentialKey(host: "Desktop.Example", portText: "3389", username: "anees", domain: ""))
+}
+
+@Test func aPasswordSavedUnderItsLegacyNameMovesToTheCurrentName() throws {
+    let passwords = Passwords([legacyAccount: "secret"])
+    let store = KeychainCredentialStore(passwords: passwords)
+
+    #expect(try store.password(for: typedKey()) == "secret")
+    #expect(passwords.saved == [currentAccount: "secret"])
+}
+
+/// Delete Profile can delete the password while a session window's lookup moves it from its
+/// legacy name. Wherever the deletion falls, the password stays deleted.
+@Test func aPasswordDeletedWhileItMovesFromItsLegacyNameStaysDeleted() throws {
+    let key = try typedKey()
+    for call in 1 ... 10 {
+        let passwords = Passwords([legacyAccount: "secret"])
+        let store = KeychainCredentialStore(passwords: passwords)
+        passwords.interruption = (call, { try? store.deletePassword(for: key) })
+
+        let password = try store.password(for: key)
+
+        guard passwords.interruption == nil else {
+            // The lookup made fewer calls.
+            break
+        }
+        #expect(passwords.saved.isEmpty, "Deleted after call \(call)")
+        #expect(password == nil || password == "secret")
+    }
+}
+
+/// A password saved under the current name while the legacy one moves is the newer one.
+@Test func aPasswordSavedWhileTheLegacyOneMovesStays() throws {
+    let key = try typedKey()
+    let passwords = Passwords([legacyAccount: "older"])
+    let store = KeychainCredentialStore(passwords: passwords)
+    // After the lookup found nothing under the current name, and read the legacy password.
+    passwords.interruption = (2, { try? store.savePassword("newer", for: key) })
+
+    #expect(try store.password(for: key) == "newer")
+    #expect(passwords.saved == [currentAccount: "newer"])
+}

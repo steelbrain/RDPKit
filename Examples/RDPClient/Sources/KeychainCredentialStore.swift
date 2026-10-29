@@ -34,55 +34,75 @@ struct KeychainCredentialKey: Equatable, Sendable {
 }
 
 struct KeychainCredentialStore: Sendable {
-    private let service = "com.steelbrain.rdpclient.credentials"
+    private let passwords: any KeychainPasswords
+
+    init(passwords: any KeychainPasswords = LoginKeychainPasswords(service: "com.steelbrain.rdpclient.credentials")) {
+        self.passwords = passwords
+    }
 
     func password(for key: KeychainCredentialKey) throws -> String? {
-        if let password = try password(account: key.account) {
+        if let password = try passwords.password(account: key.account) {
             return password
         }
-        // A password saved by an earlier release is moved to the current name.
+        // A password saved by an earlier release moves to the current name. It is renamed, in
+        // one step, rather than saved again, so one deleted meanwhile, as by Delete Profile in
+        // another window, stays deleted.
         for legacyAccount in key.identity.legacyCredentialAccountNames {
-            if let password = try password(account: legacyAccount) {
-                try savePassword(password, for: key)
-                try deletePassword(account: legacyAccount)
+            guard let password = try passwords.password(account: legacyAccount) else {
+                continue
+            }
+            switch try passwords.rename(account: legacyAccount, to: key.account) {
+            case .renamed:
                 return password
+            case .notFound:
+                // Deleted, or moved by another lookup, meanwhile.
+                return try passwords.password(account: key.account)
+            case .newNameTaken:
+                // A password saved under the current name meanwhile is the newer one.
+                try passwords.deletePassword(account: legacyAccount)
+                return try passwords.password(account: key.account)
             }
         }
         return nil
     }
 
     func savePassword(_ password: String, for key: KeychainCredentialKey) throws {
-        let passwordData = Data(password.utf8)
-        let attributes: [String: Any] = [
-            kSecValueData as String: passwordData,
-        ]
-        let updateStatus = SecItemUpdate(baseQuery(for: key) as CFDictionary, attributes as CFDictionary)
-        if updateStatus == errSecSuccess {
-            return
-        }
-        guard updateStatus == errSecItemNotFound else {
-            throw KeychainCredentialError.unexpectedStatus(updateStatus)
-        }
-
-        // No kSecAttrAccessible: macOS applies it only in the data-protection keychain, and that
-        // needs an application-identifier entitlement, which a SwiftPM executable lacks. The
-        // login keychain these items go to ignores it.
-        var query = baseQuery(for: key)
-        query[kSecValueData as String] = passwordData
-        let addStatus = SecItemAdd(query as CFDictionary, nil)
-        guard addStatus == errSecSuccess else {
-            throw KeychainCredentialError.unexpectedStatus(addStatus)
-        }
+        try passwords.savePassword(password, account: key.account)
     }
 
     func deletePassword(for key: KeychainCredentialKey) throws {
-        try deletePassword(account: key.account)
+        try passwords.deletePassword(account: key.account)
         for legacyAccount in key.identity.legacyCredentialAccountNames {
-            try deletePassword(account: legacyAccount)
+            try passwords.deletePassword(account: legacyAccount)
         }
     }
+}
 
-    private func password(account: String) throws -> String? {
+/// The passwords Keychain keeps under one service, by account. Tests stand in for Keychain with
+/// their own.
+protocol KeychainPasswords: Sendable {
+    func password(account: String) throws -> String?
+    /// Replaces the password saved under `account`, or saves one.
+    func savePassword(_ password: String, account: String) throws
+    /// Moves the password saved under `account` to `newAccount`, in one step.
+    func rename(account: String, to newAccount: String) throws -> KeychainPasswordRename
+    /// Deletes the password saved under `account`, if there is one.
+    func deletePassword(account: String) throws
+}
+
+enum KeychainPasswordRename {
+    case renamed
+    /// Nothing is saved under the account.
+    case notFound
+    /// A password is already saved under the new account.
+    case newNameTaken
+}
+
+/// Generic passwords in the login keychain.
+struct LoginKeychainPasswords: KeychainPasswords {
+    let service: String
+
+    func password(account: String) throws -> String? {
         var query = baseQuery(account: account)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
@@ -103,15 +123,52 @@ struct KeychainCredentialStore: Sendable {
         return password
     }
 
-    private func deletePassword(account: String) throws {
-        let status = SecItemDelete(baseQuery(account: account) as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else {
+    func savePassword(_ password: String, account: String) throws {
+        let passwordData = Data(password.utf8)
+        let attributes: [String: Any] = [
+            kSecValueData as String: passwordData,
+        ]
+        let updateStatus = SecItemUpdate(baseQuery(account: account) as CFDictionary, attributes as CFDictionary)
+        if updateStatus == errSecSuccess {
+            return
+        }
+        guard updateStatus == errSecItemNotFound else {
+            throw KeychainCredentialError.unexpectedStatus(updateStatus)
+        }
+
+        // No kSecAttrAccessible: macOS applies it only in the data-protection keychain, and that
+        // needs an application-identifier entitlement, which a SwiftPM executable lacks. The
+        // login keychain these items go to ignores it.
+        var query = baseQuery(account: account)
+        query[kSecValueData as String] = passwordData
+        let addStatus = SecItemAdd(query as CFDictionary, nil)
+        guard addStatus == errSecSuccess else {
+            throw KeychainCredentialError.unexpectedStatus(addStatus)
+        }
+    }
+
+    func rename(account: String, to newAccount: String) throws -> KeychainPasswordRename {
+        let attributes: [String: Any] = [
+            kSecAttrAccount as String: newAccount,
+        ]
+        let status = SecItemUpdate(baseQuery(account: account) as CFDictionary, attributes as CFDictionary)
+        switch status {
+        case errSecSuccess:
+            return .renamed
+        case errSecItemNotFound:
+            return .notFound
+        case errSecDuplicateItem:
+            return .newNameTaken
+        default:
             throw KeychainCredentialError.unexpectedStatus(status)
         }
     }
 
-    private func baseQuery(for key: KeychainCredentialKey) -> [String: Any] {
-        baseQuery(account: key.account)
+    func deletePassword(account: String) throws {
+        let status = SecItemDelete(baseQuery(account: account) as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw KeychainCredentialError.unexpectedStatus(status)
+        }
     }
 
     private func baseQuery(account: String) -> [String: Any] {

@@ -55,7 +55,7 @@ struct ClientLicenseStore: Sendable {
             throw ClientLicenseStoreError.unexpectedStatus(updateStatus)
         }
 
-        // No kSecAttrAccessible, which the login keychain ignores; see KeychainCredentialStore.
+        // No kSecAttrAccessible, which the login keychain ignores; see LoginKeychainPasswords.
         var query = baseQuery(for: key)
         query[kSecValueData as String] = licenseData
         let addStatus = SecItemAdd(query as CFDictionary, nil)
