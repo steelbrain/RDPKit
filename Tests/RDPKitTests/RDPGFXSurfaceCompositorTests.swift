@@ -1836,6 +1836,32 @@ import Testing
     }
 }
 
+/// An inverted region of a video update writes nothing: it must not wrap around the 16-bit
+/// coordinate space into an area that video did not write, where text drawn earlier is kept.
+@Test func compositorIgnoresAnInvertedVideoRegion() throws {
+    let compositor = RDPGFXSurfaceCompositor(outputWidth: 256, outputHeight: 64)
+    let clearCodec = RDPClearCodecDecoder()
+    try compositor.process(try createSurfaceMessage(surfaceID: 0, width: 256, height: 64), clearCodec: clearCodec)
+    try compositor.process(try mapSurfaceToOutputMessage(surfaceID: 0, x: 0, y: 0), clearCodec: clearCodec)
+    try compositor.process(
+        try solidFillMessage(surfaceID: 0, color: [0x01, 0x02, 0x03, 0xFF], rects: [RDPGFXRect16(left: 64, top: 0, right: 100, bottom: 64)]),
+        clearCodec: clearCodec
+    )
+    // Relative to the update, as it fits the update's size; 100 + 65500 wraps to 64.
+    compositor.noteVideo(RDPGraphicsFrameSnapshot(
+        frameID: 1,
+        surfaceID: 0,
+        codecID: RDPGFXCodecID.avc420,
+        codecName: "avc420",
+        pixelFormat: RDPGFXPixelFormat.xrgb8888,
+        destinationRect: RDPFrameRect(left: 100, top: 0, right: 200, bottom: 64),
+        regionRects: [RDPFrameRect(left: 65500, top: 0, right: 10, bottom: 64)],
+        encodedVideoData: Data([0x00, 0x00, 0x01, 0x65])
+    ))
+
+    #expect(compositor.makeFrames(frameID: 1).map(\.regionRects) == [[RDPFrameRect(left: 64, top: 0, right: 100, bottom: 64)]])
+}
+
 /// The decoder's copy to several points of a surface spans all of them.
 @Test func compositorNamesTheAreaADecoderCopyWrites() throws {
     let compositor = RDPGFXSurfaceCompositor(outputWidth: 64, outputHeight: 32)

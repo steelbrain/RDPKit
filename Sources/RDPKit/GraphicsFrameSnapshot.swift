@@ -285,16 +285,17 @@ extension RDPGraphicsFrameSnapshot {
         }
     }
 
-    /// `region`, one of this update's, in surface coordinates.
+    /// `region`, one of this update's, in surface coordinates. A relative region ends within
+    /// the update, so moving it stays in 16-bit coordinates; an inverted one becomes empty.
     func surfaceRegion(_ region: RDPFrameRect, relative: Bool) -> RDPFrameRect {
         guard relative else {
             return region
         }
         return RDPFrameRect(
-            left: destinationRect.left &+ region.left,
-            top: destinationRect.top &+ region.top,
-            right: destinationRect.left &+ region.right,
-            bottom: destinationRect.top &+ region.bottom
+            left: destinationRect.left + Swift.min(region.left, region.right),
+            top: destinationRect.top + Swift.min(region.top, region.bottom),
+            right: destinationRect.left + region.right,
+            bottom: destinationRect.top + region.bottom
         )
     }
 
