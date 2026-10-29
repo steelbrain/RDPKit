@@ -189,6 +189,18 @@ struct MockKRDPServerTests {
         #expect(core[216...] == hexData("00 00 00 00 00 00 00 00 00 00 f4 01 00 00 b4 00 00 00"))
     }
 
+    /// A desktop size set after the configuration's initializer is clamped as it clamps it.
+    @Test func clientClampsADesktopSizeSetAfterInit() throws {
+        let report = try runMock {
+            $0.desktopWidth = 9000
+            $0.desktopHeight = 300
+        }.report
+        let core = try clientCoreData(fromMCSConnectInitialHex: report.mcsConnectInitialHex)
+
+        #expect(report.status == "success")
+        #expect(core[8 ..< 12] == hexData("00 20 e0 01"))
+    }
+
     /// The auto-reconnect cookie ends the Client Info PDU ([MS-RDPBCGR] 2.2.1.11.1.1.1). A wire
     /// transcript records the client's PDUs, and so its cookie, by length only.
     @Test func clientSendsItsAutoReconnectCookie() throws {

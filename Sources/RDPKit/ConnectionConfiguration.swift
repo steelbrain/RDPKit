@@ -83,8 +83,7 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
         self.timeoutSeconds = max(1, timeoutSeconds)
         self.hideCertificateWarnings = hideCertificateWarnings
         self.graphicsFrameCaptureLimit = graphicsFrameCaptureLimit.map { min(120, max(1, $0)) }
-        self.desktopWidth = min(8192, max(640, desktopWidth))
-        self.desktopHeight = min(8192, max(480, desktopHeight))
+        (self.desktopWidth, self.desktopHeight) = Self.validDesktopSize(width: desktopWidth, height: desktopHeight)
         self.scaleFactors = scaleFactors.clamped
         self.physicalSize = physicalSize?.isValid == true ? physicalSize : nil
         self.clipboardEnabled = clipboardEnabled
@@ -185,6 +184,12 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
         }
         valid = valid.trimmingCharacters(in: .whitespaces)
         return valid.isEmpty ? "RDPKIT" : valid
+    }
+
+    /// The size clamped to 640-8192 x 480-8192, as the initializer clamps desktopWidth and
+    /// desktopHeight.
+    static func validDesktopSize(width: UInt16, height: UInt16) -> (width: UInt16, height: UInt16) {
+        (min(8192, max(640, width)), min(8192, max(480, height)))
     }
 
     var clientKeyboard: RDPClientKeyboard {

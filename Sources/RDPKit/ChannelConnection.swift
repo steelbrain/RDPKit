@@ -8,9 +8,13 @@ extension RDPClientConnection {
         stage = .channelConnection
         resetSessionRecord()
         // Checked as the configuration's initializer checks them: they can be set after it.
+        let desktopSize = RDPConnectionConfiguration.validDesktopSize(
+            width: configuration.desktopWidth,
+            height: configuration.desktopHeight
+        )
         let mcsConfiguration = MCSConnectInitialConfiguration(
-            desktopWidth: configuration.desktopWidth,
-            desktopHeight: configuration.desktopHeight,
+            desktopWidth: desktopSize.width,
+            desktopHeight: desktopSize.height,
             scaleFactors: configuration.scaleFactors.clamped,
             physicalSize: configuration.physicalSize.flatMap { $0.isValid ? $0 : nil },
             clientName: clientName,
@@ -22,6 +26,8 @@ extension RDPClientConnection {
             redirectedSessionID: configuration.redirectionSessionID,
             keyboard: configuration.clientKeyboard
         )
+        // The desktop is the one asked for until a Demand Active sets one.
+        resizeDesktop(width: mcsConfiguration.desktopWidth, height: mcsConfiguration.desktopHeight)
         let connectInitial = MCSConnectInitialPDU(configuration: mcsConfiguration).encodedTPKT()
         report.mcsConnectInitialHex = connectInitial.rdpHexString
         try send(connectInitial)
