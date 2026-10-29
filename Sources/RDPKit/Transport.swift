@@ -35,18 +35,18 @@ enum RDPTransportPacketFraming {
                 return nil
             }
             guard byteAt(1) == 0 else {
-                throw RDPConnectionError.receive("received invalid TPKT reserved byte \(byteAt(1))")
+                throw RDPConnectionError.receive("received invalid TPKT reserved byte \(byteAt(1))", failure: .protocolViolation)
             }
             let length = Int(byteAt(2)) << 8 | Int(byteAt(3))
             guard length >= 4 else {
-                throw RDPConnectionError.receive("received invalid TPKT length \(length)")
+                throw RDPConnectionError.receive("received invalid TPKT length \(length)", failure: .protocolViolation)
             }
             return length
         }
 
         // fpOutputHeader action MUST be FASTPATH_OUTPUT_ACTION_FASTPATH (0).
         guard byteAt(0) & 0x03 == 0 else {
-            throw RDPConnectionError.receive("received invalid Fast-Path action \(byteAt(0) & 0x03)")
+            throw RDPConnectionError.receive("received invalid Fast-Path action \(byteAt(0) & 0x03)", failure: .protocolViolation)
         }
         let firstLengthByte = byteAt(1)
         let length: Int
@@ -59,7 +59,7 @@ enum RDPTransportPacketFraming {
             length = Int(firstLengthByte & 0x7F) << 8 | Int(byteAt(2))
         }
         guard length >= 3 else {
-            throw RDPConnectionError.receive("received invalid Fast-Path length \(length)")
+            throw RDPConnectionError.receive("received invalid Fast-Path length \(length)", failure: .protocolViolation)
         }
         return length
     }
@@ -72,7 +72,10 @@ enum RDPTransportPacketFraming {
             return nil
         }
         guard byteAt(0) == 0x30 else {
-            throw RDPConnectionError.receive("received invalid CredSSP ASN.1 tag 0x\(String(format: "%02x", byteAt(0)))")
+            throw RDPConnectionError.receive(
+                "received invalid CredSSP ASN.1 tag 0x\(String(format: "%02x", byteAt(0)))",
+                failure: .protocolViolation
+            )
         }
         let firstLengthByte = byteAt(1)
         if firstLengthByte & 0x80 == 0 {
@@ -80,7 +83,7 @@ enum RDPTransportPacketFraming {
         }
         let lengthByteCount = Int(firstLengthByte & 0x7F)
         guard (1 ... 2).contains(lengthByteCount) else {
-            throw RDPConnectionError.receive("received invalid CredSSP ASN.1 length")
+            throw RDPConnectionError.receive("received invalid CredSSP ASN.1 length", failure: .protocolViolation)
         }
         guard readableByteCount >= 2 + lengthByteCount else {
             return nil
@@ -393,15 +396,21 @@ final class RDPTransport {
         } catch let error as RDPConnectionError {
             throw error
         } catch ChannelError.connectTimeout {
-            throw RDPConnectionError.connect("timed out after \(timeoutSeconds) seconds")
+            throw RDPConnectionError.connect(RDPSocketError(errno: ETIMEDOUT), "timed out after \(timeoutSeconds) seconds")
         } catch let error as NIOConnectionError {
             if error.connectionErrors.isEmpty, let dnsError = error.dnsAError ?? error.dnsAAAAError {
                 throw RDPConnectionError.addressResolution(connectionErrorDescription(dnsError))
             }
-            throw RDPConnectionError.connect(error.connectionErrors.last.map { connectionErrorDescription($0.error) }
-                ?? String(describing: error))
+            let last = error.connectionErrors.last?.error
+            throw RDPConnectionError.connect(
+                RDPSocketError(errno: (last as? IOError)?.errnoCode),
+                last.map(connectionErrorDescription) ?? String(describing: error)
+            )
         } catch {
-            throw RDPConnectionError.connect(connectionErrorDescription(error))
+            throw RDPConnectionError.connect(
+                RDPSocketError(errno: (error as? IOError)?.errnoCode),
+                connectionErrorDescription(error)
+            )
         }
         let reader: NIOLoopBound<RDPTransportReader>
         do {
@@ -410,7 +419,7 @@ final class RDPTransport {
             }.wait()
         } catch {
             // Only closing empties the pipeline: the server dropped the connection as it accepted it.
-            throw RDPConnectionError.connect("the server closed the connection")
+            throw RDPConnectionError(.connectionClosed, description: "connect failed: the server closed the connection")
         }
         return RDPTransport(channel: channel, reader: reader, timeoutSeconds: timeoutSeconds, callbacks: callbacks)
     }
@@ -622,7 +631,7 @@ final class RDPTransport {
             }
         }
         let timeout = channel.eventLoop.scheduleTask(in: .seconds(Int64(timeoutSeconds))) {
-            handshake.fail(RDPConnectionError.tls("TLS handshake timed out after \(timeoutSeconds) seconds"))
+            handshake.fail(RDPConnectionError.tls("TLS handshake timed out after \(timeoutSeconds) seconds", failure: .timedOut))
             channel.close(promise: nil)
         }
         handshake.futureResult.whenComplete { _ in
@@ -634,14 +643,15 @@ final class RDPTransport {
             throw error
         } catch RDPTransportError.closed {
             try callbacks.throwIfCancelled()
-            throw RDPConnectionError.tls("connection closed before the TLS handshake completed")
+            throw RDPConnectionError.tls("connection closed before the TLS handshake completed", failure: .connectionClosed)
         } catch {
             try callbacks.throwIfCancelled()
             // NIOSSL keeps BoringSSL's error codes private, so the reason is matched by name.
             if !legacyRSAKeyExchange, String(describing: error).contains("KEY_USAGE_BIT_INCORRECT") {
                 throw RDPConnectionError.tls(
                     "the server's certificate does not allow ECDHE key exchange (KEY_USAGE_BIT_INCORRECT); "
-                        + "legacyRSAKeyExchange allows RSA key exchange"
+                        + "legacyRSAKeyExchange allows RSA key exchange",
+                    failure: .tlsKeyUsageIncorrect
                 )
             }
             throw RDPConnectionError.tls(String(describing: error))

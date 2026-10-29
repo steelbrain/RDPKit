@@ -3,7 +3,7 @@ import Foundation
 // Threading: see `RDPSessionClient`.
 
 /// Receives each decoded graphics frame. Throwing ends the session with
-/// `RDPConnectionError.graphicsFrameHandler`; the frame is not acknowledged.
+/// `RDPConnectionFailure.graphicsFrameHandler`; the frame is not acknowledged.
 public typealias RDPGraphicsFrameHandler = (RDPGraphicsFrameSnapshot) throws -> Void
 public typealias RDPRemotePointerHandler = @Sendable (RDPRemotePointerUpdate) -> Void
 /// Called after connection finalization, and again with a new session after a

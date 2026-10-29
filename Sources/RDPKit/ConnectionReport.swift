@@ -109,7 +109,10 @@ public struct RDPConnectionReport: Encodable, Equatable, Sendable {
     public var rdpAudioMessages: [RDPAudioMessageSummary]?
     public var warnings: [RDPConnectionWarning]
     public var nextStage: String?
+    /// Why the connection failed, in words, for diagnostics; `failure` says it for code.
     public var error: String?
+    /// Why the connection failed; nil when the session ran and ended normally.
+    public var failure: RDPConnectionFailure?
 
     public init(
         status: String,
@@ -207,7 +210,8 @@ public struct RDPConnectionReport: Encodable, Equatable, Sendable {
         rdpAudioMessages: [RDPAudioMessageSummary]? = nil,
         warnings: [RDPConnectionWarning],
         nextStage: String? = nil,
-        error: String? = nil
+        error: String? = nil,
+        failure: RDPConnectionFailure? = nil
     ) {
         self.status = status
         self.stage = stage
@@ -305,38 +309,156 @@ public struct RDPConnectionReport: Encodable, Equatable, Sendable {
         self.warnings = warnings
         self.nextStage = nextStage
         self.error = error
+        self.failure = failure
     }
 }
 
-public enum RDPConnectionError: Error, CustomStringConvertible {
-    case addressResolution(String)
-    case connect(String)
-    case send(String)
-    case receive(String)
-    case tls(String)
-    case protocolViolation(String)
-    case cancelled
-    /// The `onGraphicsFrame` handler threw; the server's data was not at fault.
-    case graphicsFrameHandler(any Error)
+public extension RDPConnectionReport {
+    /// `stage` as a value; nil for a report no connection made, such as a dry run's.
+    var connectionStage: RDPConnectionStage? {
+        RDPConnectionStage(rawValue: stage)
+    }
 
-    public var description: String {
-        switch self {
-        case let .addressResolution(message):
-            "address resolution failed: \(message)"
-        case let .connect(message):
-            "connect failed: \(message)"
-        case let .send(message):
-            "send failed: \(message)"
-        case let .receive(message):
-            "receive failed: \(message)"
-        case let .tls(message):
-            "TLS failed: \(message)"
-        case let .protocolViolation(message):
-            message
-        case .cancelled:
-            "cancelled"
-        case let .graphicsFrameHandler(error):
-            "graphics frame handler failed: \(error)"
+    /// How the server ended the session, when it said: from the
+    /// `rdpRemoteTermination` fields.
+    var remoteTermination: RDPRemoteTermination? {
+        guard rdpRemoteTerminationErrorInfo != nil || rdpRemoteTerminationDisconnectReason != nil else {
+            return nil
         }
+        return RDPRemoteTermination(
+            errorInfo: rdpRemoteTerminationErrorInfo,
+            disconnectReason: rdpRemoteTerminationDisconnectReason
+        )
+    }
+}
+
+/// Why a connection attempt or session failed. `RDPConnectionReport.error`
+/// and `RDPConnectionError.description` give the details in words.
+public enum RDPConnectionFailure: Encodable, Equatable, Sendable {
+    /// The host name did not resolve.
+    case addressResolution
+    /// The TCP connection failed.
+    case connect(error: RDPSocketError)
+    /// The server refused the security negotiation with RDP_NEG_FAILURE ([MS-RDPBCGR] 2.2.1.2.2).
+    case negotiation(code: RDPNegotiationFailureCode)
+    /// The server selected a security protocol RDPKit does not support, such
+    /// as Standard RDP Security.
+    case unsupportedSecurityProtocol
+    /// The TLS handshake failed, or the server's certificate could not be read.
+    case tls
+    /// The server's RSA certificate does not allow digitalSignature, so the
+    /// TLS handshake refuses ECDHE key exchange (KEY_USAGE_BIT_INCORRECT). No
+    /// credential was sent yet; connecting again with
+    /// `RDPConnectionConfiguration.legacyRSAKeyExchange` set can succeed.
+    case tlsKeyUsageIncorrect
+    /// The server requires Network Level Authentication (CredSSP), and the
+    /// configuration has no credentials.
+    case credentialsRequired
+    /// The server rejected the credentials during Network Level Authentication
+    /// with this NTSTATUS ([MS-CSSP] 2.2.1).
+    case credSSP(status: RDPLogonStatus)
+    /// The Early User Authorization Result denied access ([MS-RDPBCGR] 2.2.10.2).
+    case earlyUserAuthorizationDenied
+    /// Licensing failed with this Licensing Error Message dwErrorCode ([MS-RDPBCGR] 2.2.1.12.1.3).
+    case licensing(errorCode: UInt32)
+    /// The server ended the session: before it ran, or for a reason that is
+    /// not a normal end (`RDPRemoteTermination.isNormalEnd`).
+    case serverTermination(termination: RDPRemoteTermination)
+    /// The connection broke: a reset, a TLS error or a keepalive timeout.
+    case connectionLost
+    /// The server closed the connection without saying why.
+    case connectionClosed
+    /// The server did not answer, or did not reach the next step of the
+    /// connection, within `RDPConnectionConfiguration.timeoutSeconds`.
+    case timedOut
+    /// The run was cancelled.
+    case cancelled
+    /// The server broke the protocol, or needs something RDPKit does not support.
+    case protocolViolation
+    /// The `onGraphicsFrame` handler threw.
+    case graphicsFrameHandler
+}
+
+/// A failed TCP connect: its errno and the kind of failure that is.
+public struct RDPSocketError: Encodable, Equatable, Sendable {
+    public enum Category: String, Encodable, Sendable {
+        /// Nothing accepts connections on the port, or a firewall refused it (ECONNREFUSED).
+        case refused
+        /// The host cannot be reached (EHOSTUNREACH, EHOSTDOWN). On Apple
+        /// platforms local network privacy also fails a connection into the
+        /// local network with EHOSTUNREACH, so this can mean the app may not
+        /// use the local network.
+        case hostUnreachable
+        /// This device has no route to the host's network (ENETUNREACH, ENETDOWN).
+        case networkUnreachable
+        /// The host did not answer (ETIMEDOUT), or not within `timeoutSeconds`.
+        case timedOut
+        /// The system refused to make the connection (EACCES, EPERM).
+        case notPermitted
+        /// Another errno, or none.
+        case other
+    }
+
+    /// The errno; ETIMEDOUT also when `RDPConnectionConfiguration.timeoutSeconds`
+    /// ran out first, and nil when the failure had none.
+    public let errno: Int32?
+    public let category: Category
+
+    public init(errno: Int32?) {
+        self.errno = errno
+        category = switch errno {
+        case ECONNREFUSED: .refused
+        case EHOSTUNREACH, EHOSTDOWN: .hostUnreachable
+        case ENETUNREACH, ENETDOWN: .networkUnreachable
+        case ETIMEDOUT: .timedOut
+        case EACCES, EPERM: .notPermitted
+        default: .other
+        }
+    }
+}
+
+/// Why a connection failed: `failure` for code, `description` in words.
+/// `RDPSessionClient.connect` throws it; a report carries the two as
+/// `failure` and `error`.
+public struct RDPConnectionError: Error, CustomStringConvertible, Sendable {
+    public var failure: RDPConnectionFailure
+    public var description: String
+
+    public init(_ failure: RDPConnectionFailure, description: String) {
+        self.failure = failure
+        self.description = description
+    }
+}
+
+extension RDPConnectionError {
+    static let cancelled = RDPConnectionError(.cancelled, description: "cancelled")
+
+    static func addressResolution(_ message: String) -> RDPConnectionError {
+        RDPConnectionError(.addressResolution, description: "address resolution failed: \(message)")
+    }
+
+    static func connect(_ error: RDPSocketError, _ message: String) -> RDPConnectionError {
+        RDPConnectionError(.connect(error: error), description: "connect failed: \(message)")
+    }
+
+    static func send(_ message: String) -> RDPConnectionError {
+        RDPConnectionError(.connectionLost, description: "send failed: \(message)")
+    }
+
+    static func receive(_ message: String, failure: RDPConnectionFailure = .connectionLost) -> RDPConnectionError {
+        RDPConnectionError(failure, description: "receive failed: \(message)")
+    }
+
+    static func tls(_ message: String, failure: RDPConnectionFailure = .tls) -> RDPConnectionError {
+        RDPConnectionError(failure, description: "TLS failed: \(message)")
+    }
+
+    static func protocolViolation(_ message: String) -> RDPConnectionError {
+        RDPConnectionError(.protocolViolation, description: message)
+    }
+
+    /// The `onGraphicsFrame` handler threw; the server's data was not at fault.
+    static func graphicsFrameHandler(_ error: any Error) -> RDPConnectionError {
+        RDPConnectionError(.graphicsFrameHandler, description: "graphics frame handler failed: \(error)")
     }
 }

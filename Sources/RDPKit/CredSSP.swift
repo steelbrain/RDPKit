@@ -289,33 +289,72 @@ enum RDPCredSSPError: Error, CustomStringConvertible {
         case let .ntlm(message):
             "CredSSP NTLM failed: \(message)"
         case let .serverError(code):
-            "CredSSP server returned \(RDPLogonStatus.name(code) ?? "NTSTATUS") (0x\(String(format: "%08x", code)))"
+            "CredSSP server returned \(RDPLogonStatus(rawValue: code))"
         case .serverBindingMismatch:
             "CredSSP server public-key binding did not match"
         }
     }
+
+    var failure: RDPConnectionFailure {
+        switch self {
+        case .missingCredentials:
+            .credentialsRequired
+        case let .serverError(code):
+            .credSSP(status: RDPLogonStatus(rawValue: code))
+        case .missingToken, .missingPubKeyAuth, .ntlm, .serverBindingMismatch:
+            .protocolViolation
+        }
+    }
 }
 
-/// The NTSTATUS values ([MS-ERREF] 2.3.1) for the logon and account failures a
-/// CredSSP server reports in its TSRequest errorCode.
-private enum RDPLogonStatus {
-    static func name(_ code: UInt32) -> String? {
-        switch code {
-        case 0xC000_0022: "STATUS_ACCESS_DENIED"
-        case 0xC000_0064: "STATUS_NO_SUCH_USER"
-        case 0xC000_006A: "STATUS_WRONG_PASSWORD"
-        case 0xC000_006D: "STATUS_LOGON_FAILURE"
-        case 0xC000_006E: "STATUS_ACCOUNT_RESTRICTION"
-        case 0xC000_006F: "STATUS_INVALID_LOGON_HOURS"
-        case 0xC000_0070: "STATUS_INVALID_WORKSTATION"
-        case 0xC000_0071: "STATUS_PASSWORD_EXPIRED"
-        case 0xC000_0072: "STATUS_ACCOUNT_DISABLED"
-        case 0xC000_015B: "STATUS_LOGON_TYPE_NOT_GRANTED"
-        case 0xC000_0193: "STATUS_ACCOUNT_EXPIRED"
-        case 0xC000_0224: "STATUS_PASSWORD_MUST_CHANGE"
-        case 0xC000_0234: "STATUS_ACCOUNT_LOCKED_OUT"
+/// An NTSTATUS ([MS-ERREF] 2.3.1) a CredSSP server returned in its TSRequest
+/// errorCode; the constants are the logon and account failures it reports.
+public struct RDPLogonStatus: RawRepresentable, Hashable, Encodable, Sendable, CustomStringConvertible {
+    public var rawValue: UInt32
+
+    public init(rawValue: UInt32) {
+        self.rawValue = rawValue
+    }
+
+    public static let accessDenied = RDPLogonStatus(rawValue: 0xC000_0022)
+    public static let noSuchUser = RDPLogonStatus(rawValue: 0xC000_0064)
+    public static let wrongPassword = RDPLogonStatus(rawValue: 0xC000_006A)
+    /// The user name or password is wrong; Windows does not say which.
+    public static let logonFailure = RDPLogonStatus(rawValue: 0xC000_006D)
+    public static let accountRestriction = RDPLogonStatus(rawValue: 0xC000_006E)
+    public static let invalidLogonHours = RDPLogonStatus(rawValue: 0xC000_006F)
+    public static let invalidWorkstation = RDPLogonStatus(rawValue: 0xC000_0070)
+    public static let passwordExpired = RDPLogonStatus(rawValue: 0xC000_0071)
+    public static let accountDisabled = RDPLogonStatus(rawValue: 0xC000_0072)
+    /// The account may not log on remotely.
+    public static let logonTypeNotGranted = RDPLogonStatus(rawValue: 0xC000_015B)
+    public static let accountExpired = RDPLogonStatus(rawValue: 0xC000_0193)
+    public static let passwordMustChange = RDPLogonStatus(rawValue: 0xC000_0224)
+    public static let accountLockedOut = RDPLogonStatus(rawValue: 0xC000_0234)
+
+    /// The status's name, such as STATUS_LOGON_FAILURE, for the constants above.
+    public var name: String? {
+        switch self {
+        case .accessDenied: "STATUS_ACCESS_DENIED"
+        case .noSuchUser: "STATUS_NO_SUCH_USER"
+        case .wrongPassword: "STATUS_WRONG_PASSWORD"
+        case .logonFailure: "STATUS_LOGON_FAILURE"
+        case .accountRestriction: "STATUS_ACCOUNT_RESTRICTION"
+        case .invalidLogonHours: "STATUS_INVALID_LOGON_HOURS"
+        case .invalidWorkstation: "STATUS_INVALID_WORKSTATION"
+        case .passwordExpired: "STATUS_PASSWORD_EXPIRED"
+        case .accountDisabled: "STATUS_ACCOUNT_DISABLED"
+        case .logonTypeNotGranted: "STATUS_LOGON_TYPE_NOT_GRANTED"
+        case .accountExpired: "STATUS_ACCOUNT_EXPIRED"
+        case .passwordMustChange: "STATUS_PASSWORD_MUST_CHANGE"
+        case .accountLockedOut: "STATUS_ACCOUNT_LOCKED_OUT"
         default: nil
         }
+    }
+
+    /// The name and code, such as "STATUS_LOGON_FAILURE (0xc000006d)".
+    public var description: String {
+        "\(name ?? "NTSTATUS") (0x\(String(format: "%08x", rawValue)))"
     }
 }
 

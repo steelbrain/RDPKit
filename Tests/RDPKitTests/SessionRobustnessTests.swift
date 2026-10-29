@@ -311,6 +311,7 @@ func chattyServerStillMissesTheMilestoneDeadline(prefix: Int, frameCaptureLimit:
     )
 
     #expect(run.report.error == error)
+    #expect(run.report.failure == .timedOut)
 }
 
 /// An empty frame gives a live session nothing to show, so it does not put
@@ -365,9 +366,55 @@ func liveSessionReportsALostConnectionAsAFailure(end: KRdpCapture.ConnectionEnd,
     if let error {
         #expect(run.report.status == "failure")
         #expect(run.report.error?.hasPrefix(error) == true)
+        #expect(run.report.failure == .connectionLost)
     } else {
         #expect(run.report.status == "success")
         #expect(run.report.error == nil)
+        #expect(run.report.failure == nil)
+    }
+}
+
+/// Once a session shows frames, the server ending it for the user, an
+/// administrator, a time limit or another connection is a normal end, and
+/// any other reason a failure ([MS-RDPBCGR] 2.2.5.1.1).
+@Test(arguments: [
+    (0x0000_0001, .admin, true),
+    (0x0000_0003, .timeLimit, true),
+    (0x0000_0005, .replaced, true),
+    (0x0000_000C, .user, true),
+    (0x0000_0009, .accessDenied, false),
+    (0x0000_0103, .licensing, false),
+    (0x0000_10D2, .protocolError, false),
+] as [(UInt32, RDPRemoteTermination.Category, Bool)])
+func liveSessionEndsNormallyOnlyForReasonsThatAreNoFailure(
+    errorInfo: UInt32,
+    category: RDPRemoteTermination.Category,
+    isNormalEnd: Bool
+) throws {
+    var setErrorInfo = Data()
+    setErrorInfo.appendLittleEndianUInt32(errorInfo)
+    let ending = KRdpCapture.ioPacket(KRdpCapture.shareData(pduType2: 0x2F, payload: setErrorInfo))
+        + MCSDisconnectProviderUltimatumPDU.userRequested.encodedTPKT()
+    let run = try KRdpCapture.run(frameCaptureLimit: nil, onTrailingClientPacket: { channel, packet in
+        if packet.containsSubsequence(KRdpCapture.frameAcknowledgeHeader) {
+            channel.writeAndFlush(channel.allocator.buffer(bytes: ending), promise: nil)
+            KRdpCapture.endConnection(channel, .close)
+        }
+    })
+
+    let termination = RDPRemoteTermination(errorInfo: errorInfo, disconnectReason: 3)
+    #expect(termination.category == category)
+    #expect(run.report.rdpGraphicsFirstFrame != nil)
+    #expect(run.report.remoteTermination == termination)
+    #expect(run.report.nextStage == (isNormalEnd ? "rdp-session-ended" : nil))
+    if isNormalEnd {
+        #expect(run.report.status == "success")
+        #expect(run.report.failure == nil)
+        #expect(run.report.error == nil)
+    } else {
+        #expect(run.report.status == "failure")
+        #expect(run.report.failure == .serverTermination(termination: termination))
+        #expect(run.report.error == termination.description)
     }
 }
 
@@ -390,13 +437,21 @@ func liveSessionReportsALostConnectionAsAFailure(end: KRdpCapture.ConnectionEnd,
     close(socketFD)
     try #require(bound)
 
+    let configuration = RDPConnectionConfiguration(host: "127.0.0.1", port: UInt16(bigEndian: address.sin_port))
     let error = #expect(throws: RDPConnectionError.self) {
-        try RDPSessionClient().connect(configuration: RDPConnectionConfiguration(
-            host: "127.0.0.1",
-            port: UInt16(bigEndian: address.sin_port)
-        ))
+        try RDPSessionClient().connect(configuration: configuration)
     }
     #expect(error.map(String.init(describing:)) == "connect failed: Connection refused")
+    #expect(error?.failure == .connect(error: RDPSocketError(errno: ECONNREFUSED)))
+
+    let report = RDPSessionClient().run(configuration: configuration)
+    #expect(report.connectionStage == .negotiation)
+    #expect(report.failure == error?.failure)
+    guard case let .connect(socketError)? = report.failure else {
+        Issue.record("expected a connect failure, got \(String(describing: report.failure))")
+        return
+    }
+    #expect(socketError.category == .refused)
 }
 
 /// `shouldCancel` is polled while the transport waits on something other than

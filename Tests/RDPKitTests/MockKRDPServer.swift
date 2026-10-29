@@ -276,6 +276,8 @@ enum MockKRDPAuxiliaryDynamicChannelBehavior {
 enum MockKRDPServerError: Error {
     case missingPort
     case invalidClientPDU
+    /// The NTLM proof was not made with the expected password.
+    case wrongPassword
 }
 
 struct MockDisplayControlLayoutSummary: Equatable, Sendable {
@@ -415,7 +417,12 @@ final class MockCredSSPServer {
             if authenticateToken.starts(with: Self.ntlmSignature) {
                 record(gate: "raw-ntlm-authenticate-token")
             }
-            try installKeys(from: RDPSPNEGO.mechanismToken(from: authenticateToken))
+            do {
+                try installKeys(from: RDPSPNEGO.mechanismToken(from: authenticateToken))
+            } catch MockKRDPServerError.wrongPassword {
+                // Windows answers with the NTSTATUS in errorCode ([MS-CSSP] 2.2.1).
+                return RDPCredSSPTSRequest(version: 6, errorCode: RDPLogonStatus.logonFailure.rawValue).encoded()
+            }
             guard let clientPubKeyAuth = request.pubKeyAuth else {
                 throw MockKRDPServerError.invalidClientPDU
             }
@@ -514,7 +521,7 @@ final class MockCredSSPServer {
             domain: credentials.domain ?? ""
         )
         guard Self.hmacMD5(key: ntlmV2Hash, data: serverChallenge + responsePayload) == proof else {
-            throw MockKRDPServerError.invalidClientPDU
+            throw MockKRDPServerError.wrongPassword
         }
         // NTLMv2_CLIENT_CHALLENGE: the AV pairs start 28 bytes in ([MS-NLMP] 2.2.2.7).
         if Data(responsePayload.dropFirst(28)).containsNTLMChannelBindings(channelBindingsHash) {

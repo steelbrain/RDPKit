@@ -35,6 +35,48 @@ enum RDPNegotiationResult: Equatable, Sendable {
     case failure(UInt32)
 }
 
+/// The failureCode of an RDP_NEG_FAILURE ([MS-RDPBCGR] 2.2.1.2.2): why the
+/// server refused the security protocols the client requested.
+public struct RDPNegotiationFailureCode: RawRepresentable, Hashable, Encodable, Sendable, CustomStringConvertible {
+    public var rawValue: UInt32
+
+    public init(rawValue: UInt32) {
+        self.rawValue = rawValue
+    }
+
+    /// The server requires TLS or CredSSP.
+    public static let sslRequiredByServer = RDPNegotiationFailureCode(rawValue: 0x0000_0001)
+    /// The server supports only Standard RDP Security.
+    public static let sslNotAllowedByServer = RDPNegotiationFailureCode(rawValue: 0x0000_0002)
+    /// The server has no valid certificate for TLS.
+    public static let sslCertificateNotOnServer = RDPNegotiationFailureCode(rawValue: 0x0000_0003)
+    /// The requested protocols do not fit the security protocol already in use.
+    public static let inconsistentFlags = RDPNegotiationFailureCode(rawValue: 0x0000_0004)
+    /// The server requires CredSSP.
+    public static let hybridRequiredByServer = RDPNegotiationFailureCode(rawValue: 0x0000_0005)
+    /// The server requires TLS with certificate-based client authentication.
+    public static let sslWithUserAuthRequiredByServer = RDPNegotiationFailureCode(rawValue: 0x0000_0006)
+
+    /// The code's name, such as HYBRID_REQUIRED_BY_SERVER, for the constants above.
+    public var name: String? {
+        switch self {
+        case .sslRequiredByServer: "SSL_REQUIRED_BY_SERVER"
+        case .sslNotAllowedByServer: "SSL_NOT_ALLOWED_BY_SERVER"
+        case .sslCertificateNotOnServer: "SSL_CERT_NOT_ON_SERVER"
+        case .inconsistentFlags: "INCONSISTENT_FLAGS"
+        case .hybridRequiredByServer: "HYBRID_REQUIRED_BY_SERVER"
+        case .sslWithUserAuthRequiredByServer: "SSL_WITH_USER_AUTH_REQUIRED_BY_SERVER"
+        default: nil
+        }
+    }
+
+    /// The name and code, such as "HYBRID_REQUIRED_BY_SERVER (0x00000005)".
+    public var description: String {
+        let code = "0x\(String(format: "%08x", rawValue))"
+        return name.map { "\($0) (\(code))" } ?? "code \(code)"
+    }
+}
+
 enum RDPEarlyUserAuthorizationResult: UInt32, Sendable {
     case success = 0x0000_0000
     case accessDenied = 0x0000_0005

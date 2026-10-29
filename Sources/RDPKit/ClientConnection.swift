@@ -137,7 +137,7 @@ final class RDPClientConnection {
 
     /// Connects and runs the X.224 negotiation ([MS-RDPBCGR] 3.2.5.3.1-2).
     /// Returns false when the negotiation response ends the connection; the
-    /// reason is in `report.error`.
+    /// reason is in `report.failure` and `report.error`.
     func negotiate() throws -> Bool {
         let transport = try RDPTransport.connect(
             host: configuration.host,
@@ -157,10 +157,10 @@ final class RDPClientConnection {
         case let .selected(protocols):
             report.selectedProtocols = protocols.names
             guard request.negotiationRequest.requestedProtocols.canSelect(protocols) else {
-                return end(error: "server selected an unrequested security protocol")
+                return end(.protocolViolation, "server selected an unrequested security protocol")
             }
             guard protocols.usesTLS else {
-                return end(error: protocols.rawValue == 0
+                return end(.unsupportedSecurityProtocol, protocols.rawValue == 0
                     ? "standard RDP security is not supported"
                     : "selected security protocol is not supported")
             }
@@ -168,9 +168,10 @@ final class RDPClientConnection {
             return true
         case let .failure(code):
             report.failureCode = code
-            return end(error: "RDP negotiation failed with code 0x\(String(format: "%08x", code))")
+            let failureCode = RDPNegotiationFailureCode(rawValue: code)
+            return end(.negotiation(code: failureCode), "RDP negotiation failed with \(failureCode)")
         case nil:
-            return end(error: "standard RDP security is not supported")
+            return end(.unsupportedSecurityProtocol, "standard RDP security is not supported")
         }
     }
 
@@ -196,8 +197,9 @@ final class RDPClientConnection {
         return finishReport()
     }
 
-    private func end(error: String) -> Bool {
+    private func end(_ failure: RDPConnectionFailure, _ error: String) -> Bool {
         report.error = error
+        report.failure = failure
         return false
     }
 
@@ -206,7 +208,26 @@ final class RDPClientConnection {
         guard report.error == nil else {
             return
         }
-        report.error = callbacks.isCancelled ? RDPConnectionError.cancelled.description : String(describing: error)
+        let error = connectionError(error)
+        report.error = error.description
+        report.failure = error.failure
+    }
+
+    /// `error` as the `RDPConnectionError` that `connect` throws and the report
+    /// records. Other errors come from parsing the server's data, so they are
+    /// protocol violations.
+    func connectionError(_ error: Error) -> RDPConnectionError {
+        if callbacks.isCancelled {
+            return .cancelled
+        }
+        return switch error {
+        case let error as RDPConnectionError:
+            error
+        case let error as RDPCredSSPError:
+            RDPConnectionError(error.failure, description: error.description)
+        default:
+            .protocolViolation(String(describing: error))
+        }
     }
 
     func finishReport() -> RDPConnectionReport {
@@ -270,7 +291,8 @@ final class RDPClientConnection {
             return try transport.receive(timeout: .seconds(Int64(configuration.timeoutSeconds)))
         } catch RDPTransportError.timedOut {
             throw RDPConnectionError.receive(
-                "\(description) timed out after \(configuration.timeoutSeconds) seconds"
+                "\(description) timed out after \(configuration.timeoutSeconds) seconds",
+                failure: .timedOut
             )
         } catch let error as RDPConnectionError {
             throw error
@@ -284,7 +306,7 @@ final class RDPClientConnection {
                     "connection lost before receiving \(description): \(connectionErrorDescription(error))"
                 )
             }
-            throw RDPConnectionError.receive("connection closed before receiving \(description)")
+            throw RDPConnectionError.receive("connection closed before receiving \(description)", failure: .connectionClosed)
         }
     }
 

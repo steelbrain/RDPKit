@@ -72,11 +72,12 @@ public struct RDPSessionClient: Sendable {
         }
     }
 
-    /// Runs a session and returns its report. Throws when no RDP connection
-    /// could be set up: the address could not be resolved, the TCP connection
-    /// failed, the X.224 exchange could not be completed, or the run was
-    /// cancelled before that. A negotiation the server refuses (RDP_NEG_FAILURE)
-    /// or settles on a protocol RDPKit does not support returns a failure report.
+    /// Runs a session and returns its report. Throws `RDPConnectionError` when
+    /// no RDP connection could be set up: the address could not be resolved,
+    /// the TCP connection failed, the X.224 exchange could not be completed, or
+    /// the run was cancelled before that. A negotiation the server refuses
+    /// (RDP_NEG_FAILURE) or settles on a protocol RDPKit does not support
+    /// returns a failure report.
     public func connect(
         configuration: RDPConnectionConfiguration,
         onGraphicsFrame: RDPGraphicsFrameHandler? = nil,
@@ -112,8 +113,8 @@ public struct RDPSessionClient: Sendable {
             cancellation: cancellation,
             shouldCancel: shouldCancel
         )
-        return try session(configuration: configuration, callbacks: callbacks) { _, error in
-            throw error
+        return try session(configuration: configuration, callbacks: callbacks) { connection, error in
+            throw connection.connectionError(error)
         }
     }
 

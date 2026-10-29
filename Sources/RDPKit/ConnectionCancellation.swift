@@ -7,8 +7,8 @@ import Foundation
 public typealias RDPCancellationHandler = @Sendable () -> Bool
 
 /// Cancels a running connection from any thread. Cancelling closes the socket,
-/// so a blocked `run`/`connect` returns promptly with a report whose error is
-/// "cancelled".
+/// so a blocked `run`/`connect` returns promptly with a report whose failure is
+/// `.cancelled`.
 public final class RDPConnectionCancellation: @unchecked Sendable {
     private let lock = NSLock()
     private var cancelled = false

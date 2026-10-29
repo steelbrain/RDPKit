@@ -49,7 +49,7 @@ extension RDPClientConnection {
             report.earlyUserAuthorizationResult = result.rawValue
             try transport.setFraming(.rdp)
             if result.result == .accessDenied {
-                throw RDPConnectionError.protocolViolation("early user authorization denied access")
+                throw RDPConnectionError(.earlyUserAuthorizationDenied, description: "early user authorization denied access")
             }
         }
         try transport.setRecordedLayer(.application)

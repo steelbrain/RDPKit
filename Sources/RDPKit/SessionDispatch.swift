@@ -198,7 +198,10 @@ extension RDPClientConnection {
         switch license.message {
         case let .errorAlert(alert):
             guard alert.isValidClient else {
-                throw RDPConnectionError.protocolViolation("server licensing failed: \(alert.description)")
+                throw RDPConnectionError(
+                    .licensing(errorCode: alert.errorCode),
+                    description: "server licensing failed: \(alert.description)"
+                )
             }
             licensingComplete = true
             startPhase()
@@ -388,7 +391,7 @@ extension RDPClientConnection {
         inputSession = nil
         startPhase()
         if let termination, termination.errorInfo != nil {
-            if termination.isClean, graphicsOpened {
+            if termination.isNormalEnd, graphicsOpened {
                 try endSession(by: termination)
             } else {
                 isTerminating = true
@@ -405,17 +408,17 @@ extension RDPClientConnection {
         transport?.disconnect()
     }
 
-    /// Ends the session for a termination: a clean one after the graphics
-    /// pipeline opened is a normal end, anything else a failure.
+    /// Ends the session for a termination. Once the graphics pipeline opened,
+    /// one that `isNormalEnd` (the user, an administrator, a time limit or
+    /// another connection ended the session) ends it normally; anything else
+    /// is a failure.
     func endSession(by termination: RDPRemoteTermination) throws {
-        if termination.isClean, graphicsOpened {
+        if termination.isNormalEnd, graphicsOpened {
             sessionEnded = true
             return
         }
-        if stage == .graphics, !graphicsOpened {
-            throw RDPConnectionError.protocolViolation("\(termination.description) before opening RDPGFX dynamic channel")
-        }
-        throw RDPConnectionError.protocolViolation(termination.description)
+        let suffix = stage == .graphics && !graphicsOpened ? " before opening RDPGFX dynamic channel" : ""
+        throw RDPConnectionError(.serverTermination(termination: termination), description: "\(termination)\(suffix)")
     }
 
     /// A close after the server announced the end is that end; otherwise only
@@ -436,7 +439,7 @@ extension RDPClientConnection {
             sessionEnded = true
             return
         }
-        throw RDPConnectionError.receive("connection closed before receiving \(awaitedMessage)")
+        throw RDPConnectionError.receive("connection closed before receiving \(awaitedMessage)", failure: .connectionClosed)
     }
 
     private func handleReceiveTimeout() throws {
@@ -449,7 +452,7 @@ extension RDPClientConnection {
         }
         switch stage {
         case .confirmActive, .finalization:
-            throw RDPConnectionError.protocolViolation(share?.finalization.receivedControlGranted == true
+            throw RDPConnectionError(.timedOut, description: share?.finalization.receivedControlGranted == true
                 ? "server did not send Font Map during connection finalization"
                 : "server did not grant control during connection finalization")
         case .graphics:
@@ -458,14 +461,17 @@ extension RDPClientConnection {
                 return
             }
             if graphicsChannelID != nil, graphicsCompositor == nil {
-                throw RDPConnectionError.protocolViolation(graphicsChannelID.flatMap { dynamicChannelFragments[$0] } != nil
+                throw RDPConnectionError(.timedOut, description: graphicsChannelID.flatMap { dynamicChannelFragments[$0] } != nil
                     ? "server did not complete fragmented RDPGFX capabilities data"
                     : "server did not confirm RDPGFX capabilities")
             }
         default:
             break
         }
-        throw RDPConnectionError.receive("\(awaitedMessage) timed out after \(configuration.timeoutSeconds) seconds")
+        throw RDPConnectionError.receive(
+            "\(awaitedMessage) timed out after \(configuration.timeoutSeconds) seconds",
+            failure: .timedOut
+        )
     }
 
     /// Graphics flow: RDPGFX capabilities are confirmed, or a frame arrived without RDPGFX.

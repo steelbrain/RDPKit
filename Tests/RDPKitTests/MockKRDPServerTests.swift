@@ -16,7 +16,9 @@ struct MockKRDPServerTests {
         #expect(report.stage == "x224-rdp-negotiation")
         #expect(report.failureCode == 0x0000_0002)
         #expect(report.selectedProtocols == nil)
-        #expect(report.error == "RDP negotiation failed with code 0x00000002")
+        #expect(report.error == "RDP negotiation failed with SSL_NOT_ALLOWED_BY_SERVER (0x00000002)")
+        #expect(report.failure == .negotiation(code: .sslNotAllowedByServer))
+        #expect(report.connectionStage == .negotiation)
     }
 
     @Test func clientReportsStandardSecurityAsUnsupported() throws {
@@ -27,6 +29,7 @@ struct MockKRDPServerTests {
         #expect(report.selectedProtocols == ["standard-rdp-security"])
         #expect(report.nextStage == nil)
         #expect(report.error == "standard RDP security is not supported")
+        #expect(report.failure == .unsupportedSecurityProtocol)
     }
 
     @Test func clientRejectsUnrequestedSecurityProtocolSelection() throws {
@@ -66,6 +69,7 @@ struct MockKRDPServerTests {
         #expect(report.stage == "tls-handshake")
         #expect(report.error?.contains("KEY_USAGE_BIT_INCORRECT") == true)
         #expect(report.error?.contains("legacyRSAKeyExchange") == true)
+        #expect(report.failure == .tlsKeyUsageIncorrect)
     }
 
     @Test func clientConnectsWithLegacyRSAKeyExchangeToKeyEnciphermentOnlyCertificate() throws {
@@ -91,6 +95,7 @@ struct MockKRDPServerTests {
         #expect(run.report.status == "failure")
         #expect(run.report.stage == "tls-handshake")
         #expect(run.report.error == "cancelled")
+        #expect(run.report.failure == .cancelled)
         #expect(run.report.rdpClientInfoSent != true)
         #expect(run.transcript.credSSPMessages.isEmpty)
         #expect(run.transcript.disconnectUltimatumReasons.isEmpty)
@@ -113,6 +118,30 @@ struct MockKRDPServerTests {
         ])
         #expect(run.report.rdpGraphicsFirstFrame?.codecName == "avc420")
         #expect(run.report.error == nil)
+        #expect(run.report.failure == nil)
+    }
+
+    /// A wrong password gets the NTSTATUS the server answers it with, as Windows does.
+    @Test func clientReportsTheStatusOfRejectedCredentials() throws {
+        let run = try runMock(.init(securityProtocol: .credSSP(credentials: mockCredentials))) {
+            $0.credentials = RDPCredentials(username: mockCredentials.username, password: "wrong")
+        }
+
+        #expect(run.report.status == "failure")
+        #expect(run.report.connectionStage == .credSSP)
+        #expect(run.report.failure == .credSSP(status: .logonFailure))
+        #expect(run.report.error == "CredSSP server returned STATUS_LOGON_FAILURE (0xc000006d)")
+        #expect(run.transcript.credSSPMessages == ["ntlm-negotiate", "ntlm-authenticate"])
+    }
+
+    @Test func clientReportsMissingCredentialsForCredSSP() throws {
+        let report = try runMock(.init(securityProtocol: .credSSP(credentials: mockCredentials))) {
+            $0.credentials = nil
+        }.report
+
+        #expect(report.status == "failure")
+        #expect(report.connectionStage == .credSSP)
+        #expect(report.failure == .credentialsRequired)
     }
 
     /// A server checks NTLM against the user and domain apart, so "DOMAIN\user" typed as the
@@ -191,6 +220,7 @@ struct MockKRDPServerTests {
         #expect(report.selectedProtocols == ["credssp-early-user-auth"])
         #expect(report.earlyUserAuthorizationResult == RDPEarlyUserAuthorizationResult.accessDenied.rawValue)
         #expect(report.error == "early user authorization denied access")
+        #expect(report.failure == .earlyUserAuthorizationDenied)
     }
 
     // MARK: Connection sequence
@@ -442,6 +472,7 @@ struct MockKRDPServerTests {
         #expect(report.rdpLicensingResponseType == "license-error-0x00000006")
         #expect(report.rdpLicensingErrorCode == 0x0000_0006)
         #expect(report.error == "server licensing failed: ERR_NO_LICENSE_SERVER (0x00000006), ST_TOTAL_ABORT")
+        #expect(report.failure == .licensing(errorCode: 0x0000_0006))
     }
 
     @Test func clientReportsDisconnectAfterClientInfo() throws {
@@ -451,6 +482,9 @@ struct MockKRDPServerTests {
         #expect(report.rdpClientInfoSent == true)
         #expect(report.rdpRemoteTerminationDisconnectReasonName == "rn-user-requested")
         #expect(report.error == "server ended the session with rn-user-requested")
+        // Before the session runs, even an end with no reason is a failure.
+        #expect(report.failure == .serverTermination(termination: RDPRemoteTermination(disconnectReason: 3)))
+        #expect(report.remoteTermination?.category == .unspecified)
     }
 
     // MARK: Connection finalization
@@ -580,6 +614,7 @@ struct MockKRDPServerTests {
         #expect(report.rdpRemoteTerminationDisconnectReason == 3)
         #expect(report.rdpRemoteTerminationDisconnectReasonName == "rn-user-requested")
         #expect(report.error == "server ended the session with ERRINFO_LOGOFF_BY_USER before opening RDPGFX dynamic channel")
+        #expect(report.failure == .serverTermination(termination: RDPRemoteTermination(errorInfo: 0xC, disconnectReason: 3)))
     }
 
     /// Set Error Info and Deactivate All, then silence: the client waits its
@@ -591,7 +626,10 @@ struct MockKRDPServerTests {
         #expect(report.stage == "rdp-graphics-dynamic-channel")
         #expect(report.rdpFinalizationResponseTypes?.contains("font-map") == true)
         #expect(report.rdpDynamicChannelRequestTypes == [])
-        #expect(report.error == "server ended the session with ERRINFO_0x00000007 before opening RDPGFX dynamic channel")
+        #expect(report.error
+            == "server ended the session with ERRINFO_SERVER_DENIED_CONNECTION before opening RDPGFX dynamic channel")
+        #expect(report.failure == .serverTermination(termination: RDPRemoteTermination(errorInfo: 7)))
+        #expect(report.remoteTermination?.category == .accessDenied)
     }
 
     @Test func clientRejectsDeactivateThenUserRequestedDisconnectBeforeGraphics() throws {
@@ -1387,6 +1425,7 @@ struct MockKRDPServerTests {
         #expect(report.rdpGraphicsFrames?.isEmpty == false)
         #expect(report.rdpGraphicsFrameAcknowledgeHexes == [])
         #expect(report.error?.contains("mock graphics frame handler failed") == true)
+        #expect(report.failure == .graphicsFrameHandler)
     }
 
     @Test func liveSessionTreatsRemoteCloseAfterFrameAsCleanDisconnect() throws {
@@ -1437,19 +1476,25 @@ struct MockKRDPServerTests {
         #expect(report.error == nil)
         #expect(report.rdpRemoteTerminationErrorInfoName == "ERRINFO_RPC_INITIATED_DISCONNECT")
         #expect(report.rdpRemoteTerminationDisconnectReason == 3)
+        #expect(report.remoteTermination?.category == .admin)
     }
 
-    /// A close after a non-clean Set Error Info is the server ending the session
-    /// with that error, not a clean disconnect ([MS-RDPBCGR] 2.2.5.1.1).
-    @Test func liveSessionReportsNonCleanSetErrorInfoBeforeCloseAsFailure() throws {
+    /// A close after a Set Error Info is the server ending the session for that
+    /// reason ([MS-RDPBCGR] 2.2.5.1.1); another connection taking the session
+    /// over ends a running session normally.
+    @Test func liveSessionEndsWhenAnotherConnectionTakesItOver() throws {
         let report = try runMock(.init(graphicsBehavior: .setErrorInfoThenCloseAfterFirstFrame)) {
             $0.graphicsFrameCaptureLimit = nil
         }.report
 
-        #expect(report.status == "failure")
+        #expect(report.status == "success")
         #expect(report.rdpGraphicsFirstFrame?.codecName == "avc420")
         #expect(report.rdpRemoteTerminationErrorInfo == 0x0000_0005)
-        #expect(report.error == "server ended the session with ERRINFO_0x00000005")
+        #expect(report.rdpRemoteTerminationErrorInfoName == "ERRINFO_DISCONNECTED_BY_OTHERCONNECTION")
+        #expect(report.nextStage == "rdp-session-ended")
+        #expect(report.error == nil)
+        #expect(report.failure == nil)
+        #expect(report.remoteTermination?.category == .replaced)
     }
 
     /// Logoff is a clean end of the session, live or while capturing frames.
@@ -1466,6 +1511,8 @@ struct MockKRDPServerTests {
         #expect(report.rdpGraphicsFrames == [])
         #expect(report.rdpGraphicsFrameAcknowledgeHexes == [])
         #expect(report.error == nil)
+        #expect(report.failure == nil)
+        #expect(report.remoteTermination?.category == .user)
     }
 
     // MARK: Clipboard, input, display control, device redirection and audio
