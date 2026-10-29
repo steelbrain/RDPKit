@@ -21,6 +21,12 @@
   output carries the unscaled surface, as video snapshots do. Its
   `destinationRect` and `regionRects` are in unscaled output coordinates, and
   `mappedOutputRect` says where the surface is scaled to.
+- `RDPGraphicsFrameSnapshot`: snapshots of the new content kind `.surfaceCopy`
+  carry, in `surfaceCopy`, a copy among the decoder's surfaces and cache of
+  pixels only the decoder holds, such as decoded video. `evictedCacheSlots`
+  names the cache entries such copies stored that the server has since evicted.
+  `RDPFrameDecodeQueue` applies both; a client that decodes snapshots itself
+  must make these copies, or the copied areas keep stale pixels.
 - `RDPGFXMessageSummary`: remove the per-command detail fields nothing read,
   such as the cache, fill, surface-to-surface, monitor and ClearCodec subcodec
   fields.
@@ -104,6 +110,13 @@
   drew last. `RDPFrameDecodeQueue` merges those areas over the decoded video and
   keeps them through later partial video updates, on surfaces mapped to
   scaled output too.
+- Copy decoded video instead of painting black. gnome-remote-desktop encodes
+  video into an unmapped staging surface and copies each damaged rectangle to
+  the mapped one; every partial update after its first frame used to paint
+  black, and now goes to the mapped surface's decoder with those rectangles as
+  its regions. SurfaceToSurface, SurfaceToCache and CacheToSurface copies of
+  video decoded in earlier frames, such as a scroll, are made from the decoded
+  pixels.
 - Acknowledge every RDPGFX EndFrame and every surface frame marker, including
   after an update that fails to decode, and ignore cosmetic RDPGFX and DVC
   fields instead of ending the session.

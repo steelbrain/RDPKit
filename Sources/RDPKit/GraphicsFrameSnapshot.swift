@@ -26,6 +26,40 @@ public enum RDPVideoCodec: String, Encodable, Equatable, Sendable {
 public enum RDPGraphicsFrameContentKind: String, Encodable, Equatable, Sendable {
     case video
     case bitmap
+    /// A copy among the decoder's own surfaces and cache, in ``RDPGraphicsFrameSnapshot/surfaceCopy``.
+    case surfaceCopy
+}
+
+/// A copy the decoder makes itself ([MS-RDPEGFX] 2.2.2.6-2.2.2.8) because the copied area
+/// holds pixels only the decoder has: video it decoded, or pixels such a copy put there.
+/// The session copies every other area itself and sends it in bitmap snapshots.
+public struct RDPGraphicsSurfaceCopy: Encodable, Equatable, Sendable {
+    public enum Location: Encodable, Equatable, Sendable {
+        case surface(UInt16)
+        case cacheSlot(UInt16)
+    }
+
+    /// A rectangle of the source, in its coordinates, and where it goes, in the destination's.
+    public struct Block: Encodable, Equatable, Sendable {
+        public var source: RDPFrameRect
+        public var destination: RDPFrameRect
+
+        public init(source: RDPFrameRect, destination: RDPFrameRect) {
+            self.source = source
+            self.destination = destination
+        }
+    }
+
+    public var source: Location
+    public var destination: Location
+    /// Every block copies the source as it was before the copy, so blocks may overlap.
+    public var blocks: [Block]
+
+    public init(source: Location, destination: Location, blocks: [Block]) {
+        self.source = source
+        self.destination = destination
+        self.blocks = blocks
+    }
 }
 
 public struct RDPFrameRect: Encodable, Equatable, Sendable {
@@ -83,6 +117,11 @@ public struct RDPGraphicsFrameSnapshot: Encodable, Equatable, Sendable {
     /// snapshot. A decoder drops what it kept for them before using this frame,
     /// whose surface ID may name a new surface.
     public var deletedSurfaceIDs: [UInt16]
+    /// The copy to make when ``contentKind`` is ``RDPGraphicsFrameContentKind/surfaceCopy``.
+    public var surfaceCopy: RDPGraphicsSurfaceCopy?
+    /// Cache slots a ``surfaceCopy`` stored into that the server has since evicted or
+    /// refilled without one. A decoder drops them before using this frame.
+    public var evictedCacheSlots: [UInt16]
 
     public init(
         frameID: UInt32?,
@@ -103,7 +142,9 @@ public struct RDPGraphicsFrameSnapshot: Encodable, Equatable, Sendable {
         contentKind: RDPGraphicsFrameContentKind = .video,
         decodedBitmapData: Data? = nil,
         decodedBitmapBytesPerRow: Int? = nil,
-        deletedSurfaceIDs: [UInt16] = []
+        deletedSurfaceIDs: [UInt16] = [],
+        surfaceCopy: RDPGraphicsSurfaceCopy? = nil,
+        evictedCacheSlots: [UInt16] = []
     ) {
         self.frameID = frameID
         self.surfaceID = surfaceID
@@ -124,6 +165,8 @@ public struct RDPGraphicsFrameSnapshot: Encodable, Equatable, Sendable {
         self.decodedBitmapData = decodedBitmapData
         self.decodedBitmapBytesPerRow = decodedBitmapBytesPerRow
         self.deletedSurfaceIDs = deletedSurfaceIDs
+        self.surfaceCopy = surfaceCopy
+        self.evictedCacheSlots = evictedCacheSlots
     }
 
     public var width: UInt16 {
@@ -178,6 +221,7 @@ public struct RDPGraphicsFrameSnapshot: Encodable, Equatable, Sendable {
         case videoNalUnitTypes
         case bitmapByteCount
         case decodedBitmapBytesPerRow
+        case surfaceCopy
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -199,29 +243,41 @@ public struct RDPGraphicsFrameSnapshot: Encodable, Equatable, Sendable {
         try container.encode(videoNalUnitTypes, forKey: .videoNalUnitTypes)
         try container.encode(bitmapByteCount, forKey: .bitmapByteCount)
         try container.encodeIfPresent(decodedBitmapBytesPerRow, forKey: .decodedBitmapBytesPerRow)
+        try container.encodeIfPresent(surfaceCopy, forKey: .surfaceCopy)
     }
 }
 
 extension RDPGraphicsFrameSnapshot {
-    /// The surface areas a video update writes: its region rectangles, which servers send
-    /// relative to the destination rectangle or in surface coordinates (all of them fitting
-    /// the destination's size reads as relative), or the whole destination when it lists none.
+    /// Whether a video update's region rectangles are relative to `destinationRect`.
+    /// Servers send them so or in surface coordinates; all of them fitting the
+    /// destination's size reads as relative.
+    var hasRelativeRegions: Bool {
+        (regionRects + auxiliaryRegionRects).allSatisfy {
+            $0.right <= destinationRect.width && $0.bottom <= destinationRect.height
+        }
+    }
+
+    /// `region`, one of this update's, in surface coordinates.
+    func surfaceRegion(_ region: RDPFrameRect, relative: Bool) -> RDPFrameRect {
+        guard relative else {
+            return region
+        }
+        return RDPFrameRect(
+            left: destinationRect.left &+ region.left,
+            top: destinationRect.top &+ region.top,
+            right: destinationRect.left &+ region.right,
+            bottom: destinationRect.top &+ region.bottom
+        )
+    }
+
+    /// The surface areas a video update writes: its region rectangles, or the whole
+    /// destination when it lists none.
     var videoSurfaceRegions: [RDPFrameRect] {
         let regions = regionRects + auxiliaryRegionRects
         guard !regions.isEmpty else {
             return [destinationRect]
         }
-        let areRelative = regions.allSatisfy { $0.right <= destinationRect.width && $0.bottom <= destinationRect.height }
-        guard areRelative else {
-            return regions
-        }
-        return regions.map {
-            RDPFrameRect(
-                left: destinationRect.left &+ $0.left,
-                top: destinationRect.top &+ $0.top,
-                right: destinationRect.left &+ $0.right,
-                bottom: destinationRect.top &+ $0.bottom
-            )
-        }
+        let relative = hasRelativeRegions
+        return regions.map { surfaceRegion($0, relative: relative) }
     }
 }

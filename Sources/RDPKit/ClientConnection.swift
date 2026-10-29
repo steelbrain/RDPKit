@@ -69,11 +69,13 @@ final class RDPClientConnection {
     var graphicsCompositor: RDPGFXSurfaceCompositor?
     let clearCodec = RDPClearCodecDecoder()
     var graphicsFrameTracker = RDPGFXLogicalFrameTracker()
-    /// The current RDPGFX frame's video, and copies of it made by SurfaceToSurface.
-    var pendingGraphicsFrames: [RDPGraphicsFrameSnapshot] = []
-    var pendingVideoCopies: [RDPGraphicsFrameSnapshot] = []
+    /// The current RDPGFX frame's updates for the decoder, in wire order.
+    var pendingGraphicsUpdates: [RDPPendingGraphicsUpdate] = []
     /// Surfaces deleted since the last delivered snapshot, which carries them.
     var deletedGraphicsSurfaceIDs: [UInt16] = []
+    /// The decoder's cache slots evicted after the last copy of the frames delivered,
+    /// which the next delivered snapshot carries.
+    var evictedGraphicsCacheSlots: [UInt16] = []
     var graphicsFramesDecoded: UInt32 = 0
     /// Created on first use at the current desktop size, again after a resize.
     private var primarySurfaceStorage: RDPPrimarySurfaceCompositor?

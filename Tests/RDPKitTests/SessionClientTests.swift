@@ -372,7 +372,7 @@ import Testing
     #expect(frame.videoNalUnitTypes == [32, 33, 34, 19])
 }
 
-@Test func copiedVideoFramesRejectsDestinationsOutsideCoordinateRange() {
+@Test func stagedVideoCopyRejectsDestinationsOutsideCoordinateRange() {
     let frame = RDPGraphicsFrameSnapshot(
         frameID: 9,
         surfaceID: 1,
@@ -383,43 +383,45 @@ import Testing
         regionRects: [RDPFrameRect(left: 0, top: 0, right: 40_000, bottom: 10)],
         encodedVideoData: Data([0x00, 0x00, 0x01, 0x65])
     )
-    let copy = RDPGFXSurfaceToSurfacePDU(
-        sourceSurfaceID: 1,
-        destinationSurfaceID: 2,
-        sourceRect: RDPGFXRect16(left: 0, top: 0, right: 40_000, bottom: 10),
-        destinationPoints: [
-            RDPGFXPoint16(x: -1, y: 0),
-            RDPGFXPoint16(x: Int16.max, y: 0),
-        ]
-    )
+    let sourceRect = RDPGFXRect16(left: 0, top: 0, right: 40_000, bottom: 10)
 
-    #expect(copiedVideoFrames([frame], using: copy).isEmpty)
+    for point in [RDPGFXPoint16(x: -1, y: 0), RDPGFXPoint16(x: Int16.max, y: 0)] {
+        #expect(stagedVideoCopy(of: frame, sourceRect: sourceRect, to: point, surfaceID: 2) == nil)
+    }
 }
 
-/// A second destination point on the surface would hand the same access
-/// unit to its decoder again, so each frame is copied once.
-@Test func copiedVideoFramesCopiesEachFrameToTheFirstFittingPoint() {
+/// gnome-remote-desktop copies each damage rectangle of its staging surface with a
+/// SurfaceToSurface of its own; each copy carries the access unit's part inside it.
+@Test func stagedVideoCopyCarriesTheRegionsInsideTheCopiedRectangle() throws {
     let frame = RDPGraphicsFrameSnapshot(
         frameID: 9,
         surfaceID: 1,
         codecID: RDPGFXCodecID.avc420,
         codecName: "avc420",
         pixelFormat: RDPGFXPixelFormat.xrgb8888,
-        destinationRect: RDPFrameRect(left: 0, top: 0, right: 64, bottom: 32),
-        regionRects: [RDPFrameRect(left: 0, top: 0, right: 64, bottom: 32)],
+        destinationRect: RDPFrameRect(left: 8, top: 4, right: 72, bottom: 36),
+        regionRects: [
+            RDPFrameRect(left: 0, top: 0, right: 16, bottom: 8),
+            RDPFrameRect(left: 32, top: 16, right: 64, bottom: 32),
+        ],
         encodedVideoData: Data([0x00, 0x00, 0x01, 0x65])
     )
-    let copy = RDPGFXSurfaceToSurfacePDU(
-        sourceSurfaceID: 1,
-        destinationSurfaceID: 0,
-        sourceRect: RDPGFXRect16(left: 0, top: 0, right: 64, bottom: 32),
-        destinationPoints: [
-            RDPGFXPoint16(x: -1, y: 0),
-            RDPGFXPoint16(x: 0, y: 32),
-            RDPGFXPoint16(x: 64, y: 0),
-        ]
-    )
 
-    let copies = copiedVideoFrames([frame, frame], using: copy)
-    #expect(copies.map(\.destinationRect) == Array(repeating: RDPFrameRect(left: 0, top: 32, right: 64, bottom: 64), count: 2))
+    let staged = try #require(stagedVideoCopy(
+        of: frame,
+        sourceRect: RDPGFXRect16(left: 40, top: 20, right: 56, bottom: 36),
+        to: RDPGFXPoint16(x: 50, y: 30),
+        surfaceID: 0
+    ))
+    #expect(staged.surfaceID == 0)
+    #expect(staged.destinationRect == RDPFrameRect(left: 18, top: 14, right: 82, bottom: 46))
+    #expect(staged.regionRects == [RDPFrameRect(left: 32, top: 16, right: 48, bottom: 32)])
+    #expect(staged.encodedVideoData == frame.encodedVideoData)
+    // A copy outside every region carries none of the access unit.
+    #expect(stagedVideoCopy(
+        of: frame,
+        sourceRect: RDPGFXRect16(left: 8, top: 20, right: 24, bottom: 36),
+        to: RDPGFXPoint16(x: 8, y: 20),
+        surfaceID: 0
+    ) == nil)
 }

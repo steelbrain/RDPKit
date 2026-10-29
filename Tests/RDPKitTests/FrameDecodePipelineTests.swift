@@ -426,6 +426,63 @@ import Testing
     #expect(try bgraPixel(atX: 0, y: 3, in: videoPresentation.imageBuffer) == laterVideo)
 }
 
+/// A scroll of a surface whose video went straight to the output copies the decoded
+/// picture, not black.
+@Test func decodedVideoCompositorCopiesDecodedVideoWithinASurface() throws {
+    let compositor = RDPDecodedVideoSurfaceCompositor()
+    let outputRect = RDPFrameRect(left: 0, top: 0, right: 32, bottom: 32)
+    _ = try compositor.presentation(
+        for: videoFrame(id: 1, graphicsOutputRect: outputRect, surfaceRect: outputRect, destinationRect: outputRect, regionRects: [outputRect]),
+        decodedImageBuffer: try yuvPixelBuffer(width: 32, height: 32, darkRows: 0 ..< 8)
+    )
+
+    let presentation = try #require(try compositor.presentation(copying: surfaceCopyFrame(
+        id: 2,
+        outputRect: outputRect,
+        copy: RDPGraphicsSurfaceCopy(source: .surface(1), destination: .surface(1), blocks: [.init(
+            source: RDPFrameRect(left: 0, top: 4, right: 32, bottom: 12),
+            destination: RDPFrameRect(left: 0, top: 24, right: 32, bottom: 32)
+        )])
+    )))
+
+    #expect(presentation.frame.regionRects == [RDPFrameRect(left: 0, top: 24, right: 32, bottom: 32)])
+    // Rows 4..<8 of the picture are dark and 8..<12 light.
+    #expect(try bgraPixel(atX: 3, y: 25, in: presentation.imageBuffer)[1] < 40)
+    #expect(try bgraPixel(atX: 3, y: 29, in: presentation.imageBuffer)[1] > 215)
+    #expect(try bgraPixel(atX: 3, y: 2, in: presentation.imageBuffer)[1] < 40)
+    #expect(try bgraPixel(atX: 3, y: 20, in: presentation.imageBuffer)[1] > 215)
+}
+
+/// The cache holds decoded pixels until the server evicts the entry.
+@Test func decodedVideoCompositorRestoresCachedVideoUntilEvicted() throws {
+    let compositor = RDPDecodedVideoSurfaceCompositor()
+    let outputRect = RDPFrameRect(left: 0, top: 0, right: 32, bottom: 32)
+    _ = try compositor.presentation(
+        for: videoFrame(id: 1, graphicsOutputRect: outputRect, surfaceRect: outputRect, destinationRect: outputRect, regionRects: [outputRect]),
+        decodedImageBuffer: try yuvPixelBuffer(width: 32, height: 32, darkRows: 0 ..< 8)
+    )
+    let entry = RDPFrameRect(left: 0, top: 0, right: 32, bottom: 8)
+    let store = RDPGraphicsSurfaceCopy(source: .surface(1), destination: .cacheSlot(3), blocks: [.init(
+        source: RDPFrameRect(left: 0, top: 4, right: 32, bottom: 12),
+        destination: entry
+    )])
+    let restore = RDPGraphicsSurfaceCopy(source: .cacheSlot(3), destination: .surface(1), blocks: [.init(
+        source: entry,
+        destination: RDPFrameRect(left: 0, top: 24, right: 32, bottom: 32)
+    )])
+
+    #expect(try compositor.presentation(copying: surfaceCopyFrame(id: 2, outputRect: outputRect, copy: store)) == nil)
+    let presentation = try #require(try compositor.presentation(copying: surfaceCopyFrame(id: 2, outputRect: outputRect, copy: restore)))
+    #expect(try bgraPixel(atX: 3, y: 25, in: presentation.imageBuffer)[1] < 40)
+    #expect(try bgraPixel(atX: 3, y: 29, in: presentation.imageBuffer)[1] > 215)
+    #expect(try compositor.presentation(copying: surfaceCopyFrame(
+        id: 3,
+        outputRect: outputRect,
+        copy: restore,
+        evictedCacheSlots: [3]
+    )) == nil)
+}
+
 @Test func decodedVideoCompositorClearsStaleSurfaceOnFullResyncFrame() throws {
     let compositor = RDPDecodedVideoSurfaceCompositor()
     _ = try compositor.presentation(
@@ -599,6 +656,31 @@ import Testing
 
     #expect(completion == .decoded)
     try completion.requireDecoded()
+    queue.cancel()
+}
+
+@Test func frameDecodeQueuePresentsSurfaceCopiesWithoutDecoding() throws {
+    let presented = Locked<[RDPGraphicsFrameSnapshot]>([])
+    let queue = RDPFrameDecodeQueue(
+        shouldCancel: { false },
+        onDecoded: { presentation, _, _, _ in presented.withLock { $0.append(presentation.frame) } },
+        onDecodeFailed: { _, _ in }
+    )
+    let outputRect = RDPFrameRect(left: 0, top: 0, right: 4, bottom: 4)
+    var bitmap = bitmapFrame(id: 1, width: 4, height: 4, pixel: [0x10, 0x20, 0x30, 0xFF], graphicsOutputRect: outputRect)
+    bitmap.surfaceRect = outputRect
+    let copy = surfaceCopyFrame(
+        id: 1,
+        outputRect: outputRect,
+        copy: RDPGraphicsSurfaceCopy(source: .surface(1), destination: .surface(1), blocks: [.init(
+            source: RDPFrameRect(left: 0, top: 0, right: 2, bottom: 2),
+            destination: RDPFrameRect(left: 2, top: 2, right: 4, bottom: 4)
+        )])
+    )
+
+    #expect(queue.submitAndWait(bitmap, receivedAt: Date(), shouldContinue: { true }) == .decoded)
+    #expect(queue.submitAndWait(copy, receivedAt: Date(), shouldContinue: { true }) == .decoded)
+    #expect(presented.value.map(\.regionRects).last == [RDPFrameRect(left: 2, top: 2, right: 4, bottom: 4)])
     queue.cancel()
 }
 
@@ -803,6 +885,29 @@ private func bitmapFrame(
         contentKind: .bitmap,
         decodedBitmapData: data,
         decodedBitmapBytesPerRow: bytesPerRow
+    )
+}
+
+private func surfaceCopyFrame(
+    id: UInt32,
+    outputRect: RDPFrameRect,
+    copy: RDPGraphicsSurfaceCopy,
+    evictedCacheSlots: [UInt16] = []
+) -> RDPGraphicsFrameSnapshot {
+    RDPGraphicsFrameSnapshot(
+        frameID: id,
+        surfaceID: 1,
+        codecID: RDPGFXCodecID.uncompressed,
+        codecName: "rdpgfx-surface-to-surface",
+        pixelFormat: RDPGFXPixelFormat.xrgb8888,
+        graphicsOutputRect: outputRect,
+        surfaceRect: outputRect,
+        destinationRect: outputRect,
+        regionRects: copy.blocks.map(\.destination),
+        encodedVideoData: Data(),
+        contentKind: .surfaceCopy,
+        surfaceCopy: copy,
+        evictedCacheSlots: evictedCacheSlots
     )
 }
 

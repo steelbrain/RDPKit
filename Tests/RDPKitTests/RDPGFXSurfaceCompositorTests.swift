@@ -309,8 +309,8 @@ import Testing
 
 /// gnome-remote-desktop encodes AVC420 into unmapped surface 1 and copies it
 /// to mapped surface 0 every frame (gnome fixture, sequence 143-144). The copy
-/// marks surface 0 dirty with pixels the compositor never decoded; a later
-/// frame without video must not paint them as a black bitmap over the video.
+/// brings pixels the compositor never decoded; neither this frame nor a later
+/// one without video may paint them as a black bitmap over the video.
 @Test func compositorDoesNotPaintCopiedVideoAsBlackInALaterFrame() throws {
     let compositor = RDPGFXSurfaceCompositor(outputWidth: 64, outputHeight: 32)
     let clearCodec = RDPClearCodecDecoder()
@@ -328,21 +328,143 @@ import Testing
         regionRects: [RDPFrameRect(fullSurface)],
         encodedVideoData: Data([0x00, 0x00, 0x01, 0x65])
     )
+    compositor.noteVideo(video)
     let copy = try surfaceToSurfaceMessage(
         sourceSurfaceID: 1,
         destinationSurfaceID: 0,
         sourceRect: fullSurface,
         destinationPoints: [RDPGFXPoint16(x: 0, y: 0)]
     )
-    try compositor.process(copy, clearCodec: clearCodec)
 
-    // As the client handles the copy: the copied video wrote all of surface 0 last.
-    let copied = copiedVideoFrames([video], using: try RDPGFXSurfaceToSurfacePDU.parse(from: copy))
-    #expect(copied.map(\.surfaceID) == [0])
-    copied.forEach(compositor.noteVideo)
+    // The decoder never got surface 1, so the client retargets its video instead.
+    #expect(try compositor.process(copy, clearCodec: clearCodec) == nil)
     #expect(compositor.makeFrames(frameID: 1).isEmpty)
     // The next frame has no updates.
     #expect(compositor.makeFrames(frameID: 2).isEmpty)
+}
+
+/// A scroll of a surface carrying video copies pixels only the decoder holds, so the
+/// decoder makes the copy; the session paints only what it drew there itself.
+@Test func compositorHandsCopiesOfDecodedVideoToTheDecoder() throws {
+    let compositor = RDPGFXSurfaceCompositor(outputWidth: 64, outputHeight: 32)
+    let clearCodec = RDPClearCodecDecoder()
+    try compositor.process(try createSurfaceMessage(surfaceID: 0, width: 64, height: 32), clearCodec: clearCodec)
+    try compositor.process(try createSurfaceMessage(surfaceID: 2, width: 64, height: 32), clearCodec: clearCodec)
+    try compositor.process(try mapSurfaceToOutputMessage(surfaceID: 0, x: 0, y: 0), clearCodec: clearCodec)
+    compositor.noteVideo(fullSurfaceVideo(surfaceID: 0, width: 64, height: 32))
+    #expect(compositor.makeFrames(frameID: 1).isEmpty)
+
+    // Text over the video, then its top half scrolled down.
+    try compositor.process(
+        try solidFillMessage(surfaceID: 0, color: [0x01, 0x02, 0x03, 0xFF], rects: [RDPGFXRect16(left: 0, top: 0, right: 8, bottom: 8)]),
+        clearCodec: clearCodec
+    )
+    let scroll = try compositor.process(
+        try surfaceToSurfaceMessage(
+            sourceSurfaceID: 0,
+            destinationSurfaceID: 0,
+            sourceRect: RDPGFXRect16(left: 0, top: 0, right: 64, bottom: 16),
+            destinationPoints: [RDPGFXPoint16(x: 0, y: 16)]
+        ),
+        clearCodec: clearCodec
+    )
+    #expect(scroll == RDPGraphicsSurfaceCopy(source: .surface(0), destination: .surface(0), blocks: [.init(
+        source: RDPFrameRect(left: 0, top: 0, right: 64, bottom: 16),
+        destination: RDPFrameRect(left: 0, top: 16, right: 64, bottom: 32)
+    )]))
+    // The decoder's copy lacks the text, which the session paints at both places.
+    #expect(compositor.makeFrames(frameID: 2).map(\.regionRects) == [[
+        RDPFrameRect(left: 0, top: 0, right: 8, bottom: 8),
+        RDPFrameRect(left: 0, top: 16, right: 8, bottom: 24),
+    ]])
+
+    // A copy of pixels only the session holds is the session's to paint.
+    try compositor.process(
+        try solidFillMessage(surfaceID: 2, color: [0x04, 0x05, 0x06, 0xFF], rects: [RDPGFXRect16(left: 0, top: 0, right: 64, bottom: 32)]),
+        clearCodec: clearCodec
+    )
+    let sessionCopy = try compositor.process(
+        try surfaceToSurfaceMessage(
+            sourceSurfaceID: 2,
+            destinationSurfaceID: 0,
+            sourceRect: RDPGFXRect16(left: 0, top: 0, right: 16, bottom: 16),
+            destinationPoints: [RDPGFXPoint16(x: 48, y: 0)]
+        ),
+        clearCodec: clearCodec
+    )
+    #expect(sessionCopy == nil)
+    #expect(compositor.makeFrames(frameID: 3).map(\.regionRects) == [[RDPFrameRect(left: 48, top: 0, right: 64, bottom: 16)]])
+
+    // The decoder holds what its copies put into an unmapped surface, and copies it on.
+    #expect(!compositor.isOnDecoder(surfaceID: 2))
+    try compositor.process(
+        try surfaceToSurfaceMessage(
+            sourceSurfaceID: 0,
+            destinationSurfaceID: 2,
+            sourceRect: RDPGFXRect16(left: 16, top: 16, right: 32, bottom: 32),
+            destinationPoints: [RDPGFXPoint16(x: 0, y: 0)]
+        ),
+        clearCodec: clearCodec
+    )
+    #expect(compositor.isOnDecoder(surfaceID: 2))
+    let copyBack = try compositor.process(
+        try surfaceToSurfaceMessage(
+            sourceSurfaceID: 2,
+            destinationSurfaceID: 0,
+            sourceRect: RDPGFXRect16(left: 0, top: 0, right: 16, bottom: 16),
+            destinationPoints: [RDPGFXPoint16(x: 48, y: 16)]
+        ),
+        clearCodec: clearCodec
+    )
+    #expect(copyBack?.source == .surface(2))
+    #expect(compositor.makeFrames(frameID: 4).isEmpty)
+}
+
+/// Cache entries of decoded video are the decoder's too. It drops them when the server
+/// evicts them, or refills their slots with pixels only the session holds.
+@Test func compositorHandsCacheCopiesOfDecodedVideoToTheDecoder() throws {
+    let compositor = RDPGFXSurfaceCompositor(outputWidth: 64, outputHeight: 32)
+    let clearCodec = RDPClearCodecDecoder()
+    try compositor.process(try createSurfaceMessage(surfaceID: 0, width: 64, height: 32), clearCodec: clearCodec)
+    try compositor.process(try mapSurfaceToOutputMessage(surfaceID: 0, x: 0, y: 0), clearCodec: clearCodec)
+    compositor.noteVideo(fullSurfaceVideo(surfaceID: 0, width: 64, height: 32))
+
+    let store = try compositor.process(
+        try surfaceToCacheMessage(surfaceID: 0, cacheKey: 1, cacheSlot: 3, sourceRect: RDPGFXRect16(left: 0, top: 0, right: 16, bottom: 16)),
+        clearCodec: clearCodec
+    )
+    #expect(store == RDPGraphicsSurfaceCopy(source: .surface(0), destination: .cacheSlot(3), blocks: [.init(
+        source: RDPFrameRect(left: 0, top: 0, right: 16, bottom: 16),
+        destination: RDPFrameRect(left: 0, top: 0, right: 16, bottom: 16)
+    )]))
+    let restore = try compositor.process(
+        try cacheToSurfaceMessage(cacheSlot: 3, surfaceID: 0, points: [RDPGFXPoint16(x: 48, y: 16)]),
+        clearCodec: clearCodec
+    )
+    #expect(restore == RDPGraphicsSurfaceCopy(source: .cacheSlot(3), destination: .surface(0), blocks: [.init(
+        source: RDPFrameRect(left: 0, top: 0, right: 16, bottom: 16),
+        destination: RDPFrameRect(left: 48, top: 16, right: 64, bottom: 32)
+    )]))
+    #expect(compositor.makeFrames(frameID: 1).isEmpty)
+    #expect(compositor.decoderCacheSlots == [3])
+
+    try compositor.process(try evictCacheEntryMessage(cacheSlot: 3), clearCodec: clearCodec)
+    try compositor.process(
+        try surfaceToCacheMessage(surfaceID: 0, cacheKey: 2, cacheSlot: 4, sourceRect: RDPGFXRect16(left: 16, top: 0, right: 32, bottom: 16)),
+        clearCodec: clearCodec
+    )
+    try compositor.process(
+        try solidFillMessage(surfaceID: 0, color: [0x01, 0x02, 0x03, 0xFF], rects: [RDPGFXRect16(left: 0, top: 0, right: 64, bottom: 32)]),
+        clearCodec: clearCodec
+    )
+    let refill = try compositor.process(
+        try surfaceToCacheMessage(surfaceID: 0, cacheKey: 3, cacheSlot: 4, sourceRect: RDPGFXRect16(left: 16, top: 0, right: 32, bottom: 16)),
+        clearCodec: clearCodec
+    )
+    #expect(refill == nil)
+    #expect(compositor.takeEvictedDecoderCacheSlots() == [3, 4])
+    #expect(compositor.takeEvictedDecoderCacheSlots().isEmpty)
+    #expect(compositor.decoderCacheSlots.isEmpty)
 }
 
 @Test func compositorCollapsesHeldBackDirtyRectsIntoBoundingBox() throws {
@@ -1843,6 +1965,19 @@ import Testing
             clearCodec: clearCodec
         )
     }
+}
+
+private func fullSurfaceVideo(surfaceID: UInt16, width: UInt16, height: UInt16) -> RDPGraphicsFrameSnapshot {
+    RDPGraphicsFrameSnapshot(
+        frameID: 1,
+        surfaceID: surfaceID,
+        codecID: RDPGFXCodecID.avc420,
+        codecName: "avc420",
+        pixelFormat: RDPGFXPixelFormat.xrgb8888,
+        destinationRect: RDPFrameRect(left: 0, top: 0, right: width, bottom: height),
+        regionRects: [RDPFrameRect(left: 0, top: 0, right: width, bottom: height)],
+        encodedVideoData: Data([0x00, 0x00, 0x01, 0x65])
+    )
 }
 
 private func createSurfaceMessage(

@@ -1019,6 +1019,61 @@ struct MockKRDPServerTests {
         #expect(observed.value.frames.map(\.contentKind) == [.bitmap, .bitmap])
     }
 
+    /// gnome-remote-desktop copies each damage rectangle of its staging surface to the mapped
+    /// one. The mapped surface's decoder gets each frame's video with those rectangles as its
+    /// regions, and nothing paints the copied areas black.
+    @Test func clientRetargetsStagedVideoToItsCopiedDamageRectangles() throws {
+        let observed = Locked(Observed())
+        let report = try runMock(.init(graphicsBehavior: .copyVideoFromStagingSurfacePerDamageRect), {
+            $0.graphicsFrameCaptureLimit = 2
+        }, client: {
+            RDPSessionClient().run(configuration: $0, onGraphicsFrame: { frame in
+                observed.withLock { $0.frames.append(frame) }
+            })
+        }).report
+
+        #expect(report.status == "success")
+        let frames = observed.value.frames
+        #expect(frames.map(\.frameID) == [1, 2])
+        #expect(frames.map(\.surfaceID) == [1, 1])
+        #expect(frames.map(\.contentKind) == [.video, .video])
+        #expect(frames.map(\.regionRects) == [
+            [RDPFrameRect(left: 0, top: 0, right: 64, bottom: 32)],
+            [RDPFrameRect(left: 0, top: 0, right: 16, bottom: 8), RDPFrameRect(left: 32, top: 16, right: 64, bottom: 32)],
+        ])
+    }
+
+    /// Copies of decoded video, through the cache too, go to the decoder in wire order, ahead
+    /// of the bitmap of what the session drew; evictions go with the next copy or frame.
+    @Test func clientHandsCopiesOfDecodedVideoToTheDecoderInOrder() throws {
+        let observed = Locked(Observed())
+        let report = try runMock(.init(graphicsBehavior: .copyDecodedVideoThroughSurfacesAndCache), {
+            $0.graphicsFrameCaptureLimit = 3
+        }, client: {
+            RDPSessionClient().run(configuration: $0, onGraphicsFrame: { frame in
+                observed.withLock { $0.frames.append(frame) }
+            })
+        }).report
+
+        #expect(report.status == "success")
+        let frames = observed.value.frames
+        #expect(frames.map(\.frameID) == [1, 2, 2, 2, 2, 2, 3])
+        #expect(frames.map(\.contentKind) == [.video, .surfaceCopy, .surfaceCopy, .surfaceCopy, .surfaceCopy, .bitmap, .video])
+        #expect(frames.compactMap(\.surfaceCopy).map { [$0.source, $0.destination] } == [
+            [.surface(1), .surface(1)],
+            [.surface(1), .cacheSlot(3)],
+            [.cacheSlot(3), .surface(1)],
+            [.surface(1), .cacheSlot(4)],
+        ])
+        #expect(frames.map(\.evictedCacheSlots) == [[], [], [], [], [3], [], [4]])
+        // The text, and where the decoder's copies of it lack it.
+        #expect(frames.first { $0.contentKind == .bitmap }?.regionRects == [
+            RDPFrameRect(left: 0, top: 0, right: 8, bottom: 8),
+            RDPFrameRect(left: 0, top: 16, right: 8, bottom: 24),
+            RDPFrameRect(left: 48, top: 0, right: 56, bottom: 8),
+        ])
+    }
+
     // MARK: Live sessions
 
     /// An empty frame is acknowledged but delivers no image; with no frame to

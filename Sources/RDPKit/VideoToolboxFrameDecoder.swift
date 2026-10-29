@@ -51,7 +51,7 @@ public final class RDPVideoToolboxFrameDecoder {
         sequenceDecoders.count + avc444Decoders.count
     }
 
-    private func discardSurfaces(_ surfaceIDs: [UInt16]) {
+    func discardSurfaces(_ surfaceIDs: [UInt16]) {
         guard !surfaceIDs.isEmpty else {
             return
         }

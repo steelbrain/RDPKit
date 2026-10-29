@@ -135,6 +135,8 @@ enum MockKRDPGraphicsBehavior: Equatable {
     case sendMultipleVideoUpdatesInFrame
     case sendTwoFramesInOnePayload
     case deleteAndRecreateSurfaceInSecondFrame
+    case copyVideoFromStagingSurfacePerDamageRect
+    case copyDecodedVideoThroughSurfacesAndCache
     case sendMultipleBitmapSurfacesInFrame
     case sendMalformedAVCFrame
     case sendInvalidGraphicsPDU
@@ -2102,6 +2104,10 @@ private enum MockKRDPFixtures {
             ))]
         case .sendMultipleBitmapSurfacesInFrame:
             [graphicsDynamicPacket(segmentedGraphicsData(multipleBitmapSurfacesInFrameMessages()))]
+        case .copyVideoFromStagingSurfacePerDamageRect:
+            [graphicsDynamicPacket(segmentedGraphicsData(stagedVideoFrameMessages()))]
+        case .copyDecodedVideoThroughSurfacesAndCache:
+            [graphicsDynamicPacket(segmentedGraphicsData(decodedVideoCopyFrameMessages()))]
         case .sendMalformedAVCFrame:
             [graphicsDynamicPacket(segmentedGraphicsData(malformedAVCFrameMessages()))]
         case .sendInvalidGraphicsPDU:
@@ -2154,6 +2160,72 @@ private enum MockKRDPFixtures {
             + wireToSurfaceMessage(surfaceID: 1)
             + wireToSurfaceMessage(surfaceID: 2)
             + endFrameMessage(frameID: 11)
+    }
+
+    /// gnome-remote-desktop's: video into unmapped surface 2, then one SurfaceToSurface per
+    /// damage rectangle to mapped surface 1 (blit_surface_to_surface in
+    /// grd-rdp-dvc-graphics-pipeline.c).
+    static func stagedVideoFrameMessages() -> Data {
+        let fullSurface = RDPGFXRect16(left: 0, top: 0, right: MockKRDPConstants.width, bottom: MockKRDPConstants.height)
+        let damage = [
+            RDPGFXRect16(left: 0, top: 0, right: 16, bottom: 8),
+            RDPGFXRect16(left: 32, top: 16, right: 64, bottom: 32),
+        ]
+        var messages = createSurfaceMessage(surfaceID: 1)
+        messages += createSurfaceMessage(surfaceID: 2)
+        messages += mapSurfaceToOutputMessage(surfaceID: 1, x: 0, y: 0)
+        messages += startFrameMessage(frameID: 1)
+        messages += wireToSurfaceMessage(surfaceID: 2)
+        messages += surfaceToSurfaceMessage(sourceSurfaceID: 2, destinationSurfaceID: 1, sourceRect: fullSurface)
+        messages += endFrameMessage(frameID: 1)
+        messages += startFrameMessage(frameID: 2)
+        messages += wireToSurfaceMessage(surfaceID: 2, bitmapData: avc420BitmapStream(regions: damage))
+        for rect in damage {
+            messages += surfaceToSurfaceMessage(sourceSurfaceID: 2, destinationSurfaceID: 1, sourceRect: rect)
+        }
+        messages += endFrameMessage(frameID: 2)
+        return messages
+    }
+
+    /// Video, then text over it, a scroll, and a trip through the cache of what holds both.
+    static func decodedVideoCopyFrameMessages() -> Data {
+        var messages = createSurfaceMessage(surfaceID: 1)
+        messages += mapSurfaceToOutputMessage(surfaceID: 1, x: 0, y: 0)
+        messages += startFrameMessage(frameID: 1)
+        messages += wireToSurfaceMessage(surfaceID: 1)
+        messages += endFrameMessage(frameID: 1)
+        messages += startFrameMessage(frameID: 2)
+        messages += solidFillMessage(
+            surfaceID: 1,
+            color: [0x01, 0x02, 0x03, 0xFF],
+            rects: [RDPGFXRect16(left: 0, top: 0, right: 8, bottom: 8)]
+        )
+        messages += surfaceToSurfaceMessage(
+            sourceSurfaceID: 1,
+            destinationSurfaceID: 1,
+            sourceRect: RDPGFXRect16(left: 0, top: 0, right: 64, bottom: 16),
+            destinationPoint: RDPGFXPoint16(x: 0, y: 16)
+        )
+        messages += surfaceToCacheMessage(
+            surfaceID: 1,
+            cacheKey: 1,
+            cacheSlot: 3,
+            sourceRect: RDPGFXRect16(left: 0, top: 0, right: 16, bottom: 16)
+        )
+        messages += cacheToSurfaceMessage(cacheSlot: 3, surfaceID: 1, points: [RDPGFXPoint16(x: 48, y: 0)])
+        messages += evictCacheEntryMessage(cacheSlot: 3)
+        messages += surfaceToCacheMessage(
+            surfaceID: 1,
+            cacheKey: 2,
+            cacheSlot: 4,
+            sourceRect: RDPGFXRect16(left: 16, top: 0, right: 32, bottom: 16)
+        )
+        messages += evictCacheEntryMessage(cacheSlot: 4)
+        messages += endFrameMessage(frameID: 2)
+        messages += startFrameMessage(frameID: 3)
+        messages += wireToSurfaceMessage(surfaceID: 1)
+        messages += endFrameMessage(frameID: 3)
+        return messages
     }
 
     static func multipleBitmapSurfacesInFrameMessages() -> Data {
@@ -2853,6 +2925,29 @@ private enum MockKRDPFixtures {
         return graphicsMessage(commandID: RDPGFXCommandID.cacheToSurface, payload: payload)
     }
 
+    private static func surfaceToSurfaceMessage(
+        sourceSurfaceID: UInt16,
+        destinationSurfaceID: UInt16,
+        sourceRect: RDPGFXRect16,
+        destinationPoint: RDPGFXPoint16? = nil
+    ) -> Data {
+        let point = destinationPoint ?? RDPGFXPoint16(x: Int16(sourceRect.left), y: Int16(sourceRect.top))
+        var payload = Data()
+        payload.appendLittleEndianUInt16(sourceSurfaceID)
+        payload.appendLittleEndianUInt16(destinationSurfaceID)
+        payload.append(rectangleData(sourceRect))
+        payload.appendLittleEndianUInt16(1)
+        payload.appendLittleEndianUInt16(UInt16(bitPattern: point.x))
+        payload.appendLittleEndianUInt16(UInt16(bitPattern: point.y))
+        return graphicsMessage(commandID: RDPGFXCommandID.surfaceToSurface, payload: payload)
+    }
+
+    private static func evictCacheEntryMessage(cacheSlot: UInt16) -> Data {
+        var payload = Data()
+        payload.appendLittleEndianUInt16(cacheSlot)
+        return graphicsMessage(commandID: RDPGFXCommandID.evictCacheEntry, payload: payload)
+    }
+
     private static func endFrameMessage(frameID: UInt32 = MockKRDPConstants.frameID) -> Data {
         var payload = Data()
         payload.appendLittleEndianUInt32(frameID)
@@ -2875,15 +2970,18 @@ private enum MockKRDPFixtures {
         return encoded
     }
 
-    private static func avc420BitmapStream() -> Data {
+    private static func avc420BitmapStream(
+        regions: [RDPGFXRect16] = [RDPGFXRect16(left: 0, top: 0, right: MockKRDPConstants.width, bottom: MockKRDPConstants.height)]
+    ) -> Data {
         var data = Data()
-        data.appendLittleEndianUInt32(1)
-        data.appendLittleEndianUInt16(0)
-        data.appendLittleEndianUInt16(0)
-        data.appendLittleEndianUInt16(MockKRDPConstants.width)
-        data.appendLittleEndianUInt16(MockKRDPConstants.height)
-        data.appendUInt8(24)
-        data.appendUInt8(90)
+        data.appendLittleEndianUInt32(UInt32(regions.count))
+        for region in regions {
+            data.append(rectangleData(region))
+        }
+        for _ in regions {
+            data.appendUInt8(24)
+            data.appendUInt8(90)
+        }
         data.append(Data([
             0x00, 0x00, 0x00, 0x01, 0x67, 0x64, 0x00, 0x1F,
             0x00, 0x00, 0x01, 0x68, 0xEE, 0x3C, 0x80,

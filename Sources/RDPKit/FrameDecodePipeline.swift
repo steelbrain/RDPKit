@@ -128,6 +128,8 @@ final class RDPDecodedVideoSurfaceCompositor {
     /// Surfaces holding pixels other codecs drew beside their video, as in Windows mixed
     /// mode. Their decoded video is valid only inside each update's regions.
     private var surfacesWithBitmapContent = Set<UInt16>()
+    /// Cache entries the session's surface copies stored here.
+    private var cache: [UInt16: Surface] = [:]
     private var graphicsOutput: Surface?
     private let imageConverter = RDPDecodedImageBufferConverter()
     private let pixelBufferPool = RDPBGRAPixelBufferPool()
@@ -136,12 +138,7 @@ final class RDPDecodedVideoSurfaceCompositor {
         for frame: RDPGraphicsFrameSnapshot,
         decodedImageBuffer: CVImageBuffer
     ) throws -> RDPDecodedFramePresentation {
-        for surfaceID in frame.deletedSurfaceIDs {
-            surfaces[surfaceID] = nil
-            directSurfaces[surfaceID] = nil
-            chromaEnhancedAVC444Surfaces.remove(surfaceID)
-            surfacesWithBitmapContent.remove(surfaceID)
-        }
+        forgetDeletedState(before: frame)
         guard frame.contentKind == .video else {
             if let outputRect = frame.graphicsOutputRect {
                 try materializeDirectGraphicsOutputIfNeeded(
@@ -255,6 +252,134 @@ final class RDPDecodedVideoSurfaceCompositor {
         }
         surfaces[frame.surfaceID] = surface
         return try presentation(from: frame, surface: surface, surfaceRect: surfaceRect)
+    }
+
+    /// Makes a ``RDPGraphicsSurfaceCopy`` among this compositor's surfaces and cache. Returns
+    /// the presentation of a mapped destination surface, and nil for anything else, or when
+    /// the source is one this compositor never got.
+    func presentation(copying frame: RDPGraphicsFrameSnapshot) throws -> RDPDecodedFramePresentation? {
+        forgetDeletedState(before: frame)
+        guard let surfaceCopy = frame.surfaceCopy else {
+            return nil
+        }
+        // Every block copies the source as it was before the copy.
+        var blocks: [(pixels: Surface, destination: RDPFrameRect)] = []
+        for block in surfaceCopy.blocks {
+            guard let pixels = try pixels(of: surfaceCopy.source, in: block.source) else {
+                return nil
+            }
+            blocks.append((pixels, block.destination))
+        }
+        guard case let .surface(surfaceID) = surfaceCopy.destination else {
+            if case let .cacheSlot(slot) = surfaceCopy.destination {
+                cache[slot] = blocks.last?.pixels
+            }
+            return nil
+        }
+
+        if let outputRect = frame.graphicsOutputRect, frame.surfaceRect != nil {
+            try materializeDirectGraphicsOutputIfNeeded(outputRect: outputRect, excludingSurfaceID: surfaceID)
+        }
+        try materializeDirectSurface(surfaceID: surfaceID)
+        var surface = takeSurface(
+            for: surfaceID,
+            width: blocks.map { Int($0.destination.right) }.reduce(Int(frame.surfaceRect?.width ?? 0), max),
+            height: blocks.map { Int($0.destination.bottom) }.reduce(Int(frame.surfaceRect?.height ?? 0), max)
+        )
+        for (pixels, destination) in blocks {
+            copy(
+                source: pixels.data,
+                sourceBytesPerRow: pixels.bytesPerRow,
+                destination: &surface.data,
+                destinationBytesPerRow: surface.bytesPerRow,
+                sourceX: 0,
+                sourceY: 0,
+                destinationX: Int(destination.left),
+                destinationY: Int(destination.top),
+                width: min(pixels.width, Int(destination.width)),
+                height: min(pixels.height, Int(destination.height))
+            )
+        }
+        surfaces[surfaceID] = surface
+        surfacesWithBitmapContent.insert(surfaceID)
+        guard frame.graphicsOutputRect != nil, let surfaceRect = frame.surfaceRect else {
+            return nil
+        }
+        var copied = frame
+        copied.destinationRect = RDPFrameRect(left: 0, top: 0, right: surfaceRect.width, bottom: surfaceRect.height)
+        copied.regionRects = blocks.map(\.destination)
+        return try presentation(from: copied, surface: surface, surfaceRect: surfaceRect)
+    }
+
+    private func forgetDeletedState(before frame: RDPGraphicsFrameSnapshot) {
+        for surfaceID in frame.deletedSurfaceIDs {
+            surfaces[surfaceID] = nil
+            directSurfaces[surfaceID] = nil
+            chromaEnhancedAVC444Surfaces.remove(surfaceID)
+            surfacesWithBitmapContent.remove(surfaceID)
+        }
+        for slot in frame.evictedCacheSlots {
+            cache[slot] = nil
+        }
+    }
+
+    /// A copy of `rect` of a surface or cache entry, or nil when this compositor never got it.
+    private func pixels(of location: RDPGraphicsSurfaceCopy.Location, in rect: RDPFrameRect) throws -> Surface? {
+        let width = Int(rect.width)
+        let height = Int(rect.height)
+        var pixels = Surface(width: width, height: height, bytesPerRow: width * 4, data: Data(count: width * height * 4))
+        switch location {
+        case let .cacheSlot(slot):
+            guard let entry = cache[slot] else {
+                return nil
+            }
+            copyBlock(of: entry, in: rect, to: &pixels)
+        case let .surface(surfaceID):
+            if let directSurface = directSurfaces[surfaceID] {
+                let bounds = CGRect(x: Int(rect.left), y: Int(rect.top), width: width, height: height)
+                    .intersection(CGRect(
+                        x: 0,
+                        y: 0,
+                        width: CVPixelBufferGetWidth(directSurface.imageBuffer),
+                        height: CVPixelBufferGetHeight(directSurface.imageBuffer)
+                    ))
+                guard !bounds.isEmpty else {
+                    return pixels
+                }
+                let converted = try imageConverter.bgraData(from: directSurface.imageBuffer, in: bounds)
+                copyBlock(
+                    of: Surface(width: converted.width, height: converted.height, bytesPerRow: converted.bytesPerRow, data: converted.data),
+                    in: RDPFrameRect(left: 0, top: 0, right: UInt16(converted.width), bottom: UInt16(converted.height)),
+                    to: &pixels
+                )
+            } else if let surface = surfaces[surfaceID] {
+                copyBlock(of: surface, in: rect, to: &pixels)
+            } else {
+                return nil
+            }
+        }
+        return pixels
+    }
+
+    /// Copies the part of `rect` inside `source` to `destination`'s origin.
+    private func copyBlock(of source: Surface, in rect: RDPFrameRect, to destination: inout Surface) {
+        let width = min(Int(rect.right), source.width) - Int(rect.left)
+        let height = min(Int(rect.bottom), source.height) - Int(rect.top)
+        guard width > 0, height > 0 else {
+            return
+        }
+        copy(
+            source: source.data,
+            sourceBytesPerRow: source.bytesPerRow,
+            destination: &destination.data,
+            destinationBytesPerRow: destination.bytesPerRow,
+            sourceX: Int(rect.left),
+            sourceY: Int(rect.top),
+            destinationX: 0,
+            destinationY: 0,
+            width: min(width, destination.width),
+            height: min(height, destination.height)
+        )
     }
 
     private func canPresentDirectly(
@@ -1013,6 +1138,21 @@ public final class RDPFrameDecodeQueue: @unchecked Sendable {
         return autoreleasepool {
             let decodeStartedAt = Date()
             do {
+                if frame.contentKind == .surfaceCopy {
+                    decoder.discardSurfaces(frame.deletedSurfaceIDs)
+                    if let presentation = try videoCompositor.presentation(copying: frame) {
+                        let presentedAt = Date()
+                        onDecoded(presentation, receivedAt, presentedAt, RDPFrameDecodeTiming(
+                            samplePreparationMilliseconds: 0,
+                            videoToolboxMilliseconds: 0,
+                            imageConversionMilliseconds: 0,
+                            totalMilliseconds: presentedAt.timeIntervalSince(decodeStartedAt) * 1000,
+                            decodedPixelFormat: nil,
+                            usesHardwareAcceleration: nil
+                        ))
+                    }
+                    return .decoded
+                }
                 let decodedFrame = try decoder.decodeDetailed(frame)
                 let decodedAt = Date()
                 let presentation = try videoCompositor.presentation(

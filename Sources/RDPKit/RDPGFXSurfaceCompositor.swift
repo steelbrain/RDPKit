@@ -38,7 +38,14 @@ final class RDPGFXSurfaceCompositor {
         var pixelFormat: UInt8
         var data: Data
         var outputMapping: OutputMapping?
+        /// Areas the decoder lacks: their pixels are changed here and not yet in a snapshot.
         var dirtyRects: [RDPGFXRect16] = []
+        /// Areas whose pixels only the decoder holds: video it decoded, or pixels a copy it
+        /// made put there. This surface's own pixels there are stale.
+        var decodedRects: [RDPGFXRect16] = []
+        /// Whether the decoder holds this surface: it gets the updates of a mapped surface,
+        /// and it holds what copies it made put into any surface.
+        var isOnDecoder = false
 
         var bytesPerRow: Int {
             width * 4
@@ -162,52 +169,45 @@ final class RDPGFXSurfaceCompositor {
             }
         }
 
-        /// Records a changed area. Past `maximumDirtyRectCount` rectangles the list collapses into its
-        /// bounding box, which bounds it for surfaces whose updates are held back.
+        /// What a copy of `rect` carries, relative to `rect`: the parts only the decoder holds,
+        /// and, when the decoder holds this surface and so makes the copy itself, the parts
+        /// its copy lacks.
+        func copiedState(of rect: RDPGFXRect16) -> (decoded: [RDPGFXRect16], decoderLacks: [RDPGFXRect16]?) {
+            let decoded = decodedRects.clipped(to: rect).offsetBy(dx: -Int(rect.left), dy: -Int(rect.top))
+            guard isOnDecoder, !decoded.isEmpty else {
+                return (decoded, nil)
+            }
+            return (decoded, dirtyRects.clipped(to: rect).offsetBy(dx: -Int(rect.left), dy: -Int(rect.top)))
+        }
+
+        /// Records an area this surface's pixels changed in. Past `maximumDirtyRectCount`
+        /// rectangles a list collapses into its bounding box, which bounds it for surfaces
+        /// whose updates are held back.
         mutating func markDirty(_ rect: RDPGFXRect16) {
             guard let rect = clipped(rect) else {
                 return
             }
-            dirtyRects.append(rect)
-            collapseDirtyRectsIfNeeded()
+            dirtyRects = (dirtyRects + [rect]).collapsed(beyond: Self.maximumDirtyRectCount)
+            decodedRects = decodedRects.subtracting(rect)
         }
 
-        /// Removes `rect` from the changed area: video wrote it last, and this surface does
-        /// not hold decoded video, so its pixels there must not be painted over the video.
+        /// Records an area video wrote last. Only the decoder holds those pixels, so this
+        /// surface's must not be painted over them.
         mutating func markWrittenByVideo(_ rect: RDPGFXRect16) {
-            var remaining: [RDPGFXRect16] = []
-            for dirty in dirtyRects {
-                guard dirty.left < rect.right, rect.left < dirty.right, dirty.top < rect.bottom, rect.top < dirty.bottom
-                else {
-                    remaining.append(dirty)
-                    continue
-                }
-                let top = max(dirty.top, rect.top)
-                let bottom = min(dirty.bottom, rect.bottom)
-                let pieces = [
-                    RDPGFXRect16(left: dirty.left, top: dirty.top, right: dirty.right, bottom: top),
-                    RDPGFXRect16(left: dirty.left, top: bottom, right: dirty.right, bottom: dirty.bottom),
-                    RDPGFXRect16(left: dirty.left, top: top, right: min(rect.left, dirty.right), bottom: bottom),
-                    RDPGFXRect16(left: max(rect.right, dirty.left), top: top, right: dirty.right, bottom: bottom),
-                ]
-                remaining += pieces.filter { $0.right > $0.left && $0.bottom > $0.top }
-            }
-            dirtyRects = remaining
-            collapseDirtyRectsIfNeeded()
+            dirtyRects = dirtyRects.subtracting(rect).collapsed(beyond: Self.maximumDirtyRectCount)
+            decodedRects = (decodedRects.subtracting(rect) + [rect]).collapsed(beyond: Self.maximumDirtyRectCount)
         }
 
-        private mutating func collapseDirtyRectsIfNeeded() {
-            guard dirtyRects.count > Self.maximumDirtyRectCount, let first = dirtyRects.first else {
-                return
+        /// Records a copy into `rect`, whose `decoded` parts came from areas only the decoder
+        /// holds. When the decoder makes the copy too, it lacks only `decoderLacks` of `rect`;
+        /// otherwise it lacks everything but `decoded`, which neither side holds then.
+        mutating func markCopied(into rect: RDPGFXRect16, decoded: [RDPGFXRect16], decoderLacks: [RDPGFXRect16]?) {
+            dirtyRects = (dirtyRects.subtracting(rect) + (decoderLacks ?? [rect].subtracting(decoded)))
+                .collapsed(beyond: Self.maximumDirtyRectCount)
+            decodedRects = (decodedRects.subtracting(rect) + decoded).collapsed(beyond: Self.maximumDirtyRectCount)
+            if decoderLacks != nil {
+                isOnDecoder = true
             }
-            dirtyRects = [dirtyRects.reduce(first) { bounds, dirtyRect in
-                RDPGFXRect16(
-                    left: min(bounds.left, dirtyRect.left),
-                    top: min(bounds.top, dirtyRect.top),
-                    right: max(bounds.right, dirtyRect.right),
-                    bottom: max(bounds.bottom, dirtyRect.bottom)
-                )
-            }]
         }
     }
 
@@ -215,12 +215,21 @@ final class RDPGFXSurfaceCompositor {
         var width: Int
         var height: Int
         var data: Data
+        /// Like a surface's, in entry coordinates.
+        var decodedRects: [RDPGFXRect16] = []
+        /// When the decoder stored this entry too, the parts its copy lacks.
+        var decoderLacks: [RDPGFXRect16]?
+
+        var rect: RDPFrameRect {
+            RDPFrameRect(left: 0, top: 0, right: UInt16(width), bottom: UInt16(height))
+        }
     }
 
     private var surfaces: [UInt16: Surface] = [:]
     private var cacheSlots: [UInt16: CacheEntry] = [:]
     private var codecContexts: Set<CodecContextKey> = []
     private var cachedByteCount = 0
+    private var evictedDecoderCacheSlots: [UInt16] = []
     private var graphicsOutputRect: RDPFrameRect?
     private let maximumCacheByteCount: Int
     private static let maximumSurfaceByteCount = 1 << 30
@@ -256,7 +265,10 @@ final class RDPGFXSurfaceCompositor {
         self.maximumCacheSlot = maximumCacheSlot
     }
 
-    func process(_ message: RDPGFXHeader, clearCodec: RDPClearCodecDecoder) throws {
+    /// Applies one RDPGFX PDU. Returns the copy the decoder must make itself when the PDU
+    /// copies pixels only the decoder holds.
+    @discardableResult
+    func process(_ message: RDPGFXHeader, clearCodec: RDPClearCodecDecoder) throws -> RDPGraphicsSurfaceCopy? {
         switch message.commandID {
         case RDPGFXCommandID.resetGraphics:
             resetGraphics(try RDPGFXResetGraphicsPDU.parse(from: message))
@@ -277,24 +289,25 @@ final class RDPGFXSurfaceCompositor {
         case RDPGFXCommandID.solidFill:
             try solidFill(RDPGFXSolidFillPDU.parse(from: message))
         case RDPGFXCommandID.surfaceToSurface:
-            try surfaceToSurface(RDPGFXSurfaceToSurfacePDU.parse(from: message))
+            return try surfaceToSurface(RDPGFXSurfaceToSurfacePDU.parse(from: message))
         case RDPGFXCommandID.surfaceToCache:
-            try surfaceToCache(RDPGFXSurfaceToCachePDU.parse(from: message))
+            return try surfaceToCache(RDPGFXSurfaceToCachePDU.parse(from: message))
         case RDPGFXCommandID.cacheToSurface:
-            try cacheToSurface(RDPGFXCacheToSurfacePDU.parse(from: message))
+            return try cacheToSurface(RDPGFXCacheToSurfacePDU.parse(from: message))
         case RDPGFXCommandID.evictCacheEntry:
             try evictCacheEntry(RDPGFXEvictCacheEntryPDU.parse(from: message))
         default:
             break
         }
+        return nil
     }
 
     func makeFrame(frameID: UInt32?) -> RDPGraphicsFrameSnapshot? {
         makeFrames(frameID: frameID).first
     }
 
-    /// Notes that `frame`, a video update or a copy of one, wrote its regions last. The
-    /// compositor does not decode video, so those areas leave its dirty rectangles.
+    /// Notes that `frame`, a video update, wrote its regions last. The compositor does not
+    /// decode video, so only the decoder holds those pixels.
     func noteVideo(_ frame: RDPGraphicsFrameSnapshot) {
         guard let index = surfaces.index(forKey: frame.surfaceID) else {
             return
@@ -371,6 +384,24 @@ final class RDPGFXSurfaceCompositor {
         surfaces.keys.sorted()
     }
 
+    func isOnDecoder(surfaceID: UInt16) -> Bool {
+        surfaces[surfaceID]?.isOnDecoder == true
+    }
+
+    /// Cache slots the decoder stored into, which it drops when the cache is.
+    var decoderCacheSlots: [UInt16] {
+        cacheSlots.filter { $0.value.decoderLacks != nil }.keys.sorted()
+    }
+
+    /// Returns and forgets the decoder's cache slots the server evicted or refilled
+    /// without it since the last call.
+    func takeEvictedDecoderCacheSlots() -> [UInt16] {
+        defer {
+            evictedDecoderCacheSlots = []
+        }
+        return evictedDecoderCacheSlots
+    }
+
     func surfaceRect(surfaceID: UInt16) -> RDPFrameRect? {
         surfaces[surfaceID]?.outputRect
     }
@@ -444,6 +475,7 @@ final class RDPGFXSurfaceCompositor {
     private func mapSurfaceToOutput(_ pdu: RDPGFXMapSurfaceToOutputPDU) throws {
         try modifySurface(pdu.surfaceID) {
             $0.outputMapping = OutputMapping(x: pdu.outputOriginX, y: pdu.outputOriginY)
+            $0.isOnDecoder = true
         }
     }
 
@@ -462,6 +494,7 @@ final class RDPGFXSurfaceCompositor {
                 targetWidth: pdu.targetWidth,
                 targetHeight: pdu.targetHeight
             )
+            $0.isOnDecoder = true
         }
     }
 
@@ -627,54 +660,93 @@ final class RDPGFXSurfaceCompositor {
         }
     }
 
-    private func surfaceToSurface(_ pdu: RDPGFXSurfaceToSurfacePDU) throws {
+    private func surfaceToSurface(_ pdu: RDPGFXSurfaceToSurfacePDU) throws -> RDPGraphicsSurfaceCopy? {
         guard surfaces[pdu.destinationSurfaceID] != nil,
-              let pixels = try surfaces[pdu.sourceSurfaceID]?.pixels(in: pdu.sourceRect)
+              let source = surfaces[pdu.sourceSurfaceID]
         else {
             throw RDPDecodeError.invalidRDPGFXPDU
         }
         // `pixels` is a snapshot of the source, so copies within one surface may overlap.
-        try copy(
+        let pixels = try source.pixels(in: pdu.sourceRect)
+        let (decoded, decoderLacks) = source.copiedState(of: pdu.sourceRect)
+        let rects = try copy(
             pixels,
             width: Int(pdu.sourceRect.width),
             height: Int(pdu.sourceRect.height),
             to: pdu.destinationPoints,
-            surfaceID: pdu.destinationSurfaceID
+            surfaceID: pdu.destinationSurfaceID,
+            decoded: decoded,
+            decoderLacks: decoderLacks
+        )
+        guard decoderLacks != nil else {
+            return nil
+        }
+        return RDPGraphicsSurfaceCopy(
+            source: .surface(pdu.sourceSurfaceID),
+            destination: .surface(pdu.destinationSurfaceID),
+            blocks: rects.map { .init(source: RDPFrameRect(pdu.sourceRect), destination: RDPFrameRect($0)) }
         )
     }
 
-    private func surfaceToCache(_ pdu: RDPGFXSurfaceToCachePDU) throws {
+    private func surfaceToCache(_ pdu: RDPGFXSurfaceToCachePDU) throws -> RDPGraphicsSurfaceCopy? {
         guard pdu.cacheSlot <= maximumCacheSlot,
-              let pixels = try surfaces[pdu.surfaceID]?.pixels(in: pdu.sourceRect)
+              let source = surfaces[pdu.surfaceID]
         else {
             throw RDPDecodeError.invalidRDPGFXPDU
         }
-        let replacedByteCount = cacheSlots[pdu.cacheSlot]?.data.count ?? 0
+        let pixels = try source.pixels(in: pdu.sourceRect)
+        let replaced = cacheSlots[pdu.cacheSlot]
+        let replacedByteCount = replaced?.data.count ?? 0
         guard pixels.count <= maximumCacheByteCount,
               cachedByteCount - replacedByteCount <= maximumCacheByteCount - pixels.count
         else {
             throw RDPDecodeError.invalidRDPGFXPDU
         }
-        cacheSlots[pdu.cacheSlot] = CacheEntry(
+        let (decoded, decoderLacks) = source.copiedState(of: pdu.sourceRect)
+        if replaced?.decoderLacks != nil, decoderLacks == nil {
+            evictedDecoderCacheSlots.append(pdu.cacheSlot)
+        }
+        let entry = CacheEntry(
             width: Int(pdu.sourceRect.width),
             height: Int(pdu.sourceRect.height),
-            data: pixels
+            data: pixels,
+            decodedRects: decoded,
+            decoderLacks: decoderLacks
         )
+        cacheSlots[pdu.cacheSlot] = entry
         cachedByteCount += pixels.count - replacedByteCount
+        guard decoderLacks != nil else {
+            return nil
+        }
+        return RDPGraphicsSurfaceCopy(
+            source: .surface(pdu.surfaceID),
+            destination: .cacheSlot(pdu.cacheSlot),
+            blocks: [.init(source: RDPFrameRect(pdu.sourceRect), destination: entry.rect)]
+        )
     }
 
-    private func cacheToSurface(_ pdu: RDPGFXCacheToSurfacePDU) throws {
+    private func cacheToSurface(_ pdu: RDPGFXCacheToSurfacePDU) throws -> RDPGraphicsSurfaceCopy? {
         guard pdu.cacheSlot <= maximumCacheSlot,
-              let cacheEntry = cacheSlots[pdu.cacheSlot]
+              let entry = cacheSlots[pdu.cacheSlot]
         else {
             throw RDPDecodeError.invalidRDPGFXPDU
         }
-        try copy(
-            cacheEntry.data,
-            width: cacheEntry.width,
-            height: cacheEntry.height,
+        let rects = try copy(
+            entry.data,
+            width: entry.width,
+            height: entry.height,
             to: pdu.destinationPoints,
-            surfaceID: pdu.surfaceID
+            surfaceID: pdu.surfaceID,
+            decoded: entry.decodedRects,
+            decoderLacks: entry.decoderLacks
+        )
+        guard entry.decoderLacks != nil else {
+            return nil
+        }
+        return RDPGraphicsSurfaceCopy(
+            source: .cacheSlot(pdu.cacheSlot),
+            destination: .surface(pdu.surfaceID),
+            blocks: rects.map { .init(source: entry.rect, destination: RDPFrameRect($0)) }
         )
     }
 
@@ -685,29 +757,100 @@ final class RDPGFXSurfaceCompositor {
             throw RDPDecodeError.invalidRDPGFXPDU
         }
         cachedByteCount -= entry.data.count
+        if entry.decoderLacks != nil {
+            evictedDecoderCacheSlots.append(pdu.cacheSlot)
+        }
     }
 
-    /// Copies a packed `width` x `height` BGRA bitmap to each destination point of a surface.
+    /// Copies a packed `width` x `height` BGRA bitmap to each destination point of a surface
+    /// and returns the rectangles written. `decoded` and `decoderLacks` are in bitmap
+    /// coordinates, as `Surface.markCopied` takes them.
     private func copy(
         _ pixels: Data,
         width: Int,
         height: Int,
         to points: [RDPGFXPoint16],
-        surfaceID: UInt16
-    ) throws {
+        surfaceID: UInt16,
+        decoded: [RDPGFXRect16],
+        decoderLacks: [RDPGFXRect16]?
+    ) throws -> [RDPGFXRect16] {
         try modifySurface(surfaceID) { surface in
-            for point in points {
+            try points.map { point in
                 let x = Int(point.x)
                 let y = Int(point.y)
                 try surface.write(pixels, bytesPerRow: width * 4, width: width, height: height, x: x, y: y)
-                surface.markDirty(RDPGFXRect16(
-                    left: UInt16(x),
-                    top: UInt16(y),
-                    right: UInt16(x + width),
-                    bottom: UInt16(y + height)
-                ))
+                let rect = RDPGFXRect16(left: UInt16(x), top: UInt16(y), right: UInt16(x + width), bottom: UInt16(y + height))
+                surface.markCopied(
+                    into: rect,
+                    decoded: decoded.offsetBy(dx: x, dy: y),
+                    decoderLacks: decoderLacks?.offsetBy(dx: x, dy: y)
+                )
+                return rect
             }
         }
+    }
+}
+
+private extension [RDPGFXRect16] {
+    /// These rectangles less `rect`; each one it cuts leaves up to four pieces.
+    func subtracting(_ rect: RDPGFXRect16) -> [RDPGFXRect16] {
+        flatMap { piece -> [RDPGFXRect16] in
+            guard piece.left < rect.right, rect.left < piece.right, piece.top < rect.bottom, rect.top < piece.bottom else {
+                return [piece]
+            }
+            let top = Swift.max(piece.top, rect.top)
+            let bottom = Swift.min(piece.bottom, rect.bottom)
+            return [
+                RDPGFXRect16(left: piece.left, top: piece.top, right: piece.right, bottom: top),
+                RDPGFXRect16(left: piece.left, top: bottom, right: piece.right, bottom: piece.bottom),
+                RDPGFXRect16(left: piece.left, top: top, right: Swift.min(rect.left, piece.right), bottom: bottom),
+                RDPGFXRect16(left: Swift.max(rect.right, piece.left), top: top, right: piece.right, bottom: bottom),
+            ].filter { $0.right > $0.left && $0.bottom > $0.top }
+        }
+    }
+
+    func subtracting(_ rects: [RDPGFXRect16]) -> [RDPGFXRect16] {
+        rects.reduce(self) { $0.subtracting($1) }
+    }
+
+    /// The parts of these rectangles inside `rect`.
+    func clipped(to rect: RDPGFXRect16) -> [RDPGFXRect16] {
+        compactMap { piece in
+            let clipped = RDPGFXRect16(
+                left: Swift.max(piece.left, rect.left),
+                top: Swift.max(piece.top, rect.top),
+                right: Swift.min(piece.right, rect.right),
+                bottom: Swift.min(piece.bottom, rect.bottom)
+            )
+            return clipped.right > clipped.left && clipped.bottom > clipped.top ? clipped : nil
+        }
+    }
+
+    /// These rectangles moved by (`dx`, `dy`), which must keep them in 16-bit coordinates.
+    func offsetBy(dx: Int, dy: Int) -> [RDPGFXRect16] {
+        map {
+            RDPGFXRect16(
+                left: UInt16(Int($0.left) + dx),
+                top: UInt16(Int($0.top) + dy),
+                right: UInt16(Int($0.right) + dx),
+                bottom: UInt16(Int($0.bottom) + dy)
+            )
+        }
+    }
+
+    /// These rectangles, or past `limit` of them their bounding box.
+    func collapsed(beyond limit: Int) -> [RDPGFXRect16] {
+        guard count > limit, let first else {
+            return self
+        }
+        return [dropFirst().reduce(first) { bounds, rect in
+            RDPGFXRect16(
+                left: Swift.min(bounds.left, rect.left),
+                top: Swift.min(bounds.top, rect.top),
+                right: Swift.max(bounds.right, rect.right),
+                bottom: Swift.max(bounds.bottom, rect.bottom)
+            )
+        }]
     }
 }
 
