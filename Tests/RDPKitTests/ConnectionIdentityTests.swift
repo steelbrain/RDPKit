@@ -113,6 +113,31 @@ import Testing
     #expect(lhs.hasSameConnectionIdentity(as: differentAccount) == false)
 }
 
+@Test func connectionIdentityMatchesExactlyWhereItsCredentialAccountNameDoes() {
+    let identities = [
+        RDPConnectionIdentity(host: "server.local", username: "LAB\\anees"),
+        RDPConnectionIdentity(host: "Server.Local", username: "anees", domain: "LAB"),
+        RDPConnectionIdentity(host: "server.local", username: "anees", domain: "lab"),
+        RDPConnectionIdentity(host: "server.local", username: "anees"),
+        RDPConnectionIdentity(host: "server.local", username: "\\anees"),
+        RDPConnectionIdentity(host: "server.local", port: 3390, username: "LAB\\anees"),
+    ]
+    for lhs in identities {
+        for rhs in identities {
+            #expect(lhs.hasSameConnectionIdentity(as: rhs) == (lhs.credentialAccountName == rhs.credentialAccountName))
+        }
+    }
+    // RDPCredentials signs "LAB\anees" with no domain in as "anees" in LAB.
+    #expect(identities[0].hasSameConnectionIdentity(as: identities[1]))
+
+    // Without a user name there is no account name, and the domain still tells them apart.
+    #expect(RDPConnectionIdentity(host: "server.local").hasSameConnectionIdentity(as: RDPConnectionIdentity(host: "Server.Local")))
+    #expect(
+        RDPConnectionIdentity(host: "server.local", domain: "LAB")
+            .hasSameConnectionIdentity(as: RDPConnectionIdentity(host: "server.local")) == false
+    )
+}
+
 @Test func connectionTargetValidatesHostAndPortText() throws {
     let target = try RDPConnectionTarget(host: "  server.local  ", portText: " 3390 ")
 

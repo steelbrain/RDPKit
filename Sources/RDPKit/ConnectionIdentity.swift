@@ -134,11 +134,19 @@ public struct RDPConnectionIdentity: Equatable, Hashable, Sendable {
         return hostAsEntered == credentialAccountName ? [] : [hostAsEntered]
     }
 
+    /// Whether `other` is the same account on the same server, so the two share a saved
+    /// password: exactly when their `credentialAccountName`s match. The user name and domain
+    /// compare as `qualifiedUsername` joins them, so "LAB\anees" with no domain, which
+    /// `RDPCredentials` signs in as "anees" in LAB, is the same account as "anees" in LAB.
+    /// Without a user name, the domains compare.
     public func hasSameConnectionIdentity(as other: RDPConnectionIdentity) -> Bool {
-        normalizedHost == other.normalizedHost
-            && port == other.port
-            && username == other.username
-            && (domain ?? "") == (other.domain ?? "")
+        guard normalizedHost == other.normalizedHost, port == other.port else {
+            return false
+        }
+        guard qualifiedUsername != nil || other.qualifiedUsername != nil else {
+            return (domain ?? "") == (other.domain ?? "")
+        }
+        return qualifiedUsername == other.qualifiedUsername
     }
 
     private var accountPrefix: String {

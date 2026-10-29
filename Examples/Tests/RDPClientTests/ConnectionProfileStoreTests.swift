@@ -137,6 +137,18 @@ private func profile(host: String) -> ConnectionProfile {
     #expect(try store.save(sameIdentity).profiles == [sameIdentity])
 }
 
+/// "LAB\anees" with no domain signs in as "anees" in LAB, under the same saved password.
+@Test func savingTheDomainInTheUsernameReplacesTheProfileWithThatDomain() throws {
+    let store = try ConnectionProfileStore(defaults: makeDefaults())
+    var domainApart = profile(host: "desktop.example")
+    domainApart.domain = "LAB"
+    _ = try store.save(domainApart)
+
+    var domainInUsername = profile(host: "desktop.example")
+    domainInUsername.username = "LAB\\anees"
+    #expect(try store.save(domainInUsername).profiles == [domainInUsername])
+}
+
 @Test func storedDataThatIsNotAProfileListIsReportedAndNeverOverwritten() throws {
     let defaults = try makeDefaults()
     let corrupt = Data("{\"connections\": 3}".utf8)
