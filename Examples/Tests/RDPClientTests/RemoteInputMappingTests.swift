@@ -418,28 +418,36 @@ private func windowsTypes(
     }
 }
 
-/// A Japanese input source gets Windows' Japanese layout on any keyboard, and a JIS keyboard
-/// gets it in place of US English, but keeps other layouts; Japanese goes as a 106/109-key
-/// keyboard, the one its table describes.
-@Test func japaneseInputSourcesAndJISKeyboardsAnnounceTheJapaneseKeyboard() {
+/// Only a Japanese input source on a JIS keyboard that types with US English gets Windows'
+/// Japanese layout, as a 106/109-key keyboard; everything else keeps the input source's
+/// layout, so Command and Control chords reach the server on the keys the Mac puts them on.
+@Test func onlyAJapaneseInputSourceOnAJISKeyboardAnnouncesTheJapaneseKeyboard() {
     let japanese = MacRDPKeyboardLayout.japanese
     let german = RDPKeyboardLayout(rawValue: 0x0000_0407)
+    let french = RDPKeyboardLayout(rawValue: 0x0000_080C)
+    let dvorak = RDPKeyboardLayout(rawValue: 0x0001_0409)
     let korean = RDPKeyboardLayout(rawValue: 0x0000_0412)
     func layout(_ inputSourceLayout: RDPKeyboardLayout, isJapanese: Bool, isJIS: Bool) -> RDPKeyboardLayout {
         MacRDPKeyboardLayout.windowsLayout(inputSourceLayout, isJapaneseInputSource: isJapanese, isJISKeyboard: isJIS)
     }
     #expect(layout(.unitedStates, isJapanese: true, isJIS: true) == japanese)
-    #expect(layout(.unitedStates, isJapanese: true, isJIS: false) == japanese)
-    #expect(layout(german, isJapanese: true, isJIS: false) == japanese)
-    #expect(layout(.unitedStates, isJapanese: false, isJIS: true) == japanese)
-    #expect(layout(german, isJapanese: false, isJIS: true) == german)
+    // A Japanese input method typing with another layout, or on an ANSI or ISO keyboard.
+    for other in [german, french, dvorak] {
+        #expect(layout(other, isJapanese: true, isJIS: true) == other)
+        #expect(layout(other, isJapanese: true, isJIS: false) == other)
+    }
+    #expect(layout(.unitedStates, isJapanese: true, isJIS: false) == .unitedStates)
+    // A JIS keyboard with an input source that is not Japanese.
+    #expect(layout(.unitedStates, isJapanese: false, isJIS: true) == .unitedStates)
     #expect(layout(korean, isJapanese: false, isJIS: true) == korean)
     #expect(layout(.unitedStates, isJapanese: false, isJIS: false) == .unitedStates)
 
     #expect(MacRDPKeyboardLayout.keyboardType(for: japanese) == .japanese)
     #expect(MacRDPKeyboardLayout.keyboardSubType(for: japanese) == 2)
-    #expect(MacRDPKeyboardLayout.keyboardType(for: .unitedStates) == .ibmEnhanced)
-    #expect(MacRDPKeyboardLayout.keyboardSubType(for: korean) == 0)
+    for other in [.unitedStates, german, korean] {
+        #expect(MacRDPKeyboardLayout.keyboardType(for: other) == .ibmEnhanced)
+        #expect(MacRDPKeyboardLayout.keyboardSubType(for: other) == 0)
+    }
 }
 
 /// Apple's Japanese input method counts in every mode, though its Latin mode (英字) reports

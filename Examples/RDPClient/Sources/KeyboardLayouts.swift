@@ -8,8 +8,8 @@ enum MacRDPKeyboardLayout {
     static let japanese = RDPKeyboardLayout(rawValue: 0x0000_0411)
 
     /// The layout of the current input source; an input method such as a CJK IME
-    /// reports the layout it types with. Unknown layouts fall back to US English. Japanese
-    /// input sources and JIS keyboards may get Windows' Japanese layout instead; see
+    /// reports the layout it types with. Unknown layouts fall back to US English. A Japanese
+    /// input source on a JIS keyboard may get Windows' Japanese layout instead; see
     /// `windowsLayout(_:isJapaneseInputSource:isJISKeyboard:)`.
     @MainActor
     static func current() -> RDPKeyboardLayout {
@@ -35,18 +35,26 @@ enum MacRDPKeyboardLayout {
         }
     }
 
-    /// Windows' Japanese layout for a Japanese input source, whatever the keyboard, since the
-    /// server starts its Japanese IME with that layout. On a JIS keyboard it replaces US
-    /// English too (ABC, US, or a layout with no Windows one): macOS types the JIS legends
-    /// with those there, and Windows' Japanese layout types them for the same scancodes,
-    /// while its US layout differs on most punctuation keys and types nothing on Yen and Ro.
-    /// A JIS keyboard keeps any other layout, such as Korean, whose IME needs its own.
+    /// Windows' Japanese layout only for a Japanese input source on a JIS keyboard that types
+    /// with US English (ABC, US): macOS then types the JIS legends, which the Japanese table
+    /// matches scancode for scancode, and the server's Japanese IME gets the keys. Any other
+    /// case announces the input source's own layout, for two reasons:
+    /// - Command and Control chords always go as scancodes, which the server reads with the
+    ///   announced layout, so one the Mac does not type with moves shortcuts: with Japanese,
+    ///   German Ctrl-Z would arrive as Ctrl-Y, and US Ctrl-` as Hankaku/Zenkaku (0x29).
+    /// - The server may keep its own layout. Windows kept a reconnected session's, and
+    ///   gnome-remote-desktop and KRdp use their own keymaps (live, 2026-10-29). There, a key
+    ///   sent as its scancode because the Japanese table matched types that layout's
+    ///   character instead (Shift-2 types "@" on US), a risk taken only where the IME needs it.
+    ///
+    /// Under kbd106, Shift-英数 is Caps Lock, so Shift-Eisu toggles the server's Caps Lock out
+    /// of step with the Mac's until focus or Caps Lock synchronizes them again.
     static func windowsLayout(
         _ inputSourceLayout: RDPKeyboardLayout,
         isJapaneseInputSource: Bool,
         isJISKeyboard: Bool
     ) -> RDPKeyboardLayout {
-        if isJapaneseInputSource || (isJISKeyboard && inputSourceLayout == .unitedStates) {
+        if isJapaneseInputSource, isJISKeyboard, inputSourceLayout == .unitedStates {
             return japanese
         }
         return inputSourceLayout
@@ -61,8 +69,9 @@ enum MacRDPKeyboardLayout {
     }
 
     /// The Japanese table is what Windows types with a 106/109-key keyboard (kbd106.dll), so
-    /// the server is told that keyboard: type 7, subtype 2, as Windows identifies one (subtype
-    /// 0 is the 101-key kbd101.dll). Function keys stay at RDPKit's default of 12.
+    /// the server is told that keyboard: type 7, subtype 2, which Windows 11's registry maps
+    /// to kbd106.dll (subtype 0 to the 101-key kbd101.dll; live, 2026-10-29). Function keys
+    /// stay at RDPKit's default of 12.
     static func keyboardType(for layout: RDPKeyboardLayout) -> RDPKeyboardType {
         layout == japanese ? .japanese : .ibmEnhanced
     }
