@@ -211,7 +211,10 @@ let report = client.run(
 - Remote pointer shapes, system pointers, and pointer-cache updates, with
   `RDPRemotePointerBitmap` to turn a shape into premultiplied RGBA or a
   `CGImage` and a hot spot for a native cursor
-- Display control channel support for resize and monitor layout updates
+- Display control channel support for resize and multi-monitor layouts
+  (`RDPMonitorLayout`), checked against the server's capabilities
+- Connect-time multi-monitor layouts in Client Monitor Data and Client Monitor
+  Extended Data, and the server's Monitor Layout PDU in the report
 - Connect-time desktop and device scale factors and physical size, for servers
   without display control
 - HiDPI-aware display scale models for Apple clients
