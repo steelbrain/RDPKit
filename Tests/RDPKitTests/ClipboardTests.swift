@@ -1129,6 +1129,70 @@ private final class ClipboardPublishRace: @unchecked Sendable {
     }
 }
 
+/// A copy every format asked for of which fails brings nothing, so it is reported like one of
+/// no format the session fetches, unless a newer copy, local or remote, came first. A rich
+/// copy some formats of which arrive still arrives without the rest.
+@Test func clipboardSessionReportsARemoteCopyWhoseFetchFailed() throws {
+    let textCopy = RDPClipboardFormatListPDU(entries: [
+        RDPClipboardFormatListEntry(formatID: RDPClipboardFormatID.unicodeText),
+    ]).encoded()
+    let fileCopy = RDPClipboardFormatListPDU(entries: [
+        RDPClipboardFormatListEntry(formatID: 0xC0A3, formatName: "FileGroupDescriptorW"),
+    ]).encoded()
+    let richCopy = RDPClipboardFormatListPDU(entries: [
+        RDPClipboardFormatListEntry(formatID: RDPClipboardFormatID.unicodeText),
+        RDPClipboardFormatListEntry(formatID: 0xC0A1, formatName: "HTML Format"),
+        RDPClipboardFormatListEntry(formatID: RDPClipboardFormatID.dib),
+    ]).encoded()
+    let failure = RDPClipboardFormatDataResponsePDU.failure().encoded()
+    let unavailable = RDPClipboardEvent.remoteCopyUnavailable(isEmpty: false)
+
+    for requestsRichFormats in [false, true] {
+        let channel = EmbeddedChannel()
+        let session = RDPClipboardSession(
+            userChannelID: 1006,
+            staticChannelID: 1007,
+            channel: channel,
+            requestsRichFormats: requestsRichFormats
+        )
+        func receive(_ data: Data) throws -> RDPClipboardEvent? {
+            try session.receive(RDPClipboardPDU.parse(from: data))
+        }
+        _ = try receive(RDPClipboardCapabilitiesPDU().encoded())
+        _ = try session.receive(RDPClipboardPDU(messageType: RDPClipboardMessageType.monitorReady))
+
+        for copy in [textCopy, fileCopy] {
+            #expect(try receive(copy) == nil)
+            #expect(try receive(failure) == unavailable)
+        }
+
+        // A newer remote copy, or a local one, replaced the copy whose fetch failed.
+        _ = try receive(textCopy)
+        _ = try receive(textCopy)
+        #expect(try receive(failure) == nil)
+        #expect(try receive(failure) == unavailable)
+        _ = try receive(textCopy)
+        session.publishLocalUnicodeText("local")
+        #expect(try receive(failure) == nil)
+
+        guard requestsRichFormats else {
+            _ = try channel.finish()
+            continue
+        }
+        _ = try receive(richCopy)
+        #expect(try receive(failure) == nil)
+        #expect(try receive(failure) == nil)
+        #expect(try receive(failure) == unavailable)
+        _ = try receive(richCopy)
+        #expect(try receive(failure) == nil)
+        #expect(try receive(RDPClipboardFormatDataResponsePDU(ok: true, data: RDPClipboardHTML.encoded("<b>hi</b>")).encoded()) == nil)
+        #expect(try receive(failure) == .content(RDPClipboardContent(
+            html: "<html><body><!--StartFragment--><b>hi</b><!--EndFragment--></body></html>"
+        )))
+        _ = try channel.finish()
+    }
+}
+
 /// A client that does not share its clipboard still joins cliprdr, so it can start sharing
 /// later; until then it asks the server for nothing.
 @Test func clipboardSessionFetchesNoRemoteCopyWhileFetchingIsOff() throws {

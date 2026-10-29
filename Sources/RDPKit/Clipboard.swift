@@ -1135,13 +1135,17 @@ public final class RDPClipboardSession: @unchecked Sendable {
             return nil
         }
         let answered = slot.response
+        // A copy none of which comes is reported as one of no format this session fetches.
+        let unavailable = RDPClipboardEvent.remoteCopyUnavailable(isEmpty: false)
+        // A text-only copy and a file list ask for one format: when it fails, nothing comes.
         switch answered {
         case .unicodeText where !requestsRichFormats:
-            return response.ok ? try event(.text(response.decodedUnicodeText()), ifStillCurrent: slot) : nil
+            return try event(response.ok ? .text(response.decodedUnicodeText()) : unavailable, ifStillCurrent: slot)
         case .fileGroupDescriptorW:
-            return response.ok
-                ? try event(.fileGroupDescriptor(response.decodedFileGroupDescriptorW()), ifStillCurrent: slot)
-                : nil
+            return try event(
+                response.ok ? .fileGroupDescriptor(response.decodedFileGroupDescriptorW()) : unavailable,
+                ifStillCurrent: slot
+            )
         default:
             break
         }
@@ -1168,10 +1172,11 @@ public final class RDPClipboardSession: @unchecked Sendable {
                     break
                 }
             }
-            guard completesCopy, !remoteContent.isEmpty else {
+            guard completesCopy else {
                 return nil
             }
-            return .content(remoteContent)
+            // Every format failed or came back empty: none of the copy comes.
+            return remoteContent.isEmpty ? unavailable : .content(remoteContent)
         }
     }
 
@@ -1512,7 +1517,8 @@ enum RDPClipboardEvent: Equatable, Sendable {
     case content(RDPClipboardContent)
     case fileGroupDescriptor(RDPClipboardFileGroupDescriptorW)
     /// A remote copy none of which is fetched: the server's clipboard was emptied, or holds
-    /// only formats this session does not fetch.
+    /// only formats this session does not fetch, or every format asked for of it failed or
+    /// came back empty.
     case remoteCopyUnavailable(isEmpty: Bool)
     case fileContents(RDPClipboardFileContentsResponse)
 }
