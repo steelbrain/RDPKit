@@ -999,10 +999,14 @@ public final class RDPClipboardSession: @unchecked Sendable {
         publish(content.isEmpty ? .empty : .content(content))
     }
 
-    /// Offers `files` under names Windows accepts: characters it forbids become "_", a device
-    /// name such as CON or NUL.txt gets a leading "_", trailing dots and spaces go, a name cut
-    /// to cFileName's 259 UTF-16 code units keeps its extension, and a name used before,
-    /// ignoring case, gets "-2", "-3" and so on.
+    /// Offers `files` under names Windows accepts. A name is a path relative to where the
+    /// server pastes: `\` or `/` separates its folders, so a directory "Folder" can hold
+    /// "Folder\notes.txt", and empty, "." and ".." components are dropped. In each component,
+    /// characters Windows forbids become "_", a device name such as CON or NUL.txt gets a
+    /// leading "_", trailing dots and spaces go, and one over 255 UTF-16 code units is cut
+    /// before its extension. A path over cFileName's 259 has its last component cut further,
+    /// or when its folders leave no room, goes to the top level under that component alone.
+    /// A path used before, ignoring case, gets "-2", "-3" and so on in its last component.
     public func publishLocalFiles(_ files: [RDPClipboardLocalFile]) {
         publish(files.isEmpty ? .empty : .files(RDPClipboardLocalFile.withWindowsFileNames(files)))
     }

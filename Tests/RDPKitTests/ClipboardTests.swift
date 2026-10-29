@@ -1212,20 +1212,55 @@ private final class ClipboardPublishRace: @unchecked Sendable {
         "a:b*c?d\"e<f>g|h\\i/j.txt",
         "tab\tline\nfeed.txt",
         "CON", "nul.txt", "Com1.tar.gz", "LPT\u{B9}.txt", "aux .log", "CONSOLE.txt", "COM10.txt",
+        "conin$", "CONOUT$.log", "Conin$ .txt", "CONIN.txt", "CONOUT$X.txt",
         "report. . ", "...", " ",
         "Notes.txt", "notes.txt", "NOTES.TXT", "notes.txt.",
     ])
 
     #expect(names == [
-        "a_b_c_d_e_f_g_h_i_j.txt",
+        // "\" and "/" separate folders; see clipboardLocalFilesKeepTheirFolders.
+        "a_b_c_d_e_f_g_h\\i\\j.txt",
         "tab_line_feed.txt",
         "_CON", "_nul.txt", "_Com1.tar.gz", "_LPT\u{B9}.txt", "_aux .log", "CONSOLE.txt", "COM10.txt",
+        "_conin$", "_CONOUT$.log", "_Conin$ .txt", "CONIN.txt", "CONOUT$X.txt",
         "report", "file", "file-2",
         "Notes.txt", "notes-2.txt", "NOTES-3.TXT", "notes-4.txt",
     ])
 }
 
-/// cFileName holds 259 UTF-16 code units; a longer name is shortened before its extension.
+/// A file in a folder goes out as a path relative to where the server pastes, as the shell's
+/// FILEGROUPDESCRIPTORW carries it, so Windows recreates the folder around it. Each component
+/// is made valid on its own, and a clash is numbered in the last one.
+@Test func clipboardLocalFilesKeepTheirFolders() throws {
+    let names = try fileNamesTheServerSees(publishing: [
+        RDPClipboardLocalFile(fileName: "Folder", contents: Data(), fileAttributes: RDPClipboardFileAttributes.directory),
+        RDPClipboardLocalFile(fileName: "Folder\\inner.txt", contents: Data([1])),
+        RDPClipboardLocalFile(fileName: "Folder/Sub:dir. /CON.txt", contents: Data([1])),
+        RDPClipboardLocalFile(fileName: "\\Folder\\.\\..\\\\notes.txt\\", contents: Data([1])),
+        RDPClipboardLocalFile(fileName: "FOLDER\\INNER.TXT", contents: Data([1])),
+        RDPClipboardLocalFile(fileName: "Other\\inner.txt", contents: Data([1])),
+        RDPClipboardLocalFile(fileName: "inner.txt", contents: Data([1])),
+        RDPClipboardLocalFile(fileName: "folder", contents: Data([1])),
+        RDPClipboardLocalFile(fileName: "Folder\\..", contents: Data([1])),
+        RDPClipboardLocalFile(fileName: "/./ \\", contents: Data([1])),
+    ])
+
+    #expect(names == [
+        "Folder",
+        "Folder\\inner.txt",
+        "Folder\\Sub_dir\\_CON.txt",
+        "Folder\\notes.txt",
+        "FOLDER\\INNER-2.TXT",
+        "Other\\inner.txt",
+        "inner.txt",
+        "folder-2",
+        "Folder-3",
+        "file",
+    ])
+}
+
+/// A component holds 255 UTF-16 code units on NTFS; a longer one is shortened before its
+/// extension.
 @Test func clipboardLongLocalFileNamesKeepTheirExtension() throws {
     let longName = String(repeating: "a", count: 300) + ".txt"
     let emojiName = String(repeating: "\u{1F600}", count: 200) + ".pdf"
@@ -1233,27 +1268,69 @@ private final class ClipboardPublishRace: @unchecked Sendable {
         longName,
         longName,
         emojiName,
-        String(repeating: "b", count: 258) + " " + String(repeating: "b", count: 5),
-        "CONSOLE." + String(repeating: "x", count: 255),
+        String(repeating: "b", count: 254) + " " + String(repeating: "b", count: 5),
+        "CONSOLE." + String(repeating: "x", count: 251),
+        String(repeating: "c", count: 300) + "\\" + longName,
     ])
 
-    #expect(names[0] == String(repeating: "a", count: 255) + ".txt")
-    #expect(names[1] == String(repeating: "a", count: 253) + "-2.txt")
-    #expect(names[2] == String(repeating: "\u{1F600}", count: 127) + ".pdf")
+    #expect(names[0] == String(repeating: "a", count: 251) + ".txt")
+    #expect(names[1] == String(repeating: "a", count: 249) + "-2.txt")
+    #expect(names[2] == String(repeating: "\u{1F600}", count: 125) + ".pdf")
     // A cut that ends in a space drops it, as Windows would.
-    #expect(names[3] == String(repeating: "b", count: 258))
+    #expect(names[3] == String(repeating: "b", count: 254))
     // Cut to "CON" before its extension, the name gets a leading "_" and is cut again.
-    #expect(names[4] == "_CO." + String(repeating: "x", count: 255))
+    #expect(names[4] == "_CO." + String(repeating: "x", count: 251))
+    // A folder cut to 255 leaves its file 3 code units of cFileName, too few for ".txt", so
+    // the file goes to the top level.
+    #expect(names[5] == String(repeating: "a", count: 249) + "-3.txt")
+    #expect(names.allSatisfy { $0.utf16.count <= 255 })
+}
+
+/// cFileName holds 259 UTF-16 code units: a longer path has its last component shortened
+/// before the extension. Folders that leave no room for the extension, a number and one
+/// character before them send the file to the top level under its own name.
+@Test func clipboardLongLocalFilePathsFitTheFileDescriptor() throws {
+    let folder = String(repeating: "f", count: 200)
+    let fullFolder = String(repeating: "g", count: 250)
+    let deepFolder = Array(repeating: String(repeating: "d", count: 100), count: 3).joined(separator: "/")
+    let crowdedFolder = String(repeating: "h", count: 251)
+    let names = try fileNamesTheServerSees(publishing: [
+        folder + "\\" + String(repeating: "r", count: 100) + ".txt",
+        folder + "\\" + String(repeating: "r", count: 100) + ".txt",
+        fullFolder + "\\report.txt",
+        fullFolder + "\\report.txt",
+        fullFolder + "\\report.docx",
+        deepFolder + "/report.txt",
+        String(repeating: "e", count: 250) + "\\" + String(repeating: "\u{1F600}", count: 4),
+    ] + Array(repeating: crowdedFolder + "\\report.txt", count: 10))
+
+    #expect(names == [
+        folder + "\\" + String(repeating: "r", count: 54) + ".txt",
+        folder + "\\" + String(repeating: "r", count: 52) + "-2.txt",
+        fullFolder + "\\repo.txt",
+        fullFolder + "\\re-2.txt",
+        fullFolder + "\\rep.docx",
+        "report.txt",
+        String(repeating: "e", count: 250) + "\\" + String(repeating: "\u{1F600}", count: 4),
+        crowdedFolder + "\\rep.txt",
+    ] + (2 ... 9).map { crowdedFolder + "\\r-\($0).txt" } + [
+        // "-10.txt" leaves no room in the folder.
+        "report-2.txt",
+    ])
     #expect(names.allSatisfy { $0.utf16.count <= 259 })
 }
 
 /// Publishes local files named `fileNames` and returns the names the session's
 /// FileGroupDescriptorW gives the server.
 private func fileNamesTheServerSees(publishing fileNames: [String]) throws -> [String] {
+    try fileNamesTheServerSees(publishing: fileNames.map { RDPClipboardLocalFile(fileName: $0, contents: Data([1])) })
+}
+
+private func fileNamesTheServerSees(publishing files: [RDPClipboardLocalFile]) throws -> [String] {
     let channel = EmbeddedChannel()
     try channel.connect(to: SocketAddress(ipAddress: "127.0.0.1", port: 3389)).wait()
     let session = RDPClipboardSession(userChannelID: 1006, staticChannelID: 1007, channel: channel)
-    session.publishLocalFiles(fileNames.map { RDPClipboardLocalFile(fileName: $0, contents: Data([1])) })
+    session.publishLocalFiles(files)
     _ = try session.receive(RDPClipboardPDU.parse(
         from: RDPClipboardFormatDataRequestPDU(formatID: RDPClipboardLocalFormatID.fileGroupDescriptorW).encoded()
     ))
