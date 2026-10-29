@@ -1323,9 +1323,13 @@ public final class RDPClipboardSession: @unchecked Sendable {
         ).encoded())
     }
 
+    /// The Format List makes this client the Shared Clipboard Owner (MS-RDPECLIP 1.3.2.2.1), so
+    /// the remote copy being fetched is retired: the answer to the request that has gone out is
+    /// still matched to it and dropped, and the rest are never asked for.
     private func publish(_ content: RDPClipboardLocalContent) {
         lock.lock()
         defer { lock.unlock() }
+        replaceRemoteCopy(with: [])
         localContent = content
         if hasAnsweredMonitorReady {
             sendFormatList(for: content)

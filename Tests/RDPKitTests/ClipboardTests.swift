@@ -1018,6 +1018,59 @@ private final class ClipboardPublishRace: @unchecked Sendable {
     _ = try channel.finish()
 }
 
+/// A local copy sent while a remote copy is being fetched replaces that copy on the server, so
+/// the answer already asked for is dropped and the rest of the copy is not asked for.
+@Test func clipboardSessionDropsARemoteCopyALocalCopyReplaced() throws {
+    let textCopy = RDPClipboardFormatListPDU(entries: [
+        RDPClipboardFormatListEntry(formatID: RDPClipboardFormatID.unicodeText),
+    ]).encoded()
+    let fileCopy = RDPClipboardFormatListPDU(entries: [
+        RDPClipboardFormatListEntry(formatID: 0xC0A3, formatName: "FileGroupDescriptorW"),
+    ]).encoded()
+    let richCopy = RDPClipboardFormatListPDU(entries: [
+        RDPClipboardFormatListEntry(formatID: RDPClipboardFormatID.unicodeText),
+        RDPClipboardFormatListEntry(formatID: 0xC0A1, formatName: "HTML Format"),
+    ]).encoded()
+    let fileList = RDPClipboardFormatDataResponsePDU.fileGroupDescriptorW(RDPClipboardFileGroupDescriptorW(descriptors: [
+        fileDescriptor(fileSize: 1, fileName: "remote.txt"),
+    ])).encoded()
+
+    for requestsRichFormats in [false, true] {
+        let channel = EmbeddedChannel()
+        let sent = ClipboardSentMessages()
+        let session = RDPClipboardSession(
+            userChannelID: 1006,
+            staticChannelID: 1007,
+            channel: channel,
+            requestsRichFormats: requestsRichFormats,
+            sentMessageHandler: sent.record
+        )
+        _ = try session.receive(RDPClipboardPDU.parse(from: RDPClipboardCapabilitiesPDU().encoded()))
+        _ = try session.receive(RDPClipboardPDU(messageType: RDPClipboardMessageType.monitorReady))
+
+        _ = try session.receive(RDPClipboardPDU.parse(from: textCopy))
+        session.publishLocalUnicodeText("local")
+        #expect(try session.receive(RDPClipboardPDU.parse(from: RDPClipboardFormatDataResponsePDU.unicodeText("old").encoded())) == nil)
+
+        _ = try session.receive(RDPClipboardPDU.parse(from: fileCopy))
+        session.publishLocalUnicodeText(nil)
+        #expect(try session.receive(RDPClipboardPDU.parse(from: fileList)) == nil)
+
+        _ = try session.receive(RDPClipboardPDU.parse(from: richCopy))
+        session.publishLocalContent(RDPClipboardContent(text: "local"))
+        #expect(session.outstandingFormatDataRequests == [.unicodeText])
+        #expect(try session.receive(RDPClipboardPDU.parse(from: RDPClipboardFormatDataResponsePDU.unicodeText("old").encoded())) == nil)
+        #expect(session.outstandingFormatDataRequests.isEmpty)
+
+        // The server's next copy is fetched as usual.
+        _ = try session.receive(RDPClipboardPDU.parse(from: textCopy))
+        #expect(try session.receive(RDPClipboardPDU.parse(from: RDPClipboardFormatDataResponsePDU.unicodeText("new").encoded()))
+            == (requestsRichFormats ? .content(RDPClipboardContent(text: "new")) : .text("new")))
+        #expect(try sentFormatDataRequestIDs(sent) == [13, 0xC0A3, 13, 13])
+        _ = try channel.finish()
+    }
+}
+
 /// A client that does not share its clipboard still joins cliprdr, so it can start sharing
 /// later; until then it asks the server for nothing.
 @Test func clipboardSessionFetchesNoRemoteCopyWhileFetchingIsOff() throws {
