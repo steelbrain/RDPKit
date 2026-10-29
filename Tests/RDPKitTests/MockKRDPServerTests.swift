@@ -201,6 +201,60 @@ struct MockKRDPServerTests {
         #expect(core[8 ..< 12] == hexData("00 20 e0 01"))
     }
 
+    /// A monitor layout goes out as Client Monitor Data and Client Monitor Extended Data, the
+    /// desktop its bounding box ([MS-RDPBCGR] 2.2.1.3.6, 2.2.1.3.9), and the Monitor Layout PDU
+    /// the server answers with reaches the report (2.2.12.1).
+    @Test func clientSendsItsMonitorLayoutAndRecordsTheServers() throws {
+        let layout = try RDPMonitorLayout(monitors: [
+            .singlePrimary(width: 1920, height: 1080),
+            RDPDisplayControlMonitorLayout(
+                left: -1280,
+                top: 120,
+                width: 1280,
+                height: 1024,
+                physicalWidth: 380,
+                physicalHeight: 300,
+                desktopScaleFactor: 150,
+                deviceScaleFactor: 140
+            ),
+        ])
+        let run = try runMock(.init(licensingBehavior: .validClientThenMonitorLayoutThenDemandActive)) {
+            $0.monitorLayout = layout
+        }
+        let blocks = run.transcript.clientDataBlocks
+        try #require(blocks.count == 7)
+
+        #expect(run.report.status == "success")
+        #expect(blocks.map { $0.littleEndianUInt16(at: 0) } == [0xC001, 0xC004, 0xC002, 0xC003, 0xC005, 0xC008, 0xC006])
+        #expect(blocks[0][8 ..< 12] == hexData("80 0c 78 04"))
+        #expect(blocks[0].littleEndianUInt16(at: 144) == 0x01EF)
+        #expect(blocks[4] == hexData("""
+        05 c0 34 00
+        00 00 00 00 02 00 00 00
+        00 00 00 00 00 00 00 00 7f 07 00 00 37 04 00 00 01 00 00 00
+        00 fb ff ff 78 00 00 00 ff ff ff ff 77 04 00 00 00 00 00 00
+        """))
+        #expect(blocks[5] == hexData("""
+        08 c0 38 00
+        00 00 00 00 14 00 00 00 02 00 00 00
+        00 00 00 00 00 00 00 00 00 00 00 00 64 00 00 00 64 00 00 00
+        7c 01 00 00 2c 01 00 00 00 00 00 00 96 00 00 00 8c 00 00 00
+        """))
+        #expect(run.report.rdpMonitorLayout == [
+            RDPRemoteMonitor(rect: RDPFrameRect(left: 1280, top: 0, right: 3200, bottom: 1080), isPrimary: true),
+            RDPRemoteMonitor(rect: RDPFrameRect(left: 0, top: 120, right: 1280, bottom: 1144), isPrimary: false),
+        ])
+    }
+
+    /// Without a monitor layout the client sends the blocks it always sent.
+    @Test func clientSendsNoMonitorDataWithoutALayout() throws {
+        let run = try runMock()
+
+        #expect(run.report.status == "success")
+        #expect(run.transcript.clientDataBlocks.map { $0.littleEndianUInt16(at: 0) } == [0xC001, 0xC004, 0xC002, 0xC003, 0xC006])
+        #expect(run.report.rdpMonitorLayout == nil)
+    }
+
     /// The auto-reconnect cookie ends the Client Info PDU ([MS-RDPBCGR] 2.2.1.11.1.1.1). A wire
     /// transcript records the client's PDUs, and so its cookie, by length only.
     @Test func clientSendsItsAutoReconnectCookie() throws {

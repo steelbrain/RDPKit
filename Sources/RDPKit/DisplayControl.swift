@@ -314,9 +314,11 @@ public enum RDPMonitorLayoutError: Error, Equatable, CustomStringConvertible, Se
     }
 }
 
-/// The monitors of a remote desktop, which ``RDPDisplayControlSession`` asks the server for
-/// ([MS-RDPEDISP] 2.2.2.2). A monitor's left and top are pixels from the primary monitor's
-/// top-left, so one left of or above it has negative ones.
+/// The monitors of a remote desktop: what ``RDPDisplayControlSession`` asks the server for
+/// ([MS-RDPEDISP] 2.2.2.2), and what a connection can start with
+/// (``RDPConnectionConfiguration/monitorLayout``, [MS-RDPBCGR] 2.2.1.3.6). A monitor's left and
+/// top are pixels from the primary monitor's top-left, so one left of or above it has negative
+/// ones.
 public struct RDPMonitorLayout: Equatable, Sendable {
     /// The most Client Monitor Data and ResetGraphics hold ([MS-RDPBCGR] 2.2.1.3.6,
     /// [MS-RDPEGFX] 2.2.2.14).

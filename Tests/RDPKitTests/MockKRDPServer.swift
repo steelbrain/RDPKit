@@ -217,6 +217,9 @@ enum MockKRDPAutoDetectBehavior {
 enum MockKRDPLicensingBehavior {
     case validClientThenDemandActive
     case validClientThenDemandActiveWithMonitorLayout
+    /// A Monitor Layout PDU before the Demand Active, as [MS-RDPBCGR] 1.3.1.1 orders them,
+    /// with the monitors of the client's Client Monitor Data.
+    case validClientThenMonitorLayoutThenDemandActive
     case demandActiveOnly
     case serverLicenseRequest
     case serverLicenseRequestWithStoredClientLicense
@@ -312,6 +315,8 @@ struct MockKRDPServerTranscript: Equatable, Sendable {
     var clientInfo: Data?
     /// The ClientMachineName of a Client New License Request, without its terminator.
     var licenseMachineName: String?
+    /// The MCS Connect Initial's client data blocks, headers included, in the order sent.
+    var clientDataBlocks: [Data] = []
 }
 
 private enum MockKRDPConstants {
@@ -770,7 +775,8 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
             throw MockKRDPServerError.invalidClientPDU
 
         case .mcsConnectInitial:
-            _ = try X224DataTPDU.unwrap(packet)
+            let clientDataBlocks = try MockKRDPFixtures.clientDataBlocks(fromConnectInitial: packet)
+            transcript.withLock { $0.clientDataBlocks = clientDataBlocks }
             write(
                 MockKRDPFixtures.mcsConnectResponse(
                     clipboardEnabled: clipboardEnabled,
@@ -966,6 +972,16 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
             if options.licensingBehavior == .validClientThenDemandActiveWithMonitorLayout {
                 write(MockKRDPFixtures.monitorLayout(), context: context)
             }
+            stage = .confirmActive
+        case .validClientThenMonitorLayoutThenDemandActive:
+            guard let clientMonitorData = transcript.value.clientDataBlocks.first(where: {
+                $0.littleEndianUInt16(at: 0) == 0xC005
+            }) else {
+                throw MockKRDPServerError.invalidClientPDU
+            }
+            write(MockKRDPFixtures.licenseValidClient(), context: context)
+            write(MockKRDPFixtures.monitorLayout(echoing: clientMonitorData), context: context)
+            write(MockKRDPFixtures.demandActive(), context: context)
             stage = .confirmActive
         case .demandActiveOnly:
             write(MockKRDPFixtures.demandActive(), context: context)
@@ -1782,6 +1798,37 @@ private enum MockKRDPFixtures {
         payload.appendLittleEndianUInt32(719)
         payload.appendLittleEndianUInt32(0x0000_0001)
         return shareDataPacket(pduType2: 0x37, payload: payload, pduSource: 0)
+    }
+
+    /// A Monitor Layout PDU with the monitors of a CS_MONITOR block, whose monitorCount and
+    /// monitorDefArray follow its header and flags ([MS-RDPBCGR] 2.2.1.3.6, 2.2.12.1).
+    static func monitorLayout(echoing clientMonitorData: Data) -> Data {
+        shareDataPacket(pduType2: 0x37, payload: Data(clientMonitorData.dropFirst(8)), pduSource: 0)
+    }
+
+    /// The client data blocks of an MCS Connect Initial, headers included ([MS-RDPBCGR] 2.2.1.3).
+    static func clientDataBlocks(fromConnectInitial packet: Data) throws -> [Data] {
+        let payload = try X224DataTPDU.unwrap(packet)
+        guard let key = payload.range(of: Data("Duca".utf8)) else {
+            throw MockKRDPServerError.invalidClientPDU
+        }
+        var cursor = ByteCursor(payload[key.upperBound...])
+        let userDataLength = try cursor.readPERLength()
+        var userData = try ByteCursor(cursor.readData(count: userDataLength))
+        var blocks: [Data] = []
+        while userData.remaining > 0 {
+            let type = try userData.readLittleEndianUInt16()
+            let length = try userData.readLittleEndianUInt16()
+            guard length >= 4 else {
+                throw MockKRDPServerError.invalidClientPDU
+            }
+            var block = Data()
+            block.appendLittleEndianUInt16(type)
+            block.appendLittleEndianUInt16(length)
+            try block.append(userData.readData(count: Int(length) - 4))
+            blocks.append(block)
+        }
+        return blocks
     }
 
     static func saveSessionInfo() -> Data {

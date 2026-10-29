@@ -65,6 +65,11 @@ public struct RDPConnectionReport: Encodable, Equatable, Sendable {
     public var rdpAutoReconnectCookie: RDPAutoReconnectCookie?
     public var rdpPostLicensingResponseHex: String?
     public var rdpPostLicensingResponseType: String?
+    /// The monitors of the server's latest Monitor Layout PDU ([MS-RDPBCGR] 2.2.12.1), where
+    /// they are in the desktop as a frame's ``RDPGraphicsFrameSnapshot/monitors`` are in the
+    /// graphics output. Servers send one to a client that sent a
+    /// ``RDPConnectionConfiguration/monitorLayout``.
+    public var rdpMonitorLayout: [RDPRemoteMonitor]?
     public var rdpDemandActiveShareID: UInt32?
     public var rdpDemandActiveCapabilitySets: [RDPCapabilitySetSummary]?
     public var rdpConfirmActiveRequestHex: String?
@@ -167,6 +172,7 @@ public struct RDPConnectionReport: Encodable, Equatable, Sendable {
         rdpAutoReconnectCookie: RDPAutoReconnectCookie? = nil,
         rdpPostLicensingResponseHex: String? = nil,
         rdpPostLicensingResponseType: String? = nil,
+        rdpMonitorLayout: [RDPRemoteMonitor]? = nil,
         rdpDemandActiveShareID: UInt32? = nil,
         rdpDemandActiveCapabilitySets: [RDPCapabilitySetSummary]? = nil,
         rdpConfirmActiveRequestHex: String? = nil,
@@ -266,6 +272,7 @@ public struct RDPConnectionReport: Encodable, Equatable, Sendable {
         self.rdpAutoReconnectCookie = rdpAutoReconnectCookie
         self.rdpPostLicensingResponseHex = rdpPostLicensingResponseHex
         self.rdpPostLicensingResponseType = rdpPostLicensingResponseType
+        self.rdpMonitorLayout = rdpMonitorLayout
         self.rdpDemandActiveShareID = rdpDemandActiveShareID
         self.rdpDemandActiveCapabilitySets = rdpDemandActiveCapabilitySets
         self.rdpConfirmActiveRequestHex = rdpConfirmActiveRequestHex

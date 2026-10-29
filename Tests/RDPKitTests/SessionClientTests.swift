@@ -97,6 +97,29 @@ import Testing
     #expect(kept.physicalSize == RDPDisplayPhysicalSize(widthMillimeters: 600, heightMillimeters: 340))
 }
 
+/// A monitor layout wider or taller than the 8192 pixels Client Core Data's desktop holds is
+/// dropped, by the initializer or, when set after it, before the connection sends it; and none
+/// goes to a server that does not accept extended client data blocks ([MS-RDPBCGR] 2.2.1.3).
+@Test func connectionConfigurationSendsOnlyAMonitorLayoutClientCoreDataHolds() throws {
+    let layout = try RDPMonitorLayout(monitors: [
+        .singlePrimary(width: 3840, height: 2160),
+        RDPDisplayControlMonitorLayout(left: 3840, width: 3840, height: 2160),
+    ])
+    let wide = try RDPMonitorLayout(monitors: layout.monitors + [
+        RDPDisplayControlMonitorLayout(left: -3840, width: 3840, height: 2160),
+    ])
+    var configuration = RDPConnectionConfiguration(host: "example.test", monitorLayout: layout)
+
+    #expect(RDPConnectionConfiguration(host: "example.test").monitorLayout == nil)
+    #expect(RDPConnectionConfiguration(host: "example.test", monitorLayout: wide).monitorLayout == nil)
+    #expect(configuration.monitorLayout == layout)
+    #expect(configuration.connectionMonitorLayout(extendedClientDataSupported: true) == layout)
+    #expect(configuration.connectionMonitorLayout(extendedClientDataSupported: false) == nil)
+
+    configuration.monitorLayout = wide
+    #expect(configuration.connectionMonitorLayout(extendedClientDataSupported: true) == nil)
+}
+
 /// Client Core Data holds 15 UTF-16 code units before its terminator ([MS-RDPBCGR] 2.2.1.3.2);
 /// licensing and rdpdr send the same name. A name set after init is made valid for the
 /// connection too.

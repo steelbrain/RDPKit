@@ -7,6 +7,8 @@ extension RDPClientConnection {
     func connectChannels() throws {
         stage = .channelConnection
         resetSessionRecord()
+        let extendedClientDataSupported = (report.negotiationFlags ?? 0)
+            & RDPNegotiationResponseFlags.extendedClientDataSupported != 0
         // Checked as the configuration's initializer checks them: they can be set after it.
         let desktopSize = RDPConnectionConfiguration.validDesktopSize(
             width: configuration.desktopWidth,
@@ -21,10 +23,12 @@ extension RDPClientConnection {
             selectedProtocol: selectedProtocols,
             requestedProtocols: configuration.negotiationRequest.requestedProtocols,
             channels: configuration.staticVirtualChannels,
-            advertiseMessageChannel: (report.negotiationFlags ?? 0)
-                & RDPNegotiationResponseFlags.extendedClientDataSupported != 0,
+            advertiseMessageChannel: extendedClientDataSupported,
             redirectedSessionID: configuration.redirectionSessionID,
-            keyboard: configuration.clientKeyboard
+            keyboard: configuration.clientKeyboard,
+            monitorLayout: configuration.connectionMonitorLayout(
+                extendedClientDataSupported: extendedClientDataSupported
+            )
         )
         // The desktop is the one asked for until a Demand Active sets one.
         resizeDesktop(width: mcsConfiguration.desktopWidth, height: mcsConfiguration.desktopHeight)

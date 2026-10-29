@@ -113,8 +113,9 @@ extension [RDPFrameRect] {
     }
 }
 
-/// A monitor of the remote desktop, from the server's monitor layout ([MS-RDPEGFX] 2.2.2.14).
-/// A client shows one monitor by drawing only its rectangle of the graphics output.
+/// A monitor of the remote desktop, from the server's monitor layout ([MS-RDPEGFX] 2.2.2.14,
+/// [MS-RDPBCGR] 2.2.12.1). A client shows one monitor by drawing only its rectangle of the
+/// graphics output.
 public struct RDPRemoteMonitor: Encodable, Equatable, Sendable {
     /// Where the monitor is in the graphics output.
     public var rect: RDPFrameRect

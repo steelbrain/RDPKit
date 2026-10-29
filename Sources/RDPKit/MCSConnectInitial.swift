@@ -51,6 +51,7 @@ private enum ClientEarlyCapabilityFlags {
     static let supportStatusInfoPDU: UInt16 = 0x0004
     static let strongAsymmetricKeys: UInt16 = 0x0008
     static let validConnectionType: UInt16 = 0x0020
+    static let supportMonitorLayoutPDU: UInt16 = 0x0040
     static let supportNetworkAutoDetect: UInt16 = 0x0080
     static let supportDynamicVirtualChannelGraphics: UInt16 = 0x0100
     static let base: UInt16 = supportErrorInfoPDU
@@ -64,6 +65,10 @@ private enum ClientEarlyCapabilityFlags {
         var flags = base
         if configuration.channels.contains(where: { $0.name == RDPStaticVirtualChannel.drdynvc.name }) {
             flags |= supportDynamicVirtualChannelGraphics
+        }
+        // The client records the Monitor Layout PDU ([MS-RDPBCGR] 2.2.12.1) a server then sends.
+        if configuration.monitorLayout != nil {
+            flags |= supportMonitorLayoutPDU
         }
         return flags
     }
@@ -101,7 +106,13 @@ struct MCSConnectInitialConfiguration: Equatable, Sendable {
     var advertiseMessageChannel: Bool
     var redirectedSessionID: UInt32?
     var keyboard: RDPClientKeyboard
+    /// The monitors for Client Monitor Data and Client Monitor Extended Data, extended client
+    /// data blocks a server takes only with EXTENDED_CLIENT_DATA_SUPPORTED ([MS-RDPBCGR] 2.2.1.3).
+    var monitorLayout: RDPMonitorLayout?
 
+    /// With `monitorLayout`, the desktop is its bounding box, which must fit the 8192 x 8192
+    /// pixels Client Core Data holds ([MS-RDPBCGR] 2.2.1.3.2); `desktopWidth` and `desktopHeight`
+    /// go unused.
     init(
         desktopWidth: UInt16 = 1280,
         desktopHeight: UInt16 = 720,
@@ -113,15 +124,22 @@ struct MCSConnectInitialConfiguration: Equatable, Sendable {
         channels: [RDPStaticVirtualChannel] = [.drdynvc],
         advertiseMessageChannel: Bool = false,
         redirectedSessionID: UInt32? = nil,
-        keyboard: RDPClientKeyboard = RDPClientKeyboard()
+        keyboard: RDPClientKeyboard = RDPClientKeyboard(),
+        monitorLayout: RDPMonitorLayout? = nil
     ) {
         precondition(!channels.isEmpty)
         precondition(channels.count <= 31)
         precondition(Set(channels.map(\.name)).count == channels.count)
         precondition(requestedProtocols.canSelect(selectedProtocol))
 
-        self.desktopWidth = desktopWidth
-        self.desktopHeight = desktopHeight
+        if let monitorLayout {
+            precondition(monitorLayout.desktopWidth <= 8192 && monitorLayout.desktopHeight <= 8192)
+            self.desktopWidth = UInt16(monitorLayout.desktopWidth)
+            self.desktopHeight = UInt16(monitorLayout.desktopHeight)
+        } else {
+            self.desktopWidth = desktopWidth
+            self.desktopHeight = desktopHeight
+        }
         self.scaleFactors = scaleFactors
         self.physicalSize = physicalSize
         self.clientName = clientName
@@ -131,6 +149,7 @@ struct MCSConnectInitialConfiguration: Equatable, Sendable {
         self.advertiseMessageChannel = advertiseMessageChannel
         self.redirectedSessionID = redirectedSessionID
         self.keyboard = keyboard
+        self.monitorLayout = monitorLayout
     }
 }
 
@@ -191,12 +210,17 @@ struct MCSConnectInitialPDU: Equatable, Sendable {
     }
 
     func encodedClientDataBlocks() -> Data {
-        // GCC user data blocks: core, cluster, security, network, optional message.
+        // GCC user data blocks: core, cluster, security, network, optional monitor, monitor
+        // extended and message. Servers tell them apart by type ([MS-RDPBCGR] 2.2.1.3.1).
         var data = Data()
         data.append(encodedClientCoreData())
         data.append(encodedClientClusterData())
         data.append(encodedClientSecurityData())
         data.append(encodedClientNetworkData())
+        if let monitorLayout = configuration.monitorLayout {
+            data.append(encodedClientMonitorData(monitorLayout))
+            data.append(encodedClientMonitorExtendedData(monitorLayout))
+        }
         if configuration.advertiseMessageChannel {
             data.append(encodedClientMessageChannelData())
         }
@@ -273,6 +297,36 @@ struct MCSConnectInitialPDU: Equatable, Sendable {
         var body = Data()
         body.appendLittleEndianUInt32(0)
         return userDataBlock(type: 0xC006, body: body)
+    }
+
+    /// TS_UD_CS_MONITOR ([MS-RDPBCGR] 2.2.1.3.6): a TS_MONITOR_DEF for each monitor, right and
+    /// bottom inclusive, in pixels from the primary monitor's top-left.
+    func encodedClientMonitorData(_ layout: RDPMonitorLayout) -> Data {
+        var body = Data()
+        body.appendLittleEndianUInt32(0) // flags: unused
+        body.appendLittleEndianUInt32(UInt32(layout.monitors.count))
+        for monitor in layout.monitors {
+            body.append(RDPMonitorDefinition(monitor).encoded())
+        }
+        return userDataBlock(type: 0xC005, body: body)
+    }
+
+    /// TS_UD_CS_MONITOR_EX ([MS-RDPBCGR] 2.2.1.3.9): a TS_MONITOR_ATTRIBUTES for each monitor,
+    /// in Client Monitor Data's order. Servers ignore a physical size under 10 mm, such as 0
+    /// for none.
+    func encodedClientMonitorExtendedData(_ layout: RDPMonitorLayout) -> Data {
+        var body = Data()
+        body.appendLittleEndianUInt32(0) // flags: unused
+        body.appendLittleEndianUInt32(20) // monitorAttributeSize
+        body.appendLittleEndianUInt32(UInt32(layout.monitors.count))
+        for monitor in layout.monitors {
+            body.appendLittleEndianUInt32(monitor.physicalWidth)
+            body.appendLittleEndianUInt32(monitor.physicalHeight)
+            body.appendLittleEndianUInt32(monitor.orientation)
+            body.appendLittleEndianUInt32(monitor.desktopScaleFactor)
+            body.appendLittleEndianUInt32(monitor.deviceScaleFactor)
+        }
+        return userDataBlock(type: 0xC008, body: body)
     }
 
     private func userDataBlock(type: UInt16, body: Data) -> Data {

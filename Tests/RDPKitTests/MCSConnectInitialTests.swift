@@ -287,6 +287,84 @@ import Testing
     ])))
 }
 
+/// A primary monitor with one left of it, lower down, so the second has a negative left.
+private func twoMonitorLayout() throws -> RDPMonitorLayout {
+    try RDPMonitorLayout(monitors: [
+        .singlePrimary(width: 1920, height: 1080),
+        RDPDisplayControlMonitorLayout(
+            left: -1280,
+            top: 120,
+            width: 1280,
+            height: 1024,
+            physicalWidth: 380,
+            physicalHeight: 300,
+            orientation: 90,
+            desktopScaleFactor: 150,
+            deviceScaleFactor: 140
+        ),
+    ])
+}
+
+/// MS-RDPBCGR 2.2.1.3.6: CS_MONITOR (0xC005), flags 0, monitorCount, then a TS_MONITOR_DEF for
+/// each monitor with right and bottom inclusive and TS_MONITOR_PRIMARY on the primary one.
+@Test func clientMonitorDataDefinesEachMonitor() throws {
+    #expect(try MCSConnectInitialPDU().encodedClientMonitorData(twoMonitorLayout()) == hexData("""
+    05 c0 34 00
+    00 00 00 00 02 00 00 00
+    00 00 00 00 00 00 00 00 7f 07 00 00 37 04 00 00 01 00 00 00
+    00 fb ff ff 78 00 00 00 ff ff ff ff 77 04 00 00 00 00 00 00
+    """))
+}
+
+/// MS-RDPBCGR 2.2.1.3.9: CS_MONITOR_EX (0xC008), flags 0, monitorAttributeSize 20,
+/// monitorCount, then each monitor's physical size, orientation and scale factors.
+@Test func clientMonitorExtendedDataCarriesEachMonitorsAttributes() throws {
+    #expect(try MCSConnectInitialPDU().encodedClientMonitorExtendedData(twoMonitorLayout()) == hexData("""
+    08 c0 38 00
+    00 00 00 00 14 00 00 00 02 00 00 00
+    00 00 00 00 00 00 00 00 00 00 00 00 64 00 00 00 64 00 00 00
+    7c 01 00 00 2c 01 00 00 5a 00 00 00 96 00 00 00 8c 00 00 00
+    """))
+}
+
+/// With a monitor layout the desktop is its bounding box, and the client says it reads the
+/// Monitor Layout PDU (RNS_UD_CS_SUPPORT_MONITOR_LAYOUT_PDU, MS-RDPBCGR 2.2.1.3.2). Nothing
+/// else in the Client Core Data moves.
+@Test func clientCoreDataWithMonitorsRequestsTheirBoundingBox() throws {
+    let defaultCore = MCSConnectInitialPDU().encodedClientCoreData()
+    let core = try MCSConnectInitialPDU(configuration: MCSConnectInitialConfiguration(
+        desktopWidth: 1440,
+        desktopHeight: 900,
+        monitorLayout: twoMonitorLayout()
+    )).encodedClientCoreData()
+
+    #expect(core[8 ..< 12] == hexData("80 0c 78 04"))
+    #expect(core.littleEndianUInt16(at: 144) == 0x01EF)
+    #expect(core[..<8] == defaultCore[..<8])
+    #expect(core[12 ..< 144] == defaultCore[12 ..< 144])
+    #expect(core[146...] == defaultCore[146...])
+}
+
+/// The monitor blocks follow the network block and go before the message channel's.
+@Test func clientDataBlocksCarryTheMonitorLayout() throws {
+    let blocks = try MCSConnectInitialPDU(configuration: MCSConnectInitialConfiguration(
+        advertiseMessageChannel: true,
+        monitorLayout: twoMonitorLayout()
+    )).encodedClientDataBlocks()
+
+    #expect(blockTypes(in: blocks) == [0xC001, 0xC004, 0xC002, 0xC003, 0xC005, 0xC008, 0xC006])
+}
+
+/// Without a layout nothing changes: no monitor blocks, and no Monitor Layout PDU flag.
+@Test func clientDataBlocksWithoutAMonitorLayoutAreUnchanged() {
+    let blocks = MCSConnectInitialPDU(configuration: MCSConnectInitialConfiguration(
+        advertiseMessageChannel: true
+    )).encodedClientDataBlocks()
+
+    #expect(blockTypes(in: blocks) == [0xC001, 0xC004, 0xC002, 0xC003, 0xC006])
+    #expect(blocks.littleEndianUInt16(at: 144) == 0x01AF)
+}
+
 private func blockTypes(in data: Data) -> [UInt16] {
     var offset = 0
     var types: [UInt16] = []

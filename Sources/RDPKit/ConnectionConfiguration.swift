@@ -16,6 +16,13 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
     /// The desktop's physical size, sent with the scale factors; nil, or a size servers
     /// ignore (under 10 mm or over 10,000 mm), sends none.
     public var physicalSize: RDPDisplayPhysicalSize?
+    /// The monitors the session starts with; nil starts one of desktopWidth x desktopHeight.
+    /// They go in Client Monitor Data and Client Monitor Extended Data ([MS-RDPBCGR] 2.2.1.3.6,
+    /// 2.2.1.3.9), and the desktop is their bounding box. A server that does not accept extended
+    /// client data blocks gets neither, and the session starts as without a layout. One wider
+    /// or taller than the 8192 pixels Client Core Data's desktop holds is dropped; Display
+    /// Control can ask for it once the session runs.
+    public var monitorLayout: RDPMonitorLayout?
     /// Joins cliprdr. Joining sends the Format List [MS-RDPECLIP] 1.3.2.1 requires at startup, of
     /// what the client has published, empty until it publishes; Windows 11 takes that as the
     /// client's copy and empties the server's clipboard (observed live; gnome-remote-desktop 51
@@ -63,6 +70,7 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
         desktopHeight: UInt16 = 720,
         scaleFactors: RDPDisplayScaleFactors = RDPDisplayScaleFactors(desktopScaleFactor: 100, deviceScaleFactor: 100),
         physicalSize: RDPDisplayPhysicalSize? = nil,
+        monitorLayout: RDPMonitorLayout? = nil,
         clipboardEnabled: Bool = true,
         audioPlaybackEnabled: Bool = false,
         earlyUserAuthorizationEnabled: Bool = false,
@@ -86,6 +94,7 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
         (self.desktopWidth, self.desktopHeight) = Self.validDesktopSize(width: desktopWidth, height: desktopHeight)
         self.scaleFactors = scaleFactors.clamped
         self.physicalSize = physicalSize?.isValid == true ? physicalSize : nil
+        self.monitorLayout = Self.validMonitorLayout(monitorLayout)
         self.clipboardEnabled = clipboardEnabled
         self.audioPlaybackEnabled = audioPlaybackEnabled
         self.earlyUserAuthorizationEnabled = earlyUserAuthorizationEnabled
@@ -114,6 +123,7 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
         desktopSize: RDPDesktopSize,
         scaleFactors: RDPDisplayScaleFactors = RDPDisplayScaleFactors(desktopScaleFactor: 100, deviceScaleFactor: 100),
         physicalSize: RDPDisplayPhysicalSize? = nil,
+        monitorLayout: RDPMonitorLayout? = nil,
         clipboardEnabled: Bool = true,
         audioPlaybackEnabled: Bool = false,
         earlyUserAuthorizationEnabled: Bool = false,
@@ -139,6 +149,7 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
             desktopHeight: desktopSize.height,
             scaleFactors: scaleFactors,
             physicalSize: physicalSize,
+            monitorLayout: monitorLayout,
             clipboardEnabled: clipboardEnabled,
             audioPlaybackEnabled: audioPlaybackEnabled,
             earlyUserAuthorizationEnabled: earlyUserAuthorizationEnabled,
@@ -190,6 +201,22 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
     /// desktopHeight.
     static func validDesktopSize(width: UInt16, height: UInt16) -> (width: UInt16, height: UInt16) {
         (min(8192, max(640, width)), min(8192, max(480, height)))
+    }
+
+    /// `layout` when Client Core Data's desktop, at most 8192 x 8192 pixels, holds its bounding
+    /// box ([MS-RDPBCGR] 2.2.1.3.2).
+    static func validMonitorLayout(_ layout: RDPMonitorLayout?) -> RDPMonitorLayout? {
+        guard let layout, layout.desktopWidth <= 8192, layout.desktopHeight <= 8192 else {
+            return nil
+        }
+        return layout
+    }
+
+    /// The monitor layout to send at connect: none to a server that does not accept extended
+    /// client data blocks ([MS-RDPBCGR] 2.2.1.3), and none that the initializer would drop,
+    /// since it can be set after it.
+    func connectionMonitorLayout(extendedClientDataSupported: Bool) -> RDPMonitorLayout? {
+        extendedClientDataSupported ? Self.validMonitorLayout(monitorLayout) : nil
     }
 
     var clientKeyboard: RDPClientKeyboard {

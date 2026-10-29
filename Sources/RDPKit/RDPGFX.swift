@@ -302,6 +302,16 @@ struct RDPMonitorDefinition: Equatable, Sendable {
             flags: cursor.readLittleEndianUInt32()
         )
     }
+
+    func encoded() -> Data {
+        var data = Data()
+        data.appendLittleEndianUInt32(UInt32(bitPattern: left))
+        data.appendLittleEndianUInt32(UInt32(bitPattern: top))
+        data.appendLittleEndianUInt32(UInt32(bitPattern: right))
+        data.appendLittleEndianUInt32(UInt32(bitPattern: bottom))
+        data.appendLittleEndianUInt32(flags)
+        return data
+    }
 }
 
 struct RDPGFXResetGraphicsPDU: Equatable, Sendable {
@@ -312,32 +322,9 @@ struct RDPGFXResetGraphicsPDU: Equatable, Sendable {
     var height: UInt32
     var monitors: [RDPMonitorDefinition]
 
-    /// The monitors where they are in the graphics output, in the server's order. The output
-    /// holds the desktop from the smallest left and top of any monitor. Each monitor is
-    /// clipped to the output, and one with nothing in it is left out: KRdp 6.8 sends right
-    /// and bottom exclusive (Fixtures/krdp-negotiation-transcript.json, sequence 39: monitor
-    /// (0,0)-(3840,2400) in a 3840x2400 output), which clipping reads as the whole output.
+    /// The monitors where they are in the graphics output, in the server's order.
     var outputMonitors: [RDPRemoteMonitor] {
-        guard let originX = monitors.map(\.left).min(),
-              let originY = monitors.map(\.top).min()
-        else {
-            return []
-        }
-        func outputCoordinate(_ value: Int, origin: Int32, limit: UInt32) -> UInt16 {
-            UInt16(min(max(value - Int(origin), 0), Int(limit)))
-        }
-        return monitors.compactMap { monitor in
-            let rect = RDPFrameRect(
-                left: outputCoordinate(Int(monitor.left), origin: originX, limit: width),
-                top: outputCoordinate(Int(monitor.top), origin: originY, limit: height),
-                right: outputCoordinate(Int(monitor.right) + 1, origin: originX, limit: width),
-                bottom: outputCoordinate(Int(monitor.bottom) + 1, origin: originY, limit: height)
-            )
-            guard rect.width > 0, rect.height > 0 else {
-                return nil
-            }
-            return RDPRemoteMonitor(rect: rect, isPrimary: monitor.flags & RDPMonitorDefinition.primary != 0)
-        }
+        monitors.outputMonitors(width: width, height: height)
     }
 
     /// The PDU is always 340 bytes long; padding follows monitorDefArray.
@@ -360,6 +347,66 @@ struct RDPGFXResetGraphicsPDU: Equatable, Sendable {
         }
         let monitors = try (0 ..< monitorCount).map { _ in try RDPMonitorDefinition.parse(&cursor) }
         return RDPGFXResetGraphicsPDU(width: width, height: height, monitors: monitors)
+    }
+}
+
+extension RDPMonitorDefinition {
+    /// A monitor of an ``RDPMonitorLayout``, whose bounds keep every coordinate in range.
+    init(_ monitor: RDPDisplayControlMonitorLayout) {
+        self.init(
+            left: monitor.left,
+            top: monitor.top,
+            right: monitor.left + Int32(monitor.width) - 1,
+            bottom: monitor.top + Int32(monitor.height) - 1,
+            flags: monitor.isPrimary ? Self.primary : 0
+        )
+    }
+}
+
+extension [RDPMonitorDefinition] {
+    /// The monitors where they are in a graphics output of `width` x `height`, in the server's
+    /// order. The output holds the desktop from the smallest left and top of any monitor. Each
+    /// monitor is clipped to the output, and one with nothing in it is left out: KRdp 6.8 sends
+    /// right and bottom exclusive (Fixtures/krdp-negotiation-transcript.json, sequence 39:
+    /// monitor (0,0)-(3840,2400) in a 3840x2400 output), which clipping reads as the whole
+    /// output.
+    func outputMonitors(width: UInt32, height: UInt32) -> [RDPRemoteMonitor] {
+        guard let originX = map(\.left).min(),
+              let originY = map(\.top).min()
+        else {
+            return []
+        }
+        func outputCoordinate(_ value: Int, origin: Int32, limit: UInt32) -> UInt16 {
+            UInt16(Swift.min(Swift.max(value - Int(origin), 0), Int(limit)))
+        }
+        return compactMap { monitor in
+            let rect = RDPFrameRect(
+                left: outputCoordinate(Int(monitor.left), origin: originX, limit: width),
+                top: outputCoordinate(Int(monitor.top), origin: originY, limit: height),
+                right: outputCoordinate(Int(monitor.right) + 1, origin: originX, limit: width),
+                bottom: outputCoordinate(Int(monitor.bottom) + 1, origin: originY, limit: height)
+            )
+            guard rect.width > 0, rect.height > 0 else {
+                return nil
+            }
+            return RDPRemoteMonitor(rect: rect, isPrimary: monitor.flags & RDPMonitorDefinition.primary != 0)
+        }
+    }
+
+    /// The monitors where they are in their bounding box, as an output of the desktop's size
+    /// holds them; one larger than ResetGraphics describes is cut to that.
+    var boundingBoxMonitors: [RDPRemoteMonitor] {
+        guard let left = map(\.left).min(),
+              let top = map(\.top).min(),
+              let right = map(\.right).max(),
+              let bottom = map(\.bottom).max()
+        else {
+            return []
+        }
+        func dimension(_ start: Int32, _ inclusiveEnd: Int32) -> UInt32 {
+            UInt32(Swift.min(Swift.max(Int(inclusiveEnd) + 1 - Int(start), 0), Int(RDPGFXResetGraphicsPDU.maximumDimension)))
+        }
+        return outputMonitors(width: dimension(left, right), height: dimension(top, bottom))
     }
 }
 

@@ -175,6 +175,9 @@ extension RDPClientConnection {
         if let cookie = shareData.saveSessionInfo?.autoReconnectPacket {
             report.rdpAutoReconnectCookie = cookie
         }
+        if let monitors = shareData.monitorLayout {
+            report.rdpMonitorLayout = monitors.boundingBoxMonitors
+        }
         if let update = shareData.graphicsUpdate {
             try handleSlowPathGraphics(update, packet: packet)
         }

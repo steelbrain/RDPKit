@@ -269,6 +269,7 @@ struct RDPShareDataPDU: Equatable, Sendable {
         case pointer(RDPServerPointerUpdate)
         case malformedPointer(RDPDecodeError)
         case saveSessionInfo(RDPSaveSessionInfoPDU)
+        case monitorLayout([RDPMonitorDefinition])
     }
 
     var channelID: UInt16
@@ -280,7 +281,7 @@ struct RDPShareDataPDU: Equatable, Sendable {
     var compressedType: UInt8
     var compressedLength: UInt16
     var payload: Data
-    /// Decoded Update, Pointer or Save Session Info payload.
+    /// Decoded Update, Pointer, Save Session Info or Monitor Layout payload.
     private(set) var content: Content?
 
     var typeName: String {
@@ -413,6 +414,14 @@ struct RDPShareDataPDU: Equatable, Sendable {
         return payload.littleEndianUInt32(at: 0)
     }
 
+    /// The monitors of a Monitor Layout PDU ([MS-RDPBCGR] 2.2.12.1).
+    var monitorLayout: [RDPMonitorDefinition]? {
+        guard case let .monitorLayout(monitors) = content else {
+            return nil
+        }
+        return monitors
+    }
+
     var controlAction: UInt16? {
         guard pduType2 == 0x14, payload.count >= 2 else {
             return nil
@@ -517,6 +526,11 @@ struct RDPShareDataPDU: Equatable, Sendable {
         case 0x26:
             // The client only stores Save Session Info, so a malformed one is ignored.
             return (try? RDPSaveSessionInfoPDU.parsePayload(payload)).map { .saveSessionInfo($0) }
+        case 0x37:
+            // validateMonitorLayoutPayloadIfPresent checked the count against the length.
+            var cursor = ByteCursor(payload)
+            let monitorCount = try cursor.readLittleEndianUInt32()
+            return try .monitorLayout((0 ..< monitorCount).map { _ in try RDPMonitorDefinition.parse(&cursor) })
         default:
             return nil
         }

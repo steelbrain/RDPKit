@@ -292,6 +292,29 @@ import Testing
     #expect(pdu.monitorLayoutMonitorCount == 1)
 }
 
+/// MS-RDPBCGR 2.2.12.1: TS_MONITOR_DEFs in desktop coordinates, which put the primary monitor at
+/// 0,0; in their bounding box a monitor left of it comes first.
+@Test func shareDataParsesMonitorLayoutMonitors() throws {
+    let pdu = try #require(try RDPShareDataPDU.parseIfPresent(fromTPKT: shareDataPacket(
+        type: 0x37,
+        pduSource: 0,
+        payload: hexData("""
+        02 00 00 00
+        00 00 00 00 00 00 00 00 7f 07 00 00 37 04 00 00 01 00 00 00
+        00 fb ff ff 78 00 00 00 ff ff ff ff 77 04 00 00 00 00 00 00
+        """)
+    )))
+
+    #expect(pdu.monitorLayout == [
+        RDPMonitorDefinition(left: 0, top: 0, right: 1919, bottom: 1079, flags: 1),
+        RDPMonitorDefinition(left: -1280, top: 120, right: -1, bottom: 1143, flags: 0),
+    ])
+    #expect(pdu.monitorLayout?.boundingBoxMonitors == [
+        RDPRemoteMonitor(rect: RDPFrameRect(left: 1280, top: 0, right: 3200, bottom: 1080), isPrimary: true),
+        RDPRemoteMonitor(rect: RDPFrameRect(left: 0, top: 120, right: 1280, bottom: 1144), isPrimary: false),
+    ])
+}
+
 @Test func shareDataParsesAutoReconnectStatusPDU() throws {
     let pdu = try #require(try RDPShareDataPDU.parseIfPresent(fromTPKT: shareDataPacket(
         type: 0x32,
