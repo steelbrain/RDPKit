@@ -13,6 +13,8 @@ final class RemoteInputCaptureNSView: NSView {
     var rdpFrame: RDPFrameMetadata?
     /// The layout the session announced; it decides which keys can go as scancodes.
     var keyboardLayout = RDPKeyboardLayout.unitedStates
+    /// Whether the Mac's layout makes a key a dead key with these modifiers; tests replace it.
+    var isDeadKey: @MainActor (UInt16, NSEvent.ModifierFlags) -> Bool = MacRDPDeadKeys.isDeadKey(keyCode:modifierFlags:)
     var inputSession: (any RDPInputEventSending)? {
         willSet {
             if inputSession != nil, inputSession !== newValue {
@@ -155,7 +157,8 @@ final class RemoteInputCaptureNSView: NSView {
                charactersIgnoringModifiers: event.charactersIgnoringModifiers,
                modifierFlags: event.modifierFlags,
                isHeldAsScancode: inputState.isScancodePressed(scancode),
-               isAltPressed: MacRDPModifierKey.altScancodes.contains(where: inputState.isScancodePressed)
+               isAltPressed: MacRDPModifierKey.altScancodes.contains(where: inputState.isScancodePressed),
+               isDeadKey: { isDeadKey(event.keyCode, event.modifierFlags) }
            ) || MacRDPKeyboardMapping.windowsTypes(
                event.characters,
                charactersIgnoringModifiers: event.charactersIgnoringModifiers,
@@ -613,14 +616,16 @@ enum MacRDPKeyboardMapping {
     /// A key the server holds keeps auto-repeating as its scancode after the modifier that sent it
     /// there is released; repeating it as text would type on top of the held key. With Option down
     /// but no Alt on the server, which is right Option held back (see MacRDPDeferredModifierKeys),
-    /// a key Option types a character with goes as that character instead.
+    /// a key Option types a character with goes as that character instead. `isDeadKey` (see
+    /// `optionTypes`) is asked only then, and only when Option typed nothing.
     static func shouldSendScancode(
         forKeyCode keyCode: UInt16,
         characters: String?,
         charactersIgnoringModifiers: String?,
         modifierFlags: NSEvent.ModifierFlags,
         isHeldAsScancode: Bool,
-        isAltPressed: Bool
+        isAltPressed: Bool,
+        isDeadKey: () -> Bool
     ) -> Bool {
         if isHeldAsScancode
             || scancodeOnlyKeyCodes.contains(Int(keyCode))
@@ -628,18 +633,26 @@ enum MacRDPKeyboardMapping {
         {
             return true
         }
-        return modifierFlags.contains(.option)
-            && (isAltPressed || optionTypes(characters, charactersIgnoringModifiers: charactersIgnoringModifiers) == false)
+        return modifierFlags.contains(.option) && (isAltPressed || optionTypes(
+            characters,
+            charactersIgnoringModifiers: charactersIgnoringModifiers,
+            isDeadKey: isDeadKey
+        ) == false)
     }
 
     /// Whether Option typed what the Mac layout puts on the key: printable characters other than
     /// the key's own, or nothing, for a dead key such as Option-E on US, whose accent the next key
-    /// types.
-    static func optionTypes(_ characters: String?, charactersIgnoringModifiers: String?) -> Bool {
+    /// types. A key a custom layout gives no Option output without making it a dead key, as
+    /// `isDeadKey` tells, typed nothing.
+    static func optionTypes(
+        _ characters: String?,
+        charactersIgnoringModifiers: String?,
+        isDeadKey: () -> Bool
+    ) -> Bool {
         guard let characters, characters != charactersIgnoringModifiers else {
             return false
         }
-        return isPrintable(characters)
+        return characters.isEmpty ? isDeadKey() : isPrintable(characters)
     }
 
     /// The text a dead key left ahead of a key that types a control character, which macOS puts

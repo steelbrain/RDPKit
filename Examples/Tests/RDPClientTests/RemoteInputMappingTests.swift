@@ -195,7 +195,8 @@ private func sendsScancode(
     characters: String = "a",
     ignoringModifiers: String? = nil,
     isHeldAsScancode: Bool = false,
-    isAltPressed: Bool = false
+    isAltPressed: Bool = false,
+    isDeadKey: Bool = true
 ) -> Bool {
     MacRDPKeyboardMapping.shouldSendScancode(
         forKeyCode: UInt16(keyCode),
@@ -203,7 +204,8 @@ private func sendsScancode(
         charactersIgnoringModifiers: ignoringModifiers ?? characters,
         modifierFlags: modifierFlags,
         isHeldAsScancode: isHeldAsScancode,
-        isAltPressed: isAltPressed
+        isAltPressed: isAltPressed,
+        isDeadKey: { isDeadKey }
     )
 }
 
@@ -229,8 +231,59 @@ private func sendsScancode(
     #expect(sendsScancode(kVK_ANSI_L, [.option, .command], characters: "@", ignoringModifiers: "l"))
     #expect(sendsScancode(kVK_ANSI_L, .option, characters: "@", ignoringModifiers: "l", isHeldAsScancode: true))
     #expect(sendsScancode(kVK_LeftArrow, .option, characters: "\u{F702}"))
-    #expect(MacRDPKeyboardMapping.optionTypes("\u{F702}", charactersIgnoringModifiers: "\u{F703}") == false)
-    #expect(MacRDPKeyboardMapping.optionTypes("\u{1B}", charactersIgnoringModifiers: "a") == false)
+    #expect(MacRDPKeyboardMapping.optionTypes("\u{F702}", charactersIgnoringModifiers: "\u{F703}") { true } == false)
+    #expect(MacRDPKeyboardMapping.optionTypes("\u{1B}", charactersIgnoringModifiers: "a") { true } == false)
+}
+
+/// A custom layout can give a key no output with Option without making it a dead key: that key
+/// goes as Alt and its scancode. The layout is asked only when right Option typed nothing.
+@Test func optionTypingNothingIsADeadKeyOnlyIfTheLayoutSaysSo() {
+    #expect(sendsScancode(kVK_ANSI_E, .option, characters: "", ignoringModifiers: "e", isDeadKey: false))
+    var questions = 0
+    func optionTypes(_ characters: String, _ ignoringModifiers: String) -> Bool {
+        MacRDPKeyboardMapping.optionTypes(characters, charactersIgnoringModifiers: ignoringModifiers) {
+            questions += 1
+            return true
+        }
+    }
+    #expect(optionTypes("", "e"))
+    #expect(questions == 1)
+    #expect(optionTypes("@", "l"))
+    #expect(optionTypes("l", "l") == false)
+    #expect(questions == 1)
+    #expect(MacRDPKeyboardMapping.shouldSendScancode(
+        forKeyCode: UInt16(kVK_ANSI_E),
+        characters: "",
+        charactersIgnoringModifiers: "e",
+        modifierFlags: .option,
+        isHeldAsScancode: false,
+        isAltPressed: true
+    ) {
+        questions += 1
+        return true
+    })
+    #expect(questions == 1)
+}
+
+/// Apple's US layout, loaded by its ID so the answer does not depend on the Mac's own layout.
+@MainActor
+@Test func theUSLayoutsOptionEIsADeadKey() throws {
+    let filter = [kTISPropertyInputSourceID as String: "com.apple.keylayout.US"] as CFDictionary
+    let sources = try #require(TISCreateInputSourceList(filter, true)?.takeRetainedValue() as? [TISInputSource])
+    let us = try #require(sources.first)
+    func isDeadKey(_ keyCode: Int, _ modifierFlags: NSEvent.ModifierFlags) -> Bool? {
+        MacRDPDeadKeys.isDeadKey(keyCode: UInt16(keyCode), modifierFlags: modifierFlags, in: us)
+    }
+    #expect(isDeadKey(kVK_ANSI_E, .option) == true)
+    #expect(isDeadKey(kVK_ANSI_L, .option) == false)
+    #expect(isDeadKey(kVK_ANSI_E, [.option, .shift]) == false)
+    #expect(isDeadKey(kVK_ANSI_E, []) == false)
+
+    // The remembered answer for the Mac's own layout, asked twice, is that layout's.
+    let current = try #require(TISCopyCurrentKeyboardLayoutInputSource()?.takeRetainedValue())
+    let currentAnswer = MacRDPDeadKeys.isDeadKey(keyCode: UInt16(kVK_ANSI_E), modifierFlags: .option, in: current) ?? true
+    #expect(MacRDPDeadKeys.isDeadKey(keyCode: UInt16(kVK_ANSI_E), modifierFlags: .option) == currentAnswer)
+    #expect(MacRDPDeadKeys.isDeadKey(keyCode: UInt16(kVK_ANSI_E), modifierFlags: .option) == currentAnswer)
 }
 
 /// PC keypads have no "=", and German has a dead key where the main "=" key is.
@@ -822,6 +875,11 @@ private let rightOptionFlags = NSEvent.ModifierFlags(rawValue: NSEvent.ModifierF
     let view = RemoteInputCaptureNSView()
     view.inputSession = input
     view.keyboardLayout = RDPKeyboardLayout(rawValue: 0x0000_0407)
+    var deadKeyQuestions: [Int] = []
+    view.isDeadKey = { keyCode, _ in
+        deadKeyQuestions.append(Int(keyCode))
+        return true
+    }
     func key(_ type: NSEvent.EventType, _ keyCode: Int, _ characters: String, _ ignoring: String, _ flags: NSEvent.ModifierFlags) throws {
         let event = try keyEvent(type, keyCode: keyCode, characters: characters, charactersIgnoringModifiers: ignoring, modifierFlags: flags)
         if type == .keyDown {
@@ -858,6 +916,32 @@ private let rightOptionFlags = NSEvent.ModifierFlags(rawValue: NSEvent.ModifierF
         .keyboard(scancode: leftShift, isReleased: true),
         .unicode(codeUnit: 0xE9, isReleased: false),
         .unicode(codeUnit: 0xE9, isReleased: true),
+    ])
+    // The layout is asked only about the key Option typed nothing with.
+    #expect(deadKeyQuestions == [kVK_ANSI_E])
+}
+
+/// A key a custom layout gives no Option output, without making it a dead key, goes as Alt and
+/// the key, like any key right Option types nothing new with.
+@MainActor
+@Test func rightOptionSendsAltWithAKeyThatTypesNothingButIsNoDeadKey() throws {
+    let rightAlt = RDPKeyboardScancode(code: 0x38, isExtended: true)
+    let keyE = RDPKeyboardScancode(code: 0x12)
+    let input = RecordedInput()
+    let view = RemoteInputCaptureNSView()
+    view.inputSession = input
+    view.isDeadKey = { _, _ in false }
+
+    view.flagsChanged(with: try keyEvent(.flagsChanged, keyCode: kVK_RightOption, modifierFlags: rightOptionFlags))
+    view.keyDown(with: try keyEvent(.keyDown, keyCode: kVK_ANSI_E, characters: "", charactersIgnoringModifiers: "e", modifierFlags: rightOptionFlags))
+    view.keyUp(with: try keyEvent(.keyUp, keyCode: kVK_ANSI_E, characters: "", charactersIgnoringModifiers: "e", modifierFlags: rightOptionFlags))
+    view.flagsChanged(with: try keyEvent(.flagsChanged, keyCode: kVK_RightOption))
+
+    #expect(input.events == [
+        .keyboard(scancode: rightAlt, isReleased: false),
+        .keyboard(scancode: keyE, isReleased: false),
+        .keyboard(scancode: keyE, isReleased: true),
+        .keyboard(scancode: rightAlt, isReleased: true),
     ])
 }
 
