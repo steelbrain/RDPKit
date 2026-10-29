@@ -107,12 +107,22 @@
     goes as Unicode where the remote layout has no "=" on the main "=" key,
     as on German.
   - Clipboard sharing can be turned on mid-session; with it off, nothing
-    crosses either way. A remote file download no longer replaces text or
-    files copied after it began, and fails after 30 seconds without an
-    answer. Downloaded files are quarantined, so Gatekeeper checks them
-    before they open. Their temporary folder is removed when the session
-    closes unless the pasteboard still holds them, and launch removes folders
-    earlier runs left behind.
+    crosses either way.
+  - Remote file downloads:
+    - A download no longer replaces text or files copied after it began.
+      A remote file copy cancels a local file read still in progress, and
+      wins over a local copy made in the second before it.
+    - Each request has two minutes to be answered and asks for at most
+      512 KiB, so slow links and files the server first fetches from the
+      cloud no longer time out.
+    - Downloaded files are quarantined, so Gatekeeper checks them before
+      they open. They stay on disk while the pasteboard lists them, even if
+      a newer download fails, and are removed once a newer copy replaces
+      them, when the session closes, or at the next launch.
+    - Sync Now and another "Share for 30s" send the clipboard only when it
+      changed, so they no longer cancel a download in progress.
+  - A `\` in a copied file's name is sent as `_`, so Windows does not paste
+    the file inside a folder.
   - Only a refused certificate offers trust; other warnings are listed in
     Stats for Nerds. "Hide certificate warnings" is renamed "Accept untrusted
     certificates" and explains its risk.
