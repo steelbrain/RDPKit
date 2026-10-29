@@ -18,8 +18,8 @@ extension RDPClientConnection {
         graphicsDecoder = RDPGFXServerTransportDecoder()
         // A new pipeline starts without surfaces or cache; the previous one's are gone.
         discardPendingGraphicsUpdates()
-        deletedGraphicsSurfaceIDs += graphicsCompositor?.surfaceIDs ?? []
-        evictedGraphicsCacheSlots += graphicsCompositor?.decoderCacheSlots ?? []
+        deletedGraphicsSurfaceIDs.formUnion(graphicsCompositor?.surfaceIDs ?? [])
+        evictedGraphicsCacheSlots.formUnion(graphicsCompositor?.decoderCacheSlots ?? [])
         graphicsCompositor = nil
         graphicsFrameTracker = RDPGFXLogicalFrameTracker()
         // totalFramesDecoded counts from the channel's creation ([MS-RDPEGFX] 2.2.2.13).
@@ -86,8 +86,8 @@ extension RDPClientConnection {
                 "server confirmed an RDPGFX capability version that the client did not advertise"
             )
         }
-        deletedGraphicsSurfaceIDs += graphicsCompositor?.surfaceIDs ?? []
-        evictedGraphicsCacheSlots += graphicsCompositor?.decoderCacheSlots ?? []
+        deletedGraphicsSurfaceIDs.formUnion(graphicsCompositor?.surfaceIDs ?? [])
+        evictedGraphicsCacheSlots.formUnion(graphicsCompositor?.decoderCacheSlots ?? [])
         graphicsCompositor = RDPGFXSurfaceCompositor(
             capabilitySet: confirm.capabilitySet,
             outputWidth: desktopWidth,
@@ -192,9 +192,9 @@ extension RDPClientConnection {
         for update in pendingGraphicsUpdates {
             switch update {
             case let .deletedSurface(surfaceID):
-                deletedGraphicsSurfaceIDs.append(surfaceID)
+                deletedGraphicsSurfaceIDs.insert(surfaceID)
             case let .evictedCacheSlot(slot):
-                evictedGraphicsCacheSlots.append(slot)
+                evictedGraphicsCacheSlots.insert(slot)
             case .frame, .resolved, .stagedVideoCopy:
                 break
             }
@@ -212,8 +212,8 @@ extension RDPClientConnection {
         var frames: [RDPGraphicsFrameSnapshot] = []
         func append(_ frame: RDPGraphicsFrameSnapshot) {
             var frame = frame
-            frame.deletedSurfaceIDs = deletedGraphicsSurfaceIDs
-            frame.evictedCacheSlots = evictedGraphicsCacheSlots
+            frame.deletedSurfaceIDs = deletedGraphicsSurfaceIDs.sorted()
+            frame.evictedCacheSlots = evictedGraphicsCacheSlots.sorted()
             deletedGraphicsSurfaceIDs = []
             evictedGraphicsCacheSlots = []
             frames.append(frame)
@@ -223,9 +223,9 @@ extension RDPClientConnection {
             case let .resolved(frame)?:
                 append(frame)
             case let .deletedSurface(surfaceID)?:
-                deletedGraphicsSurfaceIDs.append(surfaceID)
+                deletedGraphicsSurfaceIDs.insert(surfaceID)
             case let .evictedCacheSlot(slot)?:
-                evictedGraphicsCacheSlots.append(slot)
+                evictedGraphicsCacheSlots.insert(slot)
             case .frame?, .stagedVideoCopy?, nil:
                 break
             }

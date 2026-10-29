@@ -139,6 +139,35 @@ import Testing
     #expect(run.report.error == "server sent more than 64 video updates without ending the frame")
 }
 
+/// The next snapshot names each surface deleted since the last one once, so a server that
+/// creates and deletes surfaces it never shows cannot grow the list without bound.
+@Test func surfacesDeletedBetweenSnapshotsAreNamedOnce() throws {
+    var create = Data()
+    create.appendLittleEndianUInt16(5)
+    create.appendLittleEndianUInt16(16)
+    create.appendLittleEndianUInt16(16)
+    create.appendUInt8(0x20)
+    var delete = Data()
+    delete.appendLittleEndianUInt16(5)
+    let cycles = (2 ... 4).map { id in
+        KRdpCapture.graphicsPacket(
+            KRdpCapture.startFrame(id: UInt32(id))
+                + graphicsMessage(commandID: RDPGFXCommandID.createSurface, payload: create)
+                + graphicsMessage(commandID: RDPGFXCommandID.deleteSurface, payload: delete)
+                + KRdpCapture.endFrame(id: UInt32(id))
+        )
+    }
+    let run = try KRdpCapture.run(
+        appending: cycles + [
+            KRdpCapture.graphicsPacket(KRdpCapture.startFrame(id: 5) + KRdpCapture.avc420Update() + KRdpCapture.endFrame(id: 5)),
+        ],
+        frameCaptureLimit: 5
+    )
+
+    #expect(run.report.error == nil)
+    #expect(run.report.rdpGraphicsFrames?.last?.deletedSurfaceIDs == [5])
+}
+
 /// A second RDPGFX channel replaces the first: data still arriving on the
 /// old channel ID must not reach the new channel's decoder.
 @Test func recreatedGraphicsChannelForgetsTheOldChannelID() throws {

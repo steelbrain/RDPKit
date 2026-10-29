@@ -74,9 +74,9 @@ final class RDPClientConnection {
     /// The current RDPGFX frame's updates for the decoder, in wire order.
     var pendingGraphicsUpdates: [RDPPendingGraphicsUpdate] = []
     /// Surfaces deleted, and the decoder's cache slots evicted, after the last delivered
-    /// snapshot; the next one names them.
-    var deletedGraphicsSurfaceIDs: [UInt16] = []
-    var evictedGraphicsCacheSlots: [UInt16] = []
+    /// snapshot; the next one names them, each once.
+    var deletedGraphicsSurfaceIDs: Set<UInt16> = []
+    var evictedGraphicsCacheSlots: Set<UInt16> = []
     var graphicsFramesDecoded: UInt32 = 0
     /// Created on first use at the current desktop size, again after a resize.
     private var primarySurfaceStorage: RDPPrimarySurfaceCompositor?
