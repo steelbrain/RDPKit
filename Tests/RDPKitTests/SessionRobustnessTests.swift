@@ -203,6 +203,47 @@ private func runReactivation(
     }
 }
 
+/// A cancellation stops what is left of a fast-path PDU: cancelled as its pointer position
+/// is handled, the bitmap update after it is never drawn, and stopping it is no decode
+/// error. A bitmap update stops between rectangles too, as one can hold thousands.
+@Test func cancellingStopsTheUpdatesLeftInAFastPathPDU() throws {
+    // TS_UPDATE_BITMAP_DATA of one uncompressed 32 bpp pixel ([MS-RDPBCGR] 2.2.9.1.1.3.1.2).
+    var bitmap = Data()
+    for value: UInt16 in [0x0001, 1, 0, 0, 0, 0, 1, 1, 32, 0, 4] {
+        bitmap.appendLittleEndianUInt16(value)
+    }
+    bitmap.append(contentsOf: [1, 2, 3, 0xFF])
+    // TS_POINT16 of a position the capture never sends.
+    var position = Data()
+    position.appendLittleEndianUInt16(1234)
+    position.appendLittleEndianUInt16(567)
+    let cancellation = RDPConnectionCancellation()
+    let bitmapFrames = Locked(0)
+    let run = try KRdpCapture.run(
+        appending: [fastPathPacket([
+            // FASTPATH_UPDATETYPE_PTR_POSITION, then FASTPATH_UPDATETYPE_BITMAP.
+            fastPathUpdate(code: 0x8, payload: position),
+            fastPathUpdate(code: 0x1, payload: bitmap),
+        ])],
+        frameCaptureLimit: nil,
+        onGraphicsFrame: { frame in
+            if frame.contentKind == .bitmap {
+                bitmapFrames.withLock { $0 += 1 }
+            }
+        },
+        onRemotePointer: { update in
+            if update == .position(RDPRemotePoint(x: 1234, y: 567)) {
+                cancellation.cancel()
+            }
+        },
+        cancellation: cancellation
+    )
+
+    #expect(run.report.failure == .cancelled)
+    #expect(bitmapFrames.value == 0)
+    #expect(!run.report.warnings.contains { $0.code == "graphics-decode-error" })
+}
+
 /// A live session that has shown frames still bounds a reactivation: a
 /// Demand Active the server never finalizes ends the session at the timeout
 /// instead of leaving it waiting forever.
@@ -742,8 +783,8 @@ enum KRdpCapture {
     /// Replays the capture (or its first `prefix` events) followed by
     /// `appending`, then hands the connection to `onEnd`, and to
     /// `onTrailingClientPacket` with each packet the client sends after that.
-    /// The run is cancelled after `guardSeconds` so a hang fails the test
-    /// instead of stalling it.
+    /// The run is cancelled, through `cancellation`, after `guardSeconds` so a
+    /// hang fails the test instead of stalling it.
     static func run(
         prefix: Int? = nil,
         appending packets: [Data] = [],
@@ -755,7 +796,9 @@ enum KRdpCapture {
         onGraphicsFrame: RDPGraphicsFrameHandler? = nil,
         onInputReady: RDPInputSessionHandler? = nil,
         onDisplayControlReady: RDPDisplayControlSessionHandler? = nil,
-        liveReport: RDPLiveConnectionReport? = nil
+        onRemotePointer: RDPRemotePointerHandler? = nil,
+        liveReport: RDPLiveConnectionReport? = nil,
+        cancellation: RDPConnectionCancellation = RDPConnectionCancellation()
     ) throws -> Run {
         var events = try events()
         if let prefix {
@@ -779,7 +822,6 @@ enum KRdpCapture {
         )
         defer { server.stop() }
 
-        let cancellation = RDPConnectionCancellation()
         DispatchQueue(label: "KRdpCapture.guard").asyncAfter(deadline: .now() + guardSeconds) {
             cancellation.cancel()
         }
@@ -797,6 +839,7 @@ enum KRdpCapture {
                 graphicsCapabilityProfile: .avcThinClient
             ),
             onGraphicsFrame: onGraphicsFrame,
+            onRemotePointer: onRemotePointer,
             onInputReady: onInputReady,
             onDisplayControlReady: onDisplayControlReady,
             liveReport: liveReport,

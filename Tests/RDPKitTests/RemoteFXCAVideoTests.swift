@@ -4,6 +4,14 @@ import Testing
 
 // RemoteFX (CAVIDEO, [MS-RDPRFX]) stream validation on synthetic streams.
 
+/// A cancelled RemoteFX decode stops before its next tile.
+@Test func cavideoRemoteFXDecodeStopsOnceCancelled() {
+    let error = #expect(throws: RDPConnectionError.self) {
+        try RDPRemoteFXDecoder(isCancelled: { true }).decode(cavideoRemoteFXGrayTileStream())
+    }
+    #expect(error?.failure == .cancelled)
+}
+
 @Test func cavideoRemoteFXRejectsInvalidSyncMagic() throws {
     var bitmapStream = cavideoRemoteFXGrayTileStream()
     bitmapStream[6] = 0

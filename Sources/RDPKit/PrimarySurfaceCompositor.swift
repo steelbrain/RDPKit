@@ -13,16 +13,21 @@ final class RDPPrimarySurfaceCompositor {
     private var dirtyRects: [RDPFrameRect] = []
     private var activeFrameID: UInt32?
     private var completedFrameIDs: [UInt32] = []
-    private let remoteFX = RDPRemoteFXDecoder()
+    private let remoteFX: RDPRemoteFXDecoder
+    private let isCancelled: @Sendable () -> Bool
 
     private var bytesPerRow: Int {
         width * 4
     }
 
-    init(width: UInt16, height: UInt16) {
+    /// `isCancelled` stops a bitmap update between rectangles and a RemoteFX decode between
+    /// tiles, throwing `RDPConnectionError.cancelled`.
+    init(width: UInt16, height: UInt16, isCancelled: @escaping @Sendable () -> Bool = { false }) {
         self.width = Int(width)
         self.height = Int(height)
         data = Data(count: Int(width) * Int(height) * 4)
+        remoteFX = RDPRemoteFXDecoder(isCancelled: isCancelled)
+        self.isCancelled = isCancelled
     }
 
     /// Applies the commands in order. A surface bits command that fails to
@@ -85,6 +90,9 @@ final class RDPPrimarySurfaceCompositor {
 
     func process(_ update: RDPBitmapUpdate) throws -> [RDPGraphicsFrameSnapshot] {
         for rectangle in update.rectangles {
+            guard !isCancelled() else {
+                throw RDPConnectionError.cancelled
+            }
             try blit(rectangle)
         }
         if let frame = makeFrame(frameID: nil) {

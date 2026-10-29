@@ -330,6 +330,13 @@ final class RDPRemoteFXDecoder {
     private var classicDataBlockState: ClassicDataBlockState = .frameBegin
     private var classicRegionRects: [RDPFrameRect] = []
     private let progressiveStore = RDPProgressiveTileStore()
+    private let isCancelled: @Sendable () -> Bool
+
+    /// `isCancelled` is checked, from any thread, before each tile: a decode that stops
+    /// throws `RDPConnectionError.cancelled`.
+    init(isCancelled: @escaping @Sendable () -> Bool = { false }) {
+        self.isCancelled = isCancelled
+    }
 
     // MARK: - RemoteFX Progressive
 
@@ -532,7 +539,11 @@ final class RDPRemoteFXDecoder {
         let decodesConcurrently = tiles.count >= Self.minimumConcurrentTileCount
             && positions.count == tiles.count
             && !tiles.contains(where: \.dependsOnStoredTile)
-        let decodedTiles = try Self.decodeTiles(count: tiles.count, concurrently: decodesConcurrently) { index in
+        let decodedTiles = try Self.decodeTiles(
+            count: tiles.count,
+            concurrently: decodesConcurrently,
+            isCancelled: isCancelled
+        ) { index in
             try Self.decodeProgressiveTile(tiles[index], in: region)
         }
         return (decodedTiles, rectangles)
@@ -839,7 +850,7 @@ final class RDPRemoteFXDecoder {
                 guard classicDataBlockState == .tileSet else {
                     throw RDPDecodeError.invalidRDPGFXPDU
                 }
-                decodedTiles += try Self.decodeTileSet(block.body)
+                decodedTiles += try Self.decodeTileSet(block.body, isCancelled: isCancelled)
                 // A later frame's tiles are drawn over an earlier one's, so its region adds to theirs.
                 decodedRegionRects += classicRegionRects
                 classicDataBlockState = .frameEnd
@@ -1020,7 +1031,10 @@ final class RDPRemoteFXDecoder {
     }
 
     /// TS_RFX_TILESET (MS-RDPRFX 2.2.2.3.4).
-    private static func decodeTileSet(_ data: Data) throws -> [RDPRemoteFXDecodedTile] {
+    private static func decodeTileSet(
+        _ data: Data,
+        isCancelled: @Sendable () -> Bool
+    ) throws -> [RDPRemoteFXDecodedTile] {
         var cursor = ByteCursor(data)
         try parseCodecChannelHeader(&cursor, channelID: 0)
         guard cursor.remaining >= 14,
@@ -1057,7 +1071,8 @@ final class RDPRemoteFXDecoder {
 
         return try decodeTiles(
             count: tiles.count,
-            concurrently: tiles.count >= minimumConcurrentTileCount
+            concurrently: tiles.count >= minimumConcurrentTileCount,
+            isCancelled: isCancelled
         ) { index in
             let tile = tiles[index]
             let components = try (0 ..< 3).map { component in
@@ -1140,14 +1155,22 @@ final class RDPRemoteFXDecoder {
         return tiles
     }
 
-    /// Runs `decode` for every tile index, concurrently when asked, keeping tile order.
+    /// Runs `decode` for every tile index, concurrently when asked, keeping tile order. Stops
+    /// before the next tile once `isCancelled` is true: a region of a wide desktop holds
+    /// thousands of tiles, and the upgrade passes of one decode in order.
     private static func decodeTiles(
         count: Int,
         concurrently: Bool,
+        isCancelled: @Sendable () -> Bool,
         _ decode: @Sendable (Int) throws -> RDPRemoteFXDecodedTile
     ) throws -> [RDPRemoteFXDecodedTile] {
         guard concurrently else {
-            return try (0 ..< count).map(decode)
+            return try (0 ..< count).map { index in
+                guard !isCancelled() else {
+                    throw RDPConnectionError.cancelled
+                }
+                return try decode(index)
+            }
         }
         let results = RDPConcurrentTileResults(count: count)
         DispatchQueue.concurrentPerform(iterations: count) { index in
@@ -1155,6 +1178,9 @@ final class RDPRemoteFXDecoder {
                 return
             }
             do {
+                guard !isCancelled() else {
+                    throw RDPConnectionError.cancelled
+                }
                 try results.store(decode(index), at: index)
             } catch {
                 results.fail(with: error)

@@ -244,16 +244,18 @@ final class RDPGFXSurfaceCompositor {
     private let maximumCacheByteCount: Int
     static let maximumSurfaceByteCount = 1 << 30
     private let maximumCacheSlot: UInt16
-    private let remoteFX = RDPRemoteFXDecoder()
+    private let remoteFX: RDPRemoteFXDecoder
     /// The progressive tiles of each surface decoded in the current RDPGFX frame, by tile
     /// position: a region may rely on tiles an earlier WireToSurface2 of the frame sent
     /// (MS-RDPEGFX 2.2.4.2.1.5).
     private var progressiveFrameTiles: [UInt16: [Int: RDPRemoteFXDecodedTile]] = [:]
 
+    /// `isCancelled` stops a RemoteFX decode between tiles, as `RDPRemoteFXDecoder` explains.
     convenience init(
         capabilitySet: RDPGFXCapabilitySet? = nil,
         outputWidth: UInt16? = nil,
-        outputHeight: UInt16? = nil
+        outputHeight: UInt16? = nil,
+        isCancelled: @escaping @Sendable () -> Bool = { false }
     ) {
         let usesSmallCache = capabilitySet?.version == RDPGFXCapabilityVersion.version103
             || (capabilitySet?.flags.map {
@@ -265,18 +267,24 @@ final class RDPGFXSurfaceCompositor {
                 : RDPGFXBitmapCache.maximumByteCount,
             maximumCacheSlot: usesSmallCache
                 ? RDPGFXCacheSlot.smallCacheMaximumSlot
-                : RDPGFXCacheSlot.maximumSlot
+                : RDPGFXCacheSlot.maximumSlot,
+            isCancelled: isCancelled
         )
         if let outputWidth, let outputHeight {
             graphicsOutputRect = RDPFrameRect(left: 0, top: 0, right: outputWidth, bottom: outputHeight)
         }
     }
 
-    init(maximumCacheByteCount: Int, maximumCacheSlot: UInt16) {
+    init(
+        maximumCacheByteCount: Int,
+        maximumCacheSlot: UInt16,
+        isCancelled: @escaping @Sendable () -> Bool = { false }
+    ) {
         precondition(maximumCacheByteCount > 0)
         precondition(maximumCacheSlot > 0)
         self.maximumCacheByteCount = maximumCacheByteCount
         self.maximumCacheSlot = maximumCacheSlot
+        remoteFX = RDPRemoteFXDecoder(isCancelled: isCancelled)
     }
 
     /// Applies one RDPGFX PDU. Returns the update the decoder must make itself when the PDU

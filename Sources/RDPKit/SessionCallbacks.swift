@@ -98,4 +98,19 @@ struct RDPSessionCallbacks {
             throw RDPConnectionError.cancelled
         }
     }
+
+    /// Whether `cancellation` is cancelled. It never polls `shouldCancel`, so any thread may
+    /// check it as often as it likes: decoding checks it between the updates a message holds
+    /// and between RemoteFX tiles, which in a debug build can take seconds to get through.
+    var isCancelledWithoutPolling: @Sendable () -> Bool {
+        let cancellation = cancellation
+        return { cancellation?.isCancelled == true }
+    }
+
+    /// Throws `RDPConnectionError.cancelled` when `isCancelledWithoutPolling` says so.
+    func throwIfCancelledWithoutPolling() throws {
+        if isCancelledWithoutPolling() {
+            throw RDPConnectionError.cancelled
+        }
+    }
 }

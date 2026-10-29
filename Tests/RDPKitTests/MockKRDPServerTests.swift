@@ -1746,6 +1746,46 @@ struct MockKRDPServerTests {
         #expect(cancelled.transcript.disconnectUltimatumReasons == [3])
     }
 
+    /// A cancelled session stops a CAPROGRESSIVE upgrade pass between tiles. Its tiles decode
+    /// one after another, so a debug build took seconds over Windows 11's upgrade of a
+    /// 5560x720 desktop before the cancelled session ended (observed live, 2026-10-29).
+    @Test func cancellingStopsAProgressiveUpgradeBetweenTiles() throws {
+        let cancellation = RDPConnectionCancellation()
+        let cancelledAt = Locked<Date?>(nil)
+        let returnedAt = Locked<Date?>(nil)
+        let frameIDs = Locked<[UInt32?]>([])
+        let run = try runMock(.init(graphicsBehavior: .sendProgressiveRefinementAfterFirstFrame), {
+            $0.graphicsFrameCaptureLimit = nil
+        }, client: {
+            let report = RDPSessionClient().run(
+                configuration: $0,
+                onGraphicsFrame: { frame in
+                    frameIDs.withLock { $0.append(frame.frameID) }
+                    // The first pass ended; the upgrade, in the next message, decodes next.
+                    guard frame.frameID == 5 else {
+                        return
+                    }
+                    Thread.detachNewThread {
+                        Thread.sleep(forTimeInterval: 0.2)
+                        cancelledAt.withLock { $0 = Date() }
+                        cancellation.cancel()
+                    }
+                },
+                cancellation: cancellation
+            )
+            returnedAt.withLock { $0 = Date() }
+            return report
+        })
+
+        #expect(run.report.failure == .cancelled)
+        // The upgrade's frame never ends, and the pass it stopped is no decode error.
+        #expect(frameIDs.value == [1, 5])
+        #expect(!run.report.warnings.contains { $0.code == "graphics-decode-error" })
+        let cancelled = try #require(cancelledAt.value)
+        let returned = try #require(returnedAt.value)
+        #expect(returned.timeIntervalSince(cancelled) < 1)
+    }
+
     /// The server ends the session while the client still handles its frame: the frame
     /// acknowledgement then meets a closed connection, which must not hide the clean end
     /// the server sent before closing.

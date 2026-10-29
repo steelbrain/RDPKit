@@ -3,12 +3,16 @@ import Foundation
 /// Polled on the connection thread before each receive, and about once a
 /// second while the connection waits: to connect, for the TLS handshake, the
 /// certificate trust evaluation, a send, or a receive. Returning true cancels
-/// the connection. `RDPConnectionCancellation` takes effect without polling.
+/// the connection. `RDPConnectionCancellation` takes effect without polling, and
+/// also stops graphics decoding in progress.
 public typealias RDPCancellationHandler = @Sendable () -> Bool
 
 /// Cancels a running connection from any thread. Cancelling closes the socket,
 /// so a blocked `run`/`connect` returns promptly with a report whose failure is
-/// `.cancelled`.
+/// `.cancelled`. Graphics decoding in progress stops too, before the next update
+/// in a message, bitmap rectangle or RemoteFX tile, so a message a debug build
+/// takes seconds to decode, such as a wide desktop's CAPROGRESSIVE upgrade pass,
+/// does not hold the call up.
 public final class RDPConnectionCancellation: @unchecked Sendable {
     private let lock = NSLock()
     private var cancelled = false

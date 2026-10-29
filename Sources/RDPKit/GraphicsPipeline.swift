@@ -47,6 +47,9 @@ extension RDPClientConnection {
         }
 
         for (index, message) in messages.enumerated() where !sessionEnded {
+            // A cancelled session stops between PDUs, not only at the next receive: a debug
+            // build can take seconds over one message.
+            try callbacks.throwIfCancelledWithoutPolling()
             if message.commandID == RDPGFXCommandID.capsConfirm {
                 try confirmGraphicsCapabilities(message)
                 continue
@@ -59,6 +62,8 @@ extension RDPClientConnection {
             do {
                 endedFrameID = try processGraphicsMessage(message, compositor: compositor)
             } catch {
+                // A decode cancelling stopped is no decode error.
+                try callbacks.throwIfCancelledWithoutPolling()
                 recordGraphicsFailure(packet: packet, payload: payload, messages: messages, index: index)
                 if targetFrameCount != nil {
                     throw error
@@ -91,7 +96,8 @@ extension RDPClientConnection {
         graphicsCompositor = RDPGFXSurfaceCompositor(
             capabilitySet: confirm.capabilitySet,
             outputWidth: desktopWidth,
-            outputHeight: desktopHeight
+            outputHeight: desktopHeight,
+            isCancelled: callbacks.isCancelledWithoutPolling
         )
         startPhase(awaitingFrame: true)
     }
@@ -429,6 +435,7 @@ extension RDPClientConnection {
             }
         }
         for fragment in pdu.updates where !sessionEnded {
+            try callbacks.throwIfCancelledWithoutPolling()
             guard let update = try fastPathReassembler.append(fragment) else {
                 continue
             }
@@ -464,6 +471,7 @@ extension RDPClientConnection {
         do {
             frames = try update()
         } catch {
+            try callbacks.throwIfCancelledWithoutPolling()
             if targetFrameCount != nil {
                 throw error
             }

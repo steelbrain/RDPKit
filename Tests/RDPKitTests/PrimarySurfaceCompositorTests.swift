@@ -34,6 +34,36 @@ import Testing
     ]))
 }
 
+/// A cancelled bitmap update stops before its next rectangle. One update can hold thousands:
+/// a debug build took 2.5 seconds over planar ones covering an 11520x2160 desktop.
+@Test func primarySurfaceCompositorStopsABitmapUpdateBetweenRectanglesOnceCancelled() {
+    let checks = Locked(0)
+    let compositor = RDPPrimarySurfaceCompositor(width: 4, height: 2, isCancelled: {
+        checks.withLock { checks in
+            checks += 1
+            return checks > 1
+        }
+    })
+    let rectangle = RDPBitmapUpdateRectangle(
+        destinationLeft: 0,
+        destinationTop: 0,
+        destinationRight: 0,
+        destinationBottom: 0,
+        width: 1,
+        height: 1,
+        bitsPerPixel: 32,
+        flags: 0,
+        compressedHeader: nil,
+        bitmapDataStream: Data([0x11, 0x22, 0x33, 0x44])
+    )
+
+    let error = #expect(throws: RDPConnectionError.self) {
+        try compositor.process(RDPBitmapUpdate(rectangles: [rectangle, rectangle, rectangle]))
+    }
+    #expect(error?.failure == .cancelled)
+    #expect(checks.value == 2)
+}
+
 @Test func primarySurfaceCompositorClipsCompressedBitmapPaddedToFourPixels() throws {
     let compositor = RDPPrimarySurfaceCompositor(width: 3, height: 1)
     let update = RDPBitmapUpdate(rectangles: [

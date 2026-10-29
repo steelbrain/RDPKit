@@ -144,7 +144,11 @@ final class RDPClientConnection {
         if let primarySurfaceStorage {
             return primarySurfaceStorage
         }
-        let surface = RDPPrimarySurfaceCompositor(width: desktopWidth, height: desktopHeight)
+        let surface = RDPPrimarySurfaceCompositor(
+            width: desktopWidth,
+            height: desktopHeight,
+            isCancelled: callbacks.isCancelledWithoutPolling
+        )
         primarySurfaceStorage = surface
         return surface
     }

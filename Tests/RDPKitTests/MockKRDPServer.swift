@@ -164,6 +164,9 @@ enum MockKRDPGraphicsBehavior: Equatable {
     /// frame acknowledgement.
     case endSessionLikeGnomeAfterFirstFrame
     case setErrorInfoLogoffBeforeFrame
+    /// The first frame, then the CAPROGRESSIVE refinement `progressiveRefinementMessages`
+    /// describes: its first pass and its upgrade pass, each in an RDPGFX message of its own.
+    case sendProgressiveRefinementAfterFirstFrame
 }
 
 enum MockKRDPGraphicsCapabilitySelection {
@@ -2298,7 +2301,67 @@ private enum MockKRDPFixtures {
             [fastPathFrameMarkers(frameIDs: [5, 6]), graphicsDynamicPacket(segmentedGraphicsData(avc420FrameMessages()))]
         case .stallAfterFragmentedCapsConfirm:
             []
+        case .sendProgressiveRefinementAfterFirstFrame:
+            [graphicsDynamicPacket(segmentedGraphicsData(avc420FrameMessages()))]
+                + largeGraphicsDynamicPackets(segmentedGraphicsData(progressiveRefinementMessages().firstPass))
+                + largeGraphicsDynamicPackets(segmentedGraphicsData(progressiveRefinementMessages().upgrade))
         }
+    }
+
+    /// How Windows 11 refined a 5560x720 desktop (observed live, 2026-10-29): a CAPROGRESSIVE
+    /// first pass over every tile of the surface as one frame, then an upgrade pass over all
+    /// of them as the next. Here frames 5 and 6 refine a 1280x1280 surface 2 of 400 tiles.
+    /// Upgrades build on the stored tiles, so they decode one after another: a debug build
+    /// takes over a second for these.
+    static func progressiveRefinementMessages() -> (firstPass: Data, upgrade: Data) {
+        let size: UInt16 = 1280
+        let tilePositions = (0 ..< size / 64).flatMap { y in (0 ..< size / 64).map { x in (x, y) } }
+        let progressiveQuant = Data([50] + Array(repeating: UInt8(0x11), count: 15))
+        let firstPass = caprogressiveRemoteFXGrayTilesStream(
+            regionWidth: size,
+            regionHeight: size,
+            progressiveQuantTables: [progressiveQuant],
+            tiles: tilePositions.map { x, y in
+                CAPROGRESSIVERemoteFXGrayTile(blockType: 0xCCC6, xIndex: x, yIndex: y, progressiveQuality: 0)
+            }
+        )
+        let upgrade = caprogressiveRemoteFXGrayTilesStream(
+            frameIndex: 2,
+            regionWidth: size,
+            regionHeight: size,
+            progressiveQuantTables: [progressiveQuant],
+            tiles: tilePositions.map { x, y in
+                CAPROGRESSIVERemoteFXGrayTile(
+                    blockType: 0xCCC7,
+                    xIndex: x,
+                    yIndex: y,
+                    progressiveQuality: 0xFF,
+                    ySrlData: srlAllZeroComponent(count: 4015),
+                    yRawData: Data(repeating: 0, count: 11),
+                    cbSrlData: srlAllZeroComponent(count: 4015),
+                    cbRawData: Data(repeating: 0, count: 11),
+                    crSrlData: srlAllZeroComponent(count: 4015),
+                    crRawData: Data(repeating: 0, count: 11)
+                )
+            }
+        )
+        let wireToSurface2: (Data) -> Data = {
+            wireToSurface2Message(
+                surfaceID: 2,
+                codecID: RDPGFXCodecID.caProgressive,
+                codecContextID: 0,
+                pixelFormat: 0x20,
+                bitmapData: $0
+            )
+        }
+        return (
+            createSurfaceMessage(surfaceID: 2, width: size, height: size)
+                + mapSurfaceToOutputMessage(surfaceID: 2, x: 0, y: 0)
+                + startFrameMessage(frameID: 5)
+                + wireToSurface2(firstPass)
+                + endFrameMessage(frameID: 5),
+            startFrameMessage(frameID: 6) + wireToSurface2(upgrade) + endFrameMessage(frameID: 6)
+        )
     }
 
     static func avc420FrameMessages() -> Data {
@@ -2979,6 +3042,14 @@ private enum MockKRDPFixtures {
 
     private static func graphicsDynamicPacket(_ payload: Data) -> Data {
         dynamicPacket(payload, channelID: MockKRDPConstants.graphicsDynamicChannelID)
+    }
+
+    /// `payload` as the DVC Data First and Data PDUs a client must reassemble, each in a
+    /// virtual channel chunk of its own, for payloads larger than one PDU takes.
+    private static func largeGraphicsDynamicPackets(_ payload: Data) -> [Data] {
+        RDPDynamicVirtualChannelDataPacketizer(channelID: MockKRDPConstants.graphicsDynamicChannelID, payload: payload)
+            .encodedPDUs()
+            .map { staticVirtualChannelPacket($0) }
     }
 
     private static func compressedGraphicsDynamicPacket(_ payload: Data) -> Data {

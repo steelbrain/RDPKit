@@ -288,6 +288,62 @@ import Testing
     #expect(tiles[1].bgraData == tiles[0].bgraData)
 }
 
+/// A cancelled decode stops before its next tile. Upgrade passes, which build on the stored
+/// tiles, decode one after another: Windows 11 sent one of 1,044 tiles for a 5560x720 desktop,
+/// which took a debug build seconds (observed live, 2026-10-29).
+@Test func caprogressiveUpgradeStopsBetweenTilesOnceCancelled() throws {
+    let progressiveQuant = Data([50] + Array(repeating: UInt8(0x11), count: 15))
+    let positions = (0 ..< 3).flatMap { y in (0 ..< 4).map { x in (UInt16(x), UInt16(y)) } }
+    let firstPass = caprogressiveRemoteFXGrayTilesStream(
+        regionWidth: 256,
+        regionHeight: 192,
+        progressiveQuantTables: [progressiveQuant],
+        tiles: positions.map { x, y in
+            CAPROGRESSIVERemoteFXGrayTile(blockType: 0xCCC6, xIndex: x, yIndex: y, progressiveQuality: 0)
+        }
+    )
+    let upgrade = caprogressiveRemoteFXGrayTilesStream(
+        frameIndex: 2,
+        regionWidth: 256,
+        regionHeight: 192,
+        progressiveQuantTables: [progressiveQuant],
+        tiles: positions.map { x, y in
+            CAPROGRESSIVERemoteFXGrayTile(
+                blockType: 0xCCC7,
+                xIndex: x,
+                yIndex: y,
+                progressiveQuality: 0xFF,
+                ySrlData: srlAllZeroComponent(count: 4015),
+                yRawData: Data(repeating: 0, count: 11),
+                cbSrlData: srlAllZeroComponent(count: 4015),
+                cbRawData: Data(repeating: 0, count: 11),
+                crSrlData: srlAllZeroComponent(count: 4015),
+                crRawData: Data(repeating: 0, count: 11)
+            )
+        }
+    )
+    // Tiles the decoder may still start; nil never cancels.
+    let tilesLeft = Locked<Int?>(nil)
+    let checks = Locked(0)
+    let decoder = RDPRemoteFXDecoder(isCancelled: {
+        checks.withLock { $0 += 1 }
+        return tilesLeft.withLock { tilesLeft in
+            tilesLeft = tilesLeft.map { $0 - 1 }
+            return tilesLeft.map { $0 < 0 } ?? false
+        }
+    })
+    #expect(try decoder.decodeProgressive(firstPass).tiles.count == 12)
+    #expect(checks.value == 12)
+
+    tilesLeft.withLock { $0 = 3 }
+    let error = #expect(throws: RDPConnectionError.self) {
+        try decoder.decodeProgressive(upgrade)
+    }
+    #expect(error?.failure == .cancelled)
+    // Three tiles decoded; the check before the fourth stopped the pass.
+    #expect(checks.value == 12 + 4)
+}
+
 @Test func caprogressiveKeepsCodecContextReferencesIndependent() throws {
     let progressiveQuant = Data([50] + Array(repeating: UInt8(0x11), count: 15))
     let firstPassStream = caprogressiveRemoteFXGrayTilesStream(
