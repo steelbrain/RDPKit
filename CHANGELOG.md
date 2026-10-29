@@ -203,6 +203,11 @@
   a file list), and a rich copy whose formats all failed or came back empty.
   A rich copy with some formats left still arrives through
   `onClipboardContent` without the rest.
+- Clipboard: a local file name that starts with whitespace, such as
+  " CON.txt", is no longer taken for a device name and reaches Windows
+  unchanged: Windows 11 treats " CON" as an ordinary name, and Windows
+  ignores only spaces after a device name. Names such as "CON .txt" and
+  "NUL.txt" still get a leading "_", since Windows before 11 reserves them.
 - Clipboard: names of local files offered to Windows lose only trailing dots
   and spaces (U+0020), as Windows path normalization does. Leading spaces,
   and other whitespace such as U+00A0, U+3000 and U+200B, stay in the name.
