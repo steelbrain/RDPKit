@@ -170,6 +170,8 @@
   draws presentation buffers from a pool. A partial 4K update now takes about a
   quarter of the time. The frames of composed presentations no longer carry
   `decodedBitmapData`; their pixels are in `imageBuffer`.
+- Bitmap snapshots list an area drawn again, or inside one already drawn, once,
+  so it is merged once.
 - `RDPScrollWheelAccumulator` turns scroll deltas into wheel events.
 - The RDPClient example runs sessions on a dedicated thread, fixes modifier,
   focus-loss, toggle-key, Windows-key and keypad input, keeps a key held as a

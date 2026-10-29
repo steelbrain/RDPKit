@@ -571,13 +571,13 @@ import Testing
 @Test func compositorCollapsesHeldBackDirtyRectsIntoBoundingBox() throws {
     let compositor = RDPGFXSurfaceCompositor()
     let clearCodec = RDPClearCodecDecoder()
-    try compositor.process(try createSurfaceMessage(surfaceID: 1, width: 4, height: 2), clearCodec: clearCodec)
+    try compositor.process(try createSurfaceMessage(surfaceID: 1, width: 1_026, height: 2), clearCodec: clearCodec)
     try compositor.process(
         try solidFillMessage(
             surfaceID: 1,
             color: [0x01, 0x02, 0x03, 0xFF],
-            rects: Array(repeating: RDPGFXRect16(left: 0, top: 0, right: 1, bottom: 1), count: 1_024)
-                + [RDPGFXRect16(left: 3, top: 1, right: 4, bottom: 2)]
+            rects: (0 ..< 1_024).map { RDPGFXRect16(left: $0, top: 0, right: $0 + 1, bottom: 1) }
+                + [RDPGFXRect16(left: 1_025, top: 1, right: 1_026, bottom: 2)]
         ),
         clearCodec: clearCodec
     )
@@ -585,7 +585,28 @@ import Testing
 
     let frame = try #require(compositor.makeFrame(frameID: 1))
 
-    #expect(frame.regionRects == [RDPFrameRect(left: 0, top: 0, right: 4, bottom: 2)])
+    #expect(frame.regionRects == [RDPFrameRect(left: 0, top: 0, right: 1_026, bottom: 2)])
+}
+
+/// An area drawn twice, or inside one already drawn, is listed once.
+@Test func compositorListsEachChangedAreaOnce() throws {
+    let compositor = RDPGFXSurfaceCompositor(outputWidth: 4, outputHeight: 4)
+    let clearCodec = RDPClearCodecDecoder()
+    try compositor.process(try createSurfaceMessage(surfaceID: 1, width: 4, height: 4), clearCodec: clearCodec)
+    try compositor.process(try mapSurfaceToOutputMessage(surfaceID: 1, x: 0, y: 0), clearCodec: clearCodec)
+    let row = RDPGFXRect16(left: 0, top: 0, right: 4, bottom: 1)
+    let pixel = RDPGFXRect16(left: 1, top: 0, right: 2, bottom: 1)
+
+    try compositor.process(
+        try solidFillMessage(surfaceID: 1, color: [0x01, 0x02, 0x03, 0xFF], rects: [row, row, pixel]),
+        clearCodec: clearCodec
+    )
+    #expect(compositor.makeFrames(frameID: 1).map(\.regionRects) == [[RDPFrameRect(row)]])
+    try compositor.process(
+        try solidFillMessage(surfaceID: 1, color: [0x01, 0x02, 0x03, 0xFF], rects: [pixel, row]),
+        clearCodec: clearCodec
+    )
+    #expect(compositor.makeFrames(frameID: 2).map(\.regionRects) == [[RDPFrameRect(row)]])
 }
 
 @Test func compositorEvictsCachedSurfaceEntries() throws {

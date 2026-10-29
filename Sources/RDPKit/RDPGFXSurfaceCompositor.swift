@@ -180,14 +180,17 @@ final class RDPGFXSurfaceCompositor {
             return (decoded, dirtyRects.clipped(to: rect).offsetBy(dx: -Int(rect.left), dy: -Int(rect.top)))
         }
 
-        /// Records an area this surface's pixels changed in. Past `maximumDirtyRectCount`
-        /// rectangles a list collapses into its bounding box, which bounds it for surfaces
-        /// whose updates are held back.
+        /// Records an area this surface's pixels changed in: an area inside one already
+        /// recorded adds nothing, and one around others replaces them. Past
+        /// `maximumDirtyRectCount` rectangles a list collapses into its bounding box, which
+        /// bounds it for surfaces whose updates are held back.
         mutating func markDirty(_ rect: RDPGFXRect16) {
             guard let rect = clipped(rect) else {
                 return
             }
-            dirtyRects = (dirtyRects + [rect]).collapsed(beyond: Self.maximumDirtyRectCount)
+            if !dirtyRects.contains(where: { $0.contains(rect) }) {
+                dirtyRects = (dirtyRects.filter { !rect.contains($0) } + [rect]).collapsed(beyond: Self.maximumDirtyRectCount)
+            }
             decodedRects = decodedRects.subtracting(rect)
         }
 
@@ -896,6 +899,12 @@ final class RDPGFXSurfaceCompositor {
                 return rect
             }
         }
+    }
+}
+
+private extension RDPGFXRect16 {
+    func contains(_ rect: RDPGFXRect16) -> Bool {
+        left <= rect.left && top <= rect.top && right >= rect.right && bottom >= rect.bottom
     }
 }
 

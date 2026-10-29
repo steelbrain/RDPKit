@@ -807,8 +807,12 @@ struct MockKRDPServerTests {
         #expect(frame.codecName == "surface-bgra")
         #expect(frame.contentKind == .bitmap)
         #expect(frame.destinationRect == RDPFrameRect(left: 10, top: 20, right: 14, bottom: 24))
-        #expect(frame.regionRects.contains(RDPFrameRect(left: 12, top: 22, right: 14, bottom: 24)))
-        #expect(frame.regionRects.contains(RDPFrameRect(left: 11, top: 21, right: 13, bottom: 22)))
+        // The second fill, less the cache copy's block; ClearCodec drew inside the fill.
+        #expect(frame.regionRects == [
+            RDPFrameRect(left: 10, top: 20, right: 14, bottom: 22),
+            RDPFrameRect(left: 10, top: 22, right: 12, bottom: 24),
+            RDPFrameRect(left: 12, top: 22, right: 14, bottom: 24),
+        ])
         #expect(frame.decodedBitmapBytesPerRow == 16)
         #expect(pixel(atX: 0, y: 0, data: bitmapData, bytesPerRow: 16) == [0x09, 0x08, 0x07, 0xFF])
         #expect(pixel(atX: 2, y: 2, data: bitmapData, bytesPerRow: 16) == [0x01, 0x02, 0x03, 0xFF])
