@@ -90,8 +90,11 @@ final class RDPClearCodecDecoder {
 
         let bitmap: RDPClearCodecBitmap
         if header.flags & Flag.glyphHit != 0 {
+            // The glyph fills the destination, which is its size.
             guard let glyphIndex = header.glyphIndex,
                   let cached = glyphCache[glyphIndex],
+                  cached.width == width,
+                  cached.height == height,
                   cursor.remaining == 0
             else {
                 throw RDPDecodeError.invalidRDPGFXPDU

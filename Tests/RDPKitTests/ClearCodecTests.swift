@@ -246,6 +246,18 @@ import Testing
     #expect(bands.coveredRects == [RDPGFXRect16(left: 0, top: 0, right: 2, bottom: 3)])
 }
 
+@Test func rejectsClearCodecGlyphCacheHitOfAnotherSize() throws {
+    let decoder = RDPClearCodecDecoder()
+    _ = try decoder.decode(clearCodecGlyphMissStream(glyphIndex: 7), width: 2, height: 1)
+    var hit = Data([0x03, 0x01])
+    hit.appendLittleEndianUInt16(7)
+
+    // A 2x1 glyph drawn into a 1x1 destination would spill out of it.
+    #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
+        try decoder.decode(hit, width: 1, height: 1)
+    }
+}
+
 @Test func rejectsClearCodecGlyphCacheHitWithPayload() throws {
     let decoder = RDPClearCodecDecoder()
     let glyphIndex: UInt16 = 7
