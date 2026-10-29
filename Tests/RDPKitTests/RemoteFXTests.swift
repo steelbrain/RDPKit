@@ -91,17 +91,20 @@ func rlgrDecodesSpecEncoderOutput(algorithm: RDPRemoteFXDecoder.EntropyAlgorithm
 }
 
 @Test func caprogressiveKeepsRefinementStateOfRecentCodecContextsOnly() throws {
+    // Each context refines a tile of its own.
     let quantTables = [Data([50] + Array(repeating: UInt8(0x22), count: 15))]
-    let firstPass = caprogressiveRemoteFXGrayTilesStream(
-        progressiveQuantTables: quantTables,
-        tiles: [CAPROGRESSIVERemoteFXGrayTile(blockType: 0xCCC6, xIndex: 0, yIndex: 0, progressiveQuality: 0)]
-    )
+    let firstPass = { (xIndex: UInt16) in
+        caprogressiveRemoteFXGrayTilesStream(
+            progressiveQuantTables: quantTables,
+            tiles: [CAPROGRESSIVERemoteFXGrayTile(blockType: 0xCCC6, xIndex: xIndex, yIndex: 0, progressiveQuality: 0)]
+        )
+    }
     let zeroLL3RawBits = Data(repeating: 0, count: 21)
-    let upgrade = caprogressiveRemoteFXGrayTilesStream(
+    let upgrade = { (xIndex: UInt16) in caprogressiveRemoteFXGrayTilesStream(
         progressiveQuantTables: quantTables,
         tiles: [CAPROGRESSIVERemoteFXGrayTile(
             blockType: 0xCCC7,
-            xIndex: 0,
+            xIndex: xIndex,
             yIndex: 0,
             progressiveQuality: 0xFF,
             ySrlData: srlAllZeroComponent(count: 4015),
@@ -111,16 +114,16 @@ func rlgrDecodesSpecEncoderOutput(algorithm: RDPRemoteFXDecoder.EntropyAlgorithm
             crSrlData: srlAllZeroComponent(count: 4015),
             crRawData: zeroLL3RawBits
         )]
-    )
+    ) }
     let decoder = RDPRemoteFXDecoder()
     for codecContextID in UInt32(1) ... 5 {
-        _ = try decoder.decodeProgressive(firstPass, codecContextID: codecContextID)
+        _ = try decoder.decodeProgressive(firstPass(UInt16(codecContextID)), codecContextID: codecContextID)
     }
 
     #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
-        _ = try decoder.decodeProgressive(upgrade, codecContextID: 1)
+        _ = try decoder.decodeProgressive(upgrade(1), codecContextID: 1)
     }
-    #expect(try decoder.decodeProgressive(upgrade, codecContextID: 2).tiles.count == 1)
+    #expect(try decoder.decodeProgressive(upgrade(2), codecContextID: 2).tiles.count == 1)
 }
 
 @Test func caprogressiveDequantizesWithCombinedShift() throws {

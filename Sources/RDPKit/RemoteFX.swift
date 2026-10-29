@@ -88,6 +88,13 @@ private final class RDPProgressiveTileStore: @unchecked Sendable {
             }
         }
         coefficients[SurfaceTileKey(key)] = stored
+        // A first pass or a whole tile clears the tile's progressive state, whichever codec
+        // context refined it before (MS-RDPEGFX 3.3.8.2.1).
+        for codecContextID in codecContextIDs[key.surfaceID, default: []] {
+            var otherKey = key
+            otherKey.codecContextID = codecContextID
+            refinements[otherKey] = nil
+        }
         setRefinement(refinement, for: key)
         return stored
     }

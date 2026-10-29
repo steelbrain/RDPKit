@@ -300,7 +300,8 @@ import Testing
         )]
     )
     let unrelatedContextStream = caprogressiveRemoteFXGrayTilesStream(
-        tiles: [CAPROGRESSIVERemoteFXGrayTile(xIndex: 0, yIndex: 0)]
+        regionX: 64,
+        tiles: [CAPROGRESSIVERemoteFXGrayTile(xIndex: 1, yIndex: 0)]
     )
     let upgradeStream = caprogressiveRemoteFXGrayTilesStream(
         frameIndex: 2,
@@ -337,6 +338,43 @@ import Testing
     ).tiles.first)
 
     #expect(upgraded.bgraData == firstPass.bgraData)
+}
+
+@Test func caprogressiveTileFromAnotherCodecContextEndsTheUpgrades() throws {
+    let progressiveQuant = Data([50] + Array(repeating: UInt8(0x11), count: 15))
+    let firstPassStream = caprogressiveRemoteFXGrayTilesStream(
+        progressiveQuantTables: [progressiveQuant],
+        tiles: [CAPROGRESSIVERemoteFXGrayTile(blockType: 0xCCC6, xIndex: 0, yIndex: 0, progressiveQuality: 0)]
+    )
+    let upgradeStream = caprogressiveRemoteFXGrayTilesStream(
+        frameIndex: 3,
+        progressiveQuantTables: [progressiveQuant],
+        tiles: [CAPROGRESSIVERemoteFXGrayTile(
+            blockType: 0xCCC7,
+            xIndex: 0,
+            yIndex: 0,
+            progressiveQuality: 0xFF,
+            ySrlData: srlAllZeroComponent(count: 4015),
+            yRawData: Data(repeating: 0, count: 11),
+            cbSrlData: srlAllZeroComponent(count: 4015),
+            cbRawData: Data(repeating: 0, count: 11),
+            crSrlData: srlAllZeroComponent(count: 4015),
+            crRawData: Data(repeating: 0, count: 11)
+        )]
+    )
+    let decoder = RDPRemoteFXDecoder()
+    _ = try decoder.decodeProgressive(firstPassStream, surfaceID: 1, codecContextID: 10)
+
+    // Context 11 replaces the tile, so context 10's first pass no longer describes it.
+    _ = try decoder.decodeProgressive(
+        caprogressiveRemoteFXGrayTilesStream(frameIndex: 2, tiles: [CAPROGRESSIVERemoteFXGrayTile(xIndex: 0, yIndex: 0)]),
+        surfaceID: 1,
+        codecContextID: 11
+    )
+
+    #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
+        _ = try decoder.decodeProgressive(upgradeStream, surfaceID: 1, codecContextID: 10)
+    }
 }
 
 @Test func caprogressiveDifferenceUsesSurfaceTileAcrossCodecContexts() throws {
