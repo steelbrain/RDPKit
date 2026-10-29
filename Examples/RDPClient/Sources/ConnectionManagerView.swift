@@ -10,6 +10,7 @@ struct ConnectionManagerView: View {
     @State private var profiles: [ConnectionProfile] = []
     @State private var selectedProfileID: UUID?
     @State private var profileMessage: String?
+    @State private var savedProfilesWarning: String?
     @State private var host = ""
     @State private var port = "3389"
     @State private var desktopWidth = "1920"
@@ -126,6 +127,14 @@ struct ConnectionManagerView: View {
                     )
                 }
 
+                if let savedProfilesWarning {
+                    InlineNotice(
+                        title: "Saved Connections",
+                        message: savedProfilesWarning,
+                        systemImage: "exclamationmark.triangle.fill"
+                    )
+                }
+
                 HStack {
                     Button(action: connect) {
                         Label("Connect", systemImage: "play.fill")
@@ -153,7 +162,7 @@ struct ConnectionManagerView: View {
             .frame(maxWidth: 620)
         }
         .onAppear {
-            profiles = profileStore.profiles()
+            loadProfiles()
             loadRememberedPasswordIfAvailable(after: .zero)
         }
         .onChange(of: selectedProfileID) { _, newValue in
@@ -226,7 +235,7 @@ struct ConnectionManagerView: View {
             let persistenceResult = try persistCredentialChangeIfNeeded(
                 credentialPersistenceRequest(for: profile)
             )
-            profiles = try profileStore.save(profile)
+            applyProfileList(try profileStore.save(profile))
             selectedProfileID = profile.id
             applyCredentialPersistenceResult(persistenceResult)
             profileMessage = "Profile saved."
@@ -249,7 +258,7 @@ struct ConnectionManagerView: View {
         do {
             let wasSelected = selectedProfileID == profile.id
             let deletedPassword = try deleteStoredCredentials(for: profile)
-            profiles = try profileStore.delete(id: profile.id)
+            applyProfileList(try profileStore.delete(id: profile.id))
             if wasSelected {
                 newConnection()
             }
@@ -282,6 +291,26 @@ struct ConnectionManagerView: View {
         profileMessage = nil
         formError = nil
         loadRememberedPasswordIfAvailable(after: .zero)
+    }
+
+    private func loadProfiles() {
+        do {
+            applyProfileList(try profileStore.profiles())
+        } catch {
+            savedProfilesWarning = String(describing: error)
+        }
+    }
+
+    private func applyProfileList(_ list: ConnectionProfileList) {
+        profiles = list.profiles
+        switch list.unreadableCount {
+        case 0:
+            savedProfilesWarning = nil
+        case 1:
+            savedProfilesWarning = "1 saved connection could not be read. It stays saved as it is."
+        default:
+            savedProfilesWarning = "\(list.unreadableCount) saved connections could not be read. They stay saved as they are."
+        }
     }
 
     private func makeConnectionDraft() throws -> RDPConnectionDraft {

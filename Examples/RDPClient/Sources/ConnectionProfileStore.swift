@@ -36,35 +36,53 @@ struct ConnectionProfile: Codable, Equatable, Identifiable, Sendable {
 }
 
 extension ConnectionProfile {
-    /// Decodes profiles saved before the graphics, clipboard, and audio options existed.
+    /// Decodes profiles other RDPClient builds wrote, older or newer: a field that is missing,
+    /// or that this build cannot read, such as a graphics profile it does not know, takes the
+    /// value a new connection starts with. Only the ID and host are required.
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        func value<T: Decodable>(_ key: CodingKeys, default defaultValue: T) -> T {
+            (try? container.decodeIfPresent(T.self, forKey: key)) ?? defaultValue
+        }
         id = try container.decode(UUID.self, forKey: .id)
         host = try container.decode(String.self, forKey: .host)
-        port = try container.decode(UInt16.self, forKey: .port)
-        username = try container.decode(String.self, forKey: .username)
-        domain = try container.decode(String.self, forKey: .domain)
-        desktopWidth = try container.decode(UInt16.self, forKey: .desktopWidth)
-        desktopHeight = try container.decode(UInt16.self, forKey: .desktopHeight)
-        hideCertificateWarnings = try container.decode(Bool.self, forKey: .hideCertificateWarnings)
-        timeoutSeconds = try container.decode(Int.self, forKey: .timeoutSeconds)
-        graphicsCapabilityProfile = try container.decodeIfPresent(
-            RDPGraphicsCapabilityProfile.self,
-            forKey: .graphicsCapabilityProfile
-        ) ?? .automatic
-        clipboardSharingEnabled = try container.decodeIfPresent(
-            Bool.self,
-            forKey: .clipboardSharingEnabled
-        ) ?? true
-        audioPlaybackEnabled = try container.decodeIfPresent(
-            Bool.self,
-            forKey: .audioPlaybackEnabled
-        ) ?? false
-        rememberPassword = try container.decode(Bool.self, forKey: .rememberPassword)
-        updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+        port = value(.port, default: 3389)
+        username = value(.username, default: "")
+        domain = value(.domain, default: "")
+        desktopWidth = value(.desktopWidth, default: 1920)
+        desktopHeight = value(.desktopHeight, default: 1080)
+        hideCertificateWarnings = value(.hideCertificateWarnings, default: false)
+        timeoutSeconds = value(.timeoutSeconds, default: 10)
+        graphicsCapabilityProfile = value(.graphicsCapabilityProfile, default: .automatic)
+        clipboardSharingEnabled = value(.clipboardSharingEnabled, default: true)
+        audioPlaybackEnabled = value(.audioPlaybackEnabled, default: false)
+        rememberPassword = value(.rememberPassword, default: false)
+        updatedAt = value(.updatedAt, default: .distantPast)
     }
 }
 
+struct ConnectionProfileList: Equatable {
+    /// The profiles this build can read, most recently updated first.
+    var profiles: [ConnectionProfile] = []
+    /// Stored profiles it cannot read, such as ones a newer build wrote. They stay stored as
+    /// they are.
+    var unreadableCount = 0
+}
+
+enum ConnectionProfileStoreError: Error, CustomStringConvertible {
+    case unreadableProfiles
+
+    var description: String {
+        switch self {
+        case .unreadableProfiles:
+            "Saved connections could not be read. RDPClient leaves them unchanged, so it cannot save or delete one."
+        }
+    }
+}
+
+/// Keeps profiles in UserDefaults as a JSON array. Each element is read on its own, and written
+/// back as it was stored unless that profile is saved or deleted, so one this build cannot read,
+/// and fields it does not know, survive.
 struct ConnectionProfileStore {
     private let defaults: UserDefaults
     private let storageKey = "connection-profiles.v1"
@@ -73,37 +91,70 @@ struct ConnectionProfileStore {
         self.defaults = defaults
     }
 
-    func profiles() -> [ConnectionProfile] {
-        guard let data = defaults.data(forKey: storageKey),
-              let decoded = try? JSONDecoder().decode([ConnectionProfile].self, from: data)
-        else {
+    /// Throws when the stored data is not a JSON array; nothing is written over it then.
+    func profiles() throws -> ConnectionProfileList {
+        list(try storedProfiles())
+    }
+
+    func save(_ profile: ConnectionProfile) throws -> ConnectionProfileList {
+        var stored = try storedProfiles()
+        let encoded = try JSONSerialization.jsonObject(with: JSONEncoder().encode(profile))
+        guard var element = encoded as? [String: Any] else {
+            preconditionFailure("A ConnectionProfile encodes as a JSON object.")
+        }
+        let index = stored.firstIndex { $0.profile?.id == profile.id }
+            ?? stored.firstIndex { $0.profile?.hasSameIdentity(as: profile) == true }
+        if let index {
+            // Fields a newer build added to this profile stay.
+            if let previous = stored[index].json as? [String: Any] {
+                element = previous.merging(element) { _, new in new }
+            }
+            stored[index] = StoredProfile(json: element, profile: profile)
+        } else {
+            stored.append(StoredProfile(json: element, profile: profile))
+        }
+        try write(stored)
+        return list(stored)
+    }
+
+    func delete(id: UUID) throws -> ConnectionProfileList {
+        let stored = try storedProfiles().filter { $0.profile?.id != id }
+        try write(stored)
+        return list(stored)
+    }
+
+    /// One element of the stored array, and its profile when this build can decode it.
+    private struct StoredProfile {
+        var json: Any
+        var profile: ConnectionProfile?
+    }
+
+    private func storedProfiles() throws -> [StoredProfile] {
+        guard let data = defaults.data(forKey: storageKey) else {
             return []
         }
-        return sorted(decoded)
-    }
-
-    func save(_ profile: ConnectionProfile) throws -> [ConnectionProfile] {
-        var nextProfiles = profiles()
-        if let index = nextProfiles.firstIndex(where: { $0.id == profile.id }) {
-            nextProfiles[index] = profile
-        } else if let index = nextProfiles.firstIndex(where: { $0.hasSameIdentity(as: profile) }) {
-            nextProfiles[index] = profile
-        } else {
-            nextProfiles.append(profile)
+        guard let elements = try? JSONSerialization.jsonObject(with: data) as? [Any] else {
+            throw ConnectionProfileStoreError.unreadableProfiles
         }
-        try saveProfiles(nextProfiles)
-        return sorted(nextProfiles)
+        let decoder = JSONDecoder()
+        return elements.map { json in
+            let profile = (try? JSONSerialization.data(withJSONObject: json, options: .fragmentsAllowed))
+                .flatMap { try? decoder.decode(ConnectionProfile.self, from: $0) }
+            return StoredProfile(json: json, profile: profile)
+        }
     }
 
-    func delete(id: UUID) throws -> [ConnectionProfile] {
-        let nextProfiles = profiles().filter { $0.id != id }
-        try saveProfiles(nextProfiles)
-        return sorted(nextProfiles)
-    }
-
-    private func saveProfiles(_ profiles: [ConnectionProfile]) throws {
-        let data = try JSONEncoder().encode(sorted(profiles))
+    private func write(_ stored: [StoredProfile]) throws {
+        let data = try JSONSerialization.data(withJSONObject: stored.map(\.json))
         defaults.set(data, forKey: storageKey)
+    }
+
+    private func list(_ stored: [StoredProfile]) -> ConnectionProfileList {
+        let profiles = stored.compactMap(\.profile)
+        return ConnectionProfileList(
+            profiles: sorted(profiles),
+            unreadableCount: stored.count - profiles.count
+        )
     }
 
     private func sorted(_ profiles: [ConnectionProfile]) -> [ConnectionProfile] {
