@@ -53,6 +53,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
     private var renderMetricsStore = RDPRenderMetricsStore()
     private let diagnosticsModel = RemoteSessionDiagnosticsModel()
     private var certificateTrustedByApp = false
+    private var certificateChanged = false
     private var certificateTrustMessage: String?
     private var formError: String?
     private var controlsVisible = false
@@ -459,6 +460,15 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                 action: .forgetCertificate
             )
         }
+        if certificateChanged {
+            return RDPAppKitNoticeState(
+                title: "Certificate Changed",
+                message: "Trust the new certificate only if you know why the server's certificate changed.",
+                systemImage: "lock.trianglebadge.exclamationmark.fill",
+                actionTitle: "Trust Certificate",
+                action: .trustCertificate
+            )
+        }
         if let warning = report?.warnings.first ?? serverCertificateInfo?.warnings.first {
             return RDPAppKitNoticeState(
                 title: warning.code,
@@ -565,6 +575,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         resetFramePresentationState()
         renderMetricsStore.reset()
         certificateTrustedByApp = false
+        certificateChanged = false
         certificateTrustMessage = nil
 
         let target: RDPConnectionTarget
@@ -639,6 +650,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         let sink = RDPRemoteSessionMainActorSink(controller: self, connectionID: connectionID)
         let credentialStore = credentialStore
         let clientLicenseStore = clientLicenseStore
+        let trustedCertificateStore = trustedCertificateStore
         // RDPSessionClient.run blocks for the whole session, so it gets its own thread
         // rather than holding a Swift concurrency worker.
         let sessionThread = Thread {
@@ -777,6 +789,11 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                     }
                 },
                 onCertificate: { certificateInfo in
+                    // Cancelling here closes the connection before any credential is sent.
+                    let isChanged = trustedCertificateStore.isChanged(certificateInfo, port: target.port)
+                    if isChanged {
+                        cancellation.cancel()
+                    }
                     sink.apply { controller in
                         controller.serverCertificateInfo = certificateInfo
                         // After a server redirection, the certificate belongs to the redirection target.
@@ -785,6 +802,9 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                             port: target.port,
                             sha256: certificateInfo.sha256
                         )
+                        if isChanged {
+                            controller.rejectChangedCertificate()
+                        }
                         controller.render()
                     }
                 },
@@ -981,6 +1001,16 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         framePresentationBuffer.clear()
         hasPresentedFrame = false
         remoteDesktopRenderer.clear()
+    }
+
+    private func rejectChangedCertificate() {
+        certificateChanged = true
+        sessionEndReason = RDPSessionEndReason(
+            kind: .failed,
+            message: "The server's certificate is not the one trusted for this host. "
+                + "The connection was closed before any credential was sent."
+        )
+        cancelConnection(shouldRecordCancellation: false)
     }
 
     func cancelConnection(shouldRecordCancellation: Bool = true) {
