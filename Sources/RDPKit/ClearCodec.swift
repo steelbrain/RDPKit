@@ -239,11 +239,17 @@ final class RDPClearCodecDecoder {
                 throw RDPDecodeError.invalidRDPGFXPDU
             }
 
+            let bytesPerRow = bitmap.bytesPerRow
             for x in xStart ... xEnd {
                 let vBar = try decodeVBar(&cursor, background: background, height: height)
-                for row in 0 ..< height {
-                    let destinationOffset = (yStart + row) * bitmap.bytesPerRow + x * 4
-                    bitmap.bgraData[destinationOffset ..< destinationOffset + 4] = vBar[row * 4 ..< row * 4 + 4]
+                bitmap.bgraData.withUnsafeMutableBytes { pixels in
+                    vBar.withUnsafeBytes { vBar in
+                        for row in 0 ..< height {
+                            let destinationOffset = (yStart + row) * bytesPerRow + x * 4
+                            UnsafeMutableRawBufferPointer(rebasing: pixels[destinationOffset ..< destinationOffset + 4])
+                                .copyMemory(from: UnsafeRawBufferPointer(rebasing: vBar[row * 4 ..< row * 4 + 4]))
+                        }
+                    }
                 }
             }
             bitmap.cover(left: xStart, top: yStart, right: xEnd + 1, bottom: yEnd + 1)
@@ -277,9 +283,18 @@ final class RDPClearCodecDecoder {
             guard yOn <= yOff, yOff <= height else {
                 throw RDPDecodeError.invalidRDPGFXPDU
             }
-            var pixels = Data(capacity: (yOff - yOn) * 4)
-            for _ in yOn ..< yOff {
-                try pixels.append(contentsOf: [cursor.readUInt8(), cursor.readUInt8(), cursor.readUInt8(), 0xFF])
+            let pixelCount = yOff - yOn
+            let bgr = try cursor.readData(count: pixelCount * 3)
+            var pixels = Data(count: pixelCount * 4)
+            pixels.withUnsafeMutableBytes { pixels in
+                bgr.withUnsafeBytes { bgr in
+                    for index in 0 ..< pixelCount {
+                        pixels[index * 4] = bgr[index * 3]
+                        pixels[index * 4 + 1] = bgr[index * 3 + 1]
+                        pixels[index * 4 + 2] = bgr[index * 3 + 2]
+                        pixels[index * 4 + 3] = 0xFF
+                    }
+                }
             }
             shortVBar = pixels
             shortVBarStorage[shortVBarStorageCursor] = shortVBar
@@ -290,13 +305,16 @@ final class RDPClearCodecDecoder {
         guard yOff <= height else {
             throw RDPDecodeError.invalidRDPGFXPDU
         }
-        var vBar = Data(capacity: height * 4)
-        for _ in 0 ..< yOn {
-            vBar.append(background)
-        }
-        vBar.append(shortVBar)
-        for _ in yOff ..< height {
-            vBar.append(background)
+        var vBar = Data(count: height * 4)
+        vBar.withUnsafeMutableBytes { vBar in
+            background.withUnsafeBytes { background in
+                for row in 0 ..< height where row < yOn || row >= yOff {
+                    UnsafeMutableRawBufferPointer(rebasing: vBar[row * 4 ..< row * 4 + 4]).copyMemory(from: background)
+                }
+            }
+            shortVBar.withUnsafeBytes { shortVBar in
+                UnsafeMutableRawBufferPointer(rebasing: vBar[yOn * 4 ..< yOff * 4]).copyMemory(from: shortVBar)
+            }
         }
         vBarStorage[vBarStorageCursor] = vBar
         vBarStorageCursor = (vBarStorageCursor + 1) % Self.vBarStorageSize
@@ -486,9 +504,11 @@ private extension RDPClearCodecBitmap {
 
     mutating func setPixel(x: Int, y: Int, blue: UInt8, green: UInt8, red: UInt8) {
         let offset = y * bytesPerRow + x * 4
-        bgraData[offset] = blue
-        bgraData[offset + 1] = green
-        bgraData[offset + 2] = red
-        bgraData[offset + 3] = 0xFF
+        bgraData.withUnsafeMutableBytes { pixels in
+            pixels[offset] = blue
+            pixels[offset + 1] = green
+            pixels[offset + 2] = red
+            pixels[offset + 3] = 0xFF
+        }
     }
 }
