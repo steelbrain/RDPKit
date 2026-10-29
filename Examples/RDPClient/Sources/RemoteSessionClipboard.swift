@@ -2,6 +2,8 @@ import AppKit
 import RDPKit
 
 private let maximumClipboardFileBytes = 32 * 1024 * 1024
+/// The most asked for in one FILECONTENTS_RANGE request; servers may send less anyway.
+private let maximumFileRangeByteCount: UInt64 = 1024 * 1024
 
 /// Where the clipboard bridge sends: the session's `RDPClipboardSession`.
 protocol RDPClipboardSending: AnyObject {
@@ -169,54 +171,41 @@ final class RDPRemoteSessionClipboard {
         else {
             return
         }
+        // Taken out so the received bytes are appended in place.
+        fileTransfer = nil
         guard response.ok else {
             failFileTransfer(transfer, message: "Remote file transfer failed.")
             return
         }
 
-        if transfer.requestedRange {
-            receiveFileData(response.data, transfer: transfer)
+        guard transfer.expectedByteCount != nil else {
+            do {
+                let byteCount = try response.decodedFileSize()
+                guard byteCount <= UInt64(maximumClipboardFileBytes),
+                      transfer.totalExpectedByteCount <= UInt64(maximumClipboardFileBytes) - byteCount
+                else {
+                    failFileTransfer(transfer, message: "Remote files exceed 32 MiB.")
+                    return
+                }
+                transfer.expectedByteCount = byteCount
+                transfer.totalExpectedByteCount += byteCount
+                continueFileTransfer(transfer)
+            } catch {
+                failFileTransfer(transfer, message: "Remote file size request failed.")
+            }
             return
         }
 
-        do {
-            let byteCount = try response.decodedFileSize()
-            guard byteCount <= UInt64(maximumClipboardFileBytes),
-                  transfer.totalExpectedByteCount <= UInt64(maximumClipboardFileBytes) - byteCount,
-                  let requestedByteCount = UInt32(exactly: byteCount)
-            else {
-                failFileTransfer(transfer, message: "Remote files exceed 32 MiB.")
-                return
-            }
-
-            guard let session else {
-                failFileTransfer(transfer, message: "Clipboard is not ready.")
-                return
-            }
-
-            transfer.expectedByteCount = byteCount
-            transfer.totalExpectedByteCount += byteCount
-            if byteCount == 0 {
-                fileTransfer = transfer
-                receiveFileData(Data(), transfer: transfer)
-                return
-            }
-
-            transfer.requestedRange = true
-            fileTransfer = transfer
-            guard let currentFile = transfer.currentFile else {
-                failFileTransfer(transfer, message: "Remote file transfer failed.")
-                return
-            }
-            try session.requestRemoteFileRange(
-                streamID: transfer.streamID,
-                fileIndex: currentFile.fileIndex,
-                position: 0,
-                requestedByteCount: requestedByteCount
-            )
-        } catch {
-            failFileTransfer(transfer, message: "Remote file size request failed.")
+        // [MS-RDPECLIP] 2.2.5.4 does not promise all of a range in one answer, and servers send
+        // less, so the rest is asked for again. Nothing before the end, or more than asked, fails.
+        guard response.data.isEmpty == false,
+              response.data.count <= Int(transfer.requestedByteCount)
+        else {
+            failFileTransfer(transfer, message: "Remote file transfer was incomplete.")
+            return
         }
+        transfer.receivedData.append(response.data)
+        continueFileTransfer(transfer)
     }
 
     private func publishPasteboardIfChanged(force: Bool = false) {
@@ -351,19 +340,44 @@ final class RDPRemoteSessionClipboard {
         return files.isEmpty ? .empty : .files(files)
     }
 
-    private func receiveFileData(_ data: Data, transfer: RemoteFileTransfer) {
+    /// Asks for the next range of the current file, or saves it once all of it has arrived.
+    private func continueFileTransfer(_ transfer: RemoteFileTransfer) {
         guard let currentFile = transfer.currentFile,
-              transfer.expectedByteCount == UInt64(data.count),
-              data.count <= maximumClipboardFileBytes
+              let expectedByteCount = transfer.expectedByteCount
         else {
-            failFileTransfer(transfer, message: "Remote file transfer was incomplete.")
+            failFileTransfer(transfer, message: "Remote file transfer failed.")
+            return
+        }
+        let receivedByteCount = UInt64(transfer.receivedData.count)
+        guard receivedByteCount < expectedByteCount else {
+            saveCurrentFile(currentFile, of: transfer)
+            return
+        }
+        guard let session else {
+            failFileTransfer(transfer, message: "Clipboard is not ready.")
             return
         }
 
+        var transfer = transfer
+        transfer.requestedByteCount = UInt32(min(maximumFileRangeByteCount, expectedByteCount - receivedByteCount))
+        fileTransfer = transfer
+        do {
+            try session.requestRemoteFileRange(
+                streamID: transfer.streamID,
+                fileIndex: currentFile.fileIndex,
+                position: receivedByteCount,
+                requestedByteCount: transfer.requestedByteCount
+            )
+        } catch {
+            failFileTransfer(transfer, message: "Remote file request failed.")
+        }
+    }
+
+    private func saveCurrentFile(_ currentFile: RDPClipboardRemoteFileTransferFile, of transfer: RemoteFileTransfer) {
         do {
             var nextTransfer = transfer
             let fileURL = transfer.downloadDirectory.appendingPathComponent(currentFile.fileName, isDirectory: false)
-            try data.write(to: fileURL, options: .atomic)
+            try transfer.receivedData.write(to: fileURL, options: .atomic)
             nextTransfer.downloadedFileURLs.append(fileURL)
 
             guard nextTransfer.currentFileOffset + 1 < nextTransfer.files.count else {
@@ -374,7 +388,7 @@ final class RDPRemoteSessionClipboard {
             nextTransfer.currentFileOffset += 1
             nextTransfer.streamID = makeStreamID()
             nextTransfer.expectedByteCount = nil
-            nextTransfer.requestedRange = false
+            nextTransfer.receivedData = Data()
             requestFileSize(nextTransfer)
         } catch {
             failFileTransfer(transfer, message: "Remote file could not be saved.")
@@ -492,8 +506,10 @@ private struct RemoteFileTransfer: Equatable {
     var files: [RDPClipboardRemoteFileTransferFile]
     var currentFileOffset = 0
     var streamID: UInt32
+    /// Nil until the server answers the size request.
     var expectedByteCount: UInt64?
-    var requestedRange = false
+    var receivedData = Data()
+    var requestedByteCount: UInt32 = 0
     var totalExpectedByteCount: UInt64 = 0
     var downloadedFileURLs: [URL] = []
     var downloadDirectory: URL

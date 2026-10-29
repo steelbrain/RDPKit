@@ -15,9 +15,16 @@ private final class RecordedClipboard: RDPClipboardSending {
         publishedFiles.append(files)
     }
 
-    func requestRemoteFileSize(streamID _: UInt32, fileIndex _: Int32) throws {}
+    var sizeRequests: [UInt32] = []
+    var rangeRequests: [(streamID: UInt32, position: UInt64, requestedByteCount: UInt32)] = []
 
-    func requestRemoteFileRange(streamID _: UInt32, fileIndex _: Int32, position _: UInt64, requestedByteCount _: UInt32) throws {}
+    func requestRemoteFileSize(streamID: UInt32, fileIndex _: Int32) throws {
+        sizeRequests.append(streamID)
+    }
+
+    func requestRemoteFileRange(streamID: UInt32, fileIndex _: Int32, position: UInt64, requestedByteCount: UInt32) throws {
+        rangeRequests.append((streamID, position, requestedByteCount))
+    }
 }
 
 /// A pasteboard of the test's own, so tests never read or replace the user's clipboard.
@@ -83,4 +90,72 @@ private func makePasteboard() -> NSPasteboard {
     try await Task.sleep(nanoseconds: 200_000_000)
     #expect(session.publishedFiles.count == 1)
     #expect(session.publishedTexts.last == "newer")
+}
+
+/// Offers one remote file of `contents` and answers the size request.
+@MainActor
+private func startRemoteFileDownload(
+    _ contents: Data,
+    to clipboard: RDPRemoteSessionClipboard,
+    from session: RecordedClipboard
+) throws {
+    clipboard.receiveFileList(RDPClipboardFileGroupDescriptorW(descriptors: [
+        RDPClipboardFileDescriptorW(flags: 0, fileAttributes: 0, fileSize: UInt64(contents.count), fileName: "big.bin"),
+    ]))
+    let streamID = try #require(session.sizeRequests.last)
+    let size = UInt64(contents.count).littleEndian
+    clipboard.receiveFileContents(RDPClipboardFileContentsResponse(
+        streamID: streamID,
+        ok: true,
+        data: withUnsafeBytes(of: size) { Data($0) }
+    ))
+}
+
+@MainActor
+@Test func aRemoteFileArrivesOverRangesTheServerAnswersShort() throws {
+    let pasteboard = makePasteboard()
+    defer { pasteboard.releaseGlobally() }
+    let session = RecordedClipboard()
+    let clipboard = RDPRemoteSessionClipboard(isSharingEnabled: true, pasteboard: pasteboard)
+    clipboard.attach(session)
+    let contents = Data((0 ..< 1_500_000).map { UInt8(truncatingIfNeeded: $0 &* 31) })
+
+    try startRemoteFileDownload(contents, to: clipboard, from: session)
+    var received = 0
+    while received < contents.count {
+        let request = try #require(session.rangeRequests.last)
+        session.rangeRequests.removeAll()
+        #expect(request.position == UInt64(received))
+        #expect(request.requestedByteCount <= 1024 * 1024)
+        // Windows caps how much one answer carries.
+        let end = received + min(Int(request.requestedByteCount), 700_000)
+        clipboard.receiveFileContents(RDPClipboardFileContentsResponse(
+            streamID: request.streamID,
+            ok: true,
+            data: contents.subdata(in: received ..< end)
+        ))
+        received = end
+    }
+
+    #expect(session.rangeRequests.isEmpty)
+    let fileURL = try #require((pasteboard.readObjects(forClasses: [NSURL.self]) as? [URL])?.first)
+    defer { try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent()) }
+    #expect(try Data(contentsOf: fileURL) == contents)
+}
+
+@MainActor
+@Test func anEmptyRangeAnswerBeforeTheEndFailsTheDownload() throws {
+    let pasteboard = makePasteboard()
+    defer { pasteboard.releaseGlobally() }
+    let session = RecordedClipboard()
+    let clipboard = RDPRemoteSessionClipboard(isSharingEnabled: true, pasteboard: pasteboard)
+    clipboard.attach(session)
+
+    try startRemoteFileDownload(Data(count: 10), to: clipboard, from: session)
+    let request = try #require(session.rangeRequests.last)
+    session.rangeRequests.removeAll()
+    clipboard.receiveFileContents(RDPClipboardFileContentsResponse(streamID: request.streamID, ok: true, data: Data()))
+
+    #expect(session.rangeRequests.isEmpty)
+    #expect(clipboard.statusMessage == "Remote file transfer was incomplete.")
 }
