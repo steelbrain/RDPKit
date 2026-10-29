@@ -50,6 +50,37 @@ import Testing
     #expect(values == [0, 0, 0, 0])
 }
 
+/// gnome-remote-desktop 51 with the `legacy` graphics profile: its first frame is one
+/// WireToSurface2 of 240 RFX_PROGRESSIVE_TILE_SIMPLE tiles (original DWT, no reduce-extrapolate)
+/// covering the 1280x720 surface. The screen shows a 1000x562 colour-bar test pattern,
+/// letterboxed in black, beside the desktop background.
+@Test func replaysGnomeProgressiveTranscriptToTestPatternColours() throws {
+    let report = try replayTranscriptFixture("gnome-progressive-transcript", graphicsCapabilityProfile: .legacy).report
+    #expect(report.status == "success")
+    #expect(report.rdpGraphicsUpdateMessages?.contains {
+        $0.codecName == "caprogressive" && $0.progressiveTileSimpleCount == 240
+    } == true)
+    let frame = try #require(report.rdpGraphicsFirstFrame)
+    #expect(frame.contentKind == .bitmap)
+    #expect(frame.surfaceRect == RDPFrameRect(left: 0, top: 0, right: 1280, bottom: 720))
+    #expect(frame.regionRects == [RDPFrameRect(left: 0, top: 0, right: 1280, bottom: 720)])
+    let data = try #require(frame.decodedBitmapData)
+    let bytesPerRow = try #require(frame.decodedBitmapBytesPerRow)
+
+    // Red, green, yellow, blue, magenta and cyan bars, as RGB.
+    let expected: [(x: Int, y: Int, rgb: [Int])] = [
+        (80, 300, [254, 23, 0]), (250, 300, [0, 215, 0]), (420, 300, [254, 239, 0]),
+        (580, 300, [0, 15, 255]), (750, 300, [254, 38, 255]), (920, 300, [0, 231, 255]),
+        // The grey bar, the letterbox and the desktop background.
+        (249, 500, [128, 127, 128]), (500, 40, [0, 0, 0]), (640, 690, [0, 0, 0]), (1100, 300, [20, 56, 92]),
+    ]
+    for (x, y, rgb) in expected {
+        let bgra = pixel(atX: x, y: y, data: data, bytesPerRow: bytesPerRow)
+        let decoded = [Int(bgra[2]), Int(bgra[1]), Int(bgra[0])]
+        #expect(zip(decoded, rgb).allSatisfy { abs($0 - $1) <= 2 } && bgra[3] == 0xFF, "(\(x), \(y)): \(decoded)")
+    }
+}
+
 @Test func caprogressiveTileSimpleSummarizesAndDecodes() throws {
     // GRD can send its first frame as RDPGFX_WIRE_TO_SURFACE_2 with
     // CAPROGRESSIVE tile-simple blocks instead of AVC video. The tail bytes are
