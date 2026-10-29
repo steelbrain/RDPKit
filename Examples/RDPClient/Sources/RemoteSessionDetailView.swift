@@ -193,7 +193,7 @@ final class RDPRemoteSessionAppKitDetailView: NSView {
                 ? RDPAppKitNoticeState(
                     title: "RSA Key Exchange",
                     message: "The server's certificate does not allow ECDHE key exchange, so this window "
-                        + "connects with RSA key exchange, which has no forward secrecy.",
+                        + "connects to it with RSA key exchange, which has no forward secrecy.",
                     systemImage: "lock.trianglebadge.exclamationmark",
                     actionTitle: nil,
                     action: nil

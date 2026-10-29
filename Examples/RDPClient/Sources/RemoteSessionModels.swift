@@ -246,6 +246,36 @@ struct RDPKeyframeRequestThrottle {
     }
 }
 
+/// The target whose certificate refused ECDHE. Reconnecting to it uses RSA key exchange from the
+/// start; connecting to any other target forgets it, so that target gets ECDHE's forward secrecy.
+struct RDPLegacyKeyExchangeFallback: Equatable {
+    private(set) var target: RDPConnectionTarget?
+
+    /// Returns whether a connection to `target` uses RSA key exchange.
+    mutating func connect(to target: RDPConnectionTarget) -> Bool {
+        if self.target != target {
+            self.target = nil
+        }
+        return self.target != nil
+    }
+
+    /// Whether a connection to `target` that ended with `failure` is to connect again with RSA
+    /// key exchange: once, after the certificate refused ECDHE. RSA key exchange needs only the
+    /// keyEncipherment such a certificate allows, and RDPKit never reports this failure with it
+    /// on. The handshake failed before the certificate was checked, so no credential was sent.
+    mutating func shouldRetry(
+        _ target: RDPConnectionTarget,
+        after failure: RDPConnectionFailure?,
+        usedRSAKeyExchange: Bool
+    ) -> Bool {
+        guard failure == .tlsKeyUsageIncorrect, !usedRSAKeyExchange else {
+            return false
+        }
+        self.target = target
+        return true
+    }
+}
+
 /// Paces the sizes Follow View Size sends over Display Control: a size goes out once the view
 /// has kept it for a moment, and never when the server was last sent it.
 struct RDPDisplayResizeDebounce {

@@ -65,7 +65,8 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
     private var certificateTrustedByApp = false
     private var certificateRefusal: CertificateRefusal?
     private var certificateTrustMessage: String?
-    /// Set once the server's certificate refused ECDHE; this window keeps it for reconnects.
+    private var legacyKeyExchangeFallback = RDPLegacyKeyExchangeFallback()
+    /// Whether the connection shown uses RSA key exchange, as its target's certificate refused ECDHE.
     private var usesLegacyRSAKeyExchange = false
     private var formError: String?
     private var controlsVisible = false
@@ -603,6 +604,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         certificateTrustedByApp = false
         certificateRefusal = nil
         certificateTrustMessage = nil
+        usesLegacyRSAKeyExchange = false
 
         let target: RDPConnectionTarget
         let requestedDesktopSize: RDPDesktopSize
@@ -614,6 +616,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
             render()
             return
         }
+        usesLegacyRSAKeyExchange = legacyKeyExchangeFallback.connect(to: target)
 
         let trimmedUsername = username.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedDomain = domain.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -898,11 +901,11 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                 ? nil
                 : nextReport.rdpGraphicsFirstFrame.map(decodeReportFirstFrame)
             sink.apply { controller in
-                // The handshake failed before onCertificate, so no credential was sent. RSA key
-                // exchange needs only the keyEncipherment such a certificate allows, and RDPKit
-                // never reports this failure with it on, so this retries once.
-                if nextReport.failure == .tlsKeyUsageIncorrect, !configuration.legacyRSAKeyExchange {
-                    controller.usesLegacyRSAKeyExchange = true
+                if controller.legacyKeyExchangeFallback.shouldRetry(
+                    target,
+                    after: nextReport.failure,
+                    usedRSAKeyExchange: configuration.legacyRSAKeyExchange
+                ) {
                     controller.beginConnection()
                     return
                 }

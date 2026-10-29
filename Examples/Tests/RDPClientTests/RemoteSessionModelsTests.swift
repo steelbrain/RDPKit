@@ -175,6 +175,35 @@ private let bitmapFrame = RDPGraphicsFrameSnapshot(
     #expect(requests(atIntervals: [4]) == [true])
 }
 
+@Test func rsaKeyExchangeStaysWithTheTargetWhoseCertificateRefusedECDHE() throws {
+    let serverA = try RDPConnectionTarget(host: "a.example", port: 3389)
+    let serverB = try RDPConnectionTarget(host: "b.example", port: 3389)
+    let serverAOtherPort = try RDPConnectionTarget(host: "a.example", port: 3390)
+    var fallback = RDPLegacyKeyExchangeFallback()
+
+    #expect(fallback.connect(to: serverA) == false)
+    #expect(fallback.shouldRetry(serverA, after: .tls, usedRSAKeyExchange: false) == false)
+    #expect(fallback.shouldRetry(serverA, after: nil, usedRSAKeyExchange: false) == false)
+    #expect(fallback.connect(to: serverA) == false)
+
+    #expect(fallback.shouldRetry(serverA, after: .tlsKeyUsageIncorrect, usedRSAKeyExchange: false) == true)
+    #expect(fallback.connect(to: serverA) == true)
+    // Once only: a connection that already used RSA key exchange is not retried.
+    #expect(fallback.shouldRetry(serverA, after: .tlsKeyUsageIncorrect, usedRSAKeyExchange: true) == false)
+    // Reconnecting to the same target keeps it.
+    #expect(fallback.connect(to: serverA) == true)
+    #expect(fallback.target == serverA)
+
+    // Another target gets ECDHE, and the fallback is gone for a later connection to the first.
+    #expect(fallback.connect(to: serverB) == false)
+    #expect(fallback.target == nil)
+    #expect(fallback.connect(to: serverA) == false)
+
+    // The port is part of the target.
+    #expect(fallback.shouldRetry(serverA, after: .tlsKeyUsageIncorrect, usedRSAKeyExchange: false) == true)
+    #expect(fallback.connect(to: serverAOtherPort) == false)
+}
+
 @Test func aViewResizedAndBackBeforeTheDelaySendsNothing() {
     let sizeA = RDPDisplayRequest(pointSize: CGSize(width: 1000, height: 600), backingScaleFactor: 2)
     let sizeB = RDPDisplayRequest(pointSize: CGSize(width: 800, height: 500), backingScaleFactor: 2)

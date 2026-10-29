@@ -184,7 +184,7 @@ struct RemoteSessionDiagnosticsSnapshot: Equatable {
     var audioPlaybackEnabled = false
     var certificateTrustedByApp = false
     var certificateTrustMessage: String?
-    /// The server's certificate refused ECDHE, so this window connects with RSA key exchange.
+    /// The server's certificate refused ECDHE, so the connection uses RSA key exchange.
     var legacyRSAKeyExchange = false
     var formError: String?
     var isConnecting = false
