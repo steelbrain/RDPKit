@@ -234,6 +234,11 @@
     work, and Option-E then Return no longer types "´" first. Right Option
     does the same once its Alt is on the server. A letter typed with Caps
     Lock on goes as its scancode, as without it.
+  - When the server takes no Unicode input, RDPClient sends the keys pressed
+    instead of dropping text: right Option goes as Alt (AltGr) at once, and
+    characters, dead keys included, go as their scancodes for the server's
+    own layout to type. The Mac's composed characters and accents are not
+    sent.
   - Clipboard sharing can be turned on mid-session; with it off, nothing
     crosses either way. To allow that, RDPClient always joins the clipboard
     channel, which empties a Windows server's clipboard at connect. Turning
