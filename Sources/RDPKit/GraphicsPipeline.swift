@@ -123,7 +123,10 @@ extension RDPClientConnection {
 
         switch message.commandID {
         case RDPGFXCommandID.wireToSurface1:
-            if let frame = try videoFrame(RDPGFXWireToSurface1PDU.parse(from: message), compositor: compositor) {
+            // Video the decoder drops leaves the surface's pixels as they were, on both sides.
+            if let frame = try videoFrame(RDPGFXWireToSurface1PDU.parse(from: message), compositor: compositor),
+               !compositor.decoderDropsVideo(frame)
+            {
                 try appendPendingGraphicsUpdate(.frame(frame))
                 compositor.noteVideo(frame)
             }

@@ -1169,6 +1169,26 @@ struct MockKRDPServerTests {
         #expect(frames.filter { $0.surfaceID == 2 && $0.contentKind == .video }.map(\.videoNalUnitTypes) == [[7, 8, 5], [1]])
     }
 
+    /// Video the decoder drops changes nothing: a fill it covered on a hidden surface is
+    /// still the session's, so a copy of it is the session's to paint, not a decoder copy
+    /// of pixels the decoder never had.
+    @Test func clientCopiesWhatHiddenSurfaceVideoBeforeAKeyframeLeft() throws {
+        let observed = Locked(Observed())
+        let report = try runMock(.init(graphicsBehavior: .copyOutOfHiddenSurfaceAfterVideoBeforeAKeyframe), client: {
+            RDPSessionClient().run(configuration: $0, onGraphicsFrame: { frame in
+                observed.withLock { $0.frames.append(frame) }
+            })
+        }).report
+
+        #expect(report.status == "success")
+        let frames = observed.value.frames
+        #expect(frames.map(\.contentKind) == [.video, .surfaceCopy, .bitmap])
+        #expect(frames.map(\.surfaceID) == [1, 2, 1])
+        let bitmap = try #require(frames.last)
+        #expect(bitmap.regionRects == [RDPFrameRect(left: 32, top: 16, right: 48, bottom: 24)])
+        #expect(pixel(atX: 40, y: 20, data: try #require(bitmap.decodedBitmapData), bytesPerRow: 64 * 4) == [0x01, 0x02, 0x03, 0xFF])
+    }
+
     /// Alpha over video goes to the decoder, which has the video's colour, instead of
     /// painting the session's never decoded pixels.
     @Test func clientHandsAlphaOverVideoToTheDecoder() throws {

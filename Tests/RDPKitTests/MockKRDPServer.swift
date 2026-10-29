@@ -141,6 +141,7 @@ enum MockKRDPGraphicsBehavior: Equatable {
     case deleteSurfacesAfterCopyingOutOfThem
     case sendAlphaOverVideo
     case sendHiddenSurfaceVideoBeforeAKeyframe
+    case copyOutOfHiddenSurfaceAfterVideoBeforeAKeyframe
     case mapSurfaceAfterDeletingAnotherInTheFrame
     case sendMultipleBitmapSurfacesInFrame
     case sendMalformedAVCFrame
@@ -2132,6 +2133,8 @@ private enum MockKRDPFixtures {
             [graphicsDynamicPacket(segmentedGraphicsData(alphaOverVideoFrameMessages()))]
         case .sendHiddenSurfaceVideoBeforeAKeyframe:
             [graphicsDynamicPacket(segmentedGraphicsData(hiddenSurfaceVideoBeforeAKeyframeMessages()))]
+        case .copyOutOfHiddenSurfaceAfterVideoBeforeAKeyframe:
+            [graphicsDynamicPacket(segmentedGraphicsData(copyAfterHiddenSurfaceVideoBeforeAKeyframeMessages()))]
         case .mapSurfaceAfterDeletingAnotherInTheFrame:
             [graphicsDynamicPacket(segmentedGraphicsData(mappedAfterDeletionFrameMessages()))]
         case .sendMalformedAVCFrame:
@@ -2306,6 +2309,29 @@ private enum MockKRDPFixtures {
         messages += wireToSurfaceMessage(surfaceID: 2, bitmapData: avc420BitmapStream(isKeyframe: false))
         messages += wireToSurfaceMessage(surfaceID: 2)
         messages += wireToSurfaceMessage(surfaceID: 2, bitmapData: avc420BitmapStream(isKeyframe: false))
+        messages += endFrameMessage(frameID: 1)
+        return messages
+    }
+
+    /// Video copied into unmapped surface 2, a fill drawn there, a P slice over both, then a
+    /// copy of the fill back to mapped surface 1.
+    static func copyAfterHiddenSurfaceVideoBeforeAKeyframeMessages() -> Data {
+        let fullSurface = RDPGFXRect16(left: 0, top: 0, right: MockKRDPConstants.width, bottom: MockKRDPConstants.height)
+        let fill = RDPGFXRect16(left: 0, top: 0, right: 16, bottom: 8)
+        var messages = createSurfaceMessage(surfaceID: 1)
+        messages += createSurfaceMessage(surfaceID: 2)
+        messages += mapSurfaceToOutputMessage(surfaceID: 1, x: 0, y: 0)
+        messages += startFrameMessage(frameID: 1)
+        messages += wireToSurfaceMessage(surfaceID: 1)
+        messages += surfaceToSurfaceMessage(sourceSurfaceID: 1, destinationSurfaceID: 2, sourceRect: fullSurface)
+        messages += solidFillMessage(surfaceID: 2, color: [0x01, 0x02, 0x03, 0xFF], rects: [fill])
+        messages += wireToSurfaceMessage(surfaceID: 2, bitmapData: avc420BitmapStream(isKeyframe: false))
+        messages += surfaceToSurfaceMessage(
+            sourceSurfaceID: 2,
+            destinationSurfaceID: 1,
+            sourceRect: fill,
+            destinationPoint: RDPGFXPoint16(x: 32, y: 16)
+        )
         messages += endFrameMessage(frameID: 1)
         return messages
     }

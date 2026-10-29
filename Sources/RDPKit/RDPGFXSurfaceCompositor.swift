@@ -319,10 +319,14 @@ final class RDPGFXSurfaceCompositor {
     }
 
     /// Notes that `frame`, a video update, wrote its regions last. The compositor does not
-    /// decode video, so only the decoder holds those pixels.
+    /// decode video, so only the decoder holds those pixels; when the decoder holds the
+    /// surface, it has the surface's video stream from then on.
     func noteVideo(_ frame: RDPGraphicsFrameSnapshot) {
         guard let index = surfaces.index(forKey: frame.surfaceID) else {
             return
+        }
+        if surfaces.values[index].isOnDecoder {
+            surfaces.values[index].decoderHasVideoStream = true
         }
         for region in frame.videoSurfaceRegions {
             surfaces.values[index].markWrittenByVideo(RDPGFXRect16(
@@ -438,14 +442,26 @@ final class RDPGFXSurfaceCompositor {
     func decoderTakesVideo(_ frame: RDPGraphicsFrameSnapshot) -> Bool {
         guard let index = surfaces.index(forKey: frame.surfaceID),
               surfaces.values[index].isOnDecoder,
-              surfaces.values[index].outputMapping != nil
-              || surfaces.values[index].decoderHasVideoStream
-              || frame.isVideoResyncFrame
+              Self.decoderCanDecode(frame, on: surfaces.values[index])
         else {
             return false
         }
         surfaces.values[index].decoderHasVideoStream = true
         return true
+    }
+
+    /// Whether the decoder drops `frame`, a video update, as it arrives: it holds the
+    /// unmapped surface without its video stream, and the update is no keyframe to start
+    /// one with. Nothing changes then, here or on the decoder.
+    func decoderDropsVideo(_ frame: RDPGraphicsFrameSnapshot) -> Bool {
+        guard let surface = surfaces[frame.surfaceID], surface.isOnDecoder else {
+            return false
+        }
+        return !Self.decoderCanDecode(frame, on: surface)
+    }
+
+    private static func decoderCanDecode(_ frame: RDPGraphicsFrameSnapshot, on surface: Surface) -> Bool {
+        surface.outputMapping != nil || surface.decoderHasVideoStream || frame.isVideoResyncFrame
     }
 
     /// Cache slots the decoder stored into, which it drops when the cache is.
