@@ -1237,7 +1237,7 @@ private final class ClipboardPublishRace: @unchecked Sendable {
         RDPClipboardLocalFile(fileName: "Folder\\inner.txt", contents: Data([1])),
         RDPClipboardLocalFile(fileName: "Folder/Sub:dir. /CON.txt", contents: Data([1])),
         RDPClipboardLocalFile(fileName: "\\Folder\\.\\..\\\\notes.txt\\", contents: Data([1])),
-        RDPClipboardLocalFile(fileName: "FOLDER\\INNER.TXT", contents: Data([1])),
+        RDPClipboardLocalFile(fileName: "Folder\\INNER.TXT", contents: Data([1])),
         RDPClipboardLocalFile(fileName: "Other\\inner.txt", contents: Data([1])),
         RDPClipboardLocalFile(fileName: "inner.txt", contents: Data([1])),
         RDPClipboardLocalFile(fileName: "folder", contents: Data([1])),
@@ -1250,12 +1250,47 @@ private final class ClipboardPublishRace: @unchecked Sendable {
         "Folder\\inner.txt",
         "Folder\\Sub_dir\\_CON.txt",
         "Folder\\notes.txt",
-        "FOLDER\\INNER-2.TXT",
+        "Folder\\INNER-2.TXT",
         "Other\\inner.txt",
         "inner.txt",
         "folder-2",
         "Folder-3",
         "file",
+    ])
+}
+
+/// A folder numbered to differ from another folder or a file keeps that number for everything
+/// inside it, so its entries are pasted into it and not into the one it clashed with.
+@Test func clipboardNumberedLocalFoldersKeepTheirEntries() throws {
+    func directory(_ fileName: String) -> RDPClipboardLocalFile {
+        RDPClipboardLocalFile(fileName: fileName, contents: Data(), fileAttributes: RDPClipboardFileAttributes.directory)
+    }
+    func file(_ fileName: String) -> RDPClipboardLocalFile {
+        RDPClipboardLocalFile(fileName: fileName, contents: Data([1]))
+    }
+
+    // Two folders that become the same name.
+    #expect(try fileNamesTheServerSees(publishing: [
+        directory("What?"), file("What?\\a.txt"), directory("What*"), file("What*\\a.txt"),
+    ]) == ["What_", "What_\\a.txt", "What_-2", "What_-2\\a.txt"])
+    // A folder after a file of its name, with or without an entry of its own, and a file
+    // after a folder of its name.
+    #expect(try fileNamesTheServerSees(publishing: [
+        file("Notes."), directory("Notes"), file("Notes\\a.txt"),
+    ]) == ["Notes", "Notes-2", "Notes-2\\a.txt"])
+    #expect(try fileNamesTheServerSees(publishing: [
+        file("Report"), file("Report\\a.txt"), file("Report/b.txt"), file("Data\\a.txt"), file("data"),
+    ]) == ["Report", "Report-2\\a.txt", "Report-2\\b.txt", "Data\\a.txt", "data-2"])
+    // The folders under a numbered one follow it; a folder's own entry can come after its
+    // contents; folders are told apart as spelled, as files are.
+    #expect(try fileNamesTheServerSees(publishing: [
+        directory("A?"), directory("A*"), directory("A*\\B"), file("A*\\B\\c.txt"),
+        file("Late\\a.txt"), directory("Late"), file("Late\\b.txt"),
+        directory("Case"), file("CASE\\a.txt"),
+    ]) == [
+        "A_", "A_-2", "A_-2\\B", "A_-2\\B\\c.txt",
+        "Late\\a.txt", "Late", "Late\\b.txt",
+        "Case", "CASE-2\\a.txt",
     ])
 }
 

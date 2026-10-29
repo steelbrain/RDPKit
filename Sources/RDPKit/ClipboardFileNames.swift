@@ -34,26 +34,72 @@ enum RDPClipboardFileNameRules {
     /// The UTF-16 code units cFileName holds before its terminating null.
     private static let maximumWindowsPathLength = 259
 
-    /// `fileName` made valid, and different, ignoring case, from every name in
-    /// `usedFileNames`, which it joins. A clash gets "-2", "-3" and so on before the
-    /// extension of its last component.
-    ///
-    /// A Windows path too long for cFileName has its last component shortened before the
-    /// extension. When its folders leave no room for one character of that component's base
-    /// name, its extension and its number, the file goes to the top level under that
-    /// component alone: it is pasted outside its folder, but whole and under its own name.
+    /// `fileName` made valid, as a single component, and different, ignoring case, from every
+    /// name in `usedFileNames`, which it joins. A clash gets "-2", "-3" and so on before the
+    /// extension.
     func uniqueFileName(_ fileName: String, usedFileNames: inout Set<String>) -> String {
-        let path = pathComponents(of: fileName)
-        var folder = path.folder
+        uniquePath(of: sanitizedFileName(fileName), in: nil, usedPaths: &usedFileNames)
+    }
+
+    /// The paths `entries`, local files and folders, are offered to Windows under, in order:
+    /// each made valid as `windows` describes, and different, ignoring case, from every other.
+    ///
+    /// A folder keeps the path it first gets, from its own entry or the first entry inside
+    /// it, and every later entry inside it uses that path. So a folder numbered to differ from
+    /// a file or another folder still holds its entries. Folders are told apart as they are
+    /// spelled: "What?" and "What*" both become "What_", and the second is "What_-2" with
+    /// everything in it.
+    static func windowsPaths(of entries: [(fileName: String, isDirectory: Bool)]) -> [String] {
+        var usedPaths = Set<String>()
+        // Each folder's path, by its components as given, joined with "\".
+        var folderPaths: [String: String] = [:]
+        return entries.map { entry in
+            let components = windows.windowsComponents(of: entry.fileName)
+            guard let name = components.last else {
+                return windows.uniquePath(of: windows.fallbackFileName, in: nil, usedPaths: &usedPaths)
+            }
+            var folder: String?
+            var key = ""
+            for component in components.dropLast() {
+                key += key.isEmpty ? component.given : "\\" + component.given
+                if let path = folderPaths[key] {
+                    folder = path
+                } else {
+                    folder = windows.uniquePath(of: component.valid, in: folder, usedPaths: &usedPaths)
+                    folderPaths[key] = folder
+                }
+            }
+            key += key.isEmpty ? name.given : "\\" + name.given
+            if entry.isDirectory, let path = folderPaths[key] {
+                return path
+            }
+            let path = windows.uniquePath(of: name.valid, in: folder, usedPaths: &usedPaths)
+            if entry.isDirectory {
+                folderPaths[key] = path
+            }
+            return path
+        }
+    }
+
+    /// `name`, a valid component, in `folder`, and different, ignoring case, from every path
+    /// in `usedPaths`, which it joins. A clash gets "-2", "-3" and so on before the extension
+    /// of `name`.
+    ///
+    /// A Windows path too long for cFileName has `name` shortened before the extension. When
+    /// `folder` leaves no room for one character of its base name, its extension and its
+    /// number, it goes to the top level alone: pasted outside its folder, but whole and under
+    /// its own name.
+    private func uniquePath(of name: String, in folder: String?, usedPaths: inout Set<String>) -> String {
+        var folder = folder
         var number = 1
         while true {
-            guard let candidate = candidate(path.name, numbered: number, in: folder) else {
+            guard let candidate = candidate(name, numbered: number, in: folder) else {
                 // No room left in the folders: the top level.
                 folder = nil
                 number = 1
                 continue
             }
-            if usedFileNames.insert(candidate.lowercased()).inserted {
+            if usedPaths.insert(candidate.lowercased()).inserted {
                 return candidate
             }
             number += 1
@@ -108,21 +154,15 @@ enum RDPClipboardFileNameRules {
         return sanitized
     }
 
-    /// A Windows path's folders, each component made valid, joined with `\`, nil for none,
-    /// and its last component made valid; empty, "." and ".." components are dropped. An
-    /// Apple name is a single component.
-    private func pathComponents(of fileName: String) -> (folder: String?, name: String) {
-        guard self == .windows else {
-            return (nil, sanitizedFileName(fileName))
-        }
-        let components = fileName.unicodeScalars
+    /// The components of a Windows path, as given and made valid; those that come to nothing,
+    /// "." or ".." are dropped.
+    private func windowsComponents(of fileName: String) -> [(given: String, valid: String)] {
+        fileName.unicodeScalars
             .split(whereSeparator: { $0 == "\\" || $0 == "/" })
-            .compactMap { sanitizedComponent(String(Substring($0)), maximumLength: Self.maximumComponentLength) }
-        guard let name = components.last else {
-            return (nil, fallbackFileName)
-        }
-        let folders = components.dropLast()
-        return (folders.isEmpty ? nil : folders.joined(separator: "\\"), name)
+            .compactMap { scalars in
+                let given = String(Substring(scalars))
+                return sanitizedComponent(given, maximumLength: Self.maximumComponentLength).map { (given, $0) }
+            }
     }
 
     private var fallbackFileName: String {

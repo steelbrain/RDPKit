@@ -738,13 +738,12 @@ public struct RDPClipboardLocalFile: Equatable, Sendable {
 
     /// `files` under names Windows accepts and tells apart, as `publishLocalFiles` offers them.
     static func withWindowsFileNames(_ files: [RDPClipboardLocalFile]) -> [RDPClipboardLocalFile] {
-        var usedFileNames = Set<String>()
-        return files.map { file in
+        let paths = RDPClipboardFileNameRules.windowsPaths(of: files.map {
+            (fileName: $0.descriptor.fileName, isDirectory: $0.descriptor.isDirectory)
+        })
+        return zip(files, paths).map { file, path in
             var file = file
-            file.descriptor.fileName = RDPClipboardFileNameRules.windows.uniqueFileName(
-                file.descriptor.fileName,
-                usedFileNames: &usedFileNames
-            )
+            file.descriptor.fileName = path
             return file
         }
     }
@@ -1008,7 +1007,9 @@ public final class RDPClipboardSession: @unchecked Sendable {
     /// leading "_", trailing dots and spaces go, and one over 255 UTF-16 code units is cut
     /// before its extension. A path over cFileName's 259 has its last component cut further,
     /// or when its folders leave no room, goes to the top level under that component alone.
-    /// A path used before, ignoring case, gets "-2", "-3" and so on in its last component.
+    /// A path used before, ignoring case, gets "-2", "-3" and so on in its last component. A
+    /// folder keeps the path it first gets, so one numbered to differ from a file or from a
+    /// folder spelled differently, such as "What?" and "What*", still holds its entries.
     public func publishLocalFiles(_ files: [RDPClipboardLocalFile]) {
         publish(files.isEmpty ? .empty : .files(RDPClipboardLocalFile.withWindowsFileNames(files)))
     }
