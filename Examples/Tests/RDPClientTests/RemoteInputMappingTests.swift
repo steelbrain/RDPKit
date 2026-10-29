@@ -458,6 +458,56 @@ private func keyEvent(
     ])
 }
 
+// Command and scrolling is a chord: the server gets Win with the wheel, not a Win tap that opens
+// the Start menu.
+@MainActor
+@Test func commandAndScrollSendsTheWindowsKeyWithTheWheel() throws {
+    let leftWindows = RDPKeyboardScancode(code: 0x5B, isExtended: true)
+    let input = RecordedInput()
+    let view = RemoteInputCaptureNSView()
+    view.inputSession = input
+    let wheelLine = try #require(CGEvent(
+        scrollWheelEvent2Source: nil,
+        units: .line,
+        wheelCount: 1,
+        wheel1: 1,
+        wheel2: 0,
+        wheel3: 0
+    ))
+    wheelLine.flags = .maskCommand
+    wheelLine.location = CGPoint(x: 100, y: 100)
+    let scroll = try #require(NSEvent(cgEvent: wheelLine))
+    // Where the event lands on screen depends on the display, so the view moves to put it at (10, 10).
+    view.frame = CGRect(x: scroll.locationInWindow.x - 10, y: scroll.locationInWindow.y - 10, width: 100, height: 100)
+    view.rdpFrame = RDPFrameMetadata(RDPGraphicsFrameSnapshot(
+        frameID: nil,
+        surfaceID: 0,
+        codecID: 0,
+        codecName: "test",
+        pixelFormat: 0,
+        destinationRect: RDPFrameRect(left: 0, top: 0, right: 100, bottom: 100),
+        regionRects: [],
+        encodedVideoData: Data()
+    ))
+
+    view.flagsChanged(with: try keyEvent(.flagsChanged, keyCode: kVK_Command, modifierFlags: .command))
+    view.scrollWheel(with: scroll)
+    view.flagsChanged(with: try keyEvent(.flagsChanged, keyCode: kVK_Command))
+
+    // Only the order matters here, not where on the desktop the wheel event lands.
+    let events = input.events.map { event in
+        guard case let .verticalWheel(rotation, _, _) = event else {
+            return event
+        }
+        return .verticalWheel(rotation: rotation, x: 0, y: 0)
+    }
+    #expect(events == [
+        .keyboard(scancode: leftWindows, isReleased: false),
+        .verticalWheel(rotation: 120, x: 0, y: 0),
+        .keyboard(scancode: leftWindows, isReleased: true),
+    ])
+}
+
 // Device-dependent side bits (NX_DEVICE*KEYMASK), which tell left and right Option apart.
 private let leftOptionFlags = NSEvent.ModifierFlags(rawValue: NSEvent.ModifierFlags.option.rawValue | 0x20)
 private let rightOptionFlags = NSEvent.ModifierFlags(rawValue: NSEvent.ModifierFlags.option.rawValue | 0x40)

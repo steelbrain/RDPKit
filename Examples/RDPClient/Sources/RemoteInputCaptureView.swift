@@ -143,7 +143,7 @@ final class RemoteInputCaptureNSView: NSView {
         guard events.isEmpty == false else {
             return
         }
-        inputSession?.send(events)
+        inputSession?.send(deferredModifierKeys.flush(&inputState) + events)
     }
 
     override func keyDown(with event: NSEvent) {
@@ -383,8 +383,8 @@ enum MacRDPScrollWheel {
 /// Command is sent as the Windows key, and a Windows key pressed and released with nothing in
 /// between opens the server's Start menu (GNOME Activities, the KDE launcher). Command chords the
 /// server never sees, such as Cmd-Tab and menu shortcuts, must not reach it as such a tap, so Win
-/// down is sent only before another key or button goes to the server while Command is held, or as
-/// a tap when Command is released alone.
+/// down is sent only before another key, button or wheel event goes to the server while Command
+/// is held, or as a tap when Command is released alone.
 ///
 /// Right Option is held back the same way as Alt, so that it can type what the Mac layout puts
 /// on Option ("@" is Option-L on German) as Unicode, without Alt; releasing it after that sends
@@ -414,7 +414,7 @@ struct MacRDPDeferredModifierKeys {
         }
     }
 
-    /// Sends the held keys down, ahead of another key or button.
+    /// Sends the held keys down, ahead of another key, button or wheel event.
     mutating func flush(_ inputState: inout RDPInputStateTracker) -> [RDPSlowPathInputEvent] {
         defer {
             reset()
