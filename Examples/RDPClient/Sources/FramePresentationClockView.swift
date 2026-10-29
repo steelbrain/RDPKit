@@ -126,19 +126,12 @@ final class RDPFramePresentationClockNSView: NSView {
         displayLinkHasFiredOnScreen = false
     }
 
+    /// Removes both observers even once the window is gone: `observedWindow` is weak, and
+    /// reads nil while the window deallocates, which would leave the screen-parameters
+    /// observer behind, and add it a second time for the next window.
     private func stopObservingWindow() {
-        if let observedWindow {
-            NotificationCenter.default.removeObserver(
-                self,
-                name: NSWindow.didChangeScreenNotification,
-                object: observedWindow
-            )
-            NotificationCenter.default.removeObserver(
-                self,
-                name: NSApplication.didChangeScreenParametersNotification,
-                object: nil
-            )
-        }
+        NotificationCenter.default.removeObserver(self, name: NSWindow.didChangeScreenNotification, object: nil)
+        NotificationCenter.default.removeObserver(self, name: NSApplication.didChangeScreenParametersNotification, object: nil)
         observedWindow = nil
     }
 
