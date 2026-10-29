@@ -1613,6 +1613,21 @@ private final class ClipboardPublishRace: @unchecked Sendable {
     #expect(names == kept + [" trailing", " \u{A0}", "file", " Folder\\ inner.txt"])
 }
 
+/// Whitespace before a device name makes it a name of its own: Windows 11 takes "CON" and
+/// "CON " as the console but not " CON". A device name with an extension, or with whitespace
+/// before it, still gets a "_", as Windows before 11 reserves "NUL.txt".
+@Test func clipboardLocalFileNamesStartingWithWhitespaceAreNoDeviceNames() throws {
+    let names = try fileNamesTheServerSees(publishing: [
+        " CON.txt", "\u{A0}nul", " com1", "\u{3000}CONIN$.log",
+        "CON .txt", "CON\u{A0}.txt", "con ", "NUL.tar.gz",
+    ])
+
+    #expect(names == [
+        " CON.txt", "\u{A0}nul", " com1", "\u{3000}CONIN$.log",
+        "_CON .txt", "_CON\u{A0}.txt", "_con", "_NUL.tar.gz",
+    ])
+}
+
 /// A file in a folder goes out as a path relative to where the server pastes, as the shell's
 /// FILEGROUPDESCRIPTORW carries it, so Windows recreates the folder around it. Each component
 /// is made valid on its own, and a clash is numbered in the last one.

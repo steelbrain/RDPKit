@@ -264,9 +264,19 @@ enum RDPClipboardFileNameRules {
         }))
     }
 
-    /// Windows also ignores spaces between a device name and its extension: "CON .txt" is CON.
+    /// Whether Windows may open `fileName` as a device. Naming Files, Paths, and Namespaces
+    /// reserves a device name with an extension too ("NUL.txt" is NUL), as Windows before 11
+    /// does. Windows 11 26200 reserves none inside a folder; as a bare name it takes "CON",
+    /// "CON " and "CON:" as the device, but not " CON", " COM1" or "CON.txt"
+    /// (RtlIsDosDeviceName_U and GetFullPathNameW, observed 2026-10-29). So whitespace before
+    /// the stem makes a name no device name. The extension, and whitespace after the stem,
+    /// are still ignored for Windows before 11, whose rule no document gives; Windows 11
+    /// ignores only U+0020 there.
     private static func isWindowsDeviceName(_ fileName: String) -> Bool {
-        let stem = fileName.prefix { $0 != "." }
-        return windowsDeviceNames.contains(stem.trimmingCharacters(in: .whitespaces).uppercased())
+        var stem = String(fileName.prefix { $0 != "." })
+        while let last = stem.unicodeScalars.last, CharacterSet.whitespaces.contains(last) {
+            stem.unicodeScalars.removeLast()
+        }
+        return windowsDeviceNames.contains(stem.uppercased())
     }
 }
