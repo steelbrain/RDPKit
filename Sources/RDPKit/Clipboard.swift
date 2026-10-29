@@ -981,13 +981,11 @@ public final class RDPClipboardSession: @unchecked Sendable {
             lock.withLock { isFetchingRemoteCopies }
         }
         set {
-            let wasFetching = lock.withLock {
-                let wasFetching = isFetchingRemoteCopies
+            lock.withLock {
+                if isFetchingRemoteCopies, !newValue {
+                    replaceRemoteCopy(with: [])
+                }
                 isFetchingRemoteCopies = newValue
-                return wasFetching
-            }
-            if wasFetching, !newValue {
-                requestRemoteCopy([])
             }
         }
     }
@@ -1034,9 +1032,7 @@ public final class RDPClipboardSession: @unchecked Sendable {
             useLongFormatNames: usesLongFormatNames
         ) {
             sendFormatListResponse(ok: true)
-            if !fetchesRemoteCopies {
-                requestRemoteCopy([])
-            } else if let formatID = formatList.fileGroupDescriptorWFormatID {
+            if let formatID = formatList.fileGroupDescriptorWFormatID {
                 requestRemoteCopy([.fileGroupDescriptorW(formatID: formatID)])
             } else {
                 requestRemoteCopy(formatList.contentRequests(includingRichFormats: requestsRichFormats))
@@ -1063,21 +1059,22 @@ public final class RDPClipboardSession: @unchecked Sendable {
     /// Decodes a Format Data Response for the request it answers. A response with no
     /// outstanding request has nothing to decode against and is dropped.
     private func receiveFormatData(_ response: RDPClipboardFormatDataResponsePDU) throws -> RDPClipboardEvent? {
-        let (answered, isCurrentCopy, completesCopy) = lock.withLock { () -> (RDPClipboardRequestedFormatDataResponse?, Bool, Bool) in
+        let (slot, isCurrentCopy, completesCopy) = lock.withLock { () -> (RDPClipboardFormatDataRequestSlot?, Bool, Bool) in
             guard isAwaitingFormatData, !formatDataRequests.isEmpty else {
                 return (nil, false, false)
             }
             isAwaitingFormatData = false
             let slot = formatDataRequests.removeFirst()
             let isCurrentCopy = slot.copyID == remoteCopyID
-            return (slot.response, isCurrentCopy, isCurrentCopy && !formatDataRequests.contains { $0.copyID == remoteCopyID })
+            return (slot, isCurrentCopy, isCurrentCopy && !formatDataRequests.contains { $0.copyID == remoteCopyID })
         }
         defer {
             sendNextFormatDataRequest()
         }
-        guard let answered, isCurrentCopy else {
+        guard let slot, isCurrentCopy else {
             return nil
         }
+        let answered = slot.response
         switch answered {
         case .unicodeText where !requestsRichFormats:
             return response.ok ? try .text(response.decodedUnicodeText()) : nil
@@ -1089,6 +1086,11 @@ public final class RDPClipboardSession: @unchecked Sendable {
         // Each format is fetched as a copy's own part: one that fails or does not
         // decode is left out, and the rest still arrive.
         return lock.withLock {
+            // Fetching turned off or a new copy since the first lock started new content,
+            // which this part of the old copy must not join.
+            guard slot.copyID == remoteCopyID else {
+                return nil
+            }
             if response.ok {
                 switch answered {
                 case .unicodeText:
@@ -1176,15 +1178,23 @@ public final class RDPClipboardSession: @unchecked Sendable {
     }
 
     /// Starts fetching a remote copy: its requests replace those of an older copy that
-    /// have not gone out yet.
+    /// have not gone out yet. While fetching is off, nothing is requested.
     func requestRemoteCopy(_ requests: [RDPClipboardRequestedFormatDataResponse]) {
         lock.withLock {
-            remoteCopyID += 1
-            remoteContent = RDPClipboardContent()
-            formatDataRequests = isAwaitingFormatData ? Array(formatDataRequests.prefix(1)) : []
-            formatDataRequests += requests.map { RDPClipboardFormatDataRequestSlot(copyID: remoteCopyID, response: $0) }
+            // Checked under the lock that queues the requests, so turning fetching off
+            // on another thread cannot come between the check and the queueing.
+            replaceRemoteCopy(with: isFetchingRemoteCopies ? requests : [])
         }
         sendNextFormatDataRequest()
+    }
+
+    /// Makes a new copy current with `requests`, dropping the older copy's requests that
+    /// have not gone out yet and the content it has received. Callers hold `lock`.
+    private func replaceRemoteCopy(with requests: [RDPClipboardRequestedFormatDataResponse]) {
+        remoteCopyID += 1
+        remoteContent = RDPClipboardContent()
+        formatDataRequests = isAwaitingFormatData ? Array(formatDataRequests.prefix(1)) : []
+        formatDataRequests += requests.map { RDPClipboardFormatDataRequestSlot(copyID: remoteCopyID, response: $0) }
     }
 
     /// Asks for the size of file `fileIndex` of the server's file list. The answer comes to
