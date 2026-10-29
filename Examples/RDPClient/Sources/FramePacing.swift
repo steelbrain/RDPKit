@@ -70,6 +70,16 @@ struct RDPFramePacingState: Equatable, Sendable {
         return copy
     }
 
+    /// The same screen with the clock's state now, without reading the screen again.
+    @MainActor
+    func updatingClock(displayLink: CADisplayLink?, isPaused: Bool) -> RDPFramePacingState {
+        var copy = self
+        copy.displayLinkDuration = Self.normalizedDisplayLinkDuration(displayLink?.duration)
+        copy.hasDisplayLink = displayLink != nil
+        copy.isDisplayLinkPaused = isPaused
+        return copy
+    }
+
     private static func normalizedDisplayLinkDuration(_ duration: TimeInterval?) -> TimeInterval? {
         guard let duration,
               duration.isFinite,

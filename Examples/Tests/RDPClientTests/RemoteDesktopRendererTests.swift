@@ -95,6 +95,52 @@ func displayResetConditionsFlushBeforeEnqueue(
     ))
 }
 
+// An idle desktop leaves the display link paused; a frame that arrives runs it for one refresh.
+@MainActor
+@Test func thePresentationClockRunsOnlyWhileAFrameWaits() {
+    _ = NSApplication.shared
+    let window = NSWindow(
+        contentRect: CGRect(x: 0, y: 0, width: 200, height: 200),
+        styleMask: [.titled],
+        backing: .buffered,
+        defer: true
+    )
+    let clock = RDPFramePresentationClockNSView()
+    var refreshCount = 0
+    func configure(isEnabled: Bool) {
+        clock.configure(isEnabled: isEnabled, onFrame: { _ in refreshCount += 1 }, onTimingChange: { _ in })
+    }
+    defer {
+        window.contentView = nil
+    }
+
+    configure(isEnabled: true)
+    #expect(!clock.schedulePresentation())
+
+    window.contentView = clock
+    configure(isEnabled: false)
+    #expect(!clock.schedulePresentation())
+    #expect(!clock.isDisplayLinkRunning)
+
+    configure(isEnabled: true)
+    #expect(!clock.isDisplayLinkRunning)
+    #expect(clock.schedulePresentation())
+    #expect(clock.isDisplayLinkRunning)
+    configure(isEnabled: true)
+    #expect(clock.isDisplayLinkRunning)
+
+    clock.displayLinkFired(window.displayLink(target: clock, selector: #selector(clock.displayLinkFired(_:))))
+    #expect(refreshCount == 1)
+    #expect(!clock.isDisplayLinkRunning)
+
+    #expect(clock.schedulePresentation())
+    #expect(clock.isDisplayLinkRunning)
+    configure(isEnabled: false)
+    #expect(!clock.isDisplayLinkRunning)
+    configure(isEnabled: true)
+    #expect(!clock.isDisplayLinkRunning)
+}
+
 private func frameMetadata(width: UInt16, height: UInt16) -> RDPFrameMetadata {
     RDPFrameMetadata(RDPGraphicsFrameSnapshot(
         frameID: nil,

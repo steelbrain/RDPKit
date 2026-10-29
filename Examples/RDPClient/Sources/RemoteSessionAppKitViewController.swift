@@ -926,11 +926,8 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
 
     @discardableResult
     private func presentDecodedFrame(_ presentation: RDPDecodedFramePresentation) -> Bool {
-        guard hasPresentedFrame else {
-            return applyFramePresentation(presentation)
-        }
-
-        guard framePacing.hasDisplayLink else {
+        // The first frame shows at once; later ones wait for the display's next refresh.
+        guard hasPresentedFrame, frameClockView.schedulePresentation() else {
             return applyFramePresentation(presentation)
         }
 
