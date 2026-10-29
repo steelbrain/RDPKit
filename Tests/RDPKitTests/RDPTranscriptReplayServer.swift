@@ -1,6 +1,5 @@
 import Foundation
 import NIOCore
-import NIOPosix
 @preconcurrency import NIOSSL
 @testable import RDPKit
 
@@ -14,7 +13,7 @@ import NIOPosix
 /// inbound socket, so a recorded server-redirection reconnect is reproduced:
 /// segment 0 plays on the first connection (ending in the redirect PDU) and
 /// segment 1 plays on the client's reconnect (through to the first video frame).
-final class RDPTranscriptReplayServer {
+final class RDPTranscriptReplayServer: LoopbackTestServer {
     struct ConnectionSegment {
         /// The server→client X.224 Connection Confirm bytes (plaintext).
         var x224Response: Data
@@ -24,71 +23,32 @@ final class RDPTranscriptReplayServer {
         var appEvents: [RDPWireEvent]
     }
 
-    let port: UInt16
     /// Application-layer packets the client sent, in order, across connections.
     let clientPackets: Locked<[Data]>
-    private let group: MultiThreadedEventLoopGroup
-    private let channel: Channel
-
-    private init(port: UInt16, clientPackets: Locked<[Data]>, group: MultiThreadedEventLoopGroup, channel: Channel) {
-        self.port = port
-        self.clientPackets = clientPackets
-        self.group = group
-        self.channel = channel
-    }
 
     /// `onSegmentEnd` runs on the event loop once a connection's recorded
     /// server events are all sent, so a test can script what follows.
-    static func start(
+    init(
         transcript: [RDPWireEvent],
         credentials: RDPCredentials,
         onSegmentEnd: (@Sendable (Channel) -> Void)? = nil
-    ) throws -> RDPTranscriptReplayServer {
-        let segments = segment(transcript)
-        let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
-        do {
-            let tlsContext = try NIOSSLContext(configuration: MockKRDPTLS.configuration())
-            let connectionCount = Locked(0)
-            let clientPackets = Locked<[Data]>([])
-            let channel = try ServerBootstrap(group: group)
-                .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
-                .childChannelInitializer { channel in
-                    channel.pipeline.addHandler(RDPTranscriptReplayHandler(
-                        tlsContext: tlsContext,
-                        credentials: credentials,
-                        segments: segments,
-                        connectionCount: connectionCount,
-                        clientPackets: clientPackets,
-                        onSegmentEnd: onSegmentEnd
-                    ))
-                }
-                .bind(host: "127.0.0.1", port: 0)
-                .wait()
-
-            guard let port = channel.localAddress?.port,
-                  let serverPort = UInt16(exactly: port)
-            else {
-                throw MockKRDPServerError.missingPort
-            }
-            return RDPTranscriptReplayServer(port: serverPort, clientPackets: clientPackets, group: group, channel: channel)
-        } catch {
-            try? group.syncShutdownGracefully()
-            throw error
+    ) throws {
+        let segments = Self.segment(transcript)
+        let tlsContext = try NIOSSLContext(configuration: MockKRDPTLS.configuration())
+        let connectionCount = Locked(0)
+        let clientPackets = Locked<[Data]>([])
+        self.clientPackets = clientPackets
+        try super.init {
+            RDPTranscriptReplayHandler(
+                tlsContext: tlsContext,
+                credentials: credentials,
+                segments: segments,
+                connectionCount: connectionCount,
+                clientPackets: clientPackets,
+                onSegmentEnd: onSegmentEnd
+            )
         }
     }
-
-    func stop() {
-        try? channel.close().wait()
-        // Not syncShutdownGracefully: it completes on a global queue, which
-        // test threads blocked here can starve of workers.
-        let shutDown = DispatchSemaphore(value: 0)
-        group.shutdownGracefully(queue: Self.shutdownQueue) { _ in
-            shutDown.signal()
-        }
-        shutDown.wait()
-    }
-
-    private static let shutdownQueue = DispatchQueue(label: "RDPTranscriptReplayServer.shutdown")
 
     /// Splits a flat transcript into per-TCP-connection segments. A new segment
     /// begins at each client→server X.224 request.

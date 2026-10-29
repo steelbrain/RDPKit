@@ -275,7 +275,7 @@ func replayTranscriptFixture(
     onGraphicsFrame: RDPGraphicsFrameHandler? = nil
 ) throws -> (report: RDPConnectionReport, clientPackets: [Data]) {
     let credentials = RDPCredentials(username: "rdp-user", password: "rdp-user")
-    let server = try RDPTranscriptReplayServer.start(transcript: loadTranscriptFixture(name), credentials: credentials)
+    let server = try RDPTranscriptReplayServer(transcript: loadTranscriptFixture(name), credentials: credentials)
     defer { server.stop() }
 
     let report = RDPSessionClient().run(configuration: RDPConnectionConfiguration(
@@ -287,6 +287,7 @@ func replayTranscriptFixture(
         clipboardEnabled: false,
         graphicsCapabilityProfile: graphicsCapabilityProfile
     ), onGraphicsFrame: onGraphicsFrame)
+    server.waitForClientsToClose()
     return (report, server.clientPackets.value)
 }
 

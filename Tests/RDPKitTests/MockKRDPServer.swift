@@ -5,9 +5,62 @@ import NIOPosix
 @preconcurrency import NIOSSL
 @testable import RDPKit
 
+/// A server socket on 127.0.0.1 with an event loop of its own, for the
+/// scripted servers: each accepted connection gets a handler from `makeHandler`.
+class LoopbackTestServer {
+    let port: UInt16
+    private let group: MultiThreadedEventLoopGroup
+    private let channel: Channel
+    private let openConnections: DispatchGroup
+
+    init(makeHandler: @escaping @Sendable () -> ChannelHandler & Sendable) throws {
+        let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+        let openConnections = DispatchGroup()
+        do {
+            channel = try ServerBootstrap(group: group)
+                .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
+                .childChannelInitializer { channel in
+                    openConnections.enter()
+                    channel.closeFuture.whenComplete { _ in openConnections.leave() }
+                    return channel.pipeline.addHandler(makeHandler())
+                }
+                .bind(host: "127.0.0.1", port: 0)
+                .wait()
+            guard let port = channel.localAddress?.port.flatMap(UInt16.init(exactly:)) else {
+                throw MockKRDPServerError.missingPort
+            }
+            self.port = port
+        } catch {
+            try? group.syncShutdownGracefully()
+            throw error
+        }
+        self.group = group
+        self.openConnections = openConnections
+    }
+
+    func stop() {
+        try? channel.close().wait()
+        // Not syncShutdownGracefully: it completes on a global queue, which
+        // test threads blocked here can starve of workers.
+        let shutDown = DispatchSemaphore(value: 0)
+        group.shutdownGracefully(queue: Self.shutdownQueue) { _ in
+            shutDown.signal()
+        }
+        shutDown.wait()
+    }
+
+    private static let shutdownQueue = DispatchQueue(label: "LoopbackTestServer.shutdown")
+
+    /// Waits until the server has seen every client close, and so has handled
+    /// everything they sent.
+    func waitForClientsToClose() {
+        _ = openConnections.wait(timeout: .now() + 5)
+    }
+}
+
 /// A local RDP server for client tests. It speaks the KRdp-style flow by
 /// default; `Options` switches individual steps to other server behaviors.
-final class MockKRDPServer {
+final class MockKRDPServer: LoopbackTestServer {
     struct Options {
         var securityProtocol = MockKRDPSecurityProtocol.tls
         var clipboardFiles: [RDPClipboardLocalFile] = []
@@ -25,90 +78,27 @@ final class MockKRDPServer {
         var requireBitmapCodecsCapability = false
     }
 
-    let port: UInt16
     let transcript: Locked<MockKRDPServerTranscript>
     private let connections: Locked<Int>
-    private let openConnections: DispatchGroup
-    private let group: MultiThreadedEventLoopGroup
-    private let channel: Channel
 
     var connectionCount: Int {
         connections.value
     }
 
-    private init(
-        port: UInt16,
-        transcript: Locked<MockKRDPServerTranscript>,
-        connections: Locked<Int>,
-        openConnections: DispatchGroup,
-        group: MultiThreadedEventLoopGroup,
-        channel: Channel
-    ) {
-        self.port = port
-        self.transcript = transcript
-        self.connections = connections
-        self.openConnections = openConnections
-        self.group = group
-        self.channel = channel
-    }
-
-    static func start(_ options: Options = Options()) throws -> MockKRDPServer {
-        let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+    init(_ options: Options = Options()) throws {
+        let tlsContext = try NIOSSLContext(configuration: MockKRDPTLS.configuration())
         let transcript = Locked(MockKRDPServerTranscript())
         let connections = Locked(0)
-        let openConnections = DispatchGroup()
-        do {
-            let tlsContext = try NIOSSLContext(configuration: MockKRDPTLS.configuration())
-            let channel = try ServerBootstrap(group: group)
-                .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
-                .childChannelInitializer { channel in
-                    channel.pipeline.addHandler(MockKRDPServerHandler(
-                        options: options,
-                        tlsContext: tlsContext,
-                        transcript: transcript,
-                        connections: connections,
-                        openConnections: openConnections
-                    ))
-                }
-                .bind(host: "127.0.0.1", port: 0)
-                .wait()
-
-            guard let port = channel.localAddress?.port,
-                  let serverPort = UInt16(exactly: port)
-            else {
-                throw MockKRDPServerError.missingPort
-            }
-            return MockKRDPServer(
-                port: serverPort,
+        self.transcript = transcript
+        self.connections = connections
+        try super.init {
+            MockKRDPServerHandler(
+                options: options,
+                tlsContext: tlsContext,
                 transcript: transcript,
-                connections: connections,
-                openConnections: openConnections,
-                group: group,
-                channel: channel
+                connections: connections
             )
-        } catch {
-            try? group.syncShutdownGracefully()
-            throw error
         }
-    }
-
-    func stop() {
-        try? channel.close().wait()
-        // Not syncShutdownGracefully: it completes on a global queue, which
-        // test threads blocked here can starve of workers.
-        let shutDown = DispatchSemaphore(value: 0)
-        group.shutdownGracefully(queue: Self.shutdownQueue) { _ in
-            shutDown.signal()
-        }
-        shutDown.wait()
-    }
-
-    private static let shutdownQueue = DispatchQueue(label: "MockKRDPServer.shutdown")
-
-    /// Waits until the server has seen every client close, and so has handled
-    /// everything they sent.
-    func waitForClientsToClose() {
-        _ = openConnections.wait(timeout: .now() + 5)
     }
 }
 
@@ -677,7 +667,6 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
     private let tlsContext: NIOSSLContext
     private let transcript: Locked<MockKRDPServerTranscript>
     private let connections: Locked<Int>
-    private let openConnections: DispatchGroup
     private var connectionIndex = 0
     private var stage = Stage.x224
     private var received = ClientByteStream()
@@ -691,24 +680,12 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
         options: MockKRDPServer.Options,
         tlsContext: NIOSSLContext,
         transcript: Locked<MockKRDPServerTranscript>,
-        connections: Locked<Int>,
-        openConnections: DispatchGroup
+        connections: Locked<Int>
     ) {
         self.options = options
         self.tlsContext = tlsContext
         self.transcript = transcript
         self.connections = connections
-        self.openConnections = openConnections
-    }
-
-    func channelActive(context: ChannelHandlerContext) {
-        openConnections.enter()
-        context.fireChannelActive()
-    }
-
-    func channelInactive(context: ChannelHandlerContext) {
-        openConnections.leave()
-        context.fireChannelInactive()
     }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {

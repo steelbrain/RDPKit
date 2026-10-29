@@ -336,13 +336,7 @@ enum KRdpCapture {
             ))
         }
         let credentials = RDPCredentials(username: "rdp-user", password: "rdp-user")
-        let serverClosed = DispatchSemaphore(value: 0)
-        let server = try RDPTranscriptReplayServer.start(transcript: events, credentials: credentials) { channel in
-            channel.closeFuture.whenComplete { _ in
-                serverClosed.signal()
-            }
-            onEnd?(channel)
-        }
+        let server = try RDPTranscriptReplayServer(transcript: events, credentials: credentials, onSegmentEnd: onEnd)
         defer { server.stop() }
 
         let cancellation = RDPConnectionCancellation()
@@ -365,8 +359,7 @@ enum KRdpCapture {
             cancellation: cancellation
         )
         cancellation.cancel()
-        // The server reads the client's last packets before it sees the close.
-        _ = serverClosed.wait(timeout: .now() + 5)
+        server.waitForClientsToClose()
         return Run(report: report, clientPackets: server.clientPackets.value)
     }
 

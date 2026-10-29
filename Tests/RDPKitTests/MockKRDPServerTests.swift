@@ -1614,7 +1614,7 @@ private func runMock(
     _ configure: (inout RDPConnectionConfiguration) -> Void = { _ in },
     client: (RDPConnectionConfiguration) -> RDPConnectionReport = { RDPSessionClient().run(configuration: $0) }
 ) throws -> MockRun {
-    let server = try MockKRDPServer.start(options)
+    let server = try MockKRDPServer(options)
     defer { server.stop() }
 
     var configuration = RDPConnectionConfiguration(
