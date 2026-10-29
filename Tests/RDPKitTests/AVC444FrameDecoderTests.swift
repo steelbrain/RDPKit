@@ -281,6 +281,36 @@ private let fullFrame = [RDPFrameRect(left: 0, top: 0, right: 16, bottom: 16)]
     #expect(pixel.prefix(3).allSatisfy { abs(Int($0) - 20) <= 3 })
 }
 
+/// The luma regions end past the update's size, so all regions are in surface coordinates,
+/// the chroma region that fits the update's size too: its chroma goes to its own pixels.
+@Test func AVC444AppliesSurfaceCoordinateChromaRegionsWhereTheyAre() throws {
+    // A neutral main view and an auxiliary view whose chroma samples are all 40.
+    let accessUnits = try encodeH264AnnexB(frames: [(luma: 128, chroma: 128), (luma: 40, chroma: 128)])
+    let destinationRect = RDPFrameRect(left: 16, top: 0, right: 80, bottom: 64)
+    let frame = RDPGraphicsFrameSnapshot(
+        frameID: 1,
+        surfaceID: 1,
+        codecID: RDPGFXCodecID.avc444,
+        codecName: "avc444",
+        pixelFormat: 32,
+        destinationRect: destinationRect,
+        regionRects: [destinationRect],
+        encodedVideoData: accessUnits[0],
+        auxiliaryEncodedVideoData: accessUnits[1],
+        auxiliaryRegionRects: [RDPFrameRect(left: 16, top: 0, right: 48, bottom: 64)],
+        avc444SubframeLayout: .yuv420AndChroma420
+    )
+
+    let result = try RDPVideoToolboxFrameDecoder().decodeDetailed(frame)
+
+    func isGrey(_ pixel: [UInt8]) -> Bool {
+        pixel.prefix(3).allSatisfy { abs(Int($0) - 128) <= 8 }
+    }
+    // Picture columns 0-31 are surface columns 16-47.
+    #expect(try !isGrey(bgraPixel(atX: 5, y: 5, in: result.imageBuffer)))
+    #expect(try isGrey(bgraPixel(atX: 41, y: 5, in: result.imageBuffer)))
+}
+
 @Test func AVC444ChromaOnlyUpdateCombinesWithLumaOfAnotherRectangle() throws {
     let accessUnits = try encodeH264AnnexB(frames: [(luma: 20, chroma: 128), (luma: 128, chroma: 128)])
     let decoder = RDPVideoToolboxFrameDecoder()

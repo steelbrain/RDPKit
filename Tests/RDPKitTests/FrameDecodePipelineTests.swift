@@ -196,6 +196,29 @@ import Testing
     #expect(try bgraPixel(atX: 4, y: 2, in: presentation.imageBuffer) == [0x33, 0x44, 0x55, 0xFF])
 }
 
+/// Regions are in surface coordinates when any of them ends past the update's size, the one
+/// that fits it too: each region the presentation names is where the update copied it.
+@Test func decodedVideoCompositorPresentsSurfaceCoordinateRegionsWhereItCopiesThem() throws {
+    let compositor = RDPDecodedVideoSurfaceCompositor()
+    let regionRects = [
+        RDPFrameRect(left: 2, top: 0, right: 4, bottom: 2),
+        RDPFrameRect(left: 8, top: 0, right: 10, bottom: 2),
+    ]
+    let presentation = try compositor.presented(
+        for: videoFrame(
+            id: 1,
+            surfaceRect: RDPFrameRect(left: 0, top: 0, right: 12, bottom: 2),
+            destinationRect: RDPFrameRect(left: 2, top: 0, right: 10, bottom: 2),
+            regionRects: regionRects
+        ),
+        decodedImageBuffer: try bgraPixelBuffer(width: 8, height: 2, pixel: [0x33, 0x44, 0x55, 0xFF])
+    )
+
+    #expect(presentation.frame.regionRects == regionRects)
+    #expect(try bgraPixel(atX: 2, y: 0, in: presentation.imageBuffer) == [0x33, 0x44, 0x55, 0xFF])
+    #expect(try bgraPixel(atX: 4, y: 0, in: presentation.imageBuffer) == [0x00, 0x00, 0x00, 0x00])
+}
+
 @Test func decodedVideoCompositorAppliesScaledOutputMapping() throws {
     let compositor = RDPDecodedVideoSurfaceCompositor()
     let presentation = try compositor.presented(

@@ -32,7 +32,8 @@ final class RDPAVC444FrameDecoder {
         )
         let chromaRegionRects = auxiliary == nil ? [] : sourceRegionRects(
             layout == .chroma420Only ? frame.regionRects : frame.auxiliaryRegionRects,
-            destinationRect: frame.destinationRect
+            destinationRect: frame.destinationRect,
+            relative: frame.hasRelativeRegions
         )
         let usesV2Layout = frame.codecID == RDPGFXCodecID.avc444v2
         result.imageBuffer = try reconstruct(
@@ -76,14 +77,14 @@ final class RDPAVC444FrameDecoder {
         )
     }
 
+    /// `regionRects` in picture coordinates; `relative` says whether they are relative to
+    /// the update already or in surface coordinates.
     private func sourceRegionRects(
         _ regionRects: [RDPFrameRect],
-        destinationRect: RDPFrameRect
+        destinationRect: RDPFrameRect,
+        relative: Bool
     ) -> [RDPFrameRect] {
-        let regionsAreRelative = regionRects.allSatisfy {
-            $0.right <= destinationRect.width && $0.bottom <= destinationRect.height
-        }
-        guard !regionsAreRelative else {
+        guard !relative else {
             return regionRects
         }
         return regionRects.compactMap { region in

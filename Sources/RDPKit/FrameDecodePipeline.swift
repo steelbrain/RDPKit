@@ -203,6 +203,7 @@ final class RDPDecodedVideoSurfaceCompositor {
         let copyRegions = videoCopyRegions(
             updateRect: updateRect,
             regionRects: frame.regionRects + frame.auxiliaryRegionRects,
+            relative: frame.hasRelativeRegions,
             sourceWidth: CVPixelBufferGetWidth(decodedImageBuffer),
             sourceHeight: CVPixelBufferGetHeight(decodedImageBuffer),
             surfaceWidth: max(surfaceWidth, surfaces[frame.surfaceID]?.width ?? 0),
@@ -495,8 +496,9 @@ final class RDPDecodedVideoSurfaceCompositor {
         frame: RDPGraphicsFrameSnapshot,
         surfaceRect: RDPFrameRect
     ) -> Bool {
-        regions.contains {
-            outputRegionRect($0, updateRect: frame.destinationRect, surfaceRect: surfaceRect) == surfaceRect
+        let relative = frame.hasRelativeRegions
+        return regions.contains {
+            outputRegionRect($0, updateRect: frame.destinationRect, relative: relative, surfaceRect: surfaceRect) == surfaceRect
         }
     }
 
@@ -535,8 +537,9 @@ final class RDPDecodedVideoSurfaceCompositor {
         var outputFrame = frame
         outputFrame.surfaceRect = outputRect
         outputFrame.destinationRect = outputRect
+        let relative = frame.hasRelativeRegions
         let regionRects = (frame.regionRects + frame.auxiliaryRegionRects).compactMap {
-            outputRegionRect($0, updateRect: frame.destinationRect, surfaceRect: surfaceRect)
+            outputRegionRect($0, updateRect: frame.destinationRect, relative: relative, surfaceRect: surfaceRect)
         }
         outputFrame.regionRects = regionRects.isEmpty ? [outputRect] : regionRects
         outputFrame.auxiliaryRegionRects = []
@@ -627,8 +630,9 @@ final class RDPDecodedVideoSurfaceCompositor {
         surfaceRect: RDPFrameRect
     ) -> RDPGraphicsFrameSnapshot {
         let destinationRect = frame.mappedOutputRect ?? surfaceRect
+        let relative = frame.hasRelativeRegions
         var regionRects = (frame.regionRects + frame.auxiliaryRegionRects).compactMap {
-            outputRegionRect($0, updateRect: frame.destinationRect, surfaceRect: surfaceRect)
+            outputRegionRect($0, updateRect: frame.destinationRect, relative: relative, surfaceRect: surfaceRect)
         }
         if let mappedOutputRect = frame.mappedOutputRect {
             regionRects = regionRects.map {
@@ -839,9 +843,12 @@ private func inferredSurfaceRect(from updateRect: RDPFrameRect, minimumWidth: In
     )
 }
 
+/// `relative` says whether `regionRects` are relative to `updateRect` or in surface
+/// coordinates (``RDPGraphicsFrameSnapshot/hasRelativeRegions``).
 private func videoCopyRegions(
     updateRect: RDPFrameRect,
     regionRects: [RDPFrameRect],
+    relative: Bool,
     sourceWidth: Int,
     sourceHeight: Int,
     surfaceWidth: Int,
@@ -850,19 +857,12 @@ private func videoCopyRegions(
     let regions = regionRects.isEmpty
         ? [RDPFrameRect(left: 0, top: 0, right: updateRect.width, bottom: updateRect.height)]
         : regionRects
-    let regionsAreRelative = regions.allSatisfy {
-        $0.left <= updateRect.width
-            && $0.top <= updateRect.height
-            && $0.right <= updateRect.width
-            && $0.bottom <= updateRect.height
-    }
-
     return regions.compactMap { region in
         let sourceLeft: Int
         let sourceTop: Int
         let destinationLeft: Int
         let destinationTop: Int
-        if regionsAreRelative {
+        if relative || regionRects.isEmpty {
             sourceLeft = Int(region.left)
             sourceTop = Int(region.top)
             destinationLeft = Int(updateRect.left) + sourceLeft
@@ -933,9 +933,9 @@ private func clippedVideoCopyRegion(
 private func outputRegionRect(
     _ region: RDPFrameRect,
     updateRect: RDPFrameRect,
+    relative: Bool,
     surfaceRect: RDPFrameRect
 ) -> RDPFrameRect? {
-    let relative = region.right <= updateRect.width && region.bottom <= updateRect.height
     let outputLeft = relative
         ? Int(surfaceRect.left) + Int(updateRect.left) + Int(region.left)
         : Int(surfaceRect.left) + Int(region.left)
