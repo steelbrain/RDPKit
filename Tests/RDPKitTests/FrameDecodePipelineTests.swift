@@ -760,6 +760,48 @@ import Testing
     queue.cancel()
 }
 
+/// The session reports deletions and evictions once, on the next snapshot, whether or not
+/// that snapshot decodes.
+@Test func frameDecodeQueueForgetsDeletedStateOfFramesThatFail() throws {
+    let presented = Locked<[RDPGraphicsFrameSnapshot]>([])
+    let queue = RDPFrameDecodeQueue(
+        shouldCancel: { false },
+        onDecoded: { presentation, _, _, _ in presented.withLock { $0.append(presentation.frame) } },
+        onDecodeFailed: { _, _ in }
+    )
+    let outputRect = RDPFrameRect(left: 0, top: 0, right: 4, bottom: 4)
+    var bitmap = bitmapFrame(id: 1, width: 4, height: 4, pixel: [0x10, 0x20, 0x30, 0xFF], graphicsOutputRect: outputRect)
+    bitmap.surfaceRect = outputRect
+    let corner = RDPFrameRect(left: 0, top: 0, right: 2, bottom: 2)
+    let store = surfaceCopyFrame(
+        id: 1,
+        outputRect: outputRect,
+        copy: RDPGraphicsSurfaceCopy(source: .surface(1), destination: .cacheSlot(3), blocks: [.init(source: corner, destination: corner)])
+    )
+    #expect(queue.submitAndWait(bitmap, receivedAt: Date(), shouldContinue: { true }) == .decoded)
+    #expect(queue.submitAndWait(store, receivedAt: Date(), shouldContinue: { true }) == .decoded)
+    let presentedCount = presented.value.count
+
+    var failing = videoFrame(id: 2, surfaceRect: outputRect, destinationRect: outputRect, regionRects: [outputRect], nalUnitTypes: [1])
+    failing.deletedSurfaceIDs = [1]
+    failing.evictedCacheSlots = [3]
+    guard case .failed = queue.submitAndWait(failing, receivedAt: Date(), shouldContinue: { true }) else {
+        Issue.record("expected the video update to fail")
+        queue.cancel()
+        return
+    }
+
+    let later = RDPFrameRect(left: 2, top: 2, right: 4, bottom: 4)
+    for copy in [
+        RDPGraphicsSurfaceCopy(source: .surface(1), destination: .surface(1), blocks: [.init(source: corner, destination: later)]),
+        RDPGraphicsSurfaceCopy(source: .cacheSlot(3), destination: .surface(1), blocks: [.init(source: corner, destination: later)]),
+    ] {
+        #expect(queue.submitAndWait(surfaceCopyFrame(id: 3, outputRect: outputRect, copy: copy), receivedAt: Date(), shouldContinue: { true }) == .decoded)
+    }
+    #expect(presented.value.count == presentedCount)
+    queue.cancel()
+}
+
 @Test func latestFrameDecodeQueueReportsDecodeFailure() {
     let queue = RDPFrameDecodeQueue(
         shouldCancel: { false },

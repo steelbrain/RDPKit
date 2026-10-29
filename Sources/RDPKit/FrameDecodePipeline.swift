@@ -344,7 +344,7 @@ final class RDPDecodedVideoSurfaceCompositor {
         return try presentation(from: changed, surface: surface, surfaceRect: surfaceRect)
     }
 
-    private func forgetDeletedState(before frame: RDPGraphicsFrameSnapshot) {
+    func forgetDeletedState(before frame: RDPGraphicsFrameSnapshot) {
         for surfaceID in frame.deletedSurfaceIDs {
             surfaces[surfaceID] = nil
             directSurfaces[surfaceID] = nil
@@ -1170,9 +1170,11 @@ public final class RDPFrameDecodeQueue: @unchecked Sendable {
         }
         return autoreleasepool {
             let decodeStartedAt = Date()
+            // The session reports these only once, with this frame, whether or not it decodes.
+            decoder.discardSurfaces(frame.deletedSurfaceIDs)
+            videoCompositor.forgetDeletedState(before: frame)
             do {
                 if frame.contentKind == .surfaceCopy || frame.contentKind == .alpha {
-                    decoder.discardSurfaces(frame.deletedSurfaceIDs)
                     if let presentation = try videoCompositor.presentation(applying: frame) {
                         let presentedAt = Date()
                         onDecoded(presentation, receivedAt, presentedAt, RDPFrameDecodeTiming(
