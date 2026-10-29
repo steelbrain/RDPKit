@@ -521,6 +521,23 @@ private func windowsTypes(
     ])
 }
 
+/// Shift-英数 is Caps Lock under Windows' Japanese layout, which the Mac's Shift-Eisu is not.
+@MainActor
+@Test func theViewSendsNoShiftEisuWithTheJapaneseLayout() throws {
+    let input = RecordedInput()
+    let view = RemoteInputCaptureNSView()
+    view.inputSession = input
+    view.keyboardLayout = MacRDPKeyboardLayout.japanese
+
+    view.keyDown(with: try keyEvent(.keyDown, keyCode: kVK_JIS_Eisu, characters: " ", modifierFlags: .shift))
+    view.keyUp(with: try keyEvent(.keyUp, keyCode: kVK_JIS_Eisu, characters: " ", modifierFlags: .shift))
+    #expect(input.events.isEmpty)
+
+    view.keyboardLayout = .unitedStates
+    view.keyDown(with: try keyEvent(.keyDown, keyCode: kVK_JIS_Eisu, characters: " ", modifierFlags: .shift))
+    #expect(input.events == [.keyboard(scancode: RDPKeyboardScancode(code: 0x71), isReleased: false)])
+}
+
 @Test func aKeyHeldAsAScancodeRepeatsAsThatScancodeAfterItsModifierIsReleased() {
     #expect(sendsScancode(kVK_ANSI_C, [], characters: "c", isHeldAsScancode: true))
 }

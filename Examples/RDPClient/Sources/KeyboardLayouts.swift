@@ -47,8 +47,8 @@ enum MacRDPKeyboardLayout {
     ///   sent as its scancode because the Japanese table matched types that layout's
     ///   character instead (Shift-2 types "@" on US), a risk taken only where the IME needs it.
     ///
-    /// Under kbd106, Shift-英数 is Caps Lock, so Shift-Eisu toggles the server's Caps Lock out
-    /// of step with the Mac's until focus or Caps Lock synchronizes them again.
+    /// Under kbd106, Shift-英数 is Caps Lock, so the input view sends nothing for Shift-Eisu,
+    /// which would otherwise toggle the server's Caps Lock out of step with the Mac's.
     static func windowsLayout(
         _ inputSourceLayout: RDPKeyboardLayout,
         isJapaneseInputSource: Bool,

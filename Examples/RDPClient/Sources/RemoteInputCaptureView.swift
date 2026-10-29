@@ -150,6 +150,13 @@ final class RemoteInputCaptureNSView: NSView {
 
     override func keyDown(with event: NSEvent) {
         releaseModifiers(missingFrom: event.modifierFlags)
+        // Windows' Japanese layout makes Shift-英数 Caps Lock, which would toggle the server's
+        // out of step with the Mac's, so Shift-Eisu sends nothing there.
+        if keyboardLayout == MacRDPKeyboardLayout.japanese, Int(event.keyCode) == kVK_JIS_Eisu,
+           event.modifierFlags.contains(.shift)
+        {
+            return
+        }
         if let scancode = MacRDPKeyboardMapping.scancode(forKeyCode: event.keyCode, layout: keyboardLayout),
            MacRDPKeyboardMapping.shouldSendScancode(
                forKeyCode: event.keyCode,
