@@ -170,6 +170,24 @@
   longer counts as drawn, so copies out of that area carry what was there.
 - Reject a SurfaceToSurface or CacheToSurface whole when any destination is
   outside the surface.
+- Read AVC420/AVC444 region rectangles relative to the update or in surface
+  coordinates the same way in every decoder step, so the regions are presented
+  and chroma-combined where the video wrote them, and ignore an inverted region
+  instead of wrapping it onto another part of the surface.
+- A second DisplayControl or audio dynamic channel replaces the first, as a
+  second RDPGFX channel already did, so the old channel's data and Close no
+  longer reach the new one. An `RDPDisplayControlSession` sends nothing once
+  the server has closed or replaced its channel; `onDisplayControlReady` hands
+  out the new channel's session.
+- Cut long clipboard file names between surrogate pairs, not inside one.
+- RemoteFX Progressive: draw regions with tiles an earlier WireToSurface2 of
+  the same RDPGFX frame sent, accept an upgrade in a codec context's first PDU
+  that sent the tile's first pass, and end the refinement other codec contexts
+  kept for a tile when a first-pass or simple tile replaces it.
+- RemoteFX: keep the region of every frame in a message, and decode later
+  messages after one fails inside a frame.
+- ClearCodec: expect the next sequence number after a stream that fails to
+  decode. RDP 6.0 planar: restore negative chroma at colour-loss levels above 1.
 
 ### Security and robustness
 
@@ -205,21 +223,13 @@
   which a server could nest deep enough to overflow the stack.
 - `RDPFrameDecodeQueue` drops deleted surfaces and evicted cache entries even
   when the frame that reports them fails to decode.
-- Read AVC420/AVC444 region rectangles relative to the update or in surface
-  coordinates the same way in every decoder step, so the regions are presented
-  and chroma-combined where the video wrote them, and ignore an inverted region
-  instead of wrapping it onto another part of the surface.
-- A second DisplayControl or audio dynamic channel replaces the first, as a
-  second RDPGFX channel already did, so the old channel's data and Close no
-  longer reach the new one. An `RDPDisplayControlSession` sends nothing once
-  the server has closed or replaced its channel; `onDisplayControlReady` hands
-  out the new channel's session.
-- Cut long clipboard file names between surrogate pairs, not inside one.
 - Name each deleted surface and evicted cache slot once in the next graphics
   snapshot, so the lists stop growing for a server that never shows a frame.
 - Certificate trust evaluation gets a thread even while busy work holds every
   CPU, instead of stalling for the whole timeout and reporting a trusted server
   as untrusted.
+- ClearCodec rejects a glyph-cache hit whose destination is another size than
+  the glyph, which could trap on a very wide surface.
 - A video update's region rectangles collapse into their bounding box past
   1,024 of them or when they cover the update more than four times over, so a
   server cannot make applying them take unbounded time.
@@ -229,6 +239,9 @@
 - Mutate RDPGFX surfaces and reassemble channel messages in place, speed up
   ZGFX, NSCodec, CAPROGRESSIVE and hex formatting, and build diagnostic report
   entries only while the report keeps them.
+- Decode RemoteFX and RemoteFX Progressive tiles about 20% faster, and planar,
+  interleaved and ClearCodec bitmaps 3 to 30 times faster, with identical
+  output.
 - `RDPFrameDecodeQueue` composes partial video updates without copying whole
   surfaces. It converts only the decoded block the update's regions copy and
   draws presentation buffers from a pool. A partial 4K update now takes about a
