@@ -208,7 +208,9 @@ let report = client.run(
 
 - Slow-path and fast-path keyboard scancodes and Unicode input
 - Configurable keyboard layout (KLID), type, subtype, and function key count,
-  announced in the Client Core Data and the Input Capability Set
+  announced in the Client Core Data and the Input Capability Set. Windows
+  applies the layout only to a session it creates; connecting to an existing
+  session keeps its layout, while the type and subtype apply.
 - Pointer motion, buttons, extended buttons, vertical wheel, and horizontal wheel
 - Remote pointer shapes, system pointers, and pointer-cache updates, with
   `RDPRemotePointerBitmap` to turn a shape into premultiplied RGBA or a

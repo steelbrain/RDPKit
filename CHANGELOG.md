@@ -196,14 +196,21 @@
     character goes as Unicode without Alt; other keys still get Alt, and
     right Option released alone still taps Alt. Left Option goes as Alt at
     once, for shortcuts.
-  - With a Japanese input source on a JIS keyboard that types with ABC or
-    US, announces Windows' Japanese layout (0x00000411) on a 106/109-key
-    keyboard (type 7, subtype 2), so the server starts its Japanese IME and
-    the JIS keys go as their scancodes; every other input source and
-    keyboard announces the input source's own layout. Eisu and Kana go as
-    that layout's 英数 and ひらがな keys (0x3A and 0x70; LANG2 and LANG1 with
-    other layouts) to switch the remote IME, instead of typing a space.
+  - With a Japanese input source that types with ABC or US, announces
+    Windows' Japanese layout (0x00000411), so the server starts its Japanese
+    IME: as a 106/109-key keyboard (type 7, subtype 2) on a JIS keyboard,
+    where the JIS keys go as their scancodes, and as a 101-key one (type 7,
+    subtype 0) on an ANSI or ISO keyboard, which types what US English
+    types. Every other input source announces its own layout. With the
+    101-key keyboard, left Option and the key left of 1 (Alt-`) turn the
+    remote IME on and off, and Control-` reaches Windows as VK_DBE_DBCSCHAR
+    rather than `` ` ``. On a JIS keyboard, Eisu and Kana go as that
+    layout's 英数 and ひらがな keys (0x3A and 0x70; LANG2 and LANG1 with
+    other layouts) to switch the remote IME, instead of typing a space;
     Shift-Eisu sends nothing there, since Shift-英数 is Caps Lock on Windows.
+  - Windows applies the announced layout only to a session it creates:
+    reconnecting to an existing session keeps that session's layout, so keys
+    sent as scancodes type its characters.
   - Scrolling with Command held sends the Windows key with the wheel, so
     releasing Command no longer opens the server's Start menu. Keypad "="
     goes as Unicode where the remote layout has no "=" on the main "=" key,
