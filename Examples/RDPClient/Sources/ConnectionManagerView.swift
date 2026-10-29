@@ -173,7 +173,7 @@ struct ConnectionManagerView: View {
             loadRememberedPasswordIfAvailable(after: .zero)
         }
         .onChange(of: selectedProfileID) { _, newValue in
-            // Connect fills the form from the profile it selects itself.
+            // Connect and Save leave the form showing the profile they select.
             if newValue != appliedProfileID {
                 applySelectedProfile(id: newValue)
             }
@@ -274,6 +274,9 @@ struct ConnectionManagerView: View {
                 credentialPersistenceRequest(for: profile)
             )
             applyProfileList(try profileStore.save(profile))
+            // The form already shows what was saved, password included: selecting the profile
+            // does not fill it again or look its password up.
+            appliedProfileID = profile.id
             selectedProfileID = profile.id
             applyCredentialPersistenceResult(persistenceResult)
             profileMessage = "Profile saved."
