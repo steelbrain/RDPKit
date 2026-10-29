@@ -247,6 +247,26 @@ import Testing
     #expect(try printedLines(report, json: true).joined().contains("\"redirectionDepth\" : 2"))
 }
 
+/// The count of frame acknowledgements prints in text and JSON, ahead of the few kept in full.
+@Test func preflightPrintsTheFrameAcknowledgementCount() throws {
+    var report = RDPSessionClient().dryRun(configuration: RDPConnectionConfiguration(host: "server.example"))
+    report.rdpGraphicsFrameAcknowledgeCount = 12
+    report.rdpGraphicsFrameAcknowledgeHexes = ["01", "02"]
+
+    var text: [String] = []
+    try printReport(report, json: false) { text.append($0) }
+    var json: [String] = []
+    try printReport(report, json: true) { json.append($0) }
+
+    let countLine = try #require(text.firstIndex(of: "rdp graphics frame acknowledge count: 12"))
+    #expect(Array(text[countLine...].prefix(3)) == [
+        "rdp graphics frame acknowledge count: 12",
+        "rdp graphics frame acknowledge 1: 01",
+        "rdp graphics frame acknowledge 2: 02",
+    ])
+    #expect(json.joined().contains("\"rdpGraphicsFrameAcknowledgeCount\" : 12"))
+}
+
 @Test func connectionOptionsRejectPortZero() {
     #expect(throws: RDPCommandLineError.invalidValue(option: "--port", value: "0", expected: "1...65535")) {
         try FirstFrameCaptureOptions.parse(["RDPFirstFrameCapture", "--port", "0"])

@@ -616,6 +616,9 @@ func printReport(
         if let failureResponseHex = report.rdpGraphicsFailureUpdateResponseHex {
             print("rdp graphics failure update response: \(failureResponseHex)")
         }
+        if let rdpGraphicsFrameAcknowledgeCount = report.rdpGraphicsFrameAcknowledgeCount {
+            print("rdp graphics frame acknowledge count: \(rdpGraphicsFrameAcknowledgeCount)")
+        }
         if let rdpGraphicsFrameAcknowledgeHexes = report.rdpGraphicsFrameAcknowledgeHexes {
             for (index, acknowledgeHex) in rdpGraphicsFrameAcknowledgeHexes.enumerated() {
                 print("rdp graphics frame acknowledge \(index + 1): \(acknowledgeHex)")
