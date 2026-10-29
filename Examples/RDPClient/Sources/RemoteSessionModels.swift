@@ -31,7 +31,7 @@ struct RDPSessionEndReason: Equatable {
     init(report: RDPConnectionReport) {
         let termination = report.remoteTermination
         if let failure = report.failure {
-            self = Self.failure(failure, error: report.error)
+            self = Self.failure(failure, error: report.error, redirectedTo: report.redirectionDepth > 0 ? report.target : nil)
         } else if report.status == "failure" || report.error != nil {
             self = RDPSessionEndReason(kind: .failed, message: "The connection failed.", detail: report.error ?? "failed at \(report.stage)")
         } else if report.rdpGraphicsFirstFrame != nil {
@@ -56,11 +56,17 @@ struct RDPSessionEndReason: Equatable {
         }
     }
 
-    private static func failure(_ failure: RDPConnectionFailure, error: String?) -> RDPSessionEndReason {
+    /// `redirectedTo` is the target a Server Redirection sent the connection to: the server
+    /// typed in was reached and took the sign-in, so failing to reach the target is not its fault.
+    private static func failure(_ failure: RDPConnectionFailure, error: String?, redirectedTo: String?) -> RDPSessionEndReason {
         let credentialsMessage = "The server requires Network Level Authentication: enter a user name and password."
         let (text, offersCredentials): (String, Bool) = switch failure {
+        case .addressResolution where redirectedTo != nil:
+            ("The server passed the session on to \(redirectedTo ?? ""), whose name this Mac could not find.", false)
         case .addressResolution:
             ("The server's name could not be found. Check the host name and your network connection.", false)
+        case .connect where redirectedTo != nil:
+            ("The server passed the session on to \(redirectedTo ?? ""), which this Mac could not reach.", false)
         case let .connect(socketError):
             (message(for: socketError), false)
         case .negotiation(code: .hybridRequiredByServer):

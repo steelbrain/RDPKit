@@ -11,12 +11,14 @@ private func sessionReport(
     disconnectReason: UInt8? = nil,
     nextStage: String? = "rdp-session-ended",
     error: String? = nil,
-    failure: RDPConnectionFailure? = nil
+    failure: RDPConnectionFailure? = nil,
+    redirectionDepth: Int = 0
 ) -> RDPConnectionReport {
     RDPConnectionReport(
         status: error == nil ? "success" : "failure",
         stage: "rdp-graphics-dynamic-channel",
         target: "127.0.0.1:3389",
+        redirectionDepth: redirectionDepth,
         passwordConfigured: true,
         requestedProtocols: ["tls", "credssp"],
         requestHex: "",
@@ -110,6 +112,12 @@ private let bitmapFrame = RDPGraphicsFrameSnapshot(
     #expect(reason(.connect(error: RDPSocketError(errno: EHOSTUNREACH))).message.contains("Local Network"))
     #expect(reason(.connect(error: RDPSocketError(errno: ECONNREFUSED))).message.hasPrefix("The server refused the connection."))
     #expect(reason(.addressResolution).message.hasPrefix("The server's name could not be found."))
+    let redirectedRefused = RDPSessionEndReason(report: sessionReport(
+        error: "raw",
+        failure: .connect(error: RDPSocketError(errno: ECONNREFUSED)),
+        redirectionDepth: 1
+    ))
+    #expect(redirectedRefused.message == "The server passed the session on to 127.0.0.1:3389, which this Mac could not reach.")
     #expect(reason(.licensing(errorCode: 0x0000_0007)).message.hasPrefix("The server could not license this connection."))
     let freshCredentials = reason(.serverTermination(termination: RDPRemoteTermination(errorInfo: 0x0000_000A)))
     #expect(freshCredentials.message == "The server requires the credentials to be entered again.")
