@@ -220,9 +220,10 @@ let report = client.run(
 - File contents requests and responses. They have no timeout: to give one
   up, ignore answers for its stream ID and use a new one for the next request.
 - Local-to-remote and remote-to-local clipboard file transfer plumbing. Local
-  file names are made valid on Windows before they are offered: forbidden
-  characters, device names such as `CON`, trailing dots and spaces, names over
-  259 UTF-16 code units, and duplicates that differ only in case.
+  file names are relative paths (`\` or `/` separates folders) made valid on
+  Windows before they are offered: forbidden characters, device names such as
+  `CON`, trailing dots and spaces, components over 255 UTF-16 code units,
+  paths over cFileName's 259, and duplicates that differ only in case.
 - Drive redirection: `sharedDrives` shows local folders on the server as
   `\\tsclient\<name>`. The server can read, write, create, rename, and delete
   inside a shared folder and nowhere else; links that point outside it are

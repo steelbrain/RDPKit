@@ -38,6 +38,8 @@
   `physicalSize` (`RDPDisplayPhysicalSize`, in millimetres) go in the Client
   Core Data, so a session starts at the client's scale, also on servers
   without Display Control. The defaults send 100% and no size, as before.
+  Values set after the initializer are clamped the same way when the
+  connection starts.
 - Auto-reconnect: `report.rdpAutoReconnectCookie` (`RDPAutoReconnectCookie`)
   keeps the latest cookie the server sent, and
   `RDPConnectionConfiguration.autoReconnectCookie` sends it back in the Client
@@ -68,11 +70,16 @@
   as mstsc and FreeRDP do, so NTLM and the Client Info PDU carry the domain.
   A UPN stays as it is. `qualifiedUsername`, and so `credentialAccountName`,
   is unchanged; the report's `username` and `domain` show the two parts.
-- Clipboard: local files reach the server under names Windows accepts.
-  `publishLocalFiles` replaces `\ / : * ? " < > |` and control characters
-  with `_`, puts `_` before device names such as `CON` and `NUL.txt`, drops
-  trailing dots and spaces, shortens a name past 259 UTF-16 code units before
-  its extension, and numbers names that differ only in case.
+- Clipboard: local files reach the server under paths Windows accepts.
+  `publishLocalFiles` treats `\` and `/` as folder separators, so a
+  directory `Folder` and a file `Folder\notes.txt` paste as a folder holding
+  the file; empty, `.` and `..` components are dropped. In each component it
+  replaces `: * ? " < > |` and control characters with `_`, puts `_` before
+  device names such as `CON`, `NUL.txt` and `CONIN$`, drops trailing dots and
+  spaces, and shortens a component past 255 UTF-16 code units before its
+  extension. A path past cFileName's 259 has its last component shortened,
+  or goes to the top level when its folders leave no room. Paths that differ
+  only in case are numbered in their last component.
 
 ### Examples
 
