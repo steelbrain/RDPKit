@@ -180,16 +180,6 @@ final class RDPDecodedVideoSurfaceCompositor {
         if updateCoversSurface(frame, surfaceRect: surfaceRect) {
             surfacesWithBitmapContent.remove(frame.surfaceID)
         }
-        // A resync replaces the surface, except what other codecs drew outside its regions.
-        if frame.isVideoResyncFrame,
-           updateRect.left == 0,
-           updateRect.top == 0,
-           !surfacesWithBitmapContent.contains(frame.surfaceID)
-        {
-            surfaces[frame.surfaceID] = nil
-            directSurfaces[frame.surfaceID] = nil
-            chromaEnhancedAVC444Surfaces.remove(frame.surfaceID)
-        }
         let canPresentDirectly = !isUnmapped && canPresentDirectly(frame, surfaceRect: surfaceRect)
         recordAVC444ChromaUpdate(frame)
         if canPresentDirectly,
