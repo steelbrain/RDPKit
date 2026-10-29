@@ -609,6 +609,32 @@ import Testing
     #expect(compositor.makeFrames(frameID: 2).map(\.regionRects) == [[RDPFrameRect(row)]])
 }
 
+/// Areas drawn over each other in part list their shared pixels once, cutting whichever
+/// side leaves fewer rectangles.
+@Test func compositorListsPartlyOverlappingAreasOnce() throws {
+    let compositor = RDPGFXSurfaceCompositor(outputWidth: 8, outputHeight: 4)
+    let clearCodec = RDPClearCodecDecoder()
+    try compositor.process(try createSurfaceMessage(surfaceID: 1, width: 8, height: 4), clearCodec: clearCodec)
+    try compositor.process(try mapSurfaceToOutputMessage(surfaceID: 1, x: 0, y: 0), clearCodec: clearCodec)
+    func fill(_ rects: [RDPGFXRect16]) throws {
+        try compositor.process(try solidFillMessage(surfaceID: 1, color: [0x01, 0x02, 0x03, 0xFF], rects: rects), clearCodec: clearCodec)
+    }
+
+    // Either cut leaves three rectangles; the earlier one loses the shared pixels.
+    try fill([RDPGFXRect16(left: 0, top: 0, right: 3, bottom: 2), RDPGFXRect16(left: 1, top: 1, right: 4, bottom: 4)])
+    #expect(compositor.makeFrames(frameID: 1).map(\.regionRects) == [[
+        RDPFrameRect(left: 0, top: 0, right: 3, bottom: 1),
+        RDPFrameRect(left: 0, top: 1, right: 1, bottom: 2),
+        RDPFrameRect(left: 1, top: 1, right: 4, bottom: 4),
+    ]])
+    // A glyph over the edge of a fill keeps only what sticks out, not three pieces of the fill.
+    try fill([RDPGFXRect16(left: 0, top: 0, right: 4, bottom: 4), RDPGFXRect16(left: 3, top: 1, right: 6, bottom: 3)])
+    #expect(compositor.makeFrames(frameID: 2).map(\.regionRects) == [[
+        RDPFrameRect(left: 0, top: 0, right: 4, bottom: 4),
+        RDPFrameRect(left: 4, top: 1, right: 6, bottom: 3),
+    ]])
+}
+
 @Test func compositorEvictsCachedSurfaceEntries() throws {
     let compositor = RDPGFXSurfaceCompositor()
     let clearCodec = RDPClearCodecDecoder()

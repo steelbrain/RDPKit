@@ -182,17 +182,23 @@ final class RDPGFXSurfaceCompositor {
             return (decoded, dirtyRects.clipped(to: rect).offsetBy(dx: -Int(rect.left), dy: -Int(rect.top)))
         }
 
-        /// Records an area this surface's pixels changed in: an area inside one already
-        /// recorded adds nothing, and one around others replaces them. Past
-        /// `maximumDirtyRectCount` rectangles a list collapses into its bounding box, which
-        /// bounds it for surfaces whose updates are held back.
+        /// Records an area this surface's pixels changed in, listing each pixel once: the
+        /// rectangles recorded lose what `rect` covers, or `rect` loses what they cover,
+        /// whichever leaves fewer rectangles. Past `maximumDirtyRectCount` rectangles a
+        /// list collapses into its bounding box, which bounds it for surfaces whose
+        /// updates are held back.
         mutating func markDirty(_ rect: RDPGFXRect16) {
             guard let rect = clipped(rect) else {
                 return
             }
-            if !dirtyRects.contains(where: { $0.contains(rect) }) {
-                dirtyRects = (dirtyRects.filter { !rect.contains($0) } + [rect]).collapsed(beyond: Self.maximumDirtyRectCount)
+            let kept = dirtyRects.filter { !rect.contains($0) }
+            var marked = kept + [rect]
+            if kept.contains(where: { $0.intersects(rect) }) {
+                let cutRect = kept + [rect].subtracting(kept)
+                marked = kept.subtracting(rect) + [rect]
+                marked = cutRect.count < marked.count ? cutRect : marked
             }
+            dirtyRects = marked.collapsed(beyond: Self.maximumDirtyRectCount)
             decodedRects = decodedRects.subtracting(rect)
         }
 
@@ -939,13 +945,17 @@ private extension RDPGFXRect16 {
     func contains(_ rect: RDPGFXRect16) -> Bool {
         left <= rect.left && top <= rect.top && right >= rect.right && bottom >= rect.bottom
     }
+
+    func intersects(_ rect: RDPGFXRect16) -> Bool {
+        left < rect.right && rect.left < right && top < rect.bottom && rect.top < bottom
+    }
 }
 
 private extension [RDPGFXRect16] {
     /// These rectangles less `rect`; each one it cuts leaves up to four pieces.
     func subtracting(_ rect: RDPGFXRect16) -> [RDPGFXRect16] {
         flatMap { piece -> [RDPGFXRect16] in
-            guard piece.left < rect.right, rect.left < piece.right, piece.top < rect.bottom, rect.top < piece.bottom else {
+            guard piece.intersects(rect) else {
                 return [piece]
             }
             let top = Swift.max(piece.top, rect.top)
