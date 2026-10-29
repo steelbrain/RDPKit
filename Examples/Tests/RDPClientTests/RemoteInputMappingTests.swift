@@ -144,6 +144,24 @@ import Testing
     }
 }
 
+/// Eisu and Kana go as LANG2 and LANG1 whatever the Mac types with them (a space), and Yen
+/// and Ro as the PC JIS keys, where the layout check decides.
+@Test func jisKeysMapToThePCJISScancodes() {
+    let expected: [Int: RDPKeyboardScancode] = [
+        kVK_JIS_Eisu: RDPKeyboardScancode(code: 0x71),
+        kVK_JIS_Kana: RDPKeyboardScancode(code: 0x72),
+        kVK_JIS_Yen: RDPKeyboardScancode(code: 0x7D),
+        kVK_JIS_Underscore: RDPKeyboardScancode(code: 0x73),
+    ]
+    for (keyCode, scancode) in expected {
+        #expect(MacRDPKeyboardMapping.scancode(forKeyCode: UInt16(keyCode)) == scancode)
+    }
+    #expect(sendsScancode(kVK_JIS_Eisu, [], characters: " "))
+    #expect(sendsScancode(kVK_JIS_Kana, [], characters: " "))
+    #expect(sendsScancode(kVK_JIS_Yen, [], characters: "¥") == false)
+    #expect(sendsScancode(kVK_JIS_Underscore, [], characters: "_") == false)
+}
+
 private func sendsScancode(
     _ keyCode: Int,
     _ modifierFlags: NSEvent.ModifierFlags,
@@ -386,6 +404,32 @@ private func windowsTypes(
         .unicode(codeUnit: 0x5E, isReleased: false),
         .unicode(codeUnit: 0x5E, isReleased: true),
         .keyboard(scancode: RDPKeyboardScancode(code: 0x15), isReleased: false),
+    ])
+}
+
+/// What macOS types on a JIS keyboard, with Windows' Japanese layout announced.
+@MainActor
+@Test func theViewSendsJISKeysAsTheJapaneseLayoutTypesThem() throws {
+    let input = RecordedInput()
+    let view = RemoteInputCaptureNSView()
+    view.inputSession = input
+    view.keyboardLayout = MacRDPKeyboardLayout.japanese
+
+    view.keyDown(with: try keyEvent(.keyDown, keyCode: kVK_JIS_Kana, characters: " "))
+    view.keyUp(with: try keyEvent(.keyUp, keyCode: kVK_JIS_Kana, characters: " "))
+    view.keyDown(with: try keyEvent(.keyDown, keyCode: kVK_ANSI_LeftBracket, characters: "@"))
+    view.keyDown(with: try keyEvent(.keyDown, keyCode: kVK_JIS_Yen, characters: "¥"))
+    view.keyDown(with: try keyEvent(.keyDown, keyCode: kVK_JIS_Yen, characters: "|", modifierFlags: .shift))
+    view.keyDown(with: try keyEvent(.keyDown, keyCode: kVK_JIS_Eisu, characters: " "))
+
+    #expect(input.events == [
+        .keyboard(scancode: RDPKeyboardScancode(code: 0x72), isReleased: false),
+        .keyboard(scancode: RDPKeyboardScancode(code: 0x72), isReleased: true),
+        .keyboard(scancode: RDPKeyboardScancode(code: 0x1A), isReleased: false),
+        .unicode(codeUnit: 0xA5, isReleased: false),
+        .unicode(codeUnit: 0xA5, isReleased: true),
+        .keyboard(scancode: RDPKeyboardScancode(code: 0x7D), isReleased: false),
+        .keyboard(scancode: RDPKeyboardScancode(code: 0x71), isReleased: false),
     ])
 }
 
