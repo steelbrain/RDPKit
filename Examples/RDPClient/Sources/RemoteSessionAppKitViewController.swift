@@ -34,7 +34,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
     private var displayControlMessage: String?
     private var autoApplyViewerSize = true
     private var pendingDisplayResizeTask: Task<Void, Never>?
-    private var lastRequestedDisplayRequest: RDPDisplayRequest?
+    private var displayResize = RDPDisplayResizeDebounce()
     private var viewerPointSize: CGSize = .zero
     private var viewerPixelSize: RDPViewerPixelSize?
     private let clipboard: RDPRemoteSessionClipboard
@@ -769,7 +769,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                         controller.displayControlSession = session
                         controller.displayControlMessage = "Display Control ready."
                         // A server redirection's target has not been sent the layout the first server got.
-                        controller.lastRequestedDisplayRequest = nil
+                        controller.cancelPendingDisplayResize(resetLastRequestedSize: true)
                         controller.scheduleAutoDisplaySizeUpdate()
                         controller.render()
                     }
@@ -1127,7 +1127,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         }
 
         displayControlSession.send(request)
-        lastRequestedDisplayRequest = request
+        displayResize.recordSent(request)
         displayControlMessage = "Resize requested: \(request.label)."
         formError = nil
         render()
@@ -1139,7 +1139,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         guard let displayControlSession else {
             return
         }
-        let request = lastRequestedDisplayRequest
+        let request = displayResize.lastSent
             ?? makeDisplayRequest(width: UInt32(desktopSize.width), height: UInt32(desktopSize.height))
         displayControlSession.send(request)
         displayControlMessage = "Video failed to decode; asked the server for a fresh picture."
@@ -1180,13 +1180,14 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         }
 
         let displayRequest = viewerPixelSize.displayRequest
-        guard lastRequestedDisplayRequest != displayRequest else {
+        pendingDisplayResizeTask?.cancel()
+        pendingDisplayResizeTask = nil
+        guard displayResize.viewChanged(to: displayRequest) else {
             return
         }
 
-        pendingDisplayResizeTask?.cancel()
         pendingDisplayResizeTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 350_000_000)
+            try? await Task.sleep(nanoseconds: RDPDisplayResizeDebounce.delayNanoseconds)
             guard Task.isCancelled == false else {
                 return
             }
@@ -1196,10 +1197,11 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
 
     private func applyAutoDisplayRequest(_ displayRequest: RDPDisplayRequest) {
         pendingDisplayResizeTask = nil
-        guard autoApplyViewerSize,
+        let isSettled = displayResize.settle(displayRequest)
+        guard isSettled,
+              autoApplyViewerSize,
               isConnecting,
-              displayControlSession != nil,
-              lastRequestedDisplayRequest != displayRequest
+              displayControlSession != nil
         else {
             return
         }
@@ -1212,9 +1214,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
     private func cancelPendingDisplayResize(resetLastRequestedSize: Bool = false) {
         pendingDisplayResizeTask?.cancel()
         pendingDisplayResizeTask = nil
-        if resetLastRequestedSize {
-            lastRequestedDisplayRequest = nil
-        }
+        displayResize.cancel(forgettingLastSent: resetLastRequestedSize)
     }
 
     private func syncDisplayFieldsWithViewerSize(_ viewerPixelSize: RDPViewerPixelSize) {

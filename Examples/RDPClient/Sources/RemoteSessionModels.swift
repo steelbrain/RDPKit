@@ -111,3 +111,43 @@ struct RDPKeyframeRequestThrottle {
         unansweredRequests = 0
     }
 }
+
+/// Paces the sizes Follow View Size sends over Display Control: a size goes out once the view
+/// has kept it for a moment, and never when the server was last sent it.
+struct RDPDisplayResizeDebounce {
+    static let delayNanoseconds: UInt64 = 350_000_000
+
+    /// The request last sent, by following the view or from the size fields.
+    private(set) var lastSent: RDPDisplayRequest?
+    /// The view's size while it waits out the delay.
+    private(set) var pending: RDPDisplayRequest?
+
+    /// Returns whether `request` has to wait out the delay. It replaces the waiting request even
+    /// when the server already has it, so a size the view only passed through is never sent.
+    mutating func viewChanged(to request: RDPDisplayRequest) -> Bool {
+        pending = request == lastSent ? nil : request
+        return pending != nil
+    }
+
+    /// Whether `request`, having waited out the delay, is to be sent: false when the view has
+    /// changed since, or the server was sent it meanwhile.
+    mutating func settle(_ request: RDPDisplayRequest) -> Bool {
+        guard pending == request else {
+            return false
+        }
+        pending = nil
+        return request != lastSent
+    }
+
+    mutating func recordSent(_ request: RDPDisplayRequest) {
+        lastSent = request
+    }
+
+    /// Drops the waiting request; `forgettingLastSent` also forgets what the server was sent.
+    mutating func cancel(forgettingLastSent: Bool) {
+        pending = nil
+        if forgettingLastSent {
+            lastSent = nil
+        }
+    }
+}

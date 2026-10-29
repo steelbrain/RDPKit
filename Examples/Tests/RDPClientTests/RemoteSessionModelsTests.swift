@@ -156,3 +156,34 @@ import Testing
 
     #expect(requests(atIntervals: [4]) == [true])
 }
+
+@Test func aViewResizedAndBackBeforeTheDelaySendsNothing() {
+    let sizeA = RDPDisplayRequest(pointSize: CGSize(width: 1000, height: 600), backingScaleFactor: 2)
+    let sizeB = RDPDisplayRequest(pointSize: CGSize(width: 800, height: 500), backingScaleFactor: 2)
+    var debounce = RDPDisplayResizeDebounce()
+    debounce.recordSent(sizeA)
+    var results: [Bool] = []
+
+    results.append(debounce.viewChanged(to: sizeB))
+    results.append(debounce.viewChanged(to: sizeA))
+    // B's delay still runs out, but the view has left B.
+    results.append(debounce.settle(sizeB))
+    #expect(results == [true, false, false])
+    #expect(debounce.lastSent == sizeA)
+
+    results = [debounce.viewChanged(to: sizeB), debounce.settle(sizeB)]
+    debounce.recordSent(sizeB)
+    results.append(debounce.viewChanged(to: sizeB))
+    #expect(results == [true, true, false])
+
+    // A size sent from the fields while the view's size waits is not sent again.
+    results = [debounce.viewChanged(to: sizeA)]
+    debounce.recordSent(sizeA)
+    results.append(debounce.settle(sizeA))
+    #expect(results == [true, false])
+
+    // A new session, or a redirection's target, has been sent nothing.
+    debounce.cancel(forgettingLastSent: true)
+    results = [debounce.viewChanged(to: sizeA)]
+    #expect(results == [true])
+}
