@@ -69,6 +69,8 @@ final class MockKRDPServer: LoopbackTestServer {
         var autoDetectBehavior = MockKRDPAutoDetectBehavior.singleRTT
         var licensingBehavior = MockKRDPLicensingBehavior.validClientThenDemandActive
         var redirectionBehavior = MockKRDPRedirectionBehavior.none
+        /// The user name `redirectFirstConnection` sends the client on with.
+        var redirectionUsername: String?
         var finalizationBehavior = MockKRDPFinalizationBehavior.grantBeforeFontList
         var auxiliaryDynamicChannelBehavior = MockKRDPAuxiliaryDynamicChannelBehavior.none
         var dynamicChannelVersion: UInt16 = 2
@@ -1053,7 +1055,7 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
     private func answerGraphicsCapsAdvertise(_ packet: Data, context: ChannelHandlerContext) throws {
         let staticPayload = try MockKRDPFixtures.staticVirtualChannelPayload(from: packet)
         if options.redirectionBehavior == .redirectFirstConnection, connectionIndex == 1 {
-            write(MockKRDPFixtures.serverRedirection(), context: context)
+            write(MockKRDPFixtures.serverRedirection(username: options.redirectionUsername), context: context)
             stage = .done
             return
         }
@@ -1605,7 +1607,7 @@ private enum MockKRDPFixtures {
 
     /// A redirection to `targetNetAddress`, or without one, to the same server
     /// with a routing token.
-    static func serverRedirection(targetNetAddress: String? = nil) -> Data {
+    static func serverRedirection(targetNetAddress: String? = nil, username: String? = nil) -> Data {
         var flags = RDPServerRedirectionPDU.Flags.loadBalanceInfo
         var field = Data("Cookie: msts=load-balanced\r\n".utf8)
         if let targetNetAddress {
@@ -1615,6 +1617,12 @@ private enum MockKRDPFixtures {
         var fields = Data()
         fields.appendLittleEndianUInt32(UInt32(field.count))
         fields.append(field)
+        if let username {
+            flags.insert(.username)
+            let usernameField = utf16LENullTerminated(username)
+            fields.appendLittleEndianUInt32(UInt32(usernameField.count))
+            fields.append(usernameField)
+        }
 
         let redirectionLength = UInt16(12 + fields.count)
         let totalLength = UInt16(8 + Int(redirectionLength))

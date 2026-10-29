@@ -126,6 +126,13 @@ private let bitmapFrame = RDPGraphicsFrameSnapshot(
     #expect(reason(.serverTermination(termination: RDPRemoteTermination(errorInfo: 0x0000_0007))).message
         == "The server denied the connection, or the account may not connect.")
     #expect(reason(.cancelled).kind == .cancelled)
+    // A failure on this side does not blame the server.
+    #expect(reason(.protocolViolation).message == "The server sent something RDPClient cannot handle.")
+    let invalidConfiguration = reason(.invalidConfiguration)
+    #expect(invalidConfiguration.message.hasPrefix("RDPClient cannot send these settings to the server."))
+    #expect(invalidConfiguration.offersCredentials)
+    #expect(reason(.clientFailure).message == "RDPClient failed on this Mac; the server was not at fault.")
+    #expect(reason(.clientFailure).offersCredentials == false)
 }
 
 @Test func legacyConnectionProfileDecodesWithDefaultOptions() throws {

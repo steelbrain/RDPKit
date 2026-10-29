@@ -85,7 +85,7 @@ final class RDPCredSSPNTLMContext {
         switch state {
         case .negotiate:
             guard inputToken?.isEmpty != false else {
-                throw RDPCredSSPError.ntlm("received a server token before sending NTLM negotiate")
+                throw RDPCredSSPError.ntlmClient("received a server token before sending NTLM negotiate")
             }
             negotiateMessage = Self.makeNegotiateMessage()
             state = .authenticate
@@ -100,14 +100,14 @@ final class RDPCredSSPNTLMContext {
             return RDPNTLMStep(outputToken: token, isComplete: true)
 
         case .final:
-            throw RDPCredSSPError.ntlm("NTLM authentication is already complete")
+            throw RDPCredSSPError.ntlmClient("NTLM authentication is already complete")
         }
     }
 
     /// MS-NLMP 3.4.3 SEAL: the signature followed by the sealed message.
     func wrap(_ message: Data) throws -> Data {
         guard let sendSealingKey else {
-            throw RDPCredSSPError.ntlm("NTLM security context is not complete")
+            throw RDPCredSSPError.ntlmClient("NTLM security context is not complete")
         }
         let sealedMessage = sendSealingKey.process(message)
         let signature = messageSignature(
@@ -122,7 +122,7 @@ final class RDPCredSSPNTLMContext {
 
     func unwrap(_ message: Data) throws -> Data {
         guard let receiveSealingKey else {
-            throw RDPCredSSPError.ntlm("NTLM security context is not complete")
+            throw RDPCredSSPError.ntlmClient("NTLM security context is not complete")
         }
         guard message.count >= Self.signatureSize else {
             throw RDPCredSSPError.ntlm("NTLM sealed message is too short")
@@ -190,6 +190,9 @@ final class RDPCredSSPNTLMContext {
 
         let domainName = Data(utf16LittleEndian: domain)
         let userName = Data(utf16LittleEndian: username)
+        guard domainName.count <= UInt16.max, userName.count <= UInt16.max else {
+            throw RDPCredSSPError.credentialsTooLong
+        }
         let workstation = negotiatedFlags & Self.negotiateVersion != 0
             ? Data(utf16LittleEndian: workstationName)
             : Data()
@@ -517,7 +520,7 @@ final class RDPCredSSPNTLMContext {
         var bytes = [UInt8](repeating: 0, count: count)
         let status = SecRandomCopyBytes(kSecRandomDefault, count, &bytes)
         guard status == errSecSuccess else {
-            throw RDPCredSSPError.ntlm("failed to generate random bytes: \(status)")
+            throw RDPCredSSPError.ntlmClient("failed to generate random bytes: \(status)")
         }
         return Data(bytes)
     }

@@ -427,6 +427,35 @@ struct MockKRDPServerTests {
         #expect(run.report.redirectionDepth == 1)
     }
 
+    /// Credentials the Client Info PDU cannot hold are the configuration's fault, not the server's.
+    @Test func credentialsTooLongForClientInfoAreAnInvalidConfiguration() throws {
+        let report = try runMock {
+            $0.credentials = RDPCredentials(username: mockCredentials.username, password: String(repeating: "p", count: 256))
+        }.report
+
+        #expect(report.status == "failure")
+        #expect(report.connectionStage == .clientInfo)
+        #expect(report.failure == .invalidConfiguration)
+        #expect(report.error
+            == "credentials do not fit the Client Info PDU: password is 514 bytes including terminator; maximum is 512")
+        #expect(report.rdpClientInfoSent == false)
+    }
+
+    /// A redirection's user name is the server's, so one the Client Info PDU cannot hold
+    /// stays a protocol violation.
+    @Test func redirectedUsernameTooLongForClientInfoIsAProtocolViolation() throws {
+        let run = try runMock(.init(
+            redirectionBehavior: .redirectFirstConnection,
+            redirectionUsername: String(repeating: "u", count: 300)
+        ))
+
+        #expect(run.connectionCount == 2)
+        #expect(run.report.redirectionDepth == 1)
+        #expect(run.report.connectionStage == .clientInfo)
+        #expect(run.report.failure == .protocolViolation)
+        #expect(run.report.error == "username is 602 bytes including terminator; maximum is 512")
+    }
+
     /// A redirection target that refuses the connection fails like an unreachable server,
     /// but `connect`'s error says the failure came after the redirect, where it went, and
     /// carries the report `run` returns for it.
@@ -572,6 +601,24 @@ struct MockKRDPServerTests {
         #expect(report.rdpPostLicensingResponseType == "server-demand-active")
         #expect(report.rdpConfirmActiveRequestHex != nil)
         #expect(report.error == nil)
+    }
+
+    /// A stored license too large for one Client License Information PDU is the configuration's fault.
+    @Test func storedLicenseTooLargeToPresentIsAnInvalidConfiguration() throws {
+        let report = try runMock(.init(licensingBehavior: .serverLicenseRequestWithStoredClientLicense)) {
+            $0.storedClientLicense = RDPStoredClientLicense(
+                version: 0x0006_0001,
+                scope: "localhost",
+                companyName: "Microsoft Corporation",
+                productID: "A02",
+                licenseInfo: Data(repeating: 0x30, count: 16340)
+            )
+        }.report
+
+        #expect(report.status == "failure")
+        #expect(report.connectionStage == .licensing)
+        #expect(report.failure == .invalidConfiguration)
+        #expect(report.error?.hasPrefix("storedClientLicense does not fit the Client License Information PDU: ") == true)
     }
 
     @Test func clientReportsLicensingFailureWithTheServerErrorCode() throws {

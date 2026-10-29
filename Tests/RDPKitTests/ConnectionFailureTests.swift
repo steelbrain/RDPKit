@@ -126,6 +126,9 @@ func socketErrorsAreCategorizedByErrno(errno: Int32, category: RDPSocketError.Ca
     #expect(RDPCredSSPError.serverError(0xC000_0001).failure == .credSSP(status: RDPLogonStatus(rawValue: 0xC000_0001)))
     #expect(RDPCredSSPError.missingCredentials.failure == .credentialsRequired)
     #expect(RDPCredSSPError.serverBindingMismatch.failure == .protocolViolation)
+    #expect(RDPCredSSPError.ntlm("invalid NTLM challenge message").failure == .protocolViolation)
+    #expect(RDPCredSSPError.credentialsTooLong.failure == .invalidConfiguration)
+    #expect(RDPCredSSPError.ntlmClient("failed to generate random bytes: -1").failure == .clientFailure)
     #expect(RDPLogonStatus.passwordMustChange.name == "STATUS_PASSWORD_MUST_CHANGE")
     #expect(RDPLogonStatus(rawValue: 0xC000_0001).name == nil)
 }
@@ -139,6 +142,8 @@ func socketErrorsAreCategorizedByErrno(errno: Int32, category: RDPSocketError.Ca
     }
 
     #expect(try json(.timedOut) == #"{"timedOut":{}}"#)
+    #expect(try json(.invalidConfiguration) == #"{"invalidConfiguration":{}}"#)
+    #expect(try json(.clientFailure) == #"{"clientFailure":{}}"#)
     #expect(try json(.credSSP(status: .logonFailure)) == #"{"credSSP":{"status":3221225581}}"#)
     #expect(try json(.connect(error: RDPSocketError(errno: ECONNREFUSED)))
         == #"{"connect":{"error":{"category":"refused","errno":61}}}"#)

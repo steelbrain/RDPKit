@@ -105,6 +105,11 @@ struct RDPSessionEndReason: Equatable {
             (Self.cancelled.message, false)
         case .protocolViolation:
             ("The server sent something RDPClient cannot handle.", false)
+        case .invalidConfiguration:
+            ("RDPClient cannot send these settings to the server. Check that the user name, domain and "
+                + "password are not too long.", true)
+        case .clientFailure:
+            ("RDPClient failed on this Mac; the server was not at fault.", false)
         case .graphicsFrameHandler:
             ("RDPClient could not show the remote desktop.", false)
         }

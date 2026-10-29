@@ -410,6 +410,45 @@ import Testing
     )
 }
 
+/// A user name or domain past an AUTHENTICATE_MESSAGE field's 16-bit length is the configuration's fault.
+@Test func ntlmContextRejectsCredentialsTooLongForAuthenticateFields() throws {
+    for credentials in [
+        RDPCredentials(username: String(repeating: "u", count: 32768), domain: "Domain", password: "Password"),
+        RDPCredentials(username: "User", domain: String(repeating: "d", count: 32768), password: "Password"),
+    ] {
+        let context = RDPCredSSPNTLMContext(
+            credentials: credentials,
+            randomBytes: { count in Data(repeating: 0, count: count) },
+            currentFileTime: { 0 }
+        )
+        _ = try context.initialize(inputToken: nil)
+
+        let error = #expect(throws: RDPCredSSPError.self) {
+            try context.initialize(inputToken: localChallengeMessage())
+        }
+        #expect(error?.failure == .invalidConfiguration)
+        #expect(error?.description == "CredSSP NTLM failed: the user name or domain is too long for an NTLM message")
+    }
+}
+
+/// Using the context out of order is this client's own failure, not the server's.
+@Test func ntlmContextUsedOutOfOrderIsAClientFailure() throws {
+    let context = RDPCredSSPNTLMContext(
+        credentials: RDPCredentials(username: "User", domain: "Domain", password: "Password"),
+        randomBytes: { count in Data(repeating: 0, count: count) },
+        currentFileTime: { 0 }
+    )
+
+    let wrapError = #expect(throws: RDPCredSSPError.self) { try context.wrap(Data([0x01])) }
+    let unwrapError = #expect(throws: RDPCredSSPError.self) { try context.unwrap(Data(count: 16)) }
+    let tokenError = #expect(throws: RDPCredSSPError.self) { try context.initialize(inputToken: localChallengeMessage()) }
+    _ = try context.initialize(inputToken: nil)
+    _ = try context.initialize(inputToken: localChallengeMessage())
+    let completeError = #expect(throws: RDPCredSSPError.self) { try context.initialize(inputToken: localChallengeMessage()) }
+
+    #expect([wrapError, unwrapError, tokenError, completeError].map { $0?.failure } == Array(repeating: .clientFailure, count: 4))
+}
+
 @Test func ntlmContextUnwrapRejectsTamperedSignature() throws {
     let context = RDPCredSSPNTLMContext(
         credentials: RDPCredentials(username: "User", domain: "Domain", password: "Password"),

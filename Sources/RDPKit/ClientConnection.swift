@@ -227,7 +227,8 @@ final class RDPClientConnection {
 
     /// `error` as the `RDPConnectionError` that `connect` throws and the report
     /// records. Other errors come from parsing the server's data, so they are
-    /// protocol violations.
+    /// protocol violations; a failure on this side, such as a configuration
+    /// RDPKit cannot send, is thrown with its own failure where it happens.
     func connectionError(_ error: Error) -> RDPConnectionError {
         if callbacks.isCancelled {
             return .cancelled

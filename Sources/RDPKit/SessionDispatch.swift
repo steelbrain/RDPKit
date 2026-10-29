@@ -247,7 +247,15 @@ extension RDPClientConnection {
                 serverRandom: request.serverRandom,
                 storedLicense: storedLicense
             )
-            packet = try information.encodedTPKT(userChannelID: userChannelID)
+            do {
+                packet = try information.encodedTPKT(userChannelID: userChannelID)
+            } catch {
+                // The rest of the PDU is fixed-size but for the premaster secret encrypted to
+                // the server's key, 512 bytes for a 4096-bit key: the stored license is too large.
+                throw RDPConnectionError.invalidConfiguration(
+                    "storedClientLicense does not fit the Client License Information PDU: \(error)"
+                )
+            }
             clientRandom = information.clientRandom
             premasterSecret = information.premasterSecret
         } else {

@@ -124,7 +124,15 @@ extension RDPClientConnection {
             autoReconnectCookie: configuration.autoReconnectCookie
         )
         report.rdpClientInfoCredentialsIncluded = clientInfo.credentialsIncluded
-        let packet = try clientInfo.encodedTPKT(userChannelID: userChannelID, ioChannelID: ioChannelID)
+        let packet: Data
+        do {
+            packet = try clientInfo.encodedTPKT(userChannelID: userChannelID, ioChannelID: ioChannelID)
+        } catch where configuration.redirectionDepth == 0 {
+            // Before a redirection only the configured credentials can be too long. A
+            // redirected connection's user name, domain and cookie can be the server's, and
+            // the configured credentials already fit the Client Info PDU that preceded it.
+            throw RDPConnectionError.invalidConfiguration("credentials do not fit the Client Info PDU: \(error)")
+        }
         try send(packet)
         report.rdpClientInfoSent = true
         report.rdpClientInfoRequestBytes = packet.count

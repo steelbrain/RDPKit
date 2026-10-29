@@ -272,9 +272,14 @@ enum RDPSPNEGO {
 
 enum RDPCredSSPError: Error, CustomStringConvertible {
     case missingCredentials
+    /// The user name or domain does not fit an NTLM AUTHENTICATE_MESSAGE field.
+    case credentialsTooLong
     case missingToken
     case missingPubKeyAuth
+    /// The server's NTLM messages could not be used.
     case ntlm(String)
+    /// NTLM failed on this side: no random bytes, or the context used out of order.
+    case ntlmClient(String)
     case serverError(UInt32)
     case serverBindingMismatch
 
@@ -282,11 +287,13 @@ enum RDPCredSSPError: Error, CustomStringConvertible {
         switch self {
         case .missingCredentials:
             "CredSSP requires credentials"
+        case .credentialsTooLong:
+            "CredSSP NTLM failed: the user name or domain is too long for an NTLM message"
         case .missingToken:
             "CredSSP server did not provide a negotiation token"
         case .missingPubKeyAuth:
             "CredSSP server did not provide pubKeyAuth"
-        case let .ntlm(message):
+        case let .ntlm(message), let .ntlmClient(message):
             "CredSSP NTLM failed: \(message)"
         case let .serverError(code):
             "CredSSP server returned \(RDPLogonStatus(rawValue: code))"
@@ -299,6 +306,10 @@ enum RDPCredSSPError: Error, CustomStringConvertible {
         switch self {
         case .missingCredentials:
             .credentialsRequired
+        case .credentialsTooLong:
+            .invalidConfiguration
+        case .ntlmClient:
+            .clientFailure
         case let .serverError(code):
             .credSSP(status: RDPLogonStatus(rawValue: code))
         case .missingToken, .missingPubKeyAuth, .ntlm, .serverBindingMismatch:

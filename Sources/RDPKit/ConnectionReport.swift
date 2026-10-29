@@ -391,6 +391,14 @@ public enum RDPConnectionFailure: Encodable, Equatable, Sendable {
     case cancelled
     /// The server broke the protocol, or needs something RDPKit does not support.
     case protocolViolation
+    /// The configuration holds something RDPKit cannot send: credentials longer
+    /// than the Client Info PDU ([MS-RDPBCGR] 2.2.1.11.1.1) or NTLM holds, or a
+    /// `storedClientLicense` too large for the Client License Information PDU.
+    /// The server was not at fault.
+    case invalidConfiguration
+    /// RDPKit failed on this device: the system could not generate random
+    /// bytes, or RDPKit broke its own sequence. The server was not at fault.
+    case clientFailure
     /// The `onGraphicsFrame` handler threw.
     case graphicsFrameHandler
 }
@@ -489,6 +497,14 @@ extension RDPConnectionError {
 
     static func protocolViolation(_ message: String) -> RDPConnectionError {
         RDPConnectionError(.protocolViolation, description: message)
+    }
+
+    static func invalidConfiguration(_ message: String) -> RDPConnectionError {
+        RDPConnectionError(.invalidConfiguration, description: message)
+    }
+
+    static func clientFailure(_ message: String) -> RDPConnectionError {
+        RDPConnectionError(.clientFailure, description: message)
     }
 
     /// The `onGraphicsFrame` handler threw; the server's data was not at fault.

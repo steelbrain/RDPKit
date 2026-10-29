@@ -769,7 +769,7 @@ private func secureRandomData(count: Int) throws -> Data {
         return SecRandomCopyBytes(kSecRandomDefault, count, baseAddress)
     }
     guard status == errSecSuccess else {
-        throw RDPDecodeError.invalidLicensePDU
+        throw RDPConnectionError.clientFailure("failed to generate random bytes: \(status)")
     }
     return data
 }
