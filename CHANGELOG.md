@@ -91,6 +91,9 @@
 - `RDPRemoteDisplayViewport.remotePoint(from:contentRect:)` maps a point with
   the desktop drawn in a given rect, such as `contentRect` aligned to the
   screen's pixels.
+- `RDPInputSession.supportsUnicodeInput` tells whether the server takes
+  Unicode keyboard events (INPUT_FLAG_UNICODE). `send` drops `.unicode`
+  events when it does not, so an app can send scancodes instead.
 
 ### Compatibility and fixes
 
@@ -158,6 +161,11 @@
     Win or Alt tap. A right Option key that a custom layout gives no output,
     without making it a dead key, goes as Alt and the key instead of sending
     nothing.
+  - After left Option-E goes to the server as Alt-E, a shortcut, the next key
+    goes as what it types on its own, not the accented character macOS
+    composes, so menu accelerators and readline's Option-U then a letter
+    work, and Option-E then Return no longer types "´" first. Right Option
+    does the same once its Alt is on the server.
   - Clipboard sharing can be turned on mid-session; with it off, nothing
     crosses either way. To allow that, RDPClient always joins the clipboard
     channel, which empties a Windows server's clipboard at connect.
