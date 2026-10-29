@@ -64,6 +64,19 @@ import Testing
     #expect(decoded == Data([85, 95, 125, 0x7F]))
 }
 
+@Test func decodesRDP6NegativeChromaReducedByThreeBits() throws {
+    // Co = -40 and Cg = -10 reduced by color loss level 3 with zeros shifted in at the top
+    // (MS-RDPEGDI 3.1.9.1.4): 0x1D8 >> 3 = 0x3B and 0x1F6 >> 3 = 0x3E.
+    let decoded = try RDP6BitmapDecoder.decode(
+        Data([0x03, 0xFF, 100, 0x3B, 0x3E]),
+        width: 1,
+        height: 1
+    )
+
+    // Co/2 = -20 and Cg/2 = -8: R = 100 - 20 + 8, G = 100 - 8, B = 100 + 20 + 8.
+    #expect(decoded == Data([128, 92, 88, 0xFF]))
+}
+
 @Test func compensatesForMicrosoftNoAlphaYCoCgConversion() throws {
     let decoded = try RDP6BitmapDecoder.decode(
         Data([0x21, 100, 20, 0xFB]),

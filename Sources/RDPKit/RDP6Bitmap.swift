@@ -79,12 +79,15 @@ enum RDP6BitmapDecoder {
                         result.append(lumaOrRed[pixelIndex])
                         result.append(alphaValue)
                     } else {
+                        // Color loss reduction shifts Co and Cg right with zeros entering at the top
+                        // (MS-RDPEGDI 3.1.9.1.4), so they are shifted back within the byte, less the
+                        // inverse transform's halving, before their sign is read.
                         let y = Int(lumaOrRed[pixelIndex])
-                        let co = Int(Int8(bitPattern: orangeOrGreen[chromaIndex])) << colorLossLevel
-                        let cg = Int(Int8(bitPattern: greenOrBlue[chromaIndex])) << colorLossLevel
-                        var red = clamp(y + (co >> 1) - (cg >> 1))
-                        let green = clamp(y + (cg >> 1))
-                        var blue = clamp(y - (co >> 1) - (cg >> 1))
+                        let co = Int(Int8(bitPattern: orangeOrGreen[chromaIndex] << (colorLossLevel - 1)))
+                        let cg = Int(Int8(bitPattern: greenOrBlue[chromaIndex] << (colorLossLevel - 1)))
+                        var red = clamp(y + co - cg)
+                        let green = clamp(y + cg)
+                        var blue = clamp(y - co - cg)
                         // MS-RDPEGDI 3.1.9.1.2: Windows servers convert 24 bpp bitmaps with color
                         // loss incorrectly, so decoders MUST swap red and blue. 24 bpp is read here as
                         // "no alpha plane"; FreeRDP also swaps when an alpha plane is present, and no
