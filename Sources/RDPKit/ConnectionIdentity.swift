@@ -105,11 +105,13 @@ public struct RDPConnectionIdentity: Equatable, Hashable, Sendable {
         return "\(domain)\\\(username)"
     }
 
+    /// The account a password for this identity is stored under. Host names are matched
+    /// without regard to case, as in `hasSameConnectionIdentity(as:)`, so the host is lowercased.
     public var credentialAccountName: String? {
         guard let qualifiedUsername else {
             return nil
         }
-        return "\(qualifiedUsername)@\(host):\(port)"
+        return "\(qualifiedUsername)@\(normalizedHost):\(port)"
     }
 
     public func hasSameConnectionIdentity(as other: RDPConnectionIdentity) -> Bool {

@@ -37,23 +37,20 @@ struct KeychainCredentialStore: Sendable {
     private let service = "com.steelbrain.rdpclient.credentials"
 
     func password(for key: KeychainCredentialKey) throws -> String? {
-        var query = baseQuery(for: key)
-        query[kSecReturnData as String] = true
-        query[kSecMatchLimit as String] = kSecMatchLimitOne
-
-        var result: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-        if status == errSecItemNotFound {
+        if let password = try password(account: key.account) {
+            return password
+        }
+        // Accounts once kept the host's case; adopt one saved that way under the current name.
+        let usernamePrefix = (key.identity.qualifiedUsername ?? "") + "@"
+        guard let legacyAccount = try accounts().first(where: {
+            $0 != key.account && $0.hasPrefix(usernamePrefix) && $0.caseInsensitiveCompare(key.account) == .orderedSame
+        }),
+            let password = try password(account: legacyAccount)
+        else {
             return nil
         }
-        guard status == errSecSuccess else {
-            throw KeychainCredentialError.unexpectedStatus(status)
-        }
-        guard let data = result as? Data,
-              let password = String(data: data, encoding: .utf8)
-        else {
-            throw KeychainCredentialError.invalidPasswordData
-        }
+        try savePassword(password, for: key)
+        try deletePassword(account: legacyAccount)
         return password
     }
 
@@ -80,17 +77,65 @@ struct KeychainCredentialStore: Sendable {
     }
 
     func deletePassword(for key: KeychainCredentialKey) throws {
-        let status = SecItemDelete(baseQuery(for: key) as CFDictionary)
+        try deletePassword(account: key.account)
+    }
+
+    private func password(account: String) throws -> String? {
+        var query = baseQuery(account: account)
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        if status == errSecItemNotFound {
+            return nil
+        }
+        guard status == errSecSuccess else {
+            throw KeychainCredentialError.unexpectedStatus(status)
+        }
+        guard let data = result as? Data,
+              let password = String(data: data, encoding: .utf8)
+        else {
+            throw KeychainCredentialError.invalidPasswordData
+        }
+        return password
+    }
+
+    private func deletePassword(account: String) throws {
+        let status = SecItemDelete(baseQuery(account: account) as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else {
             throw KeychainCredentialError.unexpectedStatus(status)
         }
     }
 
+    /// The accounts this app has saved passwords under.
+    private func accounts() throws -> [String] {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecReturnAttributes as String: true,
+            kSecMatchLimit as String: kSecMatchLimitAll,
+        ]
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        if status == errSecItemNotFound {
+            return []
+        }
+        guard status == errSecSuccess else {
+            throw KeychainCredentialError.unexpectedStatus(status)
+        }
+        return (result as? [[String: Any]] ?? []).compactMap { $0[kSecAttrAccount as String] as? String }
+    }
+
     private func baseQuery(for key: KeychainCredentialKey) -> [String: Any] {
+        baseQuery(account: key.account)
+    }
+
+    private func baseQuery(account: String) -> [String: Any] {
         [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
-            kSecAttrAccount as String: key.account,
+            kSecAttrAccount as String: account,
         ]
     }
 }
