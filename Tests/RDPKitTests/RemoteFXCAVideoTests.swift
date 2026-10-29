@@ -59,6 +59,24 @@ import Testing
     #expect(frame.tiles.count == 1)
 }
 
+@Test func cavideoRemoteFXKeepsTheRegionOfEveryFrameInAMessage() throws {
+    let first = cavideoRemoteFXBlocks(cavideoRemoteFXGrayTileStream(channelWidth: 128))
+    let second = cavideoRemoteFXBlocks(cavideoRemoteFXGrayTileStream(
+        frameIndex: 2,
+        channelWidth: 128,
+        regionX: 64,
+        tileXIndex: 1
+    ))
+
+    let frame = try RDPRemoteFXDecoder().decode(cavideoRemoteFXStream(first + second[4 ... 7]))
+
+    #expect(frame.tiles.map(\.x) == [0, 64])
+    #expect(frame.regionRects == [
+        RDPFrameRect(left: 0, top: 0, right: 64, bottom: 64),
+        RDPFrameRect(left: 64, top: 0, right: 128, bottom: 64),
+    ])
+}
+
 @Test func cavideoRemoteFXRejectsOutOfSequenceFrameBlocks() throws {
     let blocks = cavideoRemoteFXBlocks(cavideoRemoteFXGrayTileStream())
     let blockOrder = [0, 1, 2, 3, 4, 6, 5, 7]

@@ -838,7 +838,8 @@ final class RDPRemoteFXDecoder {
                     throw RDPDecodeError.invalidRDPGFXPDU
                 }
                 decodedTiles += try Self.decodeTileSet(block.body)
-                decodedRegionRects = classicRegionRects
+                // A later frame's tiles are drawn over an earlier one's, so its region adds to theirs.
+                decodedRegionRects += classicRegionRects
                 classicDataBlockState = .frameEnd
             case ClassicBlockType.frameEnd:
                 guard classicDataBlockState == .frameEnd else {
