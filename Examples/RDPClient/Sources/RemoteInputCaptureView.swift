@@ -519,8 +519,17 @@ enum MacRDPKeyboardMapping {
         modifierFlags.contains(.capsLock) ? [.numLock, .capsLock] : [.numLock]
     }
 
-    static func scancode(forKeyCode keyCode: UInt16) -> RDPKeyboardScancode? {
-        scancodes[Int(keyCode)]
+    /// `isISOKeyboard` defaults to the type of the keyboard in use.
+    static func scancode(
+        forKeyCode keyCode: UInt16,
+        isISOKeyboard: Bool = KBGetLayoutType(Int16(LMGetKbdType())) == kKeyboardISO
+    ) -> RDPKeyboardScancode? {
+        // On ISO keyboards macOS reports the key between left Shift and Z as kVK_ANSI_Grave; it
+        // sits where PC ISO keyboards have their extra key (0x56).
+        if isISOKeyboard, Int(keyCode) == kVK_ANSI_Grave {
+            return RDPKeyboardScancode(code: 0x56)
+        }
+        return scancodes[Int(keyCode)]
     }
 
     /// A key the server holds keeps auto-repeating as its scancode after the modifier that sent it

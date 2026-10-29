@@ -64,6 +64,15 @@ import Testing
     #expect(windowsKey.isHeld(leftWindows) == false)
 }
 
+/// The key ANSI keyboards have left of "1" sits between left Shift and Z on ISO keyboards.
+@Test func graveKeyCodeFollowsTheKeyboardType() {
+    let graveKey = UInt16(kVK_ANSI_Grave)
+    #expect(MacRDPKeyboardMapping.scancode(forKeyCode: graveKey, isISOKeyboard: false) == RDPKeyboardScancode(code: 0x29))
+    #expect(MacRDPKeyboardMapping.scancode(forKeyCode: graveKey, isISOKeyboard: true) == RDPKeyboardScancode(code: 0x56))
+    let sectionKey = UInt16(kVK_ISO_Section)
+    #expect(MacRDPKeyboardMapping.scancode(forKeyCode: sectionKey, isISOKeyboard: true) == RDPKeyboardScancode(code: 0x29))
+}
+
 @Test func keypadClearDoesNotSendNumLock() {
     #expect(MacRDPKeyboardMapping.scancode(forKeyCode: UInt16(kVK_ANSI_KeypadClear)) == nil)
 }
