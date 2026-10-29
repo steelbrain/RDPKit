@@ -67,7 +67,7 @@ enum RDP6BitmapDecoder {
             // Bytes are written in place: appending them to Data one at a time costs more than
             // the decoding.
             var result = Data(count: fullPlaneSize * 4)
-            result.withUnsafeMutableBytes { bytes in
+            result.withUnsafeMutableBytes { (bytes: UnsafeMutableRawBufferPointer) in
                 for row in 0 ..< height {
                     for column in 0 ..< width {
                         let pixelIndex = row * width + column

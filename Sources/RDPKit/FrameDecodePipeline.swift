@@ -296,8 +296,8 @@ final class RDPDecodedVideoSurfaceCompositor {
             let bytesPerRow = surface.bytesPerRow
             let surfaceWidth = surface.width
             let surfaceHeight = surface.height
-            surface.data.withUnsafeMutableBytes { pixels in
-                alpha.data.withUnsafeBytes { alphaPixels in
+            surface.data.withUnsafeMutableBytes { (pixels: UnsafeMutableRawBufferPointer) in
+                alpha.data.withUnsafeBytes { (alphaPixels: UnsafeRawBufferPointer) in
                     for region in frame.regionRects {
                         let left = max(Int(region.left), Int(rect.left))
                         let top = max(Int(region.top), Int(rect.top))

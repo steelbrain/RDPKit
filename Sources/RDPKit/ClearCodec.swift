@@ -286,8 +286,8 @@ final class RDPClearCodecDecoder {
             let pixelCount = yOff - yOn
             let bgr = try cursor.readData(count: pixelCount * 3)
             var pixels = Data(count: pixelCount * 4)
-            pixels.withUnsafeMutableBytes { pixels in
-                bgr.withUnsafeBytes { bgr in
+            pixels.withUnsafeMutableBytes { (pixels: UnsafeMutableRawBufferPointer) in
+                bgr.withUnsafeBytes { (bgr: UnsafeRawBufferPointer) in
                     for index in 0 ..< pixelCount {
                         pixels[index * 4] = bgr[index * 3]
                         pixels[index * 4 + 1] = bgr[index * 3 + 1]
@@ -504,7 +504,7 @@ private extension RDPClearCodecBitmap {
 
     mutating func setPixel(x: Int, y: Int, blue: UInt8, green: UInt8, red: UInt8) {
         let offset = y * bytesPerRow + x * 4
-        bgraData.withUnsafeMutableBytes { pixels in
+        bgraData.withUnsafeMutableBytes { (pixels: UnsafeMutableRawBufferPointer) in
             pixels[offset] = blue
             pixels[offset + 1] = green
             pixels[offset + 2] = red

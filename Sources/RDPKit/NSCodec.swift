@@ -44,7 +44,7 @@ enum RDPNSCodecDecoder {
         let chromaShift = colorLossLevel - 1
 
         var result = Data(count: width * height * 4)
-        result.withUnsafeMutableBytes { output in
+        result.withUnsafeMutableBytes { (output: UnsafeMutableRawBufferPointer) in
             var pixelIndex = 0
             for row in 0 ..< height {
                 let yRowStart = row * yWidth

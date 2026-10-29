@@ -155,8 +155,8 @@ final class RDPGFXSurfaceCompositor {
                 throw RDPDecodeError.invalidRDPGFXPDU
             }
             let bytesPerRow = bytesPerRow
-            alphaValues.withUnsafeBytes { alphaBuffer in
-                data.withUnsafeMutableBytes { buffer in
+            alphaValues.withUnsafeBytes { (alphaBuffer: UnsafeRawBufferPointer) in
+                data.withUnsafeMutableBytes { (buffer: UnsafeMutableRawBufferPointer) in
                     for row in 0 ..< height {
                         for column in 0 ..< width {
                             buffer[(y + row) * bytesPerRow + (x + column) * 4 + 3] = alphaBuffer[row * width + column]

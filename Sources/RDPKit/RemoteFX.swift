@@ -1618,7 +1618,7 @@ final class RDPRemoteFXDecoder {
     private static func bgraData(y: [Int16], cb: [Int16], cr: [Int16]) -> Data {
         precondition(y.count == tileCoefficientCount && cb.count == y.count && cr.count == y.count)
         var data = Data(count: tileCoefficientCount * 4)
-        data.withUnsafeMutableBytes { bytes in
+        data.withUnsafeMutableBytes { (bytes: UnsafeMutableRawBufferPointer) in
             y.withUnsafeBufferPointer { y in
                 cb.withUnsafeBufferPointer { cb in
                     cr.withUnsafeBufferPointer { cr in

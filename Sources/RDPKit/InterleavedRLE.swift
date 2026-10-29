@@ -32,7 +32,7 @@ enum RDPInterleavedBitmapDecoder {
         // Bytes are written in place: appending them to Data one at a time costs more than
         // the decoding.
         var result = Data(count: expectedPixelCount * pixelByteCount)
-        result.withUnsafeMutableBytes { bytes in
+        result.withUnsafeMutableBytes { (bytes: UnsafeMutableRawBufferPointer) in
             for (index, pixel) in pixels.enumerated() {
                 for byteIndex in 0 ..< pixelByteCount {
                     bytes[index * pixelByteCount + byteIndex] = UInt8(truncatingIfNeeded: pixel >> UInt32(byteIndex * 8))
