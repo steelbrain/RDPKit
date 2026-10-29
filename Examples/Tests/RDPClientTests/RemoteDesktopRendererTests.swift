@@ -55,9 +55,9 @@ func displayResetConditionsFlushBeforeEnqueue(
         encodedVideoData: Data()
     ))
 
-    canvas.update(frame: nil, hasPresentedFrame: false, emptyMessage: "", inputSession: nil, isConnecting: true)
+    canvas.update(frame: nil, hasPresentedFrame: false, emptyMessage: "", inputSession: nil, keyboardLayout: .unitedStates, isConnecting: true)
     #expect(window.firstResponder === window)
-    canvas.update(frame: frame, hasPresentedFrame: true, emptyMessage: "", inputSession: nil, isConnecting: true)
+    canvas.update(frame: frame, hasPresentedFrame: true, emptyMessage: "", inputSession: nil, keyboardLayout: .unitedStates, isConnecting: true)
 
     #expect(window.firstResponder is RemoteInputCaptureNSView)
 }

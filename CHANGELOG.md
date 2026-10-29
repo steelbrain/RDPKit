@@ -144,6 +144,11 @@
   input, clipboard file downloads and display resize after a redirection.
   When video fails to decode, it keeps the session and asks the server for a
   fresh picture.
+- RDPClient announces the Mac's keyboard layout, mapped to a Windows layout
+  as FreeRDP maps it, instead of US English. It sends a character key as its
+  scancode when that layout types the same character, so a remote IME sees
+  the key, and Space as its scancode on every layout; other characters, and
+  those a dead key composed, still go as Unicode.
 
 ## 0.3.1
 

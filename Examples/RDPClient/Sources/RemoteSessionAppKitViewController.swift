@@ -28,6 +28,8 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
     private var activeCancellation: RDPConnectionCancellation?
     private var sessionEndReason: RDPSessionEndReason?
     private var inputSession: RDPInputSession?
+    /// The keyboard layout the current session announced.
+    private var keyboardLayout = RDPKeyboardLayout.unitedStates
     private var displayControlSession: RDPDisplayControlSession?
     private var displayControlMessage: String?
     private var autoApplyViewerSize = true
@@ -438,6 +440,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
             metricsSummary: viewerMetricsSummary,
             graphicsPathSummary: report.map { RDPGraphicsPathDescription.describe(report: $0) },
             inputSession: inputSession,
+            keyboardLayout: keyboardLayout,
             isConnecting: isConnecting,
             formError: formError,
             sessionEndReason: sessionEndReason,
@@ -637,6 +640,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
             hasCredentials: credentials != nil
         )
 
+        keyboardLayout = MacRDPKeyboardLayout.current()
         let configuration = RDPConnectionConfiguration(
             target: target,
             credentials: credentials,
@@ -647,7 +651,8 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
             clipboardEnabled: clipboard.isSharingEnabled,
             audioPlaybackEnabled: audioPlaybackEnabled,
             graphicsCapabilityProfile: graphicsCapabilityProfile,
-            storedClientLicense: storedClientLicense
+            storedClientLicense: storedClientLicense,
+            keyboardLayout: keyboardLayout
         )
 
         let connectionID = UUID()

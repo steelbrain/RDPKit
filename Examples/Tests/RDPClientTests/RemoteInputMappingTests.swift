@@ -107,7 +107,8 @@ import Testing
     }
 }
 
-@Test func functionKeysAlwaysSendScancodesWhileCharactersUseUnicode() {
+/// Character keys without modifiers go as scancodes only when the layout check agrees.
+@Test func functionKeysAndModifiedKeysAlwaysSendScancodes() {
     func sendsScancode(_ keyCode: Int, _ modifierFlags: NSEvent.ModifierFlags) -> Bool {
         MacRDPKeyboardMapping.shouldSendScancode(
             forKeyCode: UInt16(keyCode),
@@ -119,6 +120,127 @@ import Testing
     #expect(sendsScancode(kVK_F4, []))
     #expect(sendsScancode(kVK_ANSI_A, []) == false)
     #expect(sendsScancode(kVK_ANSI_A, .option))
+}
+
+/// A remote IME commits its candidate with Space, so it goes as its scancode on every layout,
+/// and as Unicode only when a dead key composed with it.
+@Test func spaceSendsItsScancodeUnlessADeadKeyComposedWithIt() {
+    #expect(MacRDPKeyboardMapping.scancode(forKeyCode: UInt16(kVK_Space)) == RDPKeyboardScancode(code: 0x39))
+    for layout: UInt32 in [0x0000_0409, 0x0000_0407, 0x0000_0419, 0x1234_5678] {
+        #expect(windowsTypes(" ", scancode: 0x39, layout: layout))
+        #expect(windowsTypes(" ", scancode: 0x39, .shift, layout: layout))
+    }
+    #expect(windowsTypes("^", ignoringModifiers: " ", scancode: 0x39, layout: 0x0000_0407) == false)
+}
+
+private func windowsTypes(
+    _ characters: String,
+    ignoringModifiers: String? = nil,
+    scancode: UInt16,
+    _ modifierFlags: NSEvent.ModifierFlags = [],
+    layout: UInt32 = 0x0000_0409
+) -> Bool {
+    MacRDPKeyboardMapping.windowsTypes(
+        characters,
+        charactersIgnoringModifiers: ignoringModifiers ?? characters,
+        for: RDPKeyboardScancode(code: scancode),
+        modifierFlags: modifierFlags,
+        layout: RDPKeyboardLayout(rawValue: layout)
+    )
+}
+
+@Test func charactersUSWindowsTypesForTheScancodeGoAsScancodes() {
+    #expect(windowsTypes("a", scancode: 0x1E))
+    #expect(windowsTypes("A", scancode: 0x1E, .shift))
+    #expect(windowsTypes(";", scancode: 0x27))
+    #expect(windowsTypes(":", scancode: 0x27, .shift))
+    #expect(windowsTypes("`", scancode: 0x29))
+    // Caps Lock shifts letters only, as on Windows.
+    #expect(windowsTypes("A", scancode: 0x1E, .capsLock))
+    #expect(windowsTypes("1", scancode: 0x02, .capsLock))
+    #expect(windowsTypes("a", scancode: 0x1E, [.capsLock, .shift]))
+}
+
+@Test func charactersWindowsTypesDifferentlyGoAsUnicode() {
+    // The ISO key between left Shift and Z goes as 0x56, which US Windows types as "\".
+    #expect(windowsTypes("`", scancode: 0x56) == false)
+    #expect(windowsTypes("§", scancode: 0x29) == false)
+    #expect(windowsTypes("a", scancode: 0x1E, .shift) == false)
+    #expect(windowsTypes("ab", scancode: 0x1E) == false)
+    // A character a dead key composed.
+    #expect(windowsTypes("é", ignoringModifiers: "e", scancode: 0x12) == false)
+    #expect(windowsTypes("e", ignoringModifiers: "é", scancode: 0x12) == false)
+    // JIS keys type nothing with the US layout, and a layout with no table sends Unicode.
+    #expect(windowsTypes("¥", scancode: 0x7D) == false)
+    #expect(windowsTypes("a", scancode: 0x1E, layout: 0x1234_5678) == false)
+}
+
+@Test func theScancodeCheckFollowsTheAnnouncedLayout() {
+    // German: QWERTZ, and "^" is a dead key on Windows.
+    #expect(windowsTypes("z", scancode: 0x15, layout: 0x0000_0407))
+    #expect(windowsTypes("z", scancode: 0x15) == false)
+    #expect(windowsTypes("ß", scancode: 0x0C, layout: 0x0000_0407))
+    #expect(windowsTypes("<", scancode: 0x56, layout: 0x0000_0407))
+    #expect(windowsTypes("^", scancode: 0x29, layout: 0x0000_0407) == false)
+    // French (Belgian, what Apple's French maps to) has digits on Shift.
+    #expect(windowsTypes("a", scancode: 0x10, layout: 0x0000_080C))
+    #expect(windowsTypes("1", scancode: 0x02, .shift, layout: 0x0000_080C))
+    #expect(windowsTypes("&", scancode: 0x02, layout: 0x0000_080C))
+    // Russian.
+    #expect(windowsTypes("ф", scancode: 0x1E, layout: 0x0000_0419))
+}
+
+@Test func macInputSourcesMapToWindowsLayoutsWithCapturedTables() {
+    func layout(_ name: String) -> UInt32 {
+        MacRDPKeyboardLayout.windowsLayout(forInputSourceID: "com.apple.keylayout." + name).rawValue
+    }
+    #expect(layout("US") == 0x0000_0409)
+    #expect(layout("German") == 0x0000_0407)
+    #expect(layout("British") == 0x0000_0809)
+    #expect(layout("French") == 0x0000_080C)
+    #expect(layout("Dvorak") == 0x0001_0409)
+    #expect(layout("Australian") == 0x0000_0409)
+    #expect(layout("ABC") == 0x0000_0409)
+    #expect(MacRDPKeyboardLayout.windowsLayout(forInputSourceID: "com.apple.inputmethod.Kotoeri.Japanese") == .unitedStates)
+    // Every layout that can be announced has a table, so the scancode check covers it.
+    for klid in Set(MacRDPKeyboardLayout.windowsLayouts.values) {
+        #expect(MacRDPWindowsKeyboardLayout.layout(RDPKeyboardLayout(rawValue: klid)) != nil)
+    }
+    for table in MacRDPWindowsKeyboardLayout.layouts.values {
+        #expect(table.unshifted.unicodeScalars.count == MacRDPWindowsKeyboardLayout.scancodes.count)
+        #expect(table.shifted.unicodeScalars.count == MacRDPWindowsKeyboardLayout.scancodes.count)
+        #expect(table.capsLock.unicodeScalars.count == MacRDPWindowsKeyboardLayout.scancodes.count)
+    }
+}
+
+@MainActor
+@Test func theViewSendsMatchingCharactersAsScancodesAndSpaceAlways() throws {
+    let input = RecordedInput()
+    let view = RemoteInputCaptureNSView()
+    view.inputSession = input
+
+    view.keyDown(with: try keyEvent(.keyDown, keyCode: kVK_ANSI_Q, characters: "q"))
+    view.keyUp(with: try keyEvent(.keyUp, keyCode: kVK_ANSI_Q, characters: "q"))
+    view.keyDown(with: try keyEvent(.keyDown, keyCode: kVK_Space, characters: " "))
+    view.keyUp(with: try keyEvent(.keyUp, keyCode: kVK_Space, characters: " "))
+    view.keyDown(with: try keyEvent(.keyDown, keyCode: kVK_ANSI_E, characters: "é", charactersIgnoringModifiers: "e"))
+    // A dead key types nothing, and Space after it the accent.
+    view.keyDown(with: try keyEvent(.keyDown, keyCode: kVK_ANSI_6, characters: "", charactersIgnoringModifiers: "^"))
+    view.keyDown(with: try keyEvent(.keyDown, keyCode: kVK_Space, characters: "^", charactersIgnoringModifiers: " "))
+    view.keyboardLayout = RDPKeyboardLayout(rawValue: 0x0000_0407)
+    view.keyDown(with: try keyEvent(.keyDown, keyCode: kVK_ANSI_Y, characters: "z"))
+
+    #expect(input.events == [
+        .keyboard(scancode: RDPKeyboardScancode(code: 0x10), isReleased: false),
+        .keyboard(scancode: RDPKeyboardScancode(code: 0x10), isReleased: true),
+        .keyboard(scancode: RDPKeyboardScancode(code: 0x39), isReleased: false),
+        .keyboard(scancode: RDPKeyboardScancode(code: 0x39), isReleased: true),
+        .unicode(codeUnit: 0xE9, isReleased: false),
+        .unicode(codeUnit: 0xE9, isReleased: true),
+        .unicode(codeUnit: 0x5E, isReleased: false),
+        .unicode(codeUnit: 0x5E, isReleased: true),
+        .keyboard(scancode: RDPKeyboardScancode(code: 0x15), isReleased: false),
+    ])
 }
 
 @Test func aKeyHeldAsAScancodeRepeatsAsThatScancodeAfterItsModifierIsReleased() {
@@ -165,6 +287,7 @@ private func keyEvent(
     _ type: NSEvent.EventType,
     keyCode: Int,
     characters: String = "",
+    charactersIgnoringModifiers: String? = nil,
     modifierFlags: NSEvent.ModifierFlags = []
 ) throws -> NSEvent {
     try #require(NSEvent.keyEvent(
@@ -175,7 +298,7 @@ private func keyEvent(
         windowNumber: 0,
         context: nil,
         characters: characters,
-        charactersIgnoringModifiers: characters,
+        charactersIgnoringModifiers: charactersIgnoringModifiers ?? characters,
         isARepeat: false,
         keyCode: UInt16(keyCode)
     ))
@@ -222,8 +345,7 @@ private func keyEvent(
     #expect(input.events == [
         .keyboard(scancode: leftControl, isReleased: false),
         .keyboard(scancode: leftControl, isReleased: true),
-        .unicode(codeUnit: 0x78, isReleased: false),
-        .unicode(codeUnit: 0x78, isReleased: true),
+        .keyboard(scancode: RDPKeyboardScancode(code: 0x2D), isReleased: false),
     ])
 
     view.flagsChanged(with: try keyEvent(.flagsChanged, keyCode: kVK_Control, modifierFlags: .control))
