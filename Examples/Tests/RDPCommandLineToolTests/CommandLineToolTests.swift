@@ -123,6 +123,32 @@ import Testing
     }
 }
 
+@Test func frameBenchmarkReportsWhyAProfileFailed() {
+    var report = RDPSessionClient().dryRun(configuration: RDPConnectionConfiguration(host: "server"))
+    report.status = "failure"
+    report.error = "connection refused"
+
+    let failed = RDPFrameBenchmark.captureOutcome(capturedFrameCount: 0, requestedFrameCount: 10, report: report)
+
+    #expect(failed.status == "failure")
+    #expect(failed.error == "captured 0 of 10 requested frames: connection refused")
+
+    report.error = "cancelled"
+    let stoppedAfterCapture = RDPFrameBenchmark.captureOutcome(
+        capturedFrameCount: 10,
+        requestedFrameCount: 10,
+        report: report
+    )
+    #expect(stoppedAfterCapture.status == "success")
+    #expect(stoppedAfterCapture.error == nil)
+
+    report.status = "success"
+    report.error = nil
+    let ended = RDPFrameBenchmark.captureOutcome(capturedFrameCount: 3, requestedFrameCount: 10, report: report)
+    #expect(ended.status == "incomplete")
+    #expect(ended.error == "captured 3 of 10 requested frames")
+}
+
 @Test func connectionOptionsRejectPortZero() {
     #expect(throws: RDPCommandLineError.invalidValue(option: "--port", value: "0", expected: "1...65535")) {
         try FirstFrameCaptureOptions.parse(["RDPFirstFrameCapture", "--port", "0"])

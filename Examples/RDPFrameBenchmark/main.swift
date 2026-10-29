@@ -178,6 +178,10 @@ enum RDPFrameBenchmark {
             } else {
                 printTextReport(report)
             }
+            // A profile that failed or fell short is not a measurement to compare.
+            if report.profiles.contains(where: { $0.status != "success" }) {
+                exit(1)
+            }
         } catch {
             fputs("\(String(describing: error))\n", stderr)
             printUsage()
@@ -214,17 +218,14 @@ enum RDPFrameBenchmark {
             let strategyReports = BenchmarkStrategy.allCases.map { strategy in
                 benchmarkStrategy(strategy, frames: capture.frames)
             }
-            let completedRequestedFrames = capture.frames.count >= args.frames
-            let stoppedAfterCapture = completedRequestedFrames && capture.report.error == "cancelled"
-            let status = completedRequestedFrames
-                ? (stoppedAfterCapture ? "success" : capture.report.status)
-                : "incomplete"
-            let error = completedRequestedFrames
-                ? (stoppedAfterCapture ? nil : capture.report.error)
-                : "captured \(capture.frames.count) of \(args.frames) requested frames"
+            let outcome = captureOutcome(
+                capturedFrameCount: capture.frames.count,
+                requestedFrameCount: args.frames,
+                report: capture.report
+            )
             return ProfileBenchmarkReport(
                 profile: profile.rawValue,
-                status: status,
+                status: outcome.status,
                 selectedCapabilityVersion: capture.report.rdpGraphicsSelectedCapabilityVersion,
                 selectedCapabilityFlags: capture.report.rdpGraphicsSelectedCapabilityFlags,
                 firstFrameCodecName: capture.report.rdpGraphicsFirstFrame?.codecName,
@@ -239,7 +240,7 @@ enum RDPFrameBenchmark {
                 codecNames: codecNames,
                 frameReports: frameReports,
                 strategyReports: strategyReports,
-                error: error
+                error: outcome.error
             )
         } catch {
             return ProfileBenchmarkReport(
@@ -262,6 +263,26 @@ enum RDPFrameBenchmark {
                 error: String(describing: error)
             )
         }
+    }
+
+    /// A profile's status and error. The benchmark cancels the session once it has every
+    /// requested frame; a session that failed before then keeps its own error.
+    static func captureOutcome(
+        capturedFrameCount: Int,
+        requestedFrameCount: Int,
+        report: RDPConnectionReport
+    ) -> (status: String, error: String?) {
+        guard capturedFrameCount >= requestedFrameCount else {
+            let shortfall = "captured \(capturedFrameCount) of \(requestedFrameCount) requested frames"
+            guard report.status == "failure" else {
+                return ("incomplete", shortfall)
+            }
+            return ("failure", "\(shortfall): \(report.error ?? "RDP connection failed at \(report.stage)")")
+        }
+        if report.error == "cancelled" {
+            return ("success", nil)
+        }
+        return (report.status, report.error)
     }
 
     private static func makeCapturedFrameReports(_ frames: [RDPGraphicsFrameSnapshot]) -> [CapturedFrameReport] {
