@@ -81,9 +81,9 @@ func displayResetConditionsFlushBeforeEnqueue(
         encodedVideoData: Data()
     ))
 
-    canvas.update(frame: nil, hasPresentedFrame: false, emptyMessage: "", inputSession: nil, keyboardLayout: .unitedStates, isConnecting: true)
+    canvas.update(frame: nil, hasPresentedFrame: false, emptyMessage: "", inputSession: nil, keyboard: .unitedStates, isConnecting: true)
     #expect(window.firstResponder === window)
-    canvas.update(frame: frame, hasPresentedFrame: true, emptyMessage: "", inputSession: nil, keyboardLayout: .unitedStates, isConnecting: true)
+    canvas.update(frame: frame, hasPresentedFrame: true, emptyMessage: "", inputSession: nil, keyboard: .unitedStates, isConnecting: true)
 
     #expect(window.firstResponder is RemoteInputCaptureNSView)
 }
@@ -207,7 +207,7 @@ private func placeOnePixelWiderThanTheDesktop(_ view: NSView) -> (window: NSWind
     let (window, scale) = placeOnePixelWiderThanTheDesktop(canvas)
     let frame = frameMetadata(width: 1000, height: 700)
 
-    canvas.update(frame: frame, hasPresentedFrame: true, emptyMessage: "", inputSession: nil, keyboardLayout: .unitedStates, isConnecting: true)
+    canvas.update(frame: frame, hasPresentedFrame: true, emptyMessage: "", inputSession: nil, keyboard: .unitedStates, isConnecting: true)
     canvas.layoutSubtreeIfNeeded()
 
     let viewport = RDPRemoteDisplayViewport(frame: frame, bounds: canvas.bounds, coordinateOrigin: .bottomLeft)

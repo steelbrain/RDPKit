@@ -113,7 +113,7 @@ final class RDPRemoteSessionAppKitDetailView: NSView {
         metricsSummary: String?,
         graphicsPathSummary: String?,
         inputSession: RDPInputSession?,
-        keyboardLayout: RDPKeyboardLayout,
+        keyboard: MacRDPWindowsKeyboard,
         isConnecting: Bool,
         formError: String?,
         sessionEndReason: RDPSessionEndReason?,
@@ -144,7 +144,7 @@ final class RDPRemoteSessionAppKitDetailView: NSView {
             hasPresentedFrame: hasPresentedFrame,
             emptyMessage: status.emptyMessage,
             inputSession: inputSession,
-            keyboardLayout: keyboardLayout,
+            keyboard: keyboard,
             isConnecting: isConnecting
         )
 

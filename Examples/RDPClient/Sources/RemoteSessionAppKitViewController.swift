@@ -36,8 +36,8 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
     private var activeCancellation: RDPConnectionCancellation?
     private var sessionEndReason: RDPSessionEndReason?
     private var inputSession: RDPInputSession?
-    /// The keyboard layout the current session announced.
-    private var keyboardLayout = RDPKeyboardLayout.unitedStates
+    /// The keyboard the current session announced.
+    private var keyboard = MacRDPWindowsKeyboard.unitedStates
     private var displayControlSession: RDPDisplayControlSession?
     private var displayControlMessage: String?
     private var autoApplyViewerSize = true
@@ -468,7 +468,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
             metricsSummary: viewerMetricsSummary,
             graphicsPathSummary: report.map { RDPGraphicsPathDescription.describe(report: $0) },
             inputSession: inputSession,
-            keyboardLayout: keyboardLayout,
+            keyboard: keyboard,
             isConnecting: isConnecting,
             formError: formError,
             sessionEndReason: sessionEndReason,
@@ -687,7 +687,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
             hasCredentials: credentials != nil
         )
 
-        keyboardLayout = MacRDPKeyboardLayout.current()
+        keyboard = MacRDPKeyboardLayout.current()
         let connectDesktop = RDPConnectDesktop(
             fieldSize: requestedDesktopSize,
             followsViewSize: autoApplyViewerSize,
@@ -708,9 +708,9 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
             audioPlaybackEnabled: audioPlaybackEnabled,
             graphicsCapabilityProfile: graphicsCapabilityProfile,
             storedClientLicense: storedClientLicense,
-            keyboardLayout: keyboardLayout,
-            keyboardType: MacRDPKeyboardLayout.keyboardType(for: keyboardLayout),
-            keyboardSubType: MacRDPKeyboardLayout.keyboardSubType(for: keyboardLayout),
+            keyboardLayout: keyboard.layout,
+            keyboardType: keyboard.type,
+            keyboardSubType: keyboard.subType,
             legacyRSAKeyExchange: usesLegacyRSAKeyExchange,
             // The Mac's name, as servers list clients; RDPKit cuts it to 15 characters.
             clientName: SCDynamicStoreCopyComputerName(nil, nil) as String? ?? "RDPKIT"

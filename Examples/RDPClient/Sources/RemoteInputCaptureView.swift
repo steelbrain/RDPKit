@@ -11,8 +11,8 @@ extension RDPInputSession: RDPInputEventSending {}
 
 final class RemoteInputCaptureNSView: NSView {
     var rdpFrame: RDPFrameMetadata?
-    /// The layout the session announced; it decides which keys can go as scancodes.
-    var keyboardLayout = RDPKeyboardLayout.unitedStates
+    /// The keyboard the session announced; it decides which keys can go as scancodes.
+    var keyboard = MacRDPWindowsKeyboard.unitedStates
     /// Whether the Mac's layout makes a key a dead key with these modifiers; tests replace it.
     var isDeadKey: @MainActor (UInt16, NSEvent.ModifierFlags) -> Bool = MacRDPDeadKeys.isDeadKey(keyCode:modifierFlags:)
     /// What the Mac's layout types for a key with no dead key pending; tests replace it.
@@ -162,12 +162,12 @@ final class RemoteInputCaptureNSView: NSView {
         ) : event.characters
         // Windows' Japanese layout makes Shift-英数 Caps Lock, which would toggle the server's
         // out of step with the Mac's, so Shift-Eisu sends nothing there.
-        if keyboardLayout == MacRDPKeyboardLayout.japanese, Int(event.keyCode) == kVK_JIS_Eisu,
+        if keyboard == .japanese106, Int(event.keyCode) == kVK_JIS_Eisu,
            event.modifierFlags.contains(.shift)
         {
             return
         }
-        if let scancode = MacRDPKeyboardMapping.scancode(forKeyCode: event.keyCode, layout: keyboardLayout),
+        if let scancode = MacRDPKeyboardMapping.scancode(forKeyCode: event.keyCode, keyboard: keyboard),
            MacRDPKeyboardMapping.shouldSendScancode(
                forKeyCode: event.keyCode,
                characters: characters,
@@ -181,7 +181,7 @@ final class RemoteInputCaptureNSView: NSView {
                charactersIgnoringModifiers: event.charactersIgnoringModifiers,
                for: scancode,
                modifierFlags: event.modifierFlags,
-               layout: keyboardLayout
+               keyboard: keyboard
            )
         {
             // A dead key's accent ahead of Return or Tab, unless that dead key went as a chord;
@@ -213,7 +213,7 @@ final class RemoteInputCaptureNSView: NSView {
 
     override func keyUp(with event: NSEvent) {
         releaseModifiers(missingFrom: event.modifierFlags)
-        guard let scancode = MacRDPKeyboardMapping.scancode(forKeyCode: event.keyCode, layout: keyboardLayout),
+        guard let scancode = MacRDPKeyboardMapping.scancode(forKeyCode: event.keyCode, keyboard: keyboard),
               inputState.isScancodePressed(scancode)
         else {
             return
@@ -613,7 +613,7 @@ enum MacRDPKeyboardMapping {
     /// `isISOKeyboard` defaults to the type of the keyboard in use.
     static func scancode(
         forKeyCode keyCode: UInt16,
-        layout: RDPKeyboardLayout = .unitedStates,
+        keyboard: MacRDPWindowsKeyboard = .unitedStates,
         isISOKeyboard: Bool = KBGetLayoutType(Int16(LMGetKbdType())) == kKeyboardISO
     ) -> RDPKeyboardScancode? {
         // On ISO keyboards macOS reports the key between left Shift and Z as kVK_ANSI_Grave; it
@@ -621,7 +621,7 @@ enum MacRDPKeyboardMapping {
         if isISOKeyboard, Int(keyCode) == kVK_ANSI_Grave {
             return RDPKeyboardScancode(code: 0x56)
         }
-        if layout == MacRDPKeyboardLayout.japanese, let scancode = japaneseInputModeKeys[Int(keyCode)] {
+        if keyboard == .japanese106, let scancode = japaneseInputModeKeys[Int(keyCode)] {
             return scancode
         }
         return scancodes[Int(keyCode)]
@@ -713,8 +713,8 @@ enum MacRDPKeyboardMapping {
         scalar.properties.generalCategory == .control
     }
 
-    /// Whether Windows, with `layout`, types what the Mac typed for a character key: then the key
-    /// goes as its scancode, which a remote IME sees, rather than as Unicode, which reaches
+    /// Whether Windows, with `keyboard`, types what the Mac typed for a character key: then the
+    /// key goes as its scancode, which a remote IME sees, rather than as Unicode, which reaches
     /// applications as VK_PACKET. The table is keyed by the scancode sent, so a key the
     /// layouts place differently, such as the ISO key sent as 0x56, still goes as Unicode, as
     /// does a character a dead key composed (`characters` differs from
@@ -728,7 +728,7 @@ enum MacRDPKeyboardMapping {
         charactersIgnoringModifiers: String?,
         for scancode: RDPKeyboardScancode,
         modifierFlags: NSEvent.ModifierFlags,
-        layout: RDPKeyboardLayout
+        keyboard: MacRDPWindowsKeyboard
     ) -> Bool {
         guard let characters, let charactersIgnoringModifiers,
               characters == charactersIgnoringModifiers
@@ -739,7 +739,7 @@ enum MacRDPKeyboardMapping {
         if scancode == spaceScancode {
             return true
         }
-        guard let typed = MacRDPWindowsKeyboardLayout.layout(layout)?.character(
+        guard let typed = MacRDPWindowsKeyboardLayout.layout(keyboard)?.character(
                   for: scancode,
                   isShifted: modifierFlags.contains(.shift),
                   isCapsLocked: modifierFlags.contains(.capsLock)
