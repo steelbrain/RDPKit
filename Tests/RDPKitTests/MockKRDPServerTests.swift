@@ -176,6 +176,19 @@ struct MockKRDPServerTests {
         #expect(run.transcript.licenseMachineName == "Conference-Room")
     }
 
+    /// A scale and physical size set after the configuration's initializer are checked as it
+    /// checks them: a server ignores both fields when either is out of range ([MS-RDPBCGR] 2.2.1.3.2).
+    @Test func clientClampsTheScaleAndDropsAnIgnoredPhysicalSizeSetAfterInit() throws {
+        let report = try runMock {
+            $0.scaleFactors = RDPDisplayScaleFactors(desktopScaleFactor: 900, deviceScaleFactor: 200)
+            $0.physicalSize = RDPDisplayPhysicalSize(widthMillimeters: 600, heightMillimeters: 9)
+        }.report
+        let core = try clientCoreData(fromMCSConnectInitialHex: report.mcsConnectInitialHex)
+
+        #expect(report.status == "success")
+        #expect(core[216...] == hexData("00 00 00 00 00 00 00 00 00 00 f4 01 00 00 b4 00 00 00"))
+    }
+
     /// The auto-reconnect cookie ends the Client Info PDU ([MS-RDPBCGR] 2.2.1.11.1.1.1). A wire
     /// transcript records the client's PDUs, and so its cookie, by length only.
     @Test func clientSendsItsAutoReconnectCookie() throws {

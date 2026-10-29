@@ -7,11 +7,12 @@ extension RDPClientConnection {
     func connectChannels() throws {
         stage = .channelConnection
         resetSessionRecord()
+        // Checked as the configuration's initializer checks them: they can be set after it.
         let mcsConfiguration = MCSConnectInitialConfiguration(
             desktopWidth: configuration.desktopWidth,
             desktopHeight: configuration.desktopHeight,
-            scaleFactors: configuration.scaleFactors,
-            physicalSize: configuration.physicalSize,
+            scaleFactors: configuration.scaleFactors.clamped,
+            physicalSize: configuration.physicalSize.flatMap { $0.isValid ? $0 : nil },
             clientName: clientName,
             selectedProtocol: selectedProtocols,
             requestedProtocols: configuration.negotiationRequest.requestedProtocols,
