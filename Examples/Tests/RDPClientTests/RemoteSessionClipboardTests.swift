@@ -586,7 +586,7 @@ private func waitUntil(_ condition: () -> Bool) async throws {
     clipboard.receiveText("remote text")
     try startRemoteFileDownload(contents, to: clipboard, from: session)
     clipboard.receiveRemoteCopyUnavailable(isEmpty: false)
-    #expect(clipboard.statusMessage == "Remote copy has no text or files.")
+    #expect(clipboard.statusMessage == "No text or files arrived from the remote copy.")
     try answerRangeRequest(with: contents, to: clipboard, from: session)
     #expect(pasteboardFileURLs(pasteboard).isEmpty)
     #expect(pasteboard.string(forType: .string) == "remote text")

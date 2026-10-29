@@ -212,11 +212,11 @@ final class RDPRemoteSessionClipboard {
     }
 
     /// A remote copy none of which comes: the server's clipboard was emptied (`isEmpty`), or
-    /// holds nothing this bridge takes, such as an image. It is newer than the remote copy
-    /// before it, whose download is dropped. An emptied clipboard also clears the pasteboard
-    /// while it holds what came from the server, as [MS-RDPECLIP] 3.1.5.2.2 has a Format List
-    /// replace the local clipboard, so a password a password manager cleared there does not
-    /// stay here; a local copy since is kept.
+    /// holds nothing this bridge takes, such as an image, or what it does could not be fetched.
+    /// It is newer than the remote copy before it, whose download is dropped. An emptied
+    /// clipboard also clears the pasteboard while it holds what came from the server, as
+    /// [MS-RDPECLIP] 3.1.5.2.2 has a Format List replace the local clipboard, so a password a
+    /// password manager cleared there does not stay here; a local copy since is kept.
     func receiveRemoteCopyUnavailable(isEmpty: Bool) {
         guard isSharingEnabled else {
             return
@@ -228,7 +228,7 @@ final class RDPRemoteSessionClipboard {
             remoteCopyChangeCount = nil
             message = "Remote clipboard emptied; cleared here too."
         } else {
-            message = isEmpty ? "Remote clipboard emptied." : "Remote copy has no text or files."
+            message = isEmpty ? "Remote clipboard emptied." : "No text or files arrived from the remote copy."
         }
         // A local copy the poll has not published yet is older than this one.
         pasteboardChangeCount = pasteboard.changeCount
