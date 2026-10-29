@@ -79,3 +79,57 @@ private func key(username: String) throws -> KeychainCredentialKey {
     #expect(try result.get() == nil)
     #expect(reads.readAccounts.count == 1)
 }
+
+private func choice(_ password: String, remember: Bool) -> RememberedPasswordChoice {
+    RememberedPasswordChoice(password: password, rememberPassword: remember)
+}
+
+/// Fills `savedPassword` into `current` for a request that began when the form showed `asked`.
+private func answer(
+    _ savedPassword: String?,
+    asked: RememberedPasswordChoice,
+    current: RememberedPasswordChoice? = nil,
+    keepsEnteredPassword: Bool = false
+) throws -> (choice: RememberedPasswordChoice, loaded: Bool) {
+    let request = try RememberedPasswordRequest(
+        key: key(username: "anees"),
+        asked: asked,
+        keepsEnteredPassword: keepsEnteredPassword
+    )
+    var filled = current ?? asked
+    let loaded = request.fill(&filled, with: savedPassword)
+    return (filled, loaded)
+}
+
+@Test func anAnswerFillsInTheSavedPasswordAsAnAnswerAtOnceWould() throws {
+    // The account changed with another account's password in the form: the saved one replaces it.
+    let loaded = try answer("secret", asked: choice("other", remember: false))
+    #expect(loaded.choice == choice("secret", remember: true))
+    #expect(loaded.loaded)
+
+    // Nothing saved: an empty password unticks Remember, an entered one keeps it.
+    #expect(try answer(nil, asked: choice("", remember: true)).choice == choice("", remember: false))
+    #expect(try answer(nil, asked: choice("typed", remember: true)).choice == choice("typed", remember: true))
+
+    // A session window keeps the draft's password and Remember choice, unless it has none.
+    let draft = try answer("secret", asked: choice("newer", remember: false), keepsEnteredPassword: true)
+    #expect(draft.choice == choice("newer", remember: false))
+    #expect(draft.loaded == false)
+    let emptyDraft = try answer("secret", asked: choice("", remember: false), keepsEnteredPassword: true)
+    #expect(emptyDraft.choice == choice("secret", remember: true))
+}
+
+/// The user unticked Remember, or typed a password, after changing the account but before
+/// Keychain answered: as with an answer at once, their change stands.
+@Test func anAnswerKeepsWhatTheUserChangedWhileItWasOnItsWay() throws {
+    let unticked = try answer("secret", asked: choice("other", remember: true), current: choice("other", remember: false))
+    #expect(unticked.choice == choice("secret", remember: false))
+    #expect(unticked.loaded)
+
+    let typed = try answer("secret", asked: choice("", remember: false), current: choice("typed", remember: false))
+    #expect(typed.choice == choice("typed", remember: true))
+    #expect(typed.loaded == false)
+
+    let ticked = try answer(nil, asked: choice("", remember: false), current: choice("", remember: true))
+    #expect(ticked.choice == choice("", remember: true))
+}

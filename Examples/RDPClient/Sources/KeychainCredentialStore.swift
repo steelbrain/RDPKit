@@ -183,6 +183,45 @@ final class RememberedPasswordLookup {
     }
 }
 
+/// A connection form's password and its Remember choice.
+struct RememberedPasswordChoice: Equatable {
+    var password: String
+    var rememberPassword: Bool
+}
+
+/// A connection form's wait for Keychain's answer about its account.
+struct RememberedPasswordRequest: Equatable {
+    let key: KeychainCredentialKey
+    /// The form's choice when its account changed to `key`.
+    let asked: RememberedPasswordChoice
+    /// Keeps the password the form had then, and its Remember choice, over the saved one.
+    let keepsEnteredPassword: Bool
+
+    /// Fills Keychain's answer into `choice`, the form's choice now, and returns whether it took
+    /// the saved password. A saved password replaces the form's and ticks Remember; none unticks
+    /// Remember for an empty password. What the user changed since the account did stays, as if
+    /// Keychain had answered at once.
+    func fill(_ choice: inout RememberedPasswordChoice, with savedPassword: String?) -> Bool {
+        let keepsAskedPassword = keepsEnteredPassword && !asked.password.isEmpty
+        let keepsPassword = keepsAskedPassword || choice.password != asked.password
+        let keepsRemember = keepsAskedPassword || choice.rememberPassword != asked.rememberPassword
+        guard let savedPassword else {
+            if choice.password.isEmpty, !keepsRemember {
+                choice.rememberPassword = false
+            }
+            return false
+        }
+        if !keepsRemember {
+            choice.rememberPassword = true
+        }
+        guard !keepsPassword else {
+            return false
+        }
+        choice.password = savedPassword
+        return true
+    }
+}
+
 enum KeychainCredentialError: Error, CustomStringConvertible {
     case invalidPasswordData
     case unexpectedStatus(OSStatus)

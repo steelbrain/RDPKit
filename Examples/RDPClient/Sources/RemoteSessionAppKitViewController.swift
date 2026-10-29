@@ -23,6 +23,8 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
     private var password = ""
     private var rememberPassword = false
     private var hasRememberedPassword = false
+    /// The form's account while it waits for Keychain's answer; nil once Keychain has answered.
+    private var passwordRequest: RememberedPasswordRequest?
     private var keychainMessage: String?
     private var hideCertificateWarnings = false
     private var timeoutSeconds = 10.0
@@ -153,9 +155,12 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         startDiagnosticsLoop()
         startClipboardPollingLoop()
         render()
-        // Connecting keeps or removes a saved password, so it waits until the lookup has said
-        // whether there is one.
+        // Connecting saves, keeps or removes a saved password, so the window connects once
+        // Keychain has answered for the account it opened with.
         loadRememberedPasswordIfAvailable(keepingEnteredPassword: true, after: .zero)
+        if passwordRequest == nil {
+            connectAutomaticallyIfNeeded()
+        }
     }
 
     func closeSession() {
@@ -607,6 +612,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         certificateRefusal = nil
         certificateTrustMessage = nil
         usesLegacyRSAKeyExchange = false
+        answerPasswordRequestNow()
 
         let target: RDPConnectionTarget
         let requestedDesktopSize: RDPDesktopSize
@@ -964,6 +970,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                 controller.isConnecting = false
                 controller.activeConnectionID = nil
                 controller.activeCancellation = nil
+                controller.lookUpRequestedPassword()
                 controller.render()
                 if controller.sessionEndReason?.offersCredentials == true {
                     controller.offerCredentials()
@@ -1128,6 +1135,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
             sessionEndReason = .cancelled
         }
         isConnecting = false
+        lookUpRequestedPassword()
         render()
     }
 
@@ -1389,43 +1397,68 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
     ) {
         keychainMessage = nil
         hasRememberedPassword = false
-        guard !isConnecting, let key = credentialKey else {
+        passwordRequest = credentialKey.map {
+            RememberedPasswordRequest(key: $0, asked: passwordChoice, keepsEnteredPassword: keepingEnteredPassword)
+        }
+        lookUpRequestedPassword(after: delay)
+    }
+
+    /// Looks up the password for the account the form waits on. While connected, the lookup
+    /// waits for the connection to end.
+    private func lookUpRequestedPassword(after delay: Duration = RememberedPasswordLookup.typingDelay) {
+        guard !didClose, !isConnecting, let key = passwordRequest?.key else {
             passwordLookup.cancel()
-            connectAutomaticallyIfNeeded()
             return
         }
         passwordLookup.lookUp(key, after: delay) { [weak self] result in
-            self?.applyRememberedPassword(result, for: key, keepingEnteredPassword: keepingEnteredPassword)
+            self?.rememberedPasswordLookedUp(result, for: key)
         }
     }
 
-    private func applyRememberedPassword(
-        _ result: Result<String?, Error>,
-        for key: KeychainCredentialKey,
-        keepingEnteredPassword: Bool
-    ) {
-        // Dropped when the fields changed since the lookup began, as a newer lookup follows, or
-        // when a connection started meanwhile with what the form had.
-        guard !isConnecting, key == credentialKey else {
+    private func rememberedPasswordLookedUp(_ result: Result<String?, Error>, for key: KeychainCredentialKey) {
+        // While connected, the request stays for the lookup that follows the connection.
+        guard !isConnecting, applyRememberedPassword(result, for: key) else {
             return
-        }
-        switch result {
-        case let .success(savedPassword?):
-            hasRememberedPassword = true
-            if keepingEnteredPassword == false || password.isEmpty {
-                rememberPassword = true
-                password = savedPassword
-                keychainMessage = "Password loaded from Keychain."
-            }
-        case .success(nil):
-            if password.isEmpty {
-                rememberPassword = false
-            }
-        case let .failure(error):
-            keychainMessage = String(describing: error)
         }
         render()
         connectAutomaticallyIfNeeded()
+    }
+
+    /// Reads Keychain on the main thread for an account the form still waits on, as a connection
+    /// starts: it saves, keeps or removes the saved password, so it needs the answer. Typing
+    /// never reads like this.
+    private func answerPasswordRequestNow() {
+        guard let key = passwordRequest?.key else {
+            return
+        }
+        passwordLookup.cancel()
+        applyRememberedPassword(Result { try credentialStore.password(for: key) }, for: key)
+    }
+
+    /// Applies Keychain's answer for `key`, unless the form has moved on to another account.
+    @discardableResult
+    private func applyRememberedPassword(_ result: Result<String?, Error>, for key: KeychainCredentialKey) -> Bool {
+        guard let request = passwordRequest, request.key == key else {
+            return false
+        }
+        passwordRequest = nil
+        switch result {
+        case let .success(savedPassword):
+            hasRememberedPassword = savedPassword != nil
+            var choice = passwordChoice
+            if request.fill(&choice, with: savedPassword) {
+                keychainMessage = "Password loaded from Keychain."
+            }
+            password = choice.password
+            rememberPassword = choice.rememberPassword
+        case let .failure(error):
+            keychainMessage = String(describing: error)
+        }
+        return true
+    }
+
+    private var passwordChoice: RememberedPasswordChoice {
+        RememberedPasswordChoice(password: password, rememberPassword: rememberPassword)
     }
 
     /// Starts the connection the window opened for, once.
