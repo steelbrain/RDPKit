@@ -549,16 +549,10 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
 
     private func beginConnection() {
         activeCancellation?.cancel()
-        cancelPendingDisplayResize(resetLastRequestedSize: true)
+        detachSessionChannels()
         activeConnectionID = nil
         activeCancellation = nil
         sessionEndReason = nil
-        inputSession = nil
-        displayControlSession = nil
-        displayControlMessage = nil
-        clipboard.detach()
-        remoteAudioPlayer.reset()
-        audioMessage = nil
         isConnecting = false
 
         formError = nil
@@ -858,10 +852,10 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                         controller.publishRenderMetricsSnapshotIfNeeded(force: true, at: receivedAt)
                     }
                 }
+                controller.detachSessionChannels()
                 controller.isConnecting = false
                 controller.activeConnectionID = nil
                 controller.activeCancellation = nil
-                controller.remoteAudioPlayer.reset()
                 controller.render()
             }
         }
@@ -990,21 +984,26 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
     func cancelConnection(shouldRecordCancellation: Bool = true) {
         let shouldRecordCancellation = shouldRecordCancellation && (isConnecting || activeConnectionID != nil)
         activeCancellation?.cancel()
-        cancelPendingDisplayResize(resetLastRequestedSize: true)
+        detachSessionChannels()
         resetFramePresentationState()
         activeCancellation = nil
         activeConnectionID = nil
+        if shouldRecordCancellation {
+            sessionEndReason = .cancelled
+        }
+        isConnecting = false
+        render()
+    }
+
+    /// Drops what a session handed out, so nothing more is sent to it once it has ended.
+    private func detachSessionChannels() {
+        cancelPendingDisplayResize(resetLastRequestedSize: true)
         inputSession = nil
         displayControlSession = nil
         displayControlMessage = nil
         clipboard.detach()
         remoteAudioPlayer.reset()
         audioMessage = nil
-        if shouldRecordCancellation {
-            sessionEndReason = .cancelled
-        }
-        isConnecting = false
-        render()
     }
 
     private func applyDisplaySizeToActiveSession() {
