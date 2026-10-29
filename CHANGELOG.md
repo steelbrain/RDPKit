@@ -13,7 +13,9 @@
 - Set Error Info 0xB is named `ERRINFO_RPC_INITIATED_DISCONNECT_BYUSER`.
   `error` names RDP_NEG_FAILURE codes, as in "RDP negotiation failed with
   HYBRID_REQUIRED_BY_SERVER (0x00000005)", and the newly named Set Error Info
-  codes.
+  codes. The RDP-specific codes 0x10C9–0x1195 are named as [MS-RDPBCGR]
+  2.2.5.1.1 spells them, such as `ERRINFO_CONNECTFAILED` (FreeRDP:
+  `ERRINFO_CONNECT_FAILED`) instead of `ERRINFO_0x000010d3`.
 
 ### Additions
 
@@ -24,16 +26,20 @@
   `legacyRSAKeyExchange`), CredSSP NTSTATUS codes (`RDPLogonStatus`), missing
   credentials, Early User Authorization, licensing, server termination, lost
   or closed connections, timeouts, cancellation, protocol violations and a
-  throwing `onGraphicsFrame`. `error` keeps the details in words.
+  throwing `onGraphicsFrame`. A configuration RDPKit cannot send
+  (`invalidConfiguration`: credentials longer than the Client Info PDU or
+  NTLM holds, or a `storedClientLicense` too large to present) and a failure
+  on the client's side (`clientFailure`) are not protocol violations.
+  `error` keeps the details in words.
 - `RDPConnectionStage` is public, and `report.connectionStage` returns it.
   `report.remoteTermination` (`RDPRemoteTermination`) names the Set Error
   Info code ([MS-RDPBCGR] 2.2.5.1.1) and gives its category: user, admin,
   time limit, replaced, access denied, licensing and others.
 - `RDPConnectionConfiguration.clientName` sets the name servers show for the
   client in session lists and per-device licensing, instead of `RDPKIT`. It
-  goes in the Client Core Data, the licensing request and the rdpdr Client
-  Name Request; control characters are dropped and it is cut to 15
-  characters.
+  goes in the Client Core Data, the licensing request, NTLM's
+  AUTHENTICATE_MESSAGE and the rdpdr Client Name Request; control characters
+  are dropped and it is cut to 15 characters.
 - `RDPConnectionConfiguration.scaleFactors` (`RDPDisplayScaleFactors`) and
   `physicalSize` (`RDPDisplayPhysicalSize`, in millimetres) go in the Client
   Core Data, so a session starts at the client's scale, also on servers
@@ -113,6 +119,10 @@
   as mstsc and FreeRDP do, so NTLM and the Client Info PDU carry the domain.
   A UPN stays as it is. `qualifiedUsername`, and so `credentialAccountName`,
   is unchanged; the report's `username` and `domain` show the two parts.
+- NLA sends `clientName` as the NTLM workstation ([MS-NLMP] 2.2.1.3,
+  3.1.5.1.2) instead of an empty one, whether or not the server negotiates
+  NTLMSSP_NEGOTIATE_VERSION. Windows logs it as the logon's client machine
+  instead of "Null".
 - `RDPConnectionIdentity.hasSameConnectionIdentity(as:)` compares the user
   name and domain as `qualifiedUsername` joins them, so it is true exactly
   when the `credentialAccountName`s match: `LAB\anees` with no domain, which
@@ -146,7 +156,9 @@
     server's reason after the desktop was shown, and offers the credentials
     again after a refused sign-in. RDPKit's own text stays in Stats for
     Nerds. A session shown through bitmap updates without RDPGFX no longer
-    ends as one that never opened RDPGFX.
+    ends as one that never opened RDPGFX. Settings that cannot be sent, such
+    as an overlong password, offer the credentials again, and a failure on
+    the Mac no longer blames the server.
   - Connects again once with RSA key exchange when the server's certificate
     refuses ECDHE (`KEY_USAGE_BIT_INCORRECT`), keeps it only for reconnects
     to that host and port, and says that such a connection has no forward
