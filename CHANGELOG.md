@@ -66,8 +66,9 @@
   - After video fails to decode, for example once iOS invalidates the
     decoder in the background, its surface keeps its last picture until a
     keyframe instead of decoding updates without their reference, failing
-    them as the new `RDPVideoDecodeError.awaitingKeyframe`. Windows sends a
-    keyframe when the client sends its monitor layout again.
+    them as the new `RDPVideoDecodeError.awaitingKeyframe`. Windows and
+    gnome-remote-desktop send a keyframe when the client sends its monitor
+    layout again.
 - Other graphics: fixes for RemoteFX, RemoteFX Progressive, ClearCodec,
   NSCodec, planar and legacy bitmaps, and pointers. Deleted surfaces free
   their decoders. Every frame is acknowledged, even ones that fail to decode.

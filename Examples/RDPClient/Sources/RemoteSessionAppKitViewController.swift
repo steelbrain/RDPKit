@@ -1130,8 +1130,8 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         render()
     }
 
-    /// Windows sends no keyframe by itself, but answers the monitor layout sent again by
-    /// resetting its graphics, which starts every video stream afresh.
+    /// Windows and gnome-remote-desktop send no keyframe by themselves, but answer the monitor
+    /// layout sent again with one.
     private func requestKeyframe(desktopSize: RDPDesktopSize) {
         guard let displayControlSession else {
             return

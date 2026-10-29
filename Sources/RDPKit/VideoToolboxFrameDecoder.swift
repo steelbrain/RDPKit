@@ -634,8 +634,9 @@ public enum RDPVideoDecodeError: Error, Equatable, CustomStringConvertible {
     case imageConversionFailed
     case videoToolbox(operation: String, status: OSStatus)
     /// The surface's video failed to decode, and the updates since refer to pictures the decoder
-    /// lacks, so they are dropped until a keyframe. Windows sends none by itself, but answers the
-    /// client's monitor layout sent again (`RDPDisplayControlSession`) by resetting its graphics.
+    /// lacks, so they are dropped until a keyframe. Windows and gnome-remote-desktop send none by
+    /// themselves, but answer the client's monitor layout sent again (`RDPDisplayControlSession`)
+    /// with one.
     case awaitingKeyframe(surfaceID: UInt16)
 
     public var description: String {
