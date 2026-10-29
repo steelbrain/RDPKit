@@ -325,7 +325,9 @@ public final class RDPLiveConnectionReport: @unchecked Sendable {
 /// add to it from whichever thread sends them, and `RDPLiveConnectionReport`
 /// copies it; each access holds the lock, so a copy never sees half a change.
 final class RDPConnectionReportStorage: @unchecked Sendable {
-    private let lock = NSLock()
+    /// Recursive, so touching `report` again during an access trips Swift's exclusivity
+    /// check, which names the access, instead of hanging the connection thread.
+    private let lock = NSRecursiveLock()
     private var stored: RDPConnectionReport
     /// The run returned the report: clipboard sends after that leave it as it is.
     private var isFinished = false
