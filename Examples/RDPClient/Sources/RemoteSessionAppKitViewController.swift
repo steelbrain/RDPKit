@@ -35,6 +35,8 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
     private var displayControlSession: RDPDisplayControlSession?
     private var displayControlMessage: String?
     private var autoApplyViewerSize = true
+    /// The desktop the last connection asked for.
+    private var requestedDesktop: RDPConnectDesktop?
     private var pendingDisplayResizeTask: Task<Void, Never>?
     private var displayResize = RDPDisplayResizeDebounce()
     private var viewerPointSize: CGSize = .zero
@@ -644,13 +646,20 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         )
 
         keyboardLayout = MacRDPKeyboardLayout.current()
+        let connectDesktop = RDPConnectDesktop(
+            fieldSize: requestedDesktopSize,
+            followsViewSize: autoApplyViewerSize,
+            viewerPointSize: viewerPointSize,
+            viewerPixelSize: viewerPixelSize
+        )
+        requestedDesktop = connectDesktop
         let configuration = RDPConnectionConfiguration(
             target: target,
             credentials: credentials,
             timeoutSeconds: Int(timeoutSeconds),
             hideCertificateWarnings: hideCertificateWarnings,
             graphicsFrameCaptureLimit: nil,
-            desktopSize: requestedDesktopSize,
+            desktopSize: connectDesktop.size,
             // Joined even when sharing is off, so sharing can start mid-session; the
             // clipboard bridge decides what crosses.
             clipboardEnabled: true,
@@ -758,7 +767,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                     if case .failed = completion {
                         if frame.contentKind == .video, keyframeRequests.shouldRequest(at: Date()) {
                             sink.apply { controller in
-                                controller.requestKeyframe(desktopSize: requestedDesktopSize)
+                                controller.requestKeyframe(connectLayout: connectDesktop.displayRequest)
                             }
                         }
                         return
@@ -1169,13 +1178,12 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
     }
 
     /// Windows and gnome-remote-desktop send no keyframe by themselves, but answer the monitor
-    /// layout sent again with one.
-    private func requestKeyframe(desktopSize: RDPDesktopSize) {
+    /// layout sent again with one: the one last sent, or the one the session started with.
+    private func requestKeyframe(connectLayout: RDPDisplayRequest) {
         guard let displayControlSession else {
             return
         }
-        let request = displayResize.lastSent
-            ?? makeDisplayRequest(width: UInt32(desktopSize.width), height: UInt32(desktopSize.height))
+        let request = displayResize.lastSent ?? connectLayout
         displayControlSession.send(request)
         displayControlMessage = "Video failed to decode; asked the server for a fresh picture."
         render()
@@ -1336,8 +1344,12 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         ].joined(separator: "\u{1f}")
     }
 
+    /// The size the last connection asked for; the fields' size until one has.
     private var requestedDesktopSizeLabel: String {
-        [
+        if let requestedDesktop {
+            return requestedDesktop.label
+        }
+        return [
             desktopWidth.trimmingCharacters(in: .whitespacesAndNewlines),
             desktopHeight.trimmingCharacters(in: .whitespacesAndNewlines),
         ].joined(separator: "x")

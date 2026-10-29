@@ -205,3 +205,38 @@ private let bitmapFrame = RDPGraphicsFrameSnapshot(
     results = [debounce.viewChanged(to: sizeA)]
     #expect(results == [true])
 }
+
+@Test func aRetinaViewConnectsAtItsPointSize() throws {
+    let pointSize = CGSize(width: 1200, height: 750)
+    let pixelSize = RDPViewerPixelSize(pointSize: pointSize, backingScaleFactor: 2)
+    let pixelFields = try RDPDesktopSize(widthText: pixelSize.desktopWidthText, heightText: pixelSize.desktopHeightText)
+
+    let following = RDPConnectDesktop(
+        fieldSize: pixelFields,
+        followsViewSize: true,
+        viewerPointSize: pointSize,
+        viewerPixelSize: pixelSize
+    )
+    #expect(following.size == (try RDPDesktopSize(width: 1200, height: 750)))
+    #expect(following.label == "1200x750")
+    #expect(following.displayRequest == RDPDisplayRequest(
+        width: 1200,
+        height: 750,
+        scaleFactors: RDPDisplayScaleFactors(desktopScaleFactor: 100, deviceScaleFactor: 100)
+    ))
+
+    // A size typed into the fields, or any size while the view is not followed, goes as it is.
+    let typed = try RDPDesktopSize(width: 1920, height: 1080)
+    for (fields, follows) in [(typed, true), (pixelFields, false)] {
+        let desktop = RDPConnectDesktop(
+            fieldSize: fields,
+            followsViewSize: follows,
+            viewerPointSize: pointSize,
+            viewerPixelSize: pixelSize
+        )
+        #expect(desktop.size == fields)
+    }
+    // Before the view has a size, the fields are all there is.
+    let early = RDPConnectDesktop(fieldSize: typed, followsViewSize: true, viewerPointSize: .zero, viewerPixelSize: nil)
+    #expect(early.size == typed)
+}

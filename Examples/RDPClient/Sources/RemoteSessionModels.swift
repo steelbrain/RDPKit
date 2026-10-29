@@ -285,3 +285,44 @@ struct RDPDisplayResizeDebounce {
         }
     }
 }
+
+/// The desktop a connection asks for, at 100% scale. While Follow View Size keeps the view's
+/// pixel size in the size fields, it is the view's size in points: a server without Display
+/// Control then draws no pixel-sized desktop for a Retina Mac to show at half size, and Display
+/// Control raises a capable server to the pixel size, at the view's scale, once connected. Any
+/// other size in the fields, such as one typed in, is asked for as it is.
+struct RDPConnectDesktop: Equatable {
+    var size: RDPDesktopSize
+
+    init(
+        fieldSize: RDPDesktopSize,
+        followsViewSize: Bool,
+        viewerPointSize: CGSize,
+        viewerPixelSize: RDPViewerPixelSize?
+    ) {
+        let pointLayout = RDPDisplayRequest(pointSize: viewerPointSize, backingScaleFactor: 1)
+        guard followsViewSize,
+              let viewerPixelSize,
+              UInt32(fieldSize.width) == viewerPixelSize.width,
+              UInt32(fieldSize.height) == viewerPixelSize.height,
+              let pointSize = try? RDPDesktopSize(width: UInt16(pointLayout.width), height: UInt16(pointLayout.height))
+        else {
+            size = fieldSize
+            return
+        }
+        size = pointSize
+    }
+
+    /// The monitor layout the session starts with, to send again through Display Control.
+    var displayRequest: RDPDisplayRequest {
+        RDPDisplayRequest(
+            width: UInt32(size.width),
+            height: UInt32(size.height),
+            scaleFactors: RDPDisplayScaleFactors(backingScaleFactor: 1)
+        )
+    }
+
+    var label: String {
+        "\(size.width)x\(size.height)"
+    }
+}
