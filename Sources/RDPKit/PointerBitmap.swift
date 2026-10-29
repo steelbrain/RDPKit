@@ -5,8 +5,8 @@ import Foundation
 /// `NSCursor(image:hotSpot:)` on macOS, or a pointer style on iOS and visionOS.
 ///
 /// It combines the masks of an ``RDPRemotePointerImage`` as Windows draws a cursor
-/// ([MS-RDPBCGR] 2.2.9.1.1.4.4-2.2.9.1.1.4.6). Both masks run bottom-up, with each scan-line
-/// padded to 2 bytes, and the AND mask has 1 bit a pixel:
+/// ([MS-RDPBCGR] 2.2.9.1.1.4.4-2.2.9.1.1.4.6). Both masks run bottom-up, except in a 1-bpp
+/// pointer, with each scan-line padded to 2 bytes, and the AND mask has 1 bit a pixel:
 /// - AND 0 shows the XOR color, opaque.
 /// - AND 1 with an XOR of 0 is transparent.
 /// - AND 1 with any other XOR inverts the screen under it, which a cursor image cannot
@@ -15,7 +15,9 @@ import Foundation
 ///   black with a white outline, which shows on any background.
 ///
 /// The XOR mask's depth sets its colors:
-/// - 1 bpp: 0 is black and 1 is white.
+/// - 1 bpp: 0 is black and 1 is white. Both masks run top-down, as rdesktop and FreeRDP read
+///   them, though the spec has them bottom-up. Windows 11 sends no such pointer: it sends a
+///   monochrome cursor at 24 bpp.
 /// - 16 bpp: RGB565, RDP's 16-bit color ([MS-RDPBCGR] 2.2.1.3.2).
 /// - 24 bpp: blue, green and red bytes.
 /// - 32 bpp: blue, green, red and alpha bytes. Windows premultiplies the colors by alpha, and
@@ -65,9 +67,13 @@ public struct RDPRemotePointerBitmap: Equatable, Sendable {
         var pixels = [UInt8](repeating: 0, count: width * height * 4)
         var invertedPixels: [Int] = []
         for row in 0 ..< height {
-            // The masks' first scan-line is the bottom one.
-            let xorRow = (height - 1 - row) * xorRowBytes
-            let andRow = (height - 1 - row) * andRowBytes
+            // The masks' first scan-line is the bottom one ([MS-RDPBCGR] 2.2.9.1.1.4.4), but the top
+            // one at 1 bpp. rdesktop reads 1-bpp masks top-down since its New Pointer support, written
+            // in 2009 for Windows Server 2008 R2 (an rdesktop developer in FreeRDP issue 1772), and so
+            // does FreeRDP (freerdp_image_copy_from_pointer_data_1bpp in libfreerdp/codec/color.c).
+            let maskRow = bitsPerPixel == 1 ? row : height - 1 - row
+            let xorRow = maskRow * xorRowBytes
+            let andRow = maskRow * andRowBytes
             for column in 0 ..< width {
                 let pixel = (row * width + column) * 4
                 let xor = Self.xorColor(in: xorMask, at: xorRow, column: column, bitsPerPixel: bitsPerPixel)

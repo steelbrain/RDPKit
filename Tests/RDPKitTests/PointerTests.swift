@@ -340,15 +340,16 @@ import Testing
     #expect(malformed?.pointerDecodeError == .invalidPointerPDU)
 }
 
-@Test func pointerBitmapDecodesOneBitMasksBottomUp() throws {
-    // Rows from the top: black, white, transparent; transparent, transparent, white.
+@Test func pointerBitmapDecodesOneBitMasksTopDown() throws {
+    // Rows from the top: black, white, transparent; transparent, transparent, white. Unlike
+    // other depths, the first scan-line is the top one, as rdesktop and FreeRDP read it.
     // Each scan-line is padded to 2 bytes; the unused bits and the pad bytes are set.
     let bitmap = try #require(RDPRemotePointerBitmap(pointerImage(
         width: 3,
         height: 2,
         xorBitsPerPixel: 1,
-        xorMask: [0x3f, 0xff, 0x5f, 0xff],
-        andMask: [0xdf, 0xff, 0x3f, 0xff]
+        xorMask: [0x5f, 0xff, 0x3f, 0xff],
+        andMask: [0x3f, 0xff, 0xdf, 0xff]
     )))
 
     #expect(bitmap.width == 3)
@@ -473,7 +474,7 @@ import Testing
         height: 3,
         xorBitsPerPixel: 1,
         xorMask: [0x00, 0x00, 0x40, 0x00, 0x00, 0x00],
-        andMask: [0x70, 0x00, 0xf0, 0x00, 0xf0, 0x00]
+        andMask: [0xf0, 0x00, 0xf0, 0x00, 0x70, 0x00]
     )))
 
     #expect(bitmap.pixels == pointerPixels(
