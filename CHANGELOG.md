@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.5.0
+
 ### Breaking changes
 
 - `RDPConnectionError` is a struct with `failure` (`RDPConnectionFailure`)
