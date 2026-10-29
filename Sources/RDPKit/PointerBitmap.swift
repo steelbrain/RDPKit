@@ -18,10 +18,11 @@ import Foundation
 /// - 1 bpp: 0 is black and 1 is white.
 /// - 16 bpp: RGB565, RDP's 16-bit color ([MS-RDPBCGR] 2.2.1.3.2).
 /// - 24 bpp: blue, green and red bytes.
-/// - 32 bpp: blue, green, red and alpha bytes, the colors not premultiplied. A mask with any
-///   non-zero alpha, or with no AND mask (KRdp sends none), is an alpha cursor: alpha alone
-///   gives the shape, and an AND mask is ignored, as Windows draws one. With an AND mask and
-///   only zero alpha, the colors are opaque and combine with the AND mask like 24 bpp.
+/// - 32 bpp: blue, green, red and alpha bytes. Windows premultiplies the colors by alpha, and
+///   KRdp does not; a mask with any color above its alpha is taken as not premultiplied. A
+///   mask with any non-zero alpha, or with no AND mask (KRdp sends none), is an alpha cursor:
+///   alpha alone gives the shape, and an AND mask is ignored, as Windows draws one. With an AND
+///   mask and only zero alpha, the colors are opaque and combine with the AND mask like 24 bpp.
 /// - 4 and 8 bpp index the session palette, which only sessions of 8 bpp or fewer have.
 ///   RDPKit asks for 15 bpp or more, so these depths are not decoded.
 public struct RDPRemotePointerBitmap: Equatable, Sendable {
@@ -55,6 +56,12 @@ public struct RDPRemotePointerBitmap: Equatable, Sendable {
 
         let usesAlpha = bitsPerPixel == 32
             && (andMask.isEmpty || stride(from: 3, to: xorMask.count, by: 4).contains { xorMask[$0] != 0 })
+        // Windows 11 25H2 sends premultiplied colors (Fixtures/windows-pointers.json: its cursors'
+        // own straight colors arrive multiplied by alpha). KRdp sends straight colors, some above
+        // their alpha (krdp-negotiation-transcript.json), which premultiplied colors cannot be.
+        let isPremultiplied = usesAlpha && stride(from: 0, to: xorMask.count, by: 4).allSatisfy {
+            max(xorMask[$0], xorMask[$0 + 1], xorMask[$0 + 2]) <= xorMask[$0 + 3]
+        }
         var pixels = [UInt8](repeating: 0, count: width * height * 4)
         var invertedPixels: [Int] = []
         for row in 0 ..< height {
@@ -65,9 +72,10 @@ public struct RDPRemotePointerBitmap: Equatable, Sendable {
                 let pixel = (row * width + column) * 4
                 let xor = Self.xorColor(in: xorMask, at: xorRow, column: column, bitsPerPixel: bitsPerPixel)
                 if usesAlpha {
-                    pixels[pixel] = Self.premultiplied(xor.red, by: xor.alpha)
-                    pixels[pixel + 1] = Self.premultiplied(xor.green, by: xor.alpha)
-                    pixels[pixel + 2] = Self.premultiplied(xor.blue, by: xor.alpha)
+                    let scale = isPremultiplied ? 0xFF : xor.alpha
+                    pixels[pixel] = Self.premultiplied(xor.red, by: scale)
+                    pixels[pixel + 1] = Self.premultiplied(xor.green, by: scale)
+                    pixels[pixel + 2] = Self.premultiplied(xor.blue, by: scale)
                     pixels[pixel + 3] = xor.alpha
                 } else if andMask[andRow + column / 8] & (0x80 >> (column % 8)) == 0 {
                     pixels[pixel] = xor.red

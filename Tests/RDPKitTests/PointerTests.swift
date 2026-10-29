@@ -393,8 +393,9 @@ import Testing
 }
 
 @Test func pointerBitmapPremultipliesThirtyTwoBitAlphaAndIgnoresAndMask() throws {
-    // AND bits are set under the half-transparent orange and both bottom pixels; with
-    // no alpha the white one would invert the screen.
+    // The half-transparent orange's red exceeds its alpha, so the colors are not premultiplied.
+    // AND bits are set under the orange and both bottom pixels; with no alpha the white one
+    // would invert the screen.
     let bitmap = try #require(RDPRemotePointerBitmap(pointerImage(
         width: 2,
         height: 2,
@@ -410,6 +411,19 @@ import Testing
         [0x80, 0x20, 0x00, 0x80], clear,
         white, black
     ))
+}
+
+@Test func pointerBitmapKeepsPremultipliedThirtyTwoBitColors() throws {
+    // No color exceeds its alpha, so the colors are already premultiplied, as Windows sends them.
+    let bitmap = try #require(RDPRemotePointerBitmap(pointerImage(
+        width: 2,
+        height: 1,
+        xorBitsPerPixel: 32,
+        xorMask: [0x00, 0x20, 0x80, 0x80, 0x10, 0x10, 0x10, 0x40],
+        andMask: [0xc0, 0x00]
+    )))
+
+    #expect(bitmap.pixels == pointerPixels([0x80, 0x20, 0x00, 0x80], [0x10, 0x10, 0x10, 0x40]))
 }
 
 @Test func pointerBitmapTakesThirtyTwoBitShapeFromAlphaWithoutAndMask() throws {
@@ -560,6 +574,100 @@ import Testing
     // Read bottom-up, the arrow starts at the top and its last 10 rows are empty.
     #expect(alphas[..<46].contains { $0 != 0 })
     #expect(alphas[(46 * 36)...].allSatisfy { $0 == 0 })
+}
+
+@Test func pointerBitmapDrawsWindowsPointersAsWindowsDoes() throws {
+    // Over black and over white, each pointer matches Windows' own drawing of the cursor, except
+    // where Windows XORs the screen: those pixels are black, and the transparent ones next to
+    // them white.
+    for pointer in try windowsPointerFixtures() {
+        let bitmap = try #require(RDPRemotePointerBitmap(pointer.image))
+        let pixels = [UInt8](bitmap.pixels)
+        let overBlack = [UInt8](pointer.drawnOverBlack)
+        let overWhite = [UInt8](pointer.drawnOverWhite)
+        // A pixel Windows draws darker over white than over black XORs the screen.
+        let xors = (0 ..< pointer.width * pointer.height).map { index in
+            (index * 3 ..< index * 3 + 3).contains { overWhite[$0] < overBlack[$0] }
+        }
+        #expect(bitmap.hotSpot == RDPRemotePoint(x: pointer.hotSpot[0], y: pointer.hotSpot[1]))
+        for index in xors.indices {
+            let ours = Array(pixels[index * 4 ..< index * 4 + 4])
+            let windows = (overBlack[index * 3 ..< index * 3 + 3], overWhite[index * 3 ..< index * 3 + 3])
+            if xors[index] {
+                #expect(ours == black, "\(pointer.name) pixel \(index)")
+            } else if ours == white, windows.0.allSatisfy({ $0 == 0 }), windows.1.allSatisfy({ $0 == 0xff }) {
+                let (row, column) = index.quotientAndRemainder(dividingBy: pointer.width)
+                #expect(
+                    (max(row - 1, 0) ... min(row + 1, pointer.height - 1)).contains { neighborRow in
+                        (max(column - 1, 0) ... min(column + 1, pointer.width - 1)).contains {
+                            xors[neighborRow * pointer.width + $0]
+                        }
+                    },
+                    "\(pointer.name) pixel \(index)"
+                )
+            } else {
+                // Premultiplied colors drawn over black, then over white.
+                #expect(Array(windows.0) == Array(ours[0 ..< 3]), "\(pointer.name) pixel \(index)")
+                #expect(
+                    windows.1.map(Int.init) == ours[0 ..< 3].map { Int($0) + 0xff - Int(ours[3]) },
+                    "\(pointer.name) pixel \(index)"
+                )
+            }
+        }
+    }
+}
+
+@Test func pointerBitmapKeepsWindowsPremultipliedColors() throws {
+    // The probe cursor's colors, which Windows holds not premultiplied, from the top: red at
+    // alpha 128 at (0, 0), white at alpha 64 at (0, 16), opaque magenta under AND bits of 1
+    // at (24, 0), and transparent black under AND bits of 0 at (24, 20).
+    let probe = try #require(windowsPointerFixtures().first { $0.name == "alpha-probe" })
+    let pixels = try [UInt8](#require(RDPRemotePointerBitmap(probe.image)).pixels)
+    func pixel(row: Int, column: Int) -> [UInt8] {
+        Array(pixels[(row * probe.width + column) * 4 ..< (row * probe.width + column) * 4 + 4])
+    }
+
+    #expect(pixel(row: 0, column: 0) == [0x80, 0x00, 0x00, 0x80])
+    #expect(pixel(row: 0, column: 16) == [0x40, 0x40, 0x40, 0x40])
+    #expect(pixel(row: 24, column: 0) == [0xff, 0x00, 0xff, 0xff])
+    #expect(pixel(row: 24, column: 20) == clear)
+}
+
+/// Pointers Windows 11 25H2 (build 26200) sent on 2026-10-29, each with Windows' own drawing
+/// of the cursor (DrawIconEx) over black and over white, as RGB rows from the top. `-probe`
+/// pointers are test cursors: `monochrome-probe` made by CreateCursor, which arrives at 24 bpp;
+/// `alpha-probe` with alpha; `color-probe` without alpha, with inverting and XOR-red pixels.
+private struct WindowsPointerFixture: Decodable {
+    var name: String
+    var xorBitsPerPixel: UInt16
+    var width: Int
+    var height: Int
+    var hotSpot: [UInt16]
+    var xorMask: Data
+    var andMask: Data
+    var drawnOverBlack: Data
+    var drawnOverWhite: Data
+
+    var image: RDPRemotePointerImage {
+        RDPRemotePointerImage(
+            cacheIndex: 0,
+            hotSpot: RDPRemotePoint(x: hotSpot[0], y: hotSpot[1]),
+            width: UInt16(width),
+            height: UInt16(height),
+            xorBitsPerPixel: xorBitsPerPixel,
+            xorMaskData: xorMask,
+            andMaskData: andMask
+        )
+    }
+}
+
+private func windowsPointerFixtures() throws -> [WindowsPointerFixture] {
+    let url = try #require(Bundle.module.url(
+        forResource: "windows-pointers",
+        withExtension: "json",
+        subdirectory: "Fixtures"
+    ))
+    return try JSONDecoder().decode([WindowsPointerFixture].self, from: Data(contentsOf: url))
 }
 
 private let black: [UInt8] = [0x00, 0x00, 0x00, 0xff]
