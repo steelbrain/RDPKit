@@ -861,6 +861,50 @@ private final class ClipboardPublishRace: @unchecked Sendable {
     _ = try channel.finish()
 }
 
+/// The server waits for these answers, so a request that cannot be processed still gets a
+/// failure response (MS-RDPECLIP 3.1.5.2.2, 3.1.5.4.3, 3.1.5.4.6).
+@Test func clipboardSessionAnswersUnprocessableRequestsWithFailureResponses() throws {
+    let channel = EmbeddedChannel()
+    let sent = ClipboardSentMessages()
+    let session = RDPClipboardSession(
+        userChannelID: 1006,
+        staticChannelID: 1007,
+        channel: channel,
+        sentMessageHandler: sent.record
+    )
+    var bothFileContentsFlags = Data()
+    bothFileContentsFlags.appendLittleEndianUInt32(42)
+    bothFileContentsFlags.appendLittleEndianUInt32(0)
+    bothFileContentsFlags.appendLittleEndianUInt32(RDPClipboardFileContentsFlags.size | RDPClipboardFileContentsFlags.range)
+    bothFileContentsFlags.appendLittleEndianUInt64(0)
+    bothFileContentsFlags.appendLittleEndianUInt32(8)
+    let malformedRequests = [
+        RDPClipboardPDU(
+            messageType: RDPClipboardMessageType.formatList,
+            messageFlags: RDPClipboardMessageFlags.responseOK,
+            payload: Data([0x0D, 0x00, 0x00, 0x00, 0x00, 0x00])
+        ),
+        RDPClipboardPDU(messageType: RDPClipboardMessageType.formatDataRequest, payload: Data([0x0D, 0x00])),
+        RDPClipboardPDU(messageType: RDPClipboardMessageType.fileContentsRequest, payload: bothFileContentsFlags),
+    ]
+
+    for request in malformedRequests {
+        #expect(throws: RDPDecodeError.invalidClipboardPDU) {
+            try session.receive(request)
+        }
+    }
+
+    let responses = try sent.packets.map { try RDPClipboardPDU.parse(from: clipboardPayload(fromPackets: $0)) }
+    try #require(responses.map(\.typeName) == [
+        "clipboard-format-list-response",
+        "clipboard-format-data-response",
+        "clipboard-file-contents-response",
+    ])
+    #expect(responses.allSatisfy { $0.header.messageFlags == RDPClipboardMessageFlags.responseFail })
+    #expect(try RDPClipboardFileContentsResponse.parseIfPresent(from: responses[2]) == .failure(streamID: 42))
+    _ = try channel.finish()
+}
+
 @Test func clipboardSessionMatchesFormatDataResponsesToRequestsInOrder() throws {
     let channel = EmbeddedChannel()
     let session = RDPClipboardSession(userChannelID: 1006, staticChannelID: 1007, channel: channel)

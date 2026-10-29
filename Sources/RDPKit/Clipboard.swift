@@ -984,6 +984,15 @@ public final class RDPClipboardSession: @unchecked Sendable {
     /// Handles one complete cliprdr PDU from the server, sends the replies the protocol
     /// requires, and returns what the application should be told about.
     func receive(_ pdu: RDPClipboardPDU) throws -> RDPClipboardEvent? {
+        do {
+            return try handle(pdu)
+        } catch {
+            sendFailureResponse(to: pdu)
+            throw error
+        }
+    }
+
+    private func handle(_ pdu: RDPClipboardPDU) throws -> RDPClipboardEvent? {
         if let capabilities = try RDPClipboardCapabilitiesPDU.parseIfPresent(from: pdu) {
             updateServerCapabilities(capabilities)
             return nil
@@ -1028,6 +1037,24 @@ public final class RDPClipboardSession: @unchecked Sendable {
             }
         }
         return nil
+    }
+
+    /// The server waits for an answer to these even when they cannot be processed, and
+    /// MS-RDPECLIP requires a failure response (3.1.5.2.2, 3.1.5.4.3, 3.1.5.4.6).
+    private func sendFailureResponse(to pdu: RDPClipboardPDU) {
+        switch pdu.header.messageType {
+        case RDPClipboardMessageType.formatList:
+            sendFormatListResponse(ok: false)
+        case RDPClipboardMessageType.formatDataRequest:
+            send(RDPClipboardFormatDataResponsePDU.failure().encoded())
+        case RDPClipboardMessageType.fileContentsRequest:
+            var cursor = ByteCursor(pdu.payload)
+            if let streamID = try? cursor.readLittleEndianUInt32() {
+                send(RDPClipboardFileContentsResponse.failure(streamID: streamID).encoded())
+            }
+        default:
+            break
+        }
     }
 
     private func updateServerCapabilities(_ capabilities: RDPClipboardCapabilitiesPDU) {
