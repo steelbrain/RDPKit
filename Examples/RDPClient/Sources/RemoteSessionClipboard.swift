@@ -6,6 +6,9 @@ private let maximumClipboardFileBytes = 32 * 1024 * 1024
 private let maximumFileRangeByteCount: UInt64 = 1024 * 1024
 /// How long a file contents request may go unanswered before the transfer fails.
 private let fileContentsRequestTimeout: TimeInterval = 30
+/// Age at which a download folder an earlier run left is removed at launch. A newer one
+/// may belong to another copy of the app that is still downloading.
+private let staleDownloadDirectoryAge: TimeInterval = 60 * 60
 
 /// Where the clipboard bridge sends: the session's `RDPClipboardSession`.
 protocol RDPClipboardSending: AnyObject {
@@ -82,6 +85,7 @@ final class RDPRemoteSessionClipboard {
         message = nil
         discardFileTransfer()
         cancelLocalFileRead()
+        removeDownloadDirectoryUnlessOnPasteboard()
         pasteboardChangeCount = pasteboard.changeCount
     }
 
@@ -236,7 +240,7 @@ final class RDPRemoteSessionClipboard {
         // The local copy is newer than remote files still downloading.
         discardFileTransfer()
         cancelLocalFileRead()
-        let fileURLs = pasteboardFileURLs()
+        let fileURLs = Self.fileURLs(on: pasteboard)
         guard fileURLs.isEmpty else {
             // Reading up to 32 MiB, or a file iCloud has to download first, would stall the UI.
             localFileRead = Task { [weak self] in
@@ -290,7 +294,7 @@ final class RDPRemoteSessionClipboard {
         return .empty
     }
 
-    private func pasteboardFileURLs() -> [URL] {
+    private static func fileURLs(on pasteboard: NSPasteboard) -> [URL] {
         var urls: [URL] = []
         for item in pasteboard.pasteboardItems ?? [] {
             appendFileURL(item.string(forType: .fileURL), to: &urls)
@@ -301,7 +305,12 @@ final class RDPRemoteSessionClipboard {
         return urls
     }
 
-    private func appendFileURL(_ value: String?, to urls: inout [URL]) {
+    /// The paths of the folders holding the files on `pasteboard`, links resolved.
+    private static func fileDirectoryPaths(on pasteboard: NSPasteboard) -> Set<String> {
+        Set(fileURLs(on: pasteboard).map { $0.deletingLastPathComponent().resolvingSymlinksInPath().path })
+    }
+
+    private static func appendFileURL(_ value: String?, to urls: inout [URL]) {
         guard let value,
               let url = URL(string: value),
               url.isFileURL,
@@ -493,6 +502,16 @@ final class RDPRemoteSessionClipboard {
         }
     }
 
+    /// Removes the last completed download once nothing can paste it any more.
+    private func removeDownloadDirectoryUnlessOnPasteboard() {
+        guard let downloadDirectory,
+              Self.fileDirectoryPaths(on: pasteboard).contains(downloadDirectory.resolvingSymlinksInPath().path) == false
+        else {
+            return
+        }
+        removeDownloadDirectory(downloadDirectory)
+    }
+
     /// Replaces the previous download directory; files from the last completed transfer stay on
     /// the pasteboard until the next transfer starts.
     private func makeDownloadDirectory() throws -> URL {
@@ -501,13 +520,51 @@ final class RDPRemoteSessionClipboard {
             try? fileManager.removeItem(at: downloadDirectory)
         }
 
-        let directory = fileManager.temporaryDirectory
-            .appendingPathComponent("RDPClientRemoteClipboard", isDirectory: true)
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let directory = Self.downloadsDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
 
         downloadDirectory = directory
         return directory
+    }
+
+    /// Holds one folder, named by a UUID, per remote file transfer.
+    nonisolated static let downloadsDirectory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("RDPClientRemoteClipboard", isDirectory: true)
+
+    /// Removes, off the main thread, download folders earlier runs left behind whose files
+    /// are not on the pasteboard.
+    static func removeStaleDownloadDirectories(pasteboard: NSPasteboard = .general) {
+        let keptDirectoryPaths = fileDirectoryPaths(on: pasteboard)
+        let cutoff = Date().addingTimeInterval(-staleDownloadDirectoryAge)
+        Task.detached(priority: .utility) {
+            removeStaleDownloadDirectories(in: downloadsDirectory, keeping: keptDirectoryPaths, changedBefore: cutoff)
+        }
+    }
+
+    /// Removes the UUID-named folders in `directory` last changed before `cutoff`, except
+    /// those at `keptDirectoryPaths`. Anything else there, and links, are left alone.
+    nonisolated static func removeStaleDownloadDirectories(
+        in directory: URL,
+        keeping keptDirectoryPaths: Set<String>,
+        changedBefore cutoff: Date
+    ) {
+        let fileManager = FileManager.default
+        let keys: Set<URLResourceKey> = [.isDirectoryKey, .isSymbolicLinkKey, .contentModificationDateKey]
+        guard let entries = try? fileManager.contentsOfDirectory(at: directory, includingPropertiesForKeys: Array(keys)) else {
+            return
+        }
+        for entry in entries where UUID(uuidString: entry.lastPathComponent) != nil {
+            guard let values = try? entry.resourceValues(forKeys: keys),
+                  values.isDirectory == true,
+                  values.isSymbolicLink != true,
+                  let changedAt = values.contentModificationDate,
+                  changedAt < cutoff,
+                  keptDirectoryPaths.contains(entry.resolvingSymlinksInPath().path) == false
+            else {
+                continue
+            }
+            try? fileManager.removeItem(at: entry)
+        }
     }
 
     private func makeStreamID() -> UInt32 {

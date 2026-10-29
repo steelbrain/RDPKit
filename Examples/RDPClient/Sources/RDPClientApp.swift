@@ -24,6 +24,7 @@ private final class RDPClientAppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         activateViewerWindow()
+        RDPRemoteSessionClipboard.removeStaleDownloadDirectories()
     }
 
     private func activateViewerWindow() {

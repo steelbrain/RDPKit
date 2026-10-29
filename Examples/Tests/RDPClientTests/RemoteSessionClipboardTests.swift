@@ -294,3 +294,63 @@ private func pasteboardFileURLs(_ pasteboard: NSPasteboard) -> [URL] {
     #expect(quarantine[kLSQuarantineTypeKey as String] as? String == kLSQuarantineTypeOtherDownload as String)
     #expect(quarantine[kLSQuarantineAgentNameKey as String] as? String == "RDPClient")
 }
+
+@MainActor
+@Test func closingRemovesDownloadedFilesOnceOffThePasteboard() throws {
+    let pasteboard = makePasteboard()
+    defer { pasteboard.releaseGlobally() }
+    let session = RecordedClipboard()
+    let clipboard = RDPRemoteSessionClipboard(isSharingEnabled: true, pasteboard: pasteboard)
+    clipboard.attach(session)
+    let contents = Data("remote".utf8)
+
+    try startRemoteFileDownload(contents, to: clipboard, from: session)
+    try answerRangeRequest(with: contents, to: clipboard, from: session)
+    let fileURL = try #require(pasteboardFileURLs(pasteboard).first)
+    defer { try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent()) }
+
+    clipboard.detach()
+    #expect(FileManager.default.fileExists(atPath: fileURL.path))
+    pasteboard.clearContents()
+    pasteboard.setString("newer", forType: .string)
+    clipboard.detach()
+    #expect(FileManager.default.fileExists(atPath: fileURL.deletingLastPathComponent().path) == false)
+}
+
+@Test func launchRemovesOnlyOldDownloadFoldersNotOnThePasteboard() throws {
+    let fileManager = FileManager.default
+    let root = fileManager.temporaryDirectory.appendingPathComponent("RDPClientTests.\(UUID().uuidString)")
+    let outside = fileManager.temporaryDirectory.appendingPathComponent("RDPClientTests.\(UUID().uuidString)")
+    defer {
+        try? fileManager.removeItem(at: root)
+        try? fileManager.removeItem(at: outside)
+    }
+    let old = Date().addingTimeInterval(-2 * 60 * 60)
+    func makeDirectory(_ url: URL, changedAt date: Date) throws {
+        try fileManager.createDirectory(at: url, withIntermediateDirectories: true)
+        try Data("x".utf8).write(to: url.appendingPathComponent("file.bin"))
+        try fileManager.setAttributes([.modificationDate: date], ofItemAtPath: url.path)
+    }
+    let stale = root.appendingPathComponent(UUID().uuidString)
+    let recent = root.appendingPathComponent(UUID().uuidString)
+    let onPasteboard = root.appendingPathComponent(UUID().uuidString)
+    let notOurs = root.appendingPathComponent("Other")
+    let link = root.appendingPathComponent(UUID().uuidString)
+    try makeDirectory(stale, changedAt: old)
+    try makeDirectory(recent, changedAt: Date())
+    try makeDirectory(onPasteboard, changedAt: old)
+    try makeDirectory(notOurs, changedAt: old)
+    try makeDirectory(outside, changedAt: old)
+    try fileManager.createSymbolicLink(at: link, withDestinationURL: outside)
+
+    RDPRemoteSessionClipboard.removeStaleDownloadDirectories(
+        in: root,
+        keeping: [onPasteboard.resolvingSymlinksInPath().path],
+        changedBefore: Date().addingTimeInterval(-60 * 60)
+    )
+
+    #expect(fileManager.fileExists(atPath: stale.path) == false)
+    for kept in [recent, onPasteboard, notOurs, link, outside.appendingPathComponent("file.bin")] {
+        #expect(fileManager.fileExists(atPath: kept.path))
+    }
+}
