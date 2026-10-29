@@ -993,6 +993,54 @@ private final class ClipboardPublishRace: @unchecked Sendable {
     _ = try channel.finish()
 }
 
+/// A client that does not share its clipboard still joins cliprdr, so it can start sharing
+/// later; until then it asks the server for nothing.
+@Test func clipboardSessionFetchesNoRemoteCopyWhileFetchingIsOff() throws {
+    let channel = EmbeddedChannel()
+    let sent = ClipboardSentMessages()
+    let session = RDPClipboardSession(
+        userChannelID: 1006,
+        staticChannelID: 1007,
+        channel: channel,
+        requestsRichFormats: true,
+        sentMessageHandler: sent.record
+    )
+    let richCopy = RDPClipboardFormatListPDU(entries: [
+        RDPClipboardFormatListEntry(formatID: RDPClipboardFormatID.unicodeText),
+        RDPClipboardFormatListEntry(formatID: 0xC0A1, formatName: "HTML Format"),
+    ]).encoded()
+    let textCopy = RDPClipboardFormatListPDU(entries: [
+        RDPClipboardFormatListEntry(formatID: RDPClipboardFormatID.unicodeText),
+    ]).encoded()
+    let fileCopy = RDPClipboardFormatListPDU(entries: [
+        RDPClipboardFormatListEntry(formatID: 0xC0A3, formatName: "FileGroupDescriptorW"),
+    ]).encoded()
+
+    _ = try session.receive(RDPClipboardPDU.parse(from: RDPClipboardCapabilitiesPDU().encoded()))
+    _ = try session.receive(RDPClipboardPDU(messageType: RDPClipboardMessageType.monitorReady))
+    // Turning fetching off drops the rest of the copy being fetched, and its answer.
+    _ = try session.receive(RDPClipboardPDU.parse(from: richCopy))
+    session.fetchesRemoteCopies = false
+    #expect(session.outstandingFormatDataRequests == [.unicodeText])
+    #expect(try session.receive(RDPClipboardPDU.parse(from: RDPClipboardFormatDataResponsePDU.unicodeText("old").encoded())) == nil)
+
+    #expect(try session.receive(RDPClipboardPDU.parse(from: textCopy)) == nil)
+    #expect(try session.receive(RDPClipboardPDU.parse(from: fileCopy)) == nil)
+    #expect(session.outstandingFormatDataRequests.isEmpty)
+    #expect(sent.summaries.suffix(2).map(\.typeName) == [
+        "clipboard-format-list-response",
+        "clipboard-format-list-response",
+    ])
+    #expect(try sentFormatDataRequestIDs(sent) == [13])
+
+    session.fetchesRemoteCopies = true
+    _ = try session.receive(RDPClipboardPDU.parse(from: textCopy))
+    #expect(try session.receive(RDPClipboardPDU.parse(from: RDPClipboardFormatDataResponsePDU.unicodeText("new").encoded()))
+        == .content(RDPClipboardContent(text: "new")))
+    #expect(try sentFormatDataRequestIDs(sent) == [13, 13])
+    _ = try channel.finish()
+}
+
 @Test func clipboardSessionOffersAndAnswersEveryLocalFormat() throws {
     let channel = EmbeddedChannel()
     let sent = ClipboardSentMessages()

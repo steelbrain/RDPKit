@@ -998,6 +998,7 @@ public final class RDPClipboardSession: @unchecked Sendable {
     /// Each remote Format List is a new copy; answers for an older one are dropped.
     private var remoteCopyID = 0
     private var remoteContent = RDPClipboardContent()
+    private var isFetchingRemoteCopies = true
     /// nil until the server sends its Clipboard Capabilities PDU.
     private var serverGeneralFlags: UInt32?
     /// Flags this client advertised; 0, the protocol default, when it sent no Capabilities PDU.
@@ -1019,6 +1020,27 @@ public final class RDPClipboardSession: @unchecked Sendable {
         self.chunkSize = chunkSize
         self.requestsRichFormats = requestsRichFormats
         self.sentMessageHandler = sentMessageHandler
+    }
+
+    /// Whether a copy the server announces is fetched; on by default. While off, the server's
+    /// Format Lists are acknowledged and nothing is requested, so none of its clipboard reaches
+    /// this client, and the rest of a copy already being fetched is dropped. Set it in
+    /// `onClipboardReady`, which runs before the server's first copy is handled, to keep that
+    /// copy from being fetched too.
+    public var fetchesRemoteCopies: Bool {
+        get {
+            lock.withLock { isFetchingRemoteCopies }
+        }
+        set {
+            let wasFetching = lock.withLock {
+                let wasFetching = isFetchingRemoteCopies
+                isFetchingRemoteCopies = newValue
+                return wasFetching
+            }
+            if wasFetching, !newValue {
+                requestRemoteCopy([])
+            }
+        }
     }
 
     public func publishLocalUnicodeText(_ text: String?) {
@@ -1059,7 +1081,9 @@ public final class RDPClipboardSession: @unchecked Sendable {
             useLongFormatNames: usesLongFormatNames
         ) {
             sendFormatListResponse(ok: true)
-            if let formatID = formatList.fileGroupDescriptorWFormatID {
+            if !fetchesRemoteCopies {
+                requestRemoteCopy([])
+            } else if let formatID = formatList.fileGroupDescriptorWFormatID {
                 requestRemoteCopy([.fileGroupDescriptorW(formatID: formatID)])
             } else {
                 requestRemoteCopy(formatList.contentRequests(includingRichFormats: requestsRichFormats))
