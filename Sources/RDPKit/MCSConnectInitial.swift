@@ -312,7 +312,7 @@ struct MCSConnectInitialPDU: Equatable, Sendable {
         return userDataBlock(type: 0xC005, body: body)
     }
 
-    /// TS_UD_CS_MONITOR_EX ([MS-RDPBCGR] 2.2.1.3.9): a TS_MONITOR_ATTRIBUTES for each monitor,
+    /// TS_UD_CS_MONITOR_EX ([MS-RDPBCGR] 2.2.1.3.10): a TS_MONITOR_ATTRIBUTES for each monitor,
     /// in Client Monitor Data's order. Servers ignore a physical size under 10 mm, such as 0
     /// for none.
     func encodedClientMonitorExtendedData(_ layout: RDPMonitorLayout) -> Data {

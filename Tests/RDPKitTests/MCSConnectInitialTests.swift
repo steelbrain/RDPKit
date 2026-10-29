@@ -316,7 +316,7 @@ private func twoMonitorLayout() throws -> RDPMonitorLayout {
     """))
 }
 
-/// MS-RDPBCGR 2.2.1.3.9: CS_MONITOR_EX (0xC008), flags 0, monitorAttributeSize 20,
+/// MS-RDPBCGR 2.2.1.3.10: CS_MONITOR_EX (0xC008), flags 0, monitorAttributeSize 20,
 /// monitorCount, then each monitor's physical size, orientation and scale factors.
 @Test func clientMonitorExtendedDataCarriesEachMonitorsAttributes() throws {
     #expect(try MCSConnectInitialPDU().encodedClientMonitorExtendedData(twoMonitorLayout()) == hexData("""

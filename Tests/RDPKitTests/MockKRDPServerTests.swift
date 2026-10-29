@@ -219,7 +219,7 @@ struct MockKRDPServerTests {
     }
 
     /// A monitor layout goes out as Client Monitor Data and Client Monitor Extended Data, the
-    /// desktop its bounding box ([MS-RDPBCGR] 2.2.1.3.6, 2.2.1.3.9), and the Monitor Layout PDU
+    /// desktop its bounding box ([MS-RDPBCGR] 2.2.1.3.6, 2.2.1.3.10), and the Monitor Layout PDU
     /// the server answers with reaches the report (2.2.12.1).
     @Test func clientSendsItsMonitorLayoutAndRecordsTheServers() throws {
         let layout = try RDPMonitorLayout(monitors: [
