@@ -78,7 +78,8 @@ public struct RDPSessionClient: Sendable {
     /// the run was cancelled before that. A negotiation the server refuses
     /// (RDP_NEG_FAILURE) or settles on a protocol RDPKit does not support
     /// returns a failure report. The error carries the report `run` returns
-    /// in its place.
+    /// in its place; its `redirectionDepth` is above 0 when the connection
+    /// that failed was to a Server Redirection's target.
     public func connect(
         configuration: RDPConnectionConfiguration,
         onGraphicsFrame: RDPGraphicsFrameHandler? = nil,

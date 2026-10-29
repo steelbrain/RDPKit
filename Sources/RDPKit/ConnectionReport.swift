@@ -13,7 +13,14 @@ public struct RDPConnectionWarning: Encodable, Equatable, Sendable {
 public struct RDPConnectionReport: Encodable, Equatable, Sendable {
     public var status: String
     public var stage: String
+    /// The host:port this connection went to: after a Server Redirection, the
+    /// one the redirection named.
     public var target: String
+    /// How many Server Redirections led to `target` ([MS-RDPBCGR] 3.1.5.2): 0
+    /// for the configured server, at most 2. Above 0, the configured server
+    /// took the logon and handed the session on, so a failure here is the
+    /// target's, not that server's.
+    public var redirectionDepth: Int
     public var username: String?
     public var domain: String?
     public var passwordConfigured: Bool
@@ -118,6 +125,7 @@ public struct RDPConnectionReport: Encodable, Equatable, Sendable {
         status: String,
         stage: String,
         target: String,
+        redirectionDepth: Int = 0,
         username: String? = nil,
         domain: String? = nil,
         passwordConfigured: Bool,
@@ -216,6 +224,7 @@ public struct RDPConnectionReport: Encodable, Equatable, Sendable {
         self.status = status
         self.stage = stage
         self.target = target
+        self.redirectionDepth = redirectionDepth
         self.username = username
         self.domain = domain
         self.passwordConfigured = passwordConfigured
@@ -424,15 +433,27 @@ public struct RDPConnectionError: Error, CustomStringConvertible, Sendable {
     public var failure: RDPConnectionFailure
     public var description: String
     /// The report `RDPSessionClient.run` returns for this failure: the stage
-    /// reached and the negotiation. `connect` attaches it, and throws only
-    /// before the TLS handshake, so it holds no captured frames and stays
-    /// small. Nil on an error `connect` did not throw.
+    /// reached, the negotiation and `redirectionDepth`. `connect` attaches it,
+    /// and throws only before the TLS handshake, so it holds no captured frames
+    /// and stays small. Nil on an error `connect` did not throw.
     public var report: RDPConnectionReport?
 
     public init(_ failure: RDPConnectionFailure, description: String, report: RDPConnectionReport? = nil) {
         self.failure = failure
         self.description = description
         self.report = report
+    }
+
+    /// The report's `redirectionDepth`: above 0 when the connection that failed
+    /// was one a Server Redirection asked for, not the configured server.
+    public var redirectionDepth: Int {
+        report?.redirectionDepth ?? 0
+    }
+
+    /// The report's `target`: the host:port of the connection that failed, the
+    /// redirection's target when `redirectionDepth` is above 0.
+    public var target: String? {
+        report?.target
     }
 }
 

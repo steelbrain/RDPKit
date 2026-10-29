@@ -234,6 +234,9 @@ enum MockKRDPRedirectionBehavior {
     /// Windows connection brokers redirect right after licensing, in place
     /// of the Demand Active ([MS-RDPBCGR] 1.3.1.1, 3.1.5.2).
     case redirectInsteadOfDemandActive
+    /// Redirect like `redirectFirstConnection`, but to TargetNetAddress
+    /// 127.0.0.1, and stop listening first, so the client's reconnect is refused.
+    case redirectToClosedPort
 }
 
 enum MockKRDPFinalizationBehavior: Equatable {
@@ -1036,6 +1039,13 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
             stage = .done
             return
         }
+        if options.redirectionBehavior == .redirectToClosedPort {
+            // The listener shares this event loop, so it is closed before the redirect is sent.
+            context.channel.parent?.close(promise: nil)
+            write(MockKRDPFixtures.serverRedirection(targetNetAddress: "127.0.0.1"), context: context)
+            stage = .done
+            return
+        }
         let advertise = try RDPDynamicVirtualChannelDataPDU.parseIfPresent(from: staticPayload).flatMap {
             try RDPGFXCapsAdvertisePDU.parseIfPresent(from: $0.payload)
         }
@@ -1574,11 +1584,18 @@ private enum MockKRDPFixtures {
         }
     }
 
-    static func serverRedirection() -> Data {
-        let cookie = Data("Cookie: msts=load-balanced\r\n".utf8)
+    /// A redirection to `targetNetAddress`, or without one, to the same server
+    /// with a routing token.
+    static func serverRedirection(targetNetAddress: String? = nil) -> Data {
+        var flags = RDPServerRedirectionPDU.Flags.loadBalanceInfo
+        var field = Data("Cookie: msts=load-balanced\r\n".utf8)
+        if let targetNetAddress {
+            flags = .targetNetAddress
+            field = utf16LENullTerminated(targetNetAddress)
+        }
         var fields = Data()
-        fields.appendLittleEndianUInt32(UInt32(cookie.count))
-        fields.append(cookie)
+        fields.appendLittleEndianUInt32(UInt32(field.count))
+        fields.append(field)
 
         let redirectionLength = UInt16(12 + fields.count)
         let totalLength = UInt16(8 + Int(redirectionLength))
@@ -1590,7 +1607,7 @@ private enum MockKRDPFixtures {
         payload.appendLittleEndianUInt16(0x0400)
         payload.appendLittleEndianUInt16(redirectionLength)
         payload.appendLittleEndianUInt32(4)
-        payload.appendLittleEndianUInt32(RDPServerRedirectionPDU.Flags.loadBalanceInfo.rawValue)
+        payload.appendLittleEndianUInt32(flags.rawValue)
         payload.append(fields)
         return mcsSendDataIndication(
             channelID: MockKRDPConstants.ioChannelID,

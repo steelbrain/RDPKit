@@ -358,6 +358,36 @@ struct MockKRDPServerTests {
         #expect(run.report.status == "success")
         #expect(run.report.rdpGraphicsFirstFrame?.codecName == "avc420")
         #expect(run.report.error == nil)
+        #expect(run.report.redirectionDepth == 1)
+    }
+
+    /// A redirection target that refuses the connection fails like an unreachable server,
+    /// but `connect`'s error says the failure came after the redirect, where it went, and
+    /// carries the report `run` returns for it.
+    @Test func unreachableRedirectionTargetIsMarkedAsAfterTheRedirect() throws {
+        var thrown: RDPConnectionError?
+        var port: UInt16 = 0
+        let connected = try runMock(.init(redirectionBehavior: .redirectToClosedPort), { $0.host = "localhost" }, client: {
+            configuration in
+            port = configuration.port
+            thrown = #expect(throws: RDPConnectionError.self) { try RDPSessionClient().connect(configuration: configuration) }
+            return thrown?.report ?? RDPSessionClient().dryRun(configuration: configuration)
+        })
+        let error = try #require(thrown)
+        let ran = try runMock(.init(redirectionBehavior: .redirectToClosedPort), { $0.host = "localhost" })
+
+        #expect(connected.connectionCount == 1)
+        #expect(error.failure == .connect(error: RDPSocketError(errno: ECONNREFUSED)))
+        #expect(error.redirectionDepth == 1)
+        #expect(error.target == "127.0.0.1:\(port)")
+        for report in [connected.report, ran.report] {
+            #expect(report.status == "failure")
+            #expect(report.connectionStage == .negotiation)
+            #expect(report.redirectionDepth == 1)
+            #expect(report.target.hasPrefix("127.0.0.1:"))
+            #expect(report.failure == error.failure)
+            #expect(report.error == error.description)
+        }
     }
 
     /// A run cancelled once a redirect arrives returns the redirected session's report
@@ -383,6 +413,7 @@ struct MockKRDPServerTests {
         #expect(run.report.stage == "rdp-graphics-dynamic-channel")
         #expect(run.report.rdpClientInfoSent == true)
         #expect(run.report.error == "cancelled")
+        #expect(run.report.redirectionDepth == 0)
     }
 
     @Test func clientFollowsRedirectionSentInsteadOfDemandActive() throws {

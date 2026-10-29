@@ -102,6 +102,7 @@ final class RDPClientConnection {
             status: "failure",
             stage: RDPConnectionStage.negotiation.rawValue,
             target: configuration.target,
+            redirectionDepth: configuration.redirectionDepth,
             username: configuration.credentials?.username,
             domain: configuration.credentials?.domain,
             passwordConfigured: configuration.credentials != nil,
