@@ -147,6 +147,13 @@
     releasing Command no longer opens the server's Start menu. Keypad "="
     goes as Unicode where the remote layout has no "=" on the main "=" key,
     as on German.
+  - A dead key's accent typed before Return, Tab, Esc or keypad Enter reaches
+    the server, as on the Mac: Option-E then Return types "´" and a new
+    line. Tapping Command or right Option while the other is already down on
+    the server, for example after a Command-click, no longer sends a lone
+    Win or Alt tap. A right Option key that a custom layout gives no output,
+    without making it a dead key, goes as Alt and the key instead of sending
+    nothing.
   - Clipboard sharing can be turned on mid-session; with it off, nothing
     crosses either way. To allow that, RDPClient always joins the clipboard
     channel, which empties a Windows server's clipboard at connect.
