@@ -68,14 +68,14 @@ struct ConnectionProfileList: Equatable {
     /// they are.
     var unreadableCount = 0
 
-    /// Another profile for `profile`'s account on the same server, which shares its saved
-    /// password: one with the same `credentialAccountName`. Saving merges such profiles, but
+    /// The other profiles for `profile`'s account on the same server, which share its saved
+    /// password: those with the same `credentialAccountName`. Saving merges such profiles, but
     /// ones saved by earlier builds can be two.
-    func profile(sharingSavedPasswordWith profile: ConnectionProfile) -> ConnectionProfile? {
+    func profiles(sharingSavedPasswordWith profile: ConnectionProfile) -> [ConnectionProfile] {
         guard let account = profile.identity.credentialAccountName else {
-            return nil
+            return []
         }
-        return profiles.first { $0.id != profile.id && $0.identity.credentialAccountName == account }
+        return profiles.filter { $0.id != profile.id && $0.identity.credentialAccountName == account }
     }
 }
 

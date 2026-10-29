@@ -172,13 +172,13 @@ private func profile(host: String) -> ConnectionProfile {
     let store = ConnectionProfileStore(defaults: defaults)
 
     let list = try store.profiles()
-    #expect(list.profile(sharingSavedPasswordWith: domainApart) == domainInUsername)
-    #expect(list.profile(sharingSavedPasswordWith: domainInUsername) == domainApart)
-    #expect(list.profile(sharingSavedPasswordWith: otherAccount) == nil)
+    #expect(list.profiles(sharingSavedPasswordWith: domainApart) == [domainInUsername])
+    #expect(list.profiles(sharingSavedPasswordWith: domainInUsername) == [domainApart])
+    #expect(list.profiles(sharingSavedPasswordWith: otherAccount).isEmpty)
     // Without a username there is no saved password to share.
-    #expect(list.profile(sharingSavedPasswordWith: noUsername) == nil)
+    #expect(list.profiles(sharingSavedPasswordWith: noUsername).isEmpty)
 
-    #expect(try store.delete(id: domainInUsername.id).profile(sharingSavedPasswordWith: domainApart) == nil)
+    #expect(try store.delete(id: domainInUsername.id).profiles(sharingSavedPasswordWith: domainApart).isEmpty)
 }
 
 @Test func storedDataThatIsNotAProfileListIsReportedAndNeverOverwritten() throws {

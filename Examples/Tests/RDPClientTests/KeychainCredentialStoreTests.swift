@@ -1,5 +1,6 @@
 import Foundation
 @testable import RDPClient
+import RDPKit
 import Testing
 
 /// Stands in for Keychain. `interruption` runs once, after the call it names, as another thread
@@ -115,6 +116,29 @@ private func typedKey() throws -> KeychainCredentialKey {
 
         #expect(try KeychainCredentialStore(passwords: passwords).deletePassword(for: key) == !saved.isEmpty)
         #expect(passwords.saved.isEmpty)
+        #expect(passwords.reads == 0)
+    }
+}
+
+/// Deleting a profile for "Desktop.Example" while one for "desktop.example" keeps the account:
+/// that one never tries the deleted one's legacy name, so a password saved under it moves to the
+/// account's name, or goes when that name has one already. One spelled alike tries it itself.
+@Test func aLegacyPasswordOnlyTheDeletedProfileFindsMovesToTheAccountName() throws {
+    let key = try typedKey()
+    let spelledOtherwise = RDPConnectionIdentity(host: "desktop.example", username: "anees")
+    let spelledAlike = RDPConnectionIdentity(host: "Desktop.Example", username: "anees")
+    let cases: [(saved: [String: String], keptBy: RDPConnectionIdentity, left: [String: String])] = [
+        ([legacyAccount: "secret"], spelledOtherwise, [currentAccount: "secret"]),
+        ([legacyAccount: "older", currentAccount: "newer"], spelledOtherwise, [currentAccount: "newer"]),
+        ([currentAccount: "secret"], spelledOtherwise, [currentAccount: "secret"]),
+        ([legacyAccount: "secret"], spelledAlike, [legacyAccount: "secret"]),
+    ]
+    for (saved, keptBy, left) in cases {
+        let passwords = Passwords(saved)
+
+        try KeychainCredentialStore(passwords: passwords).moveLegacyPasswords(for: key, keptBy: [keptBy])
+
+        #expect(passwords.saved == left)
         #expect(passwords.reads == 0)
     }
 }

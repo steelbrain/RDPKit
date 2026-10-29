@@ -299,13 +299,18 @@ struct ConnectionManagerView: View {
         do {
             let wasSelected = selectedProfileID == profile.id
             // The saved password goes with the last profile for its account.
-            let sharingProfile = try profileStore.profiles().profile(sharingSavedPasswordWith: profile)
-            let deletedPassword = try sharingProfile == nil && deleteStoredCredentials(for: profile)
+            let sharingProfiles = try profileStore.profiles().profiles(sharingSavedPasswordWith: profile)
+            let deletedPassword = try sharingProfiles.isEmpty && deleteStoredCredentials(for: profile)
+            if !sharingProfiles.isEmpty, let key = KeychainCredentialKey(identity: profile.identity) {
+                // One saved under this profile's earlier name, which the others may spell
+                // otherwise and never find, moves to the account's name.
+                try credentialStore.moveLegacyPasswords(for: key, keptBy: sharingProfiles.map(\.identity))
+            }
             applyProfileList(try profileStore.delete(id: profile.id))
             if wasSelected {
                 newConnection()
             }
-            profileMessage = if let sharingProfile {
+            profileMessage = if let sharingProfile = sharingProfiles.first {
                 "Profile deleted. Keychain keeps any password saved for its account, which "
                     + "\(sharingProfile.displayName) also uses."
             } else if deletedPassword {
