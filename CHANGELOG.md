@@ -161,6 +161,13 @@
 
 ### Compatibility and fixes
 
+- Cancelling an `RDPConnectionCancellation` also stops graphics decoding in
+  progress, before the next RemoteFX tile, bitmap rectangle, RDPGFX PDU or
+  fast-path update, so `run` and `connect` return promptly. Before, a
+  cancelled session waited for the message it was decoding: a debug build
+  took about 15 seconds over Windows 11's CAPROGRESSIVE upgrade pass of a
+  5560x720 desktop. A decode the cancellation stops is not recorded as a
+  `graphics-decode-error`, and its frame never reaches `onGraphicsFrame`.
 - A `storedClientLicense` too large for the Client License Information PDU
   no longer fails every connect: RDPKit asks the server for a new license
   instead and adds a `stored-license-too-large` report warning. A license
