@@ -46,7 +46,7 @@ private let bitmapFrame = RDPGraphicsFrameSnapshot(
 )
 
 @Test func aSessionThatShowedFramesSaysWhyItEnded() {
-    let logoff = RDPSessionEndReason(report: sessionReport(firstFrame: bitmapFrame, errorInfo: 0x0000_000C))
+    let logoff = RDPSessionEndReason(report: sessionReport(firstFrame: bitmapFrame, errorInfo: 0x0000_000C), showedDesktop: true)
     #expect(logoff.kind == .ended)
     #expect(logoff.statusText == "Disconnected")
     #expect(logoff.message == "The remote session was signed out or disconnected from within.")
@@ -54,14 +54,14 @@ private let bitmapFrame = RDPGraphicsFrameSnapshot(
         == "Disconnected: The remote session was signed out or disconnected from within.\n"
         + "server ended the session with ERRINFO_LOGOFF_BY_USER")
 
-    let idle = RDPSessionEndReason(report: sessionReport(firstFrame: bitmapFrame, errorInfo: 0x0000_0003))
+    let idle = RDPSessionEndReason(report: sessionReport(firstFrame: bitmapFrame, errorInfo: 0x0000_0003), showedDesktop: true)
     #expect(idle.message == "The session reached the server's idle or session time limit.")
-    let replaced = RDPSessionEndReason(report: sessionReport(firstFrame: bitmapFrame, errorInfo: 0x0000_0005))
+    let replaced = RDPSessionEndReason(report: sessionReport(firstFrame: bitmapFrame, errorInfo: 0x0000_0005), showedDesktop: true)
     #expect(replaced.message == "Another connection took over the session.")
-    let admin = RDPSessionEndReason(report: sessionReport(firstFrame: bitmapFrame, errorInfo: 0x0000_0001))
+    let admin = RDPSessionEndReason(report: sessionReport(firstFrame: bitmapFrame, errorInfo: 0x0000_0001), showedDesktop: true)
     #expect(admin.message == "An administrator ended the session, or the server is shutting down or restarting.")
 
-    let closed = RDPSessionEndReason(report: sessionReport(firstFrame: bitmapFrame, nextStage: "rdp-graphics-frame-decode"))
+    let closed = RDPSessionEndReason(report: sessionReport(firstFrame: bitmapFrame, nextStage: "rdp-graphics-frame-decode"), showedDesktop: true)
     #expect(closed.kind == .ended)
     #expect(closed.message == "The server closed the connection.")
     #expect(closed.diagnosticValue == "Disconnected: The server closed the connection.")
@@ -73,7 +73,7 @@ private let bitmapFrame = RDPGraphicsFrameSnapshot(
         graphicsChannelName: nil,
         firstFrame: bitmapFrame,
         errorInfo: 0x0000_000C
-    ))
+    ), showedDesktop: true)
 
     #expect(reason.kind == .ended)
     #expect(reason.message == "The remote session was signed out or disconnected from within.")
@@ -81,19 +81,28 @@ private let bitmapFrame = RDPGraphicsFrameSnapshot(
 }
 
 @Test func aSessionThatEndedBeforeItsDesktopAppearedSaysSo() {
-    let beforeChannel = RDPSessionEndReason(report: sessionReport(graphicsChannelName: nil, disconnectReason: 3))
+    let beforeChannel = RDPSessionEndReason(report: sessionReport(graphicsChannelName: nil, disconnectReason: 3), showedDesktop: false)
     #expect(beforeChannel.kind == .ended)
     #expect(beforeChannel.message == "The server ended the session. This happened before the desktop appeared.")
     #expect(beforeChannel.detail == "server ended the session with rn-user-requested before opening the RDPGFX dynamic channel")
 
-    let beforeFrame = RDPSessionEndReason(report: sessionReport())
+    let beforeFrame = RDPSessionEndReason(report: sessionReport(), showedDesktop: false)
     #expect(beforeFrame.message == "The session ended before the desktop appeared.")
     #expect(beforeFrame.detail == "session ended before producing a graphics frame")
+
+    // Frames arrived, but none decoded, when another connection took over.
+    let neverShown = RDPSessionEndReason(
+        report: sessionReport(firstFrame: bitmapFrame, errorInfo: 0x0000_0005),
+        showedDesktop: false
+    )
+    #expect(neverShown.kind == .ended)
+    #expect(neverShown.message == "Another connection took over the session. This happened before the desktop appeared.")
+    #expect(neverShown.detail == "server ended the session with ERRINFO_DISCONNECTED_BY_OTHERCONNECTION before showing a graphics frame")
 }
 
 @Test func failuresAreExplainedAndKeepTheirDetailForDiagnostics() {
     let error = "CredSSP server returned STATUS_LOGON_FAILURE (0xc000006d)"
-    let wrongPassword = RDPSessionEndReason(report: sessionReport(error: error, failure: .credSSP(status: .logonFailure)))
+    let wrongPassword = RDPSessionEndReason(report: sessionReport(error: error, failure: .credSSP(status: .logonFailure)), showedDesktop: false)
     #expect(wrongPassword.kind == .failed)
     #expect(wrongPassword.title == "Connection Failed")
     #expect(wrongPassword.message == "The user name or password is incorrect.")
@@ -101,7 +110,7 @@ private let bitmapFrame = RDPGraphicsFrameSnapshot(
     #expect(wrongPassword.diagnosticValue == "Failed: The user name or password is incorrect.\n\(error)")
 
     func reason(_ failure: RDPConnectionFailure) -> RDPSessionEndReason {
-        RDPSessionEndReason(report: sessionReport(error: "raw", failure: failure))
+        RDPSessionEndReason(report: sessionReport(error: "raw", failure: failure), showedDesktop: false)
     }
     #expect(reason(.credSSP(status: .accountLockedOut)).offersCredentials == false)
     #expect(reason(.credSSP(status: .passwordMustChange)).message.hasPrefix("The password must be changed"))
@@ -117,7 +126,7 @@ private let bitmapFrame = RDPGraphicsFrameSnapshot(
         error: "raw",
         failure: .connect(error: RDPSocketError(errno: ECONNREFUSED)),
         redirectionDepth: 1
-    ))
+    ), showedDesktop: false)
     #expect(redirectedRefused.message == "The server passed the session on to 127.0.0.1:3389, which this Mac could not reach.")
     #expect(reason(.licensing(errorCode: 0x0000_0007)).message.hasPrefix("The server could not license this connection."))
     let freshCredentials = reason(.serverTermination(termination: RDPRemoteTermination(errorInfo: 0x0000_000A)))

@@ -28,23 +28,29 @@ struct RDPSessionEndReason: Equatable {
         message: "Connection cancelled by user."
     )
 
-    init(report: RDPConnectionReport) {
+    /// `showedDesktop` is whether RDPClient presented a frame: the report's first frame may be
+    /// one the session delivered but RDPClient could not decode.
+    init(report: RDPConnectionReport, showedDesktop: Bool) {
         let termination = report.remoteTermination
         if let failure = report.failure {
             self = Self.failure(failure, error: report.error, redirectedTo: report.redirectionDepth > 0 ? report.target : nil)
         } else if report.status == "failure" || report.error != nil {
             self = RDPSessionEndReason(kind: .failed, message: "The connection failed.", detail: report.error ?? "failed at \(report.stage)")
-        } else if report.rdpGraphicsFirstFrame != nil {
+        } else if showedDesktop {
             // Checked first: a server without RDPGFX sends frames as bitmap updates.
             self = RDPSessionEndReason(
                 kind: .ended,
                 message: termination.map(Self.message(for:)) ?? "The server closed the connection.",
                 detail: termination?.description
             )
-        } else if report.nextStage == "rdp-session-ended" {
-            let missingStep = report.rdpGraphicsChannelName == nil
-                ? "opening the RDPGFX dynamic channel"
-                : "producing a graphics frame"
+        } else if report.rdpGraphicsFirstFrame != nil || report.nextStage == "rdp-session-ended" {
+            let missingStep = if report.rdpGraphicsFirstFrame != nil {
+                "showing a graphics frame"
+            } else if report.rdpGraphicsChannelName == nil {
+                "opening the RDPGFX dynamic channel"
+            } else {
+                "producing a graphics frame"
+            }
             self = RDPSessionEndReason(
                 kind: .ended,
                 message: termination.map { "\(Self.message(for: $0)) This happened before the desktop appeared." }

@@ -984,7 +984,6 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                         host: certificateHost
                     )
                 }
-                controller.sessionEndReason = RDPSessionEndReason(report: nextReport)
                 controller.certificateTrustedByApp = controller.trustedCertificateStore.isTrusted(
                     host: certificateHost,
                     port: target.port,
@@ -1015,6 +1014,11 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                         controller.publishRenderMetricsSnapshotIfNeeded(force: true, at: receivedAt)
                     }
                 }
+                // After the report's first frame had its chance to be shown.
+                controller.sessionEndReason = RDPSessionEndReason(
+                    report: nextReport,
+                    showedDesktop: controller.hasPresentedFrame
+                )
                 controller.detachSessionChannels()
                 controller.isConnecting = false
                 controller.activeConnectionID = nil
