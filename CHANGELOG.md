@@ -234,9 +234,11 @@
   the Connections window, gives the desktop keyboard focus when it appears,
   reads copied files off the main thread, downloads remote clipboard files in
   ranges of up to 1 MiB, and keeps clipboard sharing on after "Share for 30s".
-- RDPClient refuses a system-untrusted certificate from a host whose
-  certificate the user trusted before any credential is sent; trusting a
-  certificate for a host replaces the previous one.
+- RDPClient asks before sending credentials to a server whose certificate
+  neither the system nor the user trusts, unless the profile hides certificate
+  warnings, and always refuses a certificate that replaced one the user
+  trusted. Trust and Connect saves the certificate and connects again;
+  trusting a certificate for a host replaces the previous one.
 - `RDPConnectionIdentity.credentialAccountName` lowercases the host, as
   `hasSameConnectionIdentity(as:)` matches it; RDPClient moves a password saved
   under the old name the first time it misses.
