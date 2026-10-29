@@ -64,6 +64,8 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
     private var certificateTrustedByApp = false
     private var certificateRefusal: CertificateRefusal?
     private var certificateTrustMessage: String?
+    /// Set once the server's certificate refused ECDHE; this window keeps it for reconnects.
+    private var usesLegacyRSAKeyExchange = false
     private var formError: String?
     private var controlsVisible = false
     private var shouldAutoConnect = true
@@ -453,6 +455,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
             formError: formError,
             sessionEndReason: sessionEndReason,
             certificateNotice: certificateNotice,
+            usesLegacyRSAKeyExchange: usesLegacyRSAKeyExchange,
             controlsVisible: controlsVisible,
             connectTitle: connectButtonTitle,
             canConnect: canStartConnection,
@@ -570,6 +573,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
             audioPlaybackEnabled: audioPlaybackEnabled,
             certificateTrustedByApp: certificateTrustedByApp,
             certificateTrustMessage: certificateTrustMessage,
+            legacyRSAKeyExchange: usesLegacyRSAKeyExchange,
             formError: formError,
             isConnecting: isConnecting
         )
@@ -666,7 +670,8 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
             audioPlaybackEnabled: audioPlaybackEnabled,
             graphicsCapabilityProfile: graphicsCapabilityProfile,
             storedClientLicense: storedClientLicense,
-            keyboardLayout: keyboardLayout
+            keyboardLayout: keyboardLayout,
+            legacyRSAKeyExchange: usesLegacyRSAKeyExchange
         )
 
         let connectionID = UUID()
@@ -890,6 +895,14 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                 ? nil
                 : nextReport.rdpGraphicsFirstFrame.map(decodeReportFirstFrame)
             sink.apply { controller in
+                // The handshake failed before onCertificate, so no credential was sent. RSA key
+                // exchange needs only the keyEncipherment such a certificate allows, and RDPKit
+                // never reports this failure with it on, so this retries once.
+                if nextReport.failure == .tlsKeyUsageIncorrect, !configuration.legacyRSAKeyExchange {
+                    controller.usesLegacyRSAKeyExchange = true
+                    controller.beginConnection()
+                    return
+                }
                 if let finalWireReceiveSample {
                     controller.renderMetricsStore.recordWireReceive(finalWireReceiveSample)
                 }

@@ -184,6 +184,8 @@ struct RemoteSessionDiagnosticsSnapshot: Equatable {
     var audioPlaybackEnabled = false
     var certificateTrustedByApp = false
     var certificateTrustMessage: String?
+    /// The server's certificate refused ECDHE, so this window connects with RSA key exchange.
+    var legacyRSAKeyExchange = false
     var formError: String?
     var isConnecting = false
 }
@@ -243,6 +245,12 @@ struct RemoteSessionDiagnosticsWindowContent: View {
                     DiagnosticRow("Requested Protocols", snapshot.report?.requestedProtocols.joined(separator: ", ") ?? "none")
                     DiagnosticRow("Selected Protocols", snapshot.report?.selectedProtocols?.joined(separator: ", ") ?? "none")
                     DiagnosticRow("TLS", snapshot.report?.tlsProtocol ?? "not negotiated")
+                    DiagnosticRow(
+                        "Key Exchange",
+                        snapshot.legacyRSAKeyExchange
+                            ? "RSA only, no forward secrecy: the server's certificate refused ECDHE (KEY_USAGE_BIT_INCORRECT)"
+                            : "default"
+                    )
                     DiagnosticRow("Certificate", certificateState(snapshot))
                     DiagnosticRow("MCS", snapshot.report?.mcsConnectResult ?? "not exchanged")
                     DiagnosticRow("I/O Channel", channelID(snapshot.report?.mcsIOChannelID))

@@ -88,6 +88,7 @@ final class RDPRemoteSessionAppKitDetailView: NSView {
     private let formErrorNotice = RDPAppKitNoticeView()
     private let sessionNotice = RDPAppKitNoticeView()
     private let certificateNotice = RDPAppKitNoticeView()
+    private let keyExchangeNotice = RDPAppKitNoticeView()
     private let decodeNotice = RDPAppKitNoticeView()
     private var statusSystemImageName: String?
 
@@ -117,6 +118,7 @@ final class RDPRemoteSessionAppKitDetailView: NSView {
         formError: String?,
         sessionEndReason: RDPSessionEndReason?,
         certificateNotice certificateNoticeState: RDPAppKitNoticeState?,
+        usesLegacyRSAKeyExchange: Bool,
         controlsVisible: Bool,
         connectTitle: String,
         canConnect: Bool,
@@ -186,6 +188,19 @@ final class RDPRemoteSessionAppKitDetailView: NSView {
                 self?.onForgetCertificate?()
             }
         }
+        keyExchangeNotice.render(
+            usesLegacyRSAKeyExchange
+                ? RDPAppKitNoticeState(
+                    title: "RSA Key Exchange",
+                    message: "The server's certificate does not allow ECDHE key exchange, so this window "
+                        + "connects with RSA key exchange, which has no forward secrecy.",
+                    systemImage: "lock.trianglebadge.exclamationmark",
+                    actionTitle: nil,
+                    action: nil
+                )
+                : nil,
+            actionHandler: nil
+        )
         decodeNotice.render(
             decodeError.map {
                 RDPAppKitNoticeState(
@@ -244,7 +259,7 @@ final class RDPRemoteSessionAppKitDetailView: NSView {
         noticesStack.orientation = .vertical
         noticesStack.alignment = .leading
         noticesStack.spacing = 8
-        for notice in [formErrorNotice, sessionNotice, certificateNotice, decodeNotice] {
+        for notice in [formErrorNotice, sessionNotice, certificateNotice, keyExchangeNotice, decodeNotice] {
             notice.translatesAutoresizingMaskIntoConstraints = false
             noticesStack.addArrangedSubview(notice)
         }
