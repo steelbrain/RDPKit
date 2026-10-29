@@ -38,7 +38,8 @@ final class RDPRemoteSessionClipboard {
     private var temporarySharingExpiresAt: Date?
     private var timerTick = Date()
     private var fileTransfer: RemoteFileTransfer?
-    private var downloadDirectory: URL?
+    /// The last download put on the pasteboard, kept while the pasteboard may list its files.
+    private var pastedDownload: PastedDownload?
     private var nextStreamID: UInt32 = 1
 
     init(isSharingEnabled: Bool, pasteboard: NSPasteboard = .general) {
@@ -88,7 +89,7 @@ final class RDPRemoteSessionClipboard {
         message = nil
         discardFileTransfer()
         cancelLocalFileRead()
-        removeDownloadDirectoryUnlessOnPasteboard()
+        removePastedDownloadUnlessOnPasteboard()
         pasteboardChangeCount = pasteboard.changeCount
     }
 
@@ -128,12 +129,16 @@ final class RDPRemoteSessionClipboard {
         message = "Temporary sharing enabled."
     }
 
-    /// Called once a second: fails a file transfer the server stopped answering, ends
-    /// temporary sharing and publishes local pasteboard changes.
+    /// Called once a second: fails a file transfer the server stopped answering, removes
+    /// a download a newer copy replaced, ends temporary sharing and publishes local
+    /// pasteboard changes.
     func poll(now: Date = Date()) {
         if let fileTransfer, now.timeIntervalSince(fileTransfer.requestedAt) >= fileContentsRequestTimeout {
             // A late answer no longer matches a transfer, so it is dropped.
             failFileTransfer(fileTransfer, message: "Remote file transfer timed out.")
+        }
+        if let pastedDownload, pasteboard.changeCount != pastedDownload.pasteboardChangeCount {
+            removePastedDownloadUnlessOnPasteboard()
         }
         if let temporarySharingExpiresAt {
             timerTick = now
@@ -478,6 +483,11 @@ final class RDPRemoteSessionClipboard {
 
         pasteboardChangeCount = pasteboard.changeCount
         fileTransfer = nil
+        // The files these replaced on the pasteboard can go.
+        if let pastedDownload {
+            try? FileManager.default.removeItem(at: pastedDownload.directory)
+        }
+        pastedDownload = PastedDownload(directory: transfer.downloadDirectory, pasteboardChangeCount: pasteboardChangeCount)
         if transfer.downloadedFileURLs.count == 1,
            let fileName = transfer.files.first?.fileName
         {
@@ -488,7 +498,7 @@ final class RDPRemoteSessionClipboard {
     }
 
     private func failFileTransfer(_ transfer: RemoteFileTransfer, message: String) {
-        removeDownloadDirectory(transfer.downloadDirectory)
+        try? FileManager.default.removeItem(at: transfer.downloadDirectory)
         fileTransfer = nil
         self.message = message
     }
@@ -497,39 +507,30 @@ final class RDPRemoteSessionClipboard {
         guard let fileTransfer else {
             return
         }
-        removeDownloadDirectory(fileTransfer.downloadDirectory)
+        try? FileManager.default.removeItem(at: fileTransfer.downloadDirectory)
         self.fileTransfer = nil
     }
 
-    private func removeDownloadDirectory(_ directory: URL) {
-        try? FileManager.default.removeItem(at: directory)
-        if downloadDirectory == directory {
-            downloadDirectory = nil
-        }
-    }
-
-    /// Removes the last completed download once nothing can paste it any more.
-    private func removeDownloadDirectoryUnlessOnPasteboard() {
-        guard let downloadDirectory,
-              Self.fileDirectoryPaths(on: pasteboard).contains(downloadDirectory.resolvingSymlinksInPath().path) == false
-        else {
+    /// Removes the last pasted download once nothing can paste it any more.
+    private func removePastedDownloadUnlessOnPasteboard() {
+        guard let pastedDownload else {
             return
         }
-        removeDownloadDirectory(downloadDirectory)
+        let path = pastedDownload.directory.resolvingSymlinksInPath().path
+        guard Self.fileDirectoryPaths(on: pasteboard).contains(path) == false else {
+            // Looked for again only once the pasteboard changes.
+            self.pastedDownload?.pasteboardChangeCount = pasteboard.changeCount
+            return
+        }
+        try? FileManager.default.removeItem(at: pastedDownload.directory)
+        self.pastedDownload = nil
     }
 
-    /// Replaces the previous download directory; files from the last completed transfer stay on
-    /// the pasteboard until the next transfer starts.
+    /// A folder of its own for a new transfer. The last pasted download stays until a
+    /// finished transfer replaces it on the pasteboard, so a failed one leaves it pasteable.
     private func makeDownloadDirectory() throws -> URL {
-        let fileManager = FileManager.default
-        if let downloadDirectory {
-            try? fileManager.removeItem(at: downloadDirectory)
-        }
-
         let directory = Self.downloadsDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
-        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
-
-        downloadDirectory = directory
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory
     }
 
@@ -599,6 +600,13 @@ private enum LocalPayload: Equatable, Sendable {
     case empty
     case unsupported(String)
     case ignored(String)
+}
+
+/// The folder of a download put on the pasteboard.
+private struct PastedDownload {
+    var directory: URL
+    /// The pasteboard's change count when its files were last seen on it.
+    var pasteboardChangeCount: Int
 }
 
 private struct RemoteFileTransfer: Equatable {

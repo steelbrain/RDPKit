@@ -349,6 +349,88 @@ private func pasteboardFileURLs(_ pasteboard: NSPasteboard) -> [URL] {
 }
 
 @MainActor
+@Test func pastedFilesStayUntilANewDownloadReplacesThem() throws {
+    let pasteboard = makePasteboard()
+    defer { pasteboard.releaseGlobally() }
+    let session = RecordedClipboard()
+    let clipboard = RDPRemoteSessionClipboard(isSharingEnabled: true, pasteboard: pasteboard)
+    clipboard.attach(session)
+    let contents = Data("remote".utf8)
+    let fileManager = FileManager.default
+
+    try startRemoteFileDownload(contents, to: clipboard, from: session)
+    try answerRangeRequest(with: contents, to: clipboard, from: session)
+    let firstURL = try #require(pasteboardFileURLs(pasteboard).first)
+    defer { try? fileManager.removeItem(at: firstURL.deletingLastPathComponent()) }
+
+    // Downloads that fail leave the files on the pasteboard pasteable.
+    try startRemoteFileDownload(contents, to: clipboard, from: session)
+    let request = try #require(session.rangeRequests.last)
+    clipboard.receiveFileContents(RDPClipboardFileContentsResponse(streamID: request.streamID, ok: false, data: Data()))
+    #expect(clipboard.statusMessage == "Remote file transfer failed.")
+    try startRemoteFileDownload(contents, to: clipboard, from: session)
+    clipboard.poll(now: Date().addingTimeInterval(121))
+    #expect(clipboard.statusMessage == "Remote file transfer timed out.")
+    #expect(pasteboardFileURLs(pasteboard) == [firstURL])
+    #expect(try Data(contentsOf: firstURL) == contents)
+
+    // One that finishes replaces them.
+    try startRemoteFileDownload(contents, to: clipboard, from: session)
+    try answerRangeRequest(with: contents, to: clipboard, from: session)
+    let secondURL = try #require(pasteboardFileURLs(pasteboard).first)
+    defer { try? fileManager.removeItem(at: secondURL.deletingLastPathComponent()) }
+    #expect(secondURL != firstURL)
+    #expect(fileManager.fileExists(atPath: firstURL.deletingLastPathComponent().path) == false)
+}
+
+/// Downloaded files go at the poll after a newer copy replaces them, not when the window closes.
+@MainActor
+@Test func pastedFilesAreRemovedOnceANewerCopyReplacesThem() throws {
+    let pasteboard = makePasteboard()
+    defer { pasteboard.releaseGlobally() }
+    let session = RecordedClipboard()
+    let clipboard = RDPRemoteSessionClipboard(isSharingEnabled: true, pasteboard: pasteboard)
+    clipboard.attach(session)
+    let contents = Data("remote".utf8)
+    let fileManager = FileManager.default
+    var directories: [URL] = []
+    defer { directories.forEach { try? fileManager.removeItem(at: $0) } }
+    func downloadedDirectory() throws -> URL {
+        try startRemoteFileDownload(contents, to: clipboard, from: session)
+        try answerRangeRequest(with: contents, to: clipboard, from: session)
+        let directory = try #require(pasteboardFileURLs(pasteboard).first).deletingLastPathComponent()
+        directories.append(directory)
+        return directory
+    }
+
+    // Copying the downloaded file again keeps it.
+    var directory = try downloadedDirectory()
+    let fileURL = directory.appendingPathComponent("big.bin")
+    pasteboard.clearContents()
+    pasteboard.writeObjects([fileURL as NSURL])
+    clipboard.poll()
+    #expect(fileManager.fileExists(atPath: fileURL.path))
+
+    pasteboard.clearContents()
+    pasteboard.setString("local text", forType: .string)
+    clipboard.poll()
+    #expect(fileManager.fileExists(atPath: directory.path) == false)
+
+    directory = try downloadedDirectory()
+    clipboard.receiveText("remote text")
+    clipboard.poll()
+    #expect(fileManager.fileExists(atPath: directory.path) == false)
+
+    // Also with sharing turned off since.
+    directory = try downloadedDirectory()
+    clipboard.setSharingEnabled(false)
+    pasteboard.clearContents()
+    pasteboard.setString("private text", forType: .string)
+    clipboard.poll()
+    #expect(fileManager.fileExists(atPath: directory.path) == false)
+}
+
+@MainActor
 @Test func closingRemovesDownloadedFilesOnceOffThePasteboard() throws {
     let pasteboard = makePasteboard()
     defer { pasteboard.releaseGlobally() }
