@@ -176,7 +176,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                 canCancel: isConnecting,
                 controlsVisible: controlsVisible,
                 canSyncClipboard: clipboard.canSync,
-                canStartTemporaryClipboardSharing: clipboard.session != nil
+                canStartTemporaryClipboardSharing: clipboard.canStartTemporarySharing
             ),
             from: self
         )
@@ -412,7 +412,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         useViewerSizeButton.isEnabled = viewerPixelSize != nil
         applyViewerSizeButton.isEnabled = isConnecting && displayControlSession != nil && viewerPixelSize != nil
         temporaryClipboardButton.title = clipboard.temporarySharingButtonTitle
-        temporaryClipboardButton.isEnabled = clipboard.session != nil
+        temporaryClipboardButton.isEnabled = clipboard.canStartTemporarySharing
         syncClipboardButton.isEnabled = clipboard.canSync
         connectButton.title = connectButtonTitle
         connectButton.isEnabled = canStartConnection

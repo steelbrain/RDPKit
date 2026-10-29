@@ -3,11 +3,21 @@ import RDPKit
 
 private let maximumClipboardFileBytes = 32 * 1024 * 1024
 
+/// Where the clipboard bridge sends: the session's `RDPClipboardSession`.
+protocol RDPClipboardSending: AnyObject {
+    func publishLocalUnicodeText(_ text: String?)
+    func publishLocalFiles(_ files: [RDPClipboardLocalFile])
+    func requestRemoteFileSize(streamID: UInt32, fileIndex: Int32) throws
+    func requestRemoteFileRange(streamID: UInt32, fileIndex: Int32, position: UInt64, requestedByteCount: UInt32) throws
+}
+
+extension RDPClipboardSession: RDPClipboardSending {}
+
 /// Bridges the macOS pasteboard and a session's CLIPRDR channel: publishes local text and
 /// files, applies remote text, and downloads remote files into a temporary directory.
 @MainActor
 final class RDPRemoteSessionClipboard {
-    private(set) var session: RDPClipboardSession?
+    private(set) var session: (any RDPClipboardSending)?
     private(set) var isSharingEnabled: Bool
     private var message: String?
     private var pasteboardChangeCount = NSPasteboard.general.changeCount
@@ -25,6 +35,11 @@ final class RDPRemoteSessionClipboard {
         isSharingEnabled && session != nil
     }
 
+    /// Off while sharing is on for good, which a temporary share would end.
+    var canStartTemporarySharing: Bool {
+        session != nil && (isSharingEnabled == false || temporarySharingExpiresAt != nil)
+    }
+
     var statusMessage: String {
         guard isSharingEnabled else {
             return "Disabled."
@@ -40,7 +55,7 @@ final class RDPRemoteSessionClipboard {
         return "Sharing \(max(0, Int(ceil(remainingSeconds))))s"
     }
 
-    func attach(_ session: RDPClipboardSession) {
+    func attach(_ session: any RDPClipboardSending) {
         self.session = session
         guard isSharingEnabled else {
             session.publishLocalUnicodeText(nil)
@@ -58,10 +73,11 @@ final class RDPRemoteSessionClipboard {
         pasteboardChangeCount = NSPasteboard.general.changeCount
     }
 
+    /// The user's choice, which also ends a temporary share.
     func setSharingEnabled(_ enabled: Bool) {
         isSharingEnabled = enabled
+        temporarySharingExpiresAt = nil
         guard enabled else {
-            temporarySharingExpiresAt = nil
             discardFileTransfer()
             session?.publishLocalUnicodeText(nil)
             message = "Disabled."
@@ -77,15 +93,17 @@ final class RDPRemoteSessionClipboard {
     }
 
     func startTemporarySharing() {
-        guard session != nil else {
-            message = "Not ready."
+        guard canStartTemporarySharing else {
+            if session == nil {
+                message = "Not ready."
+            }
             return
         }
 
+        setSharingEnabled(true)
         let now = Date()
         timerTick = now
         temporarySharingExpiresAt = now.addingTimeInterval(30)
-        setSharingEnabled(true)
         message = "Temporary sharing enabled."
     }
 
