@@ -92,6 +92,13 @@
   since, so a client that decides later, on the main thread for instance,
   still gets a copy that came in between. `isAwaitingRemoteCopy` tells
   whether a copy is being fetched.
+- `RDPClipboardSession.deliveredRemoteCopyNumber`, read in a clipboard
+  handler, numbers the remote copy it is called for, and
+  `hasPublished(since:)` tells whether the client has published since,
+  replacing that copy on the server. A client that hands remote copies to
+  another thread can drop one there that a publish made in the meantime
+  replaced, including the copy `fetchesRemoteCopies` reports when turned on
+  right before publishing.
 - `run` and `connect` take `onClipboardRemoteCopyUnavailable`
   (`RDPClipboardRemoteCopyUnavailableHandler`), called when the server
   announces a copy none of which is fetched, so the copy delivered before is
@@ -262,6 +269,15 @@
     came from the server; a local copy made since is kept. A server copy
     RDPClient takes nothing of, such as an image, cancels a remote file
     download in progress.
+  - A server copy announced before the Mac's clipboard was sent, but
+    reaching RDPClient after, no longer replaces the Mac's newer copy on the
+    pasteboard, nor stops turning sharing off from taking the Mac's copy
+    back. Turning sharing on, or connecting, with files copied on the Mac
+    sends them as it sends text: the server's clipboard is emptied while
+    they are read, so its copy from while sharing was off is not fetched in
+    their place; a copy the server's user makes during the read still wins.
+    A server copy that brings nothing, such as an image or one that failed
+    to arrive, shows "No text or files arrived from the remote copy."
   - The server's first copy reaches the Mac even when it comes before the
     clipboard bridge is ready, and the Mac's older clipboard no longer
     replaces it on the server; Sync Now sends the Mac's clipboard should

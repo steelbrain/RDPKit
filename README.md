@@ -237,6 +237,9 @@ let report = client.run(
 - `onClipboardRemoteCopyUnavailable` reports a server copy nothing is fetched
   of: an emptied clipboard (an empty Format List, which Windows sends and
   gnome-remote-desktop does not) or only formats the session does not fetch.
+- `deliveredRemoteCopyNumber` and `hasPublished(since:)` let a client that
+  applies remote copies on another thread drop one its own publish replaced on
+  the way.
 - File contents requests and responses. They have no timeout: to give one
   up, ignore answers for its stream ID and use a new one for the next request.
 - Local-to-remote and remote-to-local clipboard file transfer plumbing. Local
