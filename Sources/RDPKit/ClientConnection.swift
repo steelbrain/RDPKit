@@ -71,10 +71,9 @@ final class RDPClientConnection {
     var graphicsFrameTracker = RDPGFXLogicalFrameTracker()
     /// The current RDPGFX frame's updates for the decoder, in wire order.
     var pendingGraphicsUpdates: [RDPPendingGraphicsUpdate] = []
-    /// Surfaces deleted since the last delivered snapshot, which carries them.
+    /// Surfaces deleted, and the decoder's cache slots evicted, after the last delivered
+    /// snapshot; the next one names them.
     var deletedGraphicsSurfaceIDs: [UInt16] = []
-    /// The decoder's cache slots evicted after the last copy of the frames delivered,
-    /// which the next delivered snapshot carries.
     var evictedGraphicsCacheSlots: [UInt16] = []
     var graphicsFramesDecoded: UInt32 = 0
     /// Created on first use at the current desktop size, again after a resize.

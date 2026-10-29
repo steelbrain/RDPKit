@@ -102,8 +102,9 @@
   deleted since the previous snapshot. `RDPVideoToolboxFrameDecoder` and
   `RDPFrameDecodeQueue` drop their decoders and pixels for them, so a session
   that recreates surfaces no longer keeps a decoder per old surface, and a
-  surface recreated with the same ID starts empty. Video queued for a surface
-  deleted later in the frame is dropped.
+  surface recreated with the same ID starts empty. Updates queued for a surface
+  deleted later in the frame are dropped, unless a copy out of the surface reads
+  them: copies made before a deletion still copy the surface.
 - Keep text and other non-video updates that Windows mixed mode draws on a
   video surface. Before, those updates were dropped whenever the same frame also
   carried video. Now the surface snapshot carries only the areas other codecs

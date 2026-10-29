@@ -1044,7 +1044,7 @@ struct MockKRDPServerTests {
     }
 
     /// Copies of decoded video, through the cache too, go to the decoder in wire order, ahead
-    /// of the bitmap of what the session drew; evictions go with the next copy or frame.
+    /// of the bitmap of what the session drew; evictions go with the next snapshot.
     @Test func clientHandsCopiesOfDecodedVideoToTheDecoderInOrder() throws {
         let observed = Locked(Observed())
         let report = try runMock(.init(graphicsBehavior: .copyDecodedVideoThroughSurfacesAndCache), {
@@ -1065,7 +1065,7 @@ struct MockKRDPServerTests {
             [.cacheSlot(3), .surface(1)],
             [.surface(1), .cacheSlot(4)],
         ])
-        #expect(frames.map(\.evictedCacheSlots) == [[], [], [], [], [3], [], [4]])
+        #expect(frames.map(\.evictedCacheSlots) == [[], [], [], [], [3], [4], []])
         // The text, and where the decoder's copies of it lack it.
         #expect(frames.first { $0.contentKind == .bitmap }?.regionRects == [
             RDPFrameRect(left: 0, top: 0, right: 8, bottom: 8),
@@ -1092,6 +1092,26 @@ struct MockKRDPServerTests {
         let hiddenVideo = frames.first { $0.contentKind == .video && $0.surfaceID == 2 }
         #expect(hiddenVideo?.graphicsOutputRect != nil)
         #expect(hiddenVideo?.surfaceRect == nil)
+    }
+
+    /// Copies out of a surface deleted later in the frame still copy it: the decoder forgets the
+    /// surface only after them, from the next snapshot on.
+    @Test func clientCopiesOutOfSurfacesBeforeDeletingThem() throws {
+        let observed = Locked(Observed())
+        let report = try runMock(.init(graphicsBehavior: .deleteSurfacesAfterCopyingOutOfThem), {
+            $0.graphicsFrameCaptureLimit = 3
+        }, client: {
+            RDPSessionClient().run(configuration: $0, onGraphicsFrame: { frame in
+                observed.withLock { $0.frames.append(frame) }
+            })
+        }).report
+
+        #expect(report.status == "success")
+        let frames = observed.value.frames
+        #expect(frames.map(\.frameID) == [1, 1, 2, 3])
+        #expect(frames.map(\.contentKind) == [.video, .surfaceCopy, .video, .video])
+        #expect(frames.map(\.surfaceID) == [2, 1, 1, 1])
+        #expect(frames.map(\.deletedSurfaceIDs) == [[], [], [2], [3]])
     }
 
     // MARK: Live sessions

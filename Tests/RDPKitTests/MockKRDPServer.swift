@@ -138,6 +138,7 @@ enum MockKRDPGraphicsBehavior: Equatable {
     case copyVideoFromStagingSurfacePerDamageRect
     case copyDecodedVideoThroughSurfacesAndCache
     case copyVideoThroughHiddenSurface
+    case deleteSurfacesAfterCopyingOutOfThem
     case sendMultipleBitmapSurfacesInFrame
     case sendMalformedAVCFrame
     case sendInvalidGraphicsPDU
@@ -2111,6 +2112,8 @@ private enum MockKRDPFixtures {
             [graphicsDynamicPacket(segmentedGraphicsData(decodedVideoCopyFrameMessages()))]
         case .copyVideoThroughHiddenSurface:
             [graphicsDynamicPacket(segmentedGraphicsData(hiddenSurfaceVideoFrameMessages()))]
+        case .deleteSurfacesAfterCopyingOutOfThem:
+            [graphicsDynamicPacket(segmentedGraphicsData(deletedSourceFrameMessages()))]
         case .sendMalformedAVCFrame:
             [graphicsDynamicPacket(segmentedGraphicsData(malformedAVCFrameMessages()))]
         case .sendInvalidGraphicsPDU:
@@ -2243,6 +2246,31 @@ private enum MockKRDPFixtures {
         messages += wireToSurfaceMessage(surfaceID: 2)
         messages += surfaceToSurfaceMessage(sourceSurfaceID: 2, destinationSurfaceID: 1, sourceRect: fullSurface)
         messages += endFrameMessage(frameID: 1)
+        return messages
+    }
+
+    /// Video copied out of mapped surface 2, then out of unmapped staging surface 3, each
+    /// deleted right after the copy.
+    static func deletedSourceFrameMessages() -> Data {
+        let fullSurface = RDPGFXRect16(left: 0, top: 0, right: MockKRDPConstants.width, bottom: MockKRDPConstants.height)
+        var messages = createSurfaceMessage(surfaceID: 1)
+        messages += createSurfaceMessage(surfaceID: 2)
+        messages += mapSurfaceToOutputMessage(surfaceID: 1, x: 0, y: 0)
+        messages += mapSurfaceToOutputMessage(surfaceID: 2, x: 0, y: 0)
+        messages += startFrameMessage(frameID: 1)
+        messages += wireToSurfaceMessage(surfaceID: 2)
+        messages += surfaceToSurfaceMessage(sourceSurfaceID: 2, destinationSurfaceID: 1, sourceRect: fullSurface)
+        messages += deleteSurfaceMessage(surfaceID: 2)
+        messages += endFrameMessage(frameID: 1)
+        messages += startFrameMessage(frameID: 2)
+        messages += createSurfaceMessage(surfaceID: 3)
+        messages += wireToSurfaceMessage(surfaceID: 3)
+        messages += surfaceToSurfaceMessage(sourceSurfaceID: 3, destinationSurfaceID: 1, sourceRect: fullSurface)
+        messages += deleteSurfaceMessage(surfaceID: 3)
+        messages += endFrameMessage(frameID: 2)
+        messages += startFrameMessage(frameID: 3)
+        messages += wireToSurfaceMessage(surfaceID: 1)
+        messages += endFrameMessage(frameID: 3)
         return messages
     }
 
