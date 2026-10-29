@@ -6,6 +6,9 @@ import RDPKit
 /// link runs only while a frame waits, so an idle desktop does not wake the main thread.
 final class RDPFramePresentationClockNSView: NSView {
     private var displayLink: CADisplayLink?
+    /// Whether the display link has fired on the window's screen. Until it does, its `duration`
+    /// is 0 or the previous screen's, so the timing published leaves it out.
+    private var displayLinkHasFiredOnScreen = false
     private weak var observedWindow: NSWindow?
     private var isEnabled = false
     private var isPresentationPending = false
@@ -55,7 +58,11 @@ final class RDPFramePresentationClockNSView: NSView {
         configureDisplayLink(for: window)
         updateDisplayLinkPause()
         if wasEnabled != isEnabled {
-            publish(lastPublishedState.updatingClock(displayLink: displayLink, isPaused: !isEnabled))
+            publish(lastPublishedState.updatingClock(
+                displayLinkDuration: firedDisplayLinkDuration,
+                hasDisplayLink: displayLink != nil,
+                isPaused: !isEnabled
+            ))
         }
     }
 
@@ -116,6 +123,7 @@ final class RDPFramePresentationClockNSView: NSView {
     private func stopDisplayLink() {
         displayLink?.invalidate()
         displayLink = nil
+        displayLinkHasFiredOnScreen = false
     }
 
     private func stopObservingWindow() {
@@ -139,18 +147,30 @@ final class RDPFramePresentationClockNSView: NSView {
     }
 
     @objc func displayLinkFired(_ displayLink: CADisplayLink) {
+        displayLinkHasFiredOnScreen = true
         isPresentationPending = false
         updateDisplayLinkPause()
         onFrame?(displayLink)
     }
 
     @objc private func screenDidChange(_: Notification) {
+        // The link's duration is the old screen's or refresh rate's until it fires again.
+        displayLinkHasFiredOnScreen = false
         publishTiming()
+    }
+
+    private var firedDisplayLinkDuration: TimeInterval? {
+        displayLinkHasFiredOnScreen ? displayLink?.duration : nil
     }
 
     /// Reads the screen, so only a window, screen or backing change calls it.
     private func publishTiming() {
-        publish(RDPFramePacingState.current(window: observedWindow, displayLink: displayLink, isPaused: !isEnabled))
+        publish(RDPFramePacingState.current(
+            window: observedWindow,
+            displayLinkDuration: firedDisplayLinkDuration,
+            hasDisplayLink: displayLink != nil,
+            isPaused: !isEnabled
+        ))
     }
 
     private func publish(_ nextState: RDPFramePacingState) {

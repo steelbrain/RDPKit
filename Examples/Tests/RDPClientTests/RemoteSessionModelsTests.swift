@@ -177,6 +177,22 @@ private let bitmapFrame = RDPGraphicsFrameSnapshot(
     #expect(state.clockState == "window display link")
 }
 
+/// Until the display link fires on a screen, its duration is 0 or the previous screen's, so the
+/// clock shows the screen's maximum refresh rate instead.
+@Test func framePacingStateShowsTheScreensMaximumUntilTheDisplayLinkFires() {
+    let unfired = RDPFramePacingState(maximumFramesPerSecond: 120, hasDisplayLink: true)
+    #expect(unfired.displayLinkFramesPerSecond == 120)
+    #expect(RDPFramePacingState(minimumRefreshInterval: 1.0 / 60.0, hasDisplayLink: true).displayLinkFramesPerSecond == 60)
+    #expect(RDPFramePacingState(maximumFramesPerSecond: 120).displayLinkFramesPerSecond == nil)
+
+    // A 60 Hz link moved to a 120 Hz screen: its old duration is dropped until it fires there.
+    let movedScreen = RDPFramePacingState(maximumFramesPerSecond: 120, displayLinkDuration: 1.0 / 60.0, hasDisplayLink: true)
+        .updatingClock(displayLinkDuration: nil, hasDisplayLink: true, isPaused: true)
+    #expect(movedScreen.displayLinkDuration == nil)
+    #expect(movedScreen.displayLinkFramesPerSecond == 120)
+    #expect(movedScreen.updatingDisplayLinkDuration(1.0 / 96.0).displayLinkFramesPerSecond == 96)
+}
+
 @Test func keyframeRequestsArePacedAndStopUntilVideoDecodesAgain() {
     var throttle = RDPKeyframeRequestThrottle()
     let start = Date()
