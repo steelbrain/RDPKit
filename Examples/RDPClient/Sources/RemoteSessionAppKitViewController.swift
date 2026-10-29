@@ -53,8 +53,11 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
     private var audioMessage: String?
     private var remoteAudioPlayer = RDPAudioPlayer()
     private var report: RDPConnectionReport?
-    /// The last connection's report while it runs, for Stats for Nerds until `report` arrives.
+    /// The last connection's report while it runs, for Stats for Nerds and the graphics path
+    /// until `report` arrives.
     private var liveReport: RDPLiveConnectionReport?
+    /// The session window's graphics path, from `currentReport`.
+    private var graphicsPathSummary: String?
     private var serverCertificateInfo: RDPServerCertificateInfo?
     private var previewFrame: RDPFrameMetadata?
     /// The newest presented frame, for the diagnostics timer to publish its codec.
@@ -466,7 +469,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
             status: status,
             decodeError: previewDecodeError,
             metricsSummary: viewerMetricsSummary,
-            graphicsPathSummary: report.map { RDPGraphicsPathDescription.describe(report: $0) },
+            graphicsPathSummary: graphicsPathSummary,
             inputSession: inputSession,
             keyboard: keyboard,
             isConnecting: isConnecting,
@@ -545,8 +548,11 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         diagnosticsTask = Task { @MainActor [weak self] in
             while Task.isCancelled == false {
                 self?.publishLatestFrameMetadata()
-                // The overlay's rolling rates fall when traffic stops, which records nothing.
-                if self?.publishRenderMetricsSnapshotIfNeeded() == true {
+                // The overlay's rolling rates fall when traffic stops, which records nothing,
+                // and the live report's graphics path changes without a callback.
+                let metricsChanged = self?.publishRenderMetricsSnapshotIfNeeded() == true
+                let graphicsPathChanged = self?.updateGraphicsPathSummary() == true
+                if metricsChanged || graphicsPathChanged {
                     self?.render()
                 }
                 self?.syncDiagnosticsSnapshot()
@@ -579,7 +585,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         let now = Date()
         let nextSnapshot = RemoteSessionDiagnosticsSnapshot(
             title: sessionDisplayName,
-            report: report ?? liveReport?.snapshot,
+            report: currentReport,
             previewFrame: previewFrame,
             previewFrameCount: previewFrameCount,
             presentedFrameCount: presentedFrameCount,
@@ -617,6 +623,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         formError = nil
         report = nil
         liveReport = nil
+        graphicsPathSummary = nil
         serverCertificateInfo = nil
         previewFrame = nil
         latestPresentedFrame = nil
@@ -962,6 +969,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                 controller.flushPendingFramePresentation()
                 controller.publishRenderMetricsSnapshotIfNeeded(force: true)
                 controller.report = nextReport
+                controller.updateGraphicsPathSummary()
                 if let clientLicensePersistenceResult {
                     controller.applyClientLicensePersistenceResult(clientLicensePersistenceResult)
                 }
@@ -1139,6 +1147,21 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         let nextSummary = compactViewerMetricsSummary(metrics: metrics, framePacing: framePacing, at: Date())
         if viewerMetricsSummary != nextSummary {
             viewerMetricsSummary = nextSummary
+            return true
+        }
+        return false
+    }
+
+    /// The session's report: the one `run` returned, or the live one while it runs.
+    private var currentReport: RDPConnectionReport? {
+        report ?? liveReport?.snapshot
+    }
+
+    @discardableResult
+    private func updateGraphicsPathSummary() -> Bool {
+        let nextSummary = currentReport.map { RDPGraphicsPathDescription.describe(report: $0) }
+        if graphicsPathSummary != nextSummary {
+            graphicsPathSummary = nextSummary
             return true
         }
         return false
