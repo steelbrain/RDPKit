@@ -3,102 +3,120 @@ import Foundation
 import RDPKit
 import Testing
 
-@Test func successfulRemoteSessionEndUsesCleanDisconnectMessage() {
-    let report = RDPConnectionReport(
-        status: "success",
+/// A report of a session that reached graphics, with what the test sets.
+private func sessionReport(
+    graphicsChannelName: String? = "Microsoft::Windows::RDS::Graphics",
+    firstFrame: RDPGraphicsFrameSnapshot? = nil,
+    errorInfo: UInt32? = nil,
+    disconnectReason: UInt8? = nil,
+    nextStage: String? = "rdp-session-ended",
+    error: String? = nil,
+    failure: RDPConnectionFailure? = nil
+) -> RDPConnectionReport {
+    RDPConnectionReport(
+        status: error == nil ? "success" : "failure",
         stage: "rdp-graphics-dynamic-channel",
         target: "127.0.0.1:3389",
         passwordConfigured: true,
         requestedProtocols: ["tls", "credssp"],
         requestHex: "",
-        warnings: []
+        rdpGraphicsChannelName: graphicsChannelName,
+        rdpGraphicsFirstFrame: firstFrame,
+        rdpRemoteTerminationErrorInfo: errorInfo,
+        rdpRemoteTerminationDisconnectReason: disconnectReason,
+        warnings: [],
+        nextStage: error == nil ? nextStage : nil,
+        error: error,
+        failure: failure
     )
-    let reason = RDPSessionEndReason(report: report)
-
-    #expect(reason.kind == RDPSessionEndReason.Kind.ended)
-    #expect(reason.statusText == "Disconnected")
-    #expect(reason.message == "Remote session disconnected.")
-    #expect(reason.diagnosticValue == "Disconnected: Remote session disconnected.")
 }
 
-@Test func remoteSessionEndBeforeGraphicsChannelDescribesMissingRDPGFX() {
-    let report = RDPConnectionReport(
-        status: "success",
-        stage: "rdp-graphics-dynamic-channel",
-        target: "127.0.0.1:3389",
-        passwordConfigured: true,
-        requestedProtocols: ["tls", "credssp"],
-        requestHex: "",
-        warnings: [],
-        nextStage: "rdp-session-ended"
-    )
-    let reason = RDPSessionEndReason(report: report)
+private let bitmapFrame = RDPGraphicsFrameSnapshot(
+    frameID: nil,
+    surfaceID: 0,
+    codecID: 0,
+    codecName: "bitmap",
+    pixelFormat: 0,
+    destinationRect: RDPFrameRect(left: 0, top: 0, right: 640, bottom: 480),
+    regionRects: [],
+    encodedVideoData: Data()
+)
 
-    #expect(reason.kind == RDPSessionEndReason.Kind.ended)
-    #expect(reason.statusText == "Disconnected")
-    #expect(reason.message == "Remote session ended before opening the RDPGFX dynamic channel.")
+@Test func aSessionThatShowedFramesSaysWhyItEnded() {
+    let logoff = RDPSessionEndReason(report: sessionReport(firstFrame: bitmapFrame, errorInfo: 0x0000_000C))
+    #expect(logoff.kind == .ended)
+    #expect(logoff.statusText == "Disconnected")
+    #expect(logoff.message == "The remote session was signed out or disconnected from within.")
+    #expect(logoff.diagnosticValue
+        == "Disconnected: The remote session was signed out or disconnected from within.\n"
+        + "server ended the session with ERRINFO_LOGOFF_BY_USER")
+
+    let idle = RDPSessionEndReason(report: sessionReport(firstFrame: bitmapFrame, errorInfo: 0x0000_0003))
+    #expect(idle.message == "The session reached the server's idle or session time limit.")
+    let replaced = RDPSessionEndReason(report: sessionReport(firstFrame: bitmapFrame, errorInfo: 0x0000_0005))
+    #expect(replaced.message == "Another connection took over the session.")
+    let admin = RDPSessionEndReason(report: sessionReport(firstFrame: bitmapFrame, errorInfo: 0x0000_0001))
+    #expect(admin.message == "An administrator ended the session, or the server is shutting down or restarting.")
+
+    let closed = RDPSessionEndReason(report: sessionReport(firstFrame: bitmapFrame, nextStage: "rdp-graphics-frame-decode"))
+    #expect(closed.kind == .ended)
+    #expect(closed.message == "The server closed the connection.")
+    #expect(closed.diagnosticValue == "Disconnected: The server closed the connection.")
 }
 
-@Test func remoteSessionEndBeforeGraphicsChannelIncludesTerminationReason() {
-    let report = RDPConnectionReport(
-        status: "success",
-        stage: "rdp-graphics-dynamic-channel",
-        target: "127.0.0.1:3389",
-        passwordConfigured: true,
-        requestedProtocols: ["tls", "credssp"],
-        requestHex: "",
-        rdpRemoteTerminationDisconnectReason: 3,
-        rdpRemoteTerminationDisconnectReasonName: "rn-user-requested",
-        warnings: [],
-        nextStage: "rdp-session-ended"
-    )
-    let reason = RDPSessionEndReason(report: report)
+/// Legacy bitmap updates show the desktop without RDPGFX: such a session ran.
+@Test func aSessionWithoutRDPGFXThatShowedFramesEndsNormally() {
+    let reason = RDPSessionEndReason(report: sessionReport(
+        graphicsChannelName: nil,
+        firstFrame: bitmapFrame,
+        errorInfo: 0x0000_000C
+    ))
 
-    #expect(reason.kind == RDPSessionEndReason.Kind.ended)
-    #expect(reason.statusText == "Disconnected")
-    #expect(reason.message == "Remote session ended before opening the RDPGFX dynamic channel (rn-user-requested).")
+    #expect(reason.kind == .ended)
+    #expect(reason.message == "The remote session was signed out or disconnected from within.")
+    #expect(reason.detail?.contains("RDPGFX") == false)
 }
 
-@Test func remoteSessionEndBeforeFrameDescribesMissingGraphicsFrame() {
-    let report = RDPConnectionReport(
-        status: "success",
-        stage: "rdp-graphics-dynamic-channel",
-        target: "127.0.0.1:3389",
-        passwordConfigured: true,
-        requestedProtocols: ["tls", "credssp"],
-        requestHex: "",
-        rdpGraphicsChannelName: "Microsoft::Windows::RDS::Graphics",
-        rdpGraphicsFrames: [],
-        warnings: [],
-        nextStage: "rdp-session-ended"
-    )
-    let reason = RDPSessionEndReason(report: report)
+@Test func aSessionThatEndedBeforeItsDesktopAppearedSaysSo() {
+    let beforeChannel = RDPSessionEndReason(report: sessionReport(graphicsChannelName: nil, disconnectReason: 3))
+    #expect(beforeChannel.kind == .ended)
+    #expect(beforeChannel.message == "The server ended the session. This happened before the desktop appeared.")
+    #expect(beforeChannel.detail == "server ended the session with rn-user-requested before opening the RDPGFX dynamic channel")
 
-    #expect(reason.kind == RDPSessionEndReason.Kind.ended)
-    #expect(reason.statusText == "Disconnected")
-    #expect(reason.message == "Remote session ended before producing a graphics frame.")
+    let beforeFrame = RDPSessionEndReason(report: sessionReport())
+    #expect(beforeFrame.message == "The session ended before the desktop appeared.")
+    #expect(beforeFrame.detail == "session ended before producing a graphics frame")
 }
 
-@Test func remoteSessionEndBeforeFrameIncludesTerminationReason() {
-    let report = RDPConnectionReport(
-        status: "success",
-        stage: "rdp-graphics-dynamic-channel",
-        target: "127.0.0.1:3389",
-        passwordConfigured: true,
-        requestedProtocols: ["tls", "credssp"],
-        requestHex: "",
-        rdpGraphicsChannelName: "Microsoft::Windows::RDS::Graphics",
-        rdpGraphicsFrames: [],
-        rdpRemoteTerminationErrorInfo: 0x0000_000C,
-        rdpRemoteTerminationErrorInfoName: "ERRINFO_LOGOFF_BY_USER",
-        warnings: [],
-        nextStage: "rdp-session-ended"
-    )
-    let reason = RDPSessionEndReason(report: report)
+@Test func failuresAreExplainedAndKeepTheirDetailForDiagnostics() {
+    let error = "CredSSP server returned STATUS_LOGON_FAILURE (0xc000006d)"
+    let wrongPassword = RDPSessionEndReason(report: sessionReport(error: error, failure: .credSSP(status: .logonFailure)))
+    #expect(wrongPassword.kind == .failed)
+    #expect(wrongPassword.title == "Connection Failed")
+    #expect(wrongPassword.message == "The user name or password is incorrect.")
+    #expect(wrongPassword.offersCredentials)
+    #expect(wrongPassword.diagnosticValue == "Failed: The user name or password is incorrect.\n\(error)")
 
-    #expect(reason.kind == RDPSessionEndReason.Kind.ended)
-    #expect(reason.statusText == "Disconnected")
-    #expect(reason.message == "Remote session ended before producing a graphics frame (ERRINFO_LOGOFF_BY_USER).")
+    func reason(_ failure: RDPConnectionFailure) -> RDPSessionEndReason {
+        RDPSessionEndReason(report: sessionReport(error: "raw", failure: failure))
+    }
+    #expect(reason(.credSSP(status: .accountLockedOut)).offersCredentials == false)
+    #expect(reason(.credSSP(status: .passwordMustChange)).message.hasPrefix("The password must be changed"))
+    #expect(reason(.credSSP(status: .logonTypeNotGranted)).message.hasPrefix("The account may not sign in remotely."))
+    #expect(reason(.credentialsRequired).offersCredentials)
+    #expect(reason(.negotiation(code: .hybridRequiredByServer)).offersCredentials)
+    #expect(reason(.negotiation(code: .sslWithUserAuthRequiredByServer)).message
+        == "The server requires a client certificate, which RDPClient does not support.")
+    #expect(reason(.connect(error: RDPSocketError(errno: EHOSTUNREACH))).message.contains("Local Network"))
+    #expect(reason(.connect(error: RDPSocketError(errno: ECONNREFUSED))).message.hasPrefix("The server refused the connection."))
+    #expect(reason(.addressResolution).message.hasPrefix("The server's name could not be found."))
+    #expect(reason(.licensing(errorCode: 0x0000_0007)).message.hasPrefix("The server could not license this connection."))
+    let freshCredentials = reason(.serverTermination(termination: RDPRemoteTermination(errorInfo: 0x0000_000A)))
+    #expect(freshCredentials.message == "The server requires the credentials to be entered again.")
+    #expect(freshCredentials.offersCredentials)
+    #expect(reason(.serverTermination(termination: RDPRemoteTermination(errorInfo: 0x0000_0007))).message
+        == "The server denied the connection, or the account may not connect.")
+    #expect(reason(.cancelled).kind == .cancelled)
 }
 
 @Test func legacyConnectionProfileDecodesWithDefaultOptions() throws {

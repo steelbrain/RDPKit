@@ -9,11 +9,18 @@ struct RDPSessionEndReason: Equatable {
     }
 
     var kind: Kind
+    /// What happened, in words for the user.
     var message: String
+    /// What RDPKit said, for diagnostics: its error, or the server's termination code.
+    var detail: String?
+    /// Whether entering the credentials again can help.
+    var offersCredentials: Bool
 
-    init(kind: Kind, message: String) {
+    init(kind: Kind, message: String, detail: String? = nil, offersCredentials: Bool = false) {
         self.kind = kind
         self.message = message
+        self.detail = detail
+        self.offersCredentials = offersCredentials
     }
 
     static let cancelled = RDPSessionEndReason(
@@ -22,29 +29,156 @@ struct RDPSessionEndReason: Equatable {
     )
 
     init(report: RDPConnectionReport) {
-        if report.status == "failure" || report.error != nil {
-            kind = .failed
-            message = report.error ?? "Connection failed at \(report.stage)."
-        } else if report.nextStage == "rdp-session-ended", report.rdpGraphicsChannelName == nil {
-            kind = .ended
-            message = "Remote session ended before opening the RDPGFX dynamic channel\(Self.terminationSuffix(report))."
-        } else if report.nextStage == "rdp-session-ended", report.rdpGraphicsFrames?.isEmpty != false {
-            kind = .ended
-            message = "Remote session ended before producing a graphics frame\(Self.terminationSuffix(report))."
+        let termination = report.remoteTermination
+        if let failure = report.failure {
+            self = Self.failure(failure, error: report.error)
+        } else if report.status == "failure" || report.error != nil {
+            self = RDPSessionEndReason(kind: .failed, message: "The connection failed.", detail: report.error ?? "failed at \(report.stage)")
+        } else if report.rdpGraphicsFirstFrame != nil {
+            // Checked first: a server without RDPGFX sends frames as bitmap updates.
+            self = RDPSessionEndReason(
+                kind: .ended,
+                message: termination.map(Self.message(for:)) ?? "The server closed the connection.",
+                detail: termination?.description
+            )
+        } else if report.nextStage == "rdp-session-ended" {
+            let missingStep = report.rdpGraphicsChannelName == nil
+                ? "opening the RDPGFX dynamic channel"
+                : "producing a graphics frame"
+            self = RDPSessionEndReason(
+                kind: .ended,
+                message: termination.map { "\(Self.message(for: $0)) This happened before the desktop appeared." }
+                    ?? "The session ended before the desktop appeared.",
+                detail: "\(termination?.description ?? "session ended") before \(missingStep)"
+            )
         } else {
-            kind = .ended
-            message = "Remote session disconnected."
+            self = RDPSessionEndReason(kind: .ended, message: "The remote session ended.", detail: termination?.description)
         }
     }
 
-    private static func terminationSuffix(_ report: RDPConnectionReport) -> String {
-        if let errorInfoName = report.rdpRemoteTerminationErrorInfoName {
-            return " (\(errorInfoName))"
+    private static func failure(_ failure: RDPConnectionFailure, error: String?) -> RDPSessionEndReason {
+        let credentialsMessage = "The server requires Network Level Authentication: enter a user name and password."
+        let (text, offersCredentials): (String, Bool) = switch failure {
+        case .addressResolution:
+            ("The server's name could not be found. Check the host name and your network connection.", false)
+        case let .connect(socketError):
+            (message(for: socketError), false)
+        case .negotiation(code: .hybridRequiredByServer):
+            (credentialsMessage, true)
+        case .negotiation(code: .sslWithUserAuthRequiredByServer):
+            ("The server requires a client certificate, which RDPClient does not support.", false)
+        case .negotiation(code: .sslNotAllowedByServer):
+            ("The server offers only Standard RDP Security, which RDPClient does not support.", false)
+        case .unsupportedSecurityProtocol:
+            ("The server chose a security protocol RDPClient does not support, such as Standard RDP Security.", false)
+        case .negotiation(code: .sslCertificateNotOnServer):
+            ("The server has no certificate to secure the connection with.", false)
+        case .negotiation:
+            ("The server refused the security RDPClient offered.", false)
+        case .tls:
+            ("A secure connection to the server could not be set up.", false)
+        case .tlsKeyUsageIncorrect:
+            ("The server's certificate does not allow the key exchange RDPClient offered.", false)
+        case .credentialsRequired:
+            (credentialsMessage, true)
+        case let .credSSP(status):
+            message(for: status)
+        case .earlyUserAuthorizationDenied:
+            ("The server denied this account access.", false)
+        case .licensing:
+            ("The server could not license this connection. Its administrator has to check its Remote Desktop licensing.", false)
+        case let .serverTermination(termination):
+            (message(for: termination), termination.category == .freshCredentialsRequired)
+        case .connectionLost:
+            ("The connection to the server was lost.", false)
+        case .connectionClosed:
+            ("The server closed the connection.", false)
+        case .timedOut:
+            ("The server did not respond in time.", false)
+        case .cancelled:
+            (Self.cancelled.message, false)
+        case .protocolViolation:
+            ("The server sent something RDPClient cannot handle.", false)
+        case .graphicsFrameHandler:
+            ("RDPClient could not show the remote desktop.", false)
         }
-        if let disconnectReasonName = report.rdpRemoteTerminationDisconnectReasonName {
-            return " (\(disconnectReasonName))"
+        return RDPSessionEndReason(
+            kind: failure == .cancelled ? .cancelled : .failed,
+            message: text,
+            detail: error,
+            offersCredentials: offersCredentials
+        )
+    }
+
+    private static func message(for error: RDPSocketError) -> String {
+        switch error.category {
+        case .refused:
+            "The server refused the connection. Check that Remote Desktop is on and the port is right."
+        case .hostUnreachable:
+            "The server could not be reached. If it is on your local network, check that RDPClient may use "
+                + "the local network in System Settings > Privacy & Security > Local Network."
+        case .networkUnreachable:
+            "This Mac has no route to the server's network. Check your network connection or VPN."
+        case .timedOut:
+            "The server did not answer. Check the host name and port, and that no firewall blocks the connection."
+        case .notPermitted:
+            "macOS did not allow the connection, for example because of a firewall or network filter."
+        case .other:
+            "The connection to the server could not be made."
         }
-        return ""
+    }
+
+    /// The message, and whether entering the credentials again can help.
+    private static func message(for status: RDPLogonStatus) -> (String, Bool) {
+        switch status {
+        case .logonFailure, .wrongPassword, .noSuchUser:
+            ("The user name or password is incorrect.", true)
+        case .accountLockedOut:
+            ("The account is locked out. Try again later, or ask an administrator to unlock it.", false)
+        case .accountDisabled:
+            ("The account is disabled.", false)
+        case .accountExpired:
+            ("The account has expired.", false)
+        case .passwordExpired:
+            ("The password has expired. Change it, then connect again.", false)
+        case .passwordMustChange:
+            ("The password must be changed before the first sign-in. Change it, then connect again.", false)
+        case .logonTypeNotGranted:
+            ("The account may not sign in remotely. An administrator can add it to the Remote Desktop Users group.", false)
+        case .accountRestriction:
+            ("The account's restrictions do not allow this sign-in; an account without a password cannot sign in remotely.", false)
+        case .invalidLogonHours:
+            ("The account may not sign in at this time.", false)
+        case .invalidWorkstation:
+            ("The account may not sign in from this computer.", false)
+        default:
+            ("The server refused the sign-in.", false)
+        }
+    }
+
+    private static func message(for termination: RDPRemoteTermination) -> String {
+        switch termination.category {
+        case .user:
+            "The remote session was signed out or disconnected from within."
+        case .admin:
+            "An administrator ended the session, or the server is shutting down or restarting."
+        case .timeLimit:
+            "The session reached the server's idle or session time limit."
+        case .replaced:
+            "Another connection took over the session."
+        case .accessDenied:
+            "The server denied the connection, or the account may not connect."
+        case .freshCredentialsRequired:
+            "The server requires the credentials to be entered again."
+        case .licensing:
+            "The server could not license this connection."
+        case .serverError:
+            "The session ended because of an error on the server."
+        case .protocolError:
+            "The server rejected something RDPClient sent."
+        case .unspecified, .unknown:
+            "The server ended the session."
+        }
     }
 
     var title: String {
@@ -81,7 +215,7 @@ struct RDPSessionEndReason: Equatable {
     }
 
     var diagnosticValue: String {
-        "\(statusText): \(message)"
+        ["\(statusText): \(message)", detail].compactMap { $0 }.joined(separator: "\n")
     }
 }
 

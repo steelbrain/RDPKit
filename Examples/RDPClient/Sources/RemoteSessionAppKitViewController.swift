@@ -935,6 +935,9 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                 controller.activeConnectionID = nil
                 controller.activeCancellation = nil
                 controller.render()
+                if controller.sessionEndReason?.offersCredentials == true {
+                    controller.offerCredentials()
+                }
             }
         }
         sessionThread.name = "RDPClient session"
@@ -1503,6 +1506,14 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
     func toggleSessionControls() {
         controlsVisible.toggle()
         render()
+    }
+
+    /// After a refused sign-in: shows the credential fields, with the one to fix selected.
+    private func offerCredentials() {
+        controlsVisible = true
+        render()
+        let field = username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? usernameField : passwordField
+        field.selectText(nil)
     }
 
     @objc private func textFieldAction(_: NSTextField) {
