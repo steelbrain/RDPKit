@@ -495,6 +495,13 @@ public final class RDPInputSession: Sendable {
         self.serverInputFlags = serverInputFlags ?? 0
     }
 
+    /// Whether the server takes Unicode keyboard events (INPUT_FLAG_UNICODE, [MS-RDPBCGR]
+    /// 2.2.7.1.6). When it does not, `send` drops `.unicode` events, so text has to go as
+    /// scancodes the server's keyboard layout types. Fixed for the session; read from any thread.
+    public var supportsUnicodeInput: Bool {
+        serverInputFlags & RDPInputCapabilityFlags.unicode != 0
+    }
+
     public func send(_ event: RDPSlowPathInputEvent) {
         send([event])
     }

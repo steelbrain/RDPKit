@@ -253,6 +253,26 @@ import Testing
     #expect(RDPInputSession.supportedEvents(events, serverInputFlags: 0x0015) == events)
 }
 
+/// INPUT_FLAG_UNICODE (0x0010) tells an app whether `.unicode` events reach the server.
+@Test func inputSessionReportsWhetherTheServerTakesUnicode() throws {
+    func session(serverInputFlags: UInt16?) throws -> RDPInputSession {
+        let channel = EmbeddedChannel()
+        try channel.connect(to: SocketAddress(ipAddress: "127.0.0.1", port: 3389)).wait()
+        return RDPInputSession(
+            shareID: 1,
+            userChannelID: 1001,
+            ioChannelID: 1003,
+            channel: channel,
+            serverInputFlags: serverInputFlags
+        )
+    }
+
+    #expect(try session(serverInputFlags: 0x0035).supportsUnicodeInput)
+    #expect(try session(serverInputFlags: 0x0010).supportsUnicodeInput)
+    #expect(try session(serverInputFlags: 0x0025).supportsUnicodeInput == false)
+    #expect(try session(serverInputFlags: nil).supportsUnicodeInput == false)
+}
+
 @Test func synchronizeInputPDUEncodesToggleFlags() {
     let data = RDPClientInputPDU(
         shareID: 0x0001_03EE,
