@@ -10,8 +10,11 @@ final class RDPClientConnection {
     let callbacks: RDPSessionCallbacks
     /// Frames to capture before the session ends; nil runs until the server ends it.
     let targetFrameCount: Int?
-    var report: RDPConnectionReport
-    var stage = RDPConnectionStage.negotiation
+    /// Holds `report`, for `RDPLiveConnectionReport` to copy while the connection runs.
+    let reportStorage: RDPConnectionReportStorage
+    var stage = RDPConnectionStage.negotiation {
+        didSet { report.stage = stage.rawValue }
+    }
     var transport: RDPTransport?
     /// A Server Redirection PDU that ended this connection ([MS-RDPBCGR] 3.1.5.2).
     var redirection: RDPServerRedirectionPDU?
@@ -43,7 +46,14 @@ final class RDPClientConnection {
     var isDeactivated = false
     /// The input session `onInputReady` last handed out.
     var inputSession: RDPInputSession?
-    var termination: RDPRemoteTermination?
+    var termination: RDPRemoteTermination? {
+        didSet {
+            report.rdpRemoteTerminationErrorInfo = termination?.errorInfo
+            report.rdpRemoteTerminationErrorInfoName = termination?.errorInfoName
+            report.rdpRemoteTerminationDisconnectReason = termination?.disconnectReason
+            report.rdpRemoteTerminationDisconnectReasonName = termination?.disconnectReasonName
+        }
+    }
     /// A non-zero Set Error Info was followed by Deactivate All: the server is
     /// disconnecting, and only the disconnect reason is still to come.
     var isTerminating = false
@@ -59,7 +69,6 @@ final class RDPClientConnection {
     let staticChannelChunkSize = RDPStaticVirtualChannelChunkSize()
     var staticChannelReassemblers: [UInt16: RDPStaticVirtualChannelReassembler] = [:]
     var clipboard: RDPClipboardSession?
-    let clipboardSentLog = RDPClipboardSentLog()
     var audio: RDPAudioSession?
     var deviceRedirection: RDPDeviceRedirectionSession?
 
@@ -99,8 +108,8 @@ final class RDPClientConnection {
         desktopHeight = configuration.desktopHeight
         clientName = RDPConnectionConfiguration.validClientName(configuration.clientName)
         let request = configuration.connectionRequest
-        report = RDPConnectionReport(
-            status: "failure",
+        reportStorage = RDPConnectionReportStorage(RDPConnectionReport(
+            status: "running",
             stage: RDPConnectionStage.negotiation.rawValue,
             target: configuration.target,
             redirectionDepth: configuration.redirectionDepth,
@@ -111,11 +120,19 @@ final class RDPClientConnection {
             requestHex: request.encodedTPKT().rdpHexString,
             rdpGraphicsCapabilityProfile: configuration.graphicsCapabilityProfile,
             warnings: []
-        )
+        ))
+        callbacks.liveReport?.follow(reportStorage)
     }
 
     deinit {
         transport?.close()
+    }
+
+    /// Each access holds `reportStorage`'s lock, so what runs during one, such
+    /// as an `appendIfRoom` element, must not touch `report` again.
+    var report: RDPConnectionReport {
+        _read { yield reportStorage.report }
+        _modify { yield &reportStorage.report }
     }
 
     var primarySurface: RDPPrimarySurfaceCompositor {
@@ -246,16 +263,6 @@ final class RDPClientConnection {
 
     func finishReport() -> RDPConnectionReport {
         transport?.close()
-        report.stage = stage.rawValue
-        if clipboard != nil {
-            report.rdpClipboardSentMessages = clipboardSentLog.snapshot
-        }
-        if let termination {
-            report.rdpRemoteTerminationErrorInfo = termination.errorInfo
-            report.rdpRemoteTerminationErrorInfoName = termination.errorInfoName
-            report.rdpRemoteTerminationDisconnectReason = termination.disconnectReason
-            report.rdpRemoteTerminationDisconnectReasonName = termination.disconnectReasonName
-        }
         if report.error == nil {
             report.status = "success"
             report.nextStage = nextStage
@@ -263,7 +270,7 @@ final class RDPClientConnection {
             report.status = "failure"
             report.nextStage = nil
         }
-        return report
+        return reportStorage.finish()
     }
 
     private var nextStage: String {

@@ -294,18 +294,72 @@ extension Optional {
     }
 }
 
-/// Clipboard PDUs the session sent; filled from whichever thread sends them.
-final class RDPClipboardSentLog: @unchecked Sendable {
+/// A running connection's report, which any thread can read while
+/// `RDPSessionClient.run` or `connect` runs, for example to show diagnostics
+/// during a session. Pass it to the call as `liveReport`.
+///
+/// ``snapshot`` copies the report so far: `status` is "running", `stage` the
+/// one the connection is in, and `nextStage` nil. After a Server Redirection
+/// it is the redirection target's. Once the call returns, it is the report
+/// the call returned or attached to the error `connect` threw.
+public final class RDPLiveConnectionReport: @unchecked Sendable {
     private let lock = NSLock()
-    private var messages: [RDPClipboardMessageSummary] = []
+    private var storage: RDPConnectionReportStorage?
 
-    func append(_ summary: RDPClipboardMessageSummary) {
-        lock.withLock {
-            messages.appendCapped(summary, limit: RDPRecordLimit.messages)
+    public init() {}
+
+    /// A copy of the report so far; nil until the call starts connecting. The
+    /// copy shares the report's lists and takes a lock the connection holds
+    /// only while it records a change, so reading it often costs little.
+    public var snapshot: RDPConnectionReport? {
+        lock.withLock { storage }?.report
+    }
+
+    /// Reads the report of the connection now starting, such as a redirection's.
+    func follow(_ storage: RDPConnectionReportStorage) {
+        lock.withLock { self.storage = storage }
+    }
+}
+
+/// One connection's report. The connection thread fills it, clipboard sends
+/// add to it from whichever thread sends them, and `RDPLiveConnectionReport`
+/// copies it; each access holds the lock, so a copy never sees half a change.
+final class RDPConnectionReportStorage: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: RDPConnectionReport
+    /// The run returned the report: clipboard sends after that leave it as it is.
+    private var isFinished = false
+
+    init(_ report: RDPConnectionReport) {
+        stored = report
+    }
+
+    var report: RDPConnectionReport {
+        _read {
+            lock.lock()
+            defer { lock.unlock() }
+            yield stored
+        }
+        _modify {
+            lock.lock()
+            defer { lock.unlock() }
+            yield &stored
         }
     }
 
-    var snapshot: [RDPClipboardMessageSummary] {
-        lock.withLock { messages }
+    func recordClipboardSent(_ summary: RDPClipboardMessageSummary) {
+        lock.withLock {
+            if !isFinished {
+                stored.rdpClipboardSentMessages.appendCapped(summary, limit: RDPRecordLimit.messages)
+            }
+        }
+    }
+
+    /// The report as the run returns it.
+    func finish() -> RDPConnectionReport {
+        lock.withLock {
+            isFinished = true
+            return stored
+        }
     }
 }

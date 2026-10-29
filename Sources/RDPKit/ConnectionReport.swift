@@ -11,6 +11,8 @@ public struct RDPConnectionWarning: Encodable, Equatable, Sendable {
 }
 
 public struct RDPConnectionReport: Encodable, Equatable, Sendable {
+    /// "success" or "failure" once the run returns, "running" in an
+    /// `RDPLiveConnectionReport` snapshot before that, and "dry-run" from `dryRun`.
     public var status: String
     public var stage: String
     /// The host:port this connection went to: after a Server Redirection, the

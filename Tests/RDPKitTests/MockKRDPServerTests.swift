@@ -366,6 +366,49 @@ struct MockKRDPServerTests {
         #expect(report.error == nil)
     }
 
+    /// The report a frame handler reads is the session's so far; another thread
+    /// reads it throughout, and once the run returns it is the run's report.
+    @Test func liveReportShowsTheSessionWhileItRuns() throws {
+        let liveReport = RDPLiveConnectionReport()
+        let duringFrame = Locked<RDPConnectionReport?>(nil)
+        let reader = Locked((isDone: false, snapshotCount: 0))
+        #expect(liveReport.snapshot == nil)
+
+        let readerThread = Thread {
+            while !reader.value.isDone {
+                if liveReport.snapshot != nil {
+                    reader.withLock { $0.snapshotCount += 1 }
+                }
+            }
+        }
+        readerThread.start()
+        let report = try runMock(client: {
+            RDPSessionClient().run(
+                configuration: $0,
+                onGraphicsFrame: { _ in duringFrame.withLock { $0 = $0 ?? liveReport.snapshot } },
+                liveReport: liveReport
+            )
+        }).report
+        reader.withLock { $0.isDone = true }
+
+        let snapshot = try #require(duringFrame.value)
+        #expect(snapshot.status == "running")
+        #expect(snapshot.connectionStage == .graphics)
+        #expect(snapshot.selectedProtocols == ["tls"])
+        #expect(snapshot.tlsProtocol == "tls1.2")
+        #expect(snapshot.mcsIOChannelID == 1003)
+        #expect(snapshot.rdpGraphicsChannelName == RDPGFXChannel.name)
+        #expect(snapshot.rdpGraphicsFirstFrame?.codecName == "avc420")
+        // The frame is acknowledged once the handler returns.
+        #expect(snapshot.rdpGraphicsFrameAcknowledgeCount == 0)
+        #expect(snapshot.nextStage == nil)
+        #expect(snapshot.error == nil)
+        #expect(report.status == "success")
+        #expect(report.rdpGraphicsFrameAcknowledgeCount == 1)
+        #expect(liveReport.snapshot == report)
+        #expect(reader.value.snapshotCount > 0)
+    }
+
     @Test func clientExplicitlyJoinsEveryMCSChannel() throws {
         let report = try runMock().report
 
@@ -433,7 +476,10 @@ struct MockKRDPServerTests {
     }
 
     @Test func clientFollowsServerRedirectionAndReconnects() throws {
-        let run = try runMock(.init(redirectionBehavior: .redirectFirstConnection))
+        let liveReport = RDPLiveConnectionReport()
+        let run = try runMock(.init(redirectionBehavior: .redirectFirstConnection), client: {
+            RDPSessionClient().run(configuration: $0, liveReport: liveReport)
+        })
 
         // The first connection is redirected mid graphics handshake; the client must
         // reconnect (carrying the routing token) and complete on the second attempt.
@@ -442,6 +488,8 @@ struct MockKRDPServerTests {
         #expect(run.report.rdpGraphicsFirstFrame?.codecName == "avc420")
         #expect(run.report.error == nil)
         #expect(run.report.redirectionDepth == 1)
+        // The live report followed the redirection.
+        #expect(liveReport.snapshot == run.report)
     }
 
     /// Credentials the Client Info PDU cannot hold are the configuration's fault, not the server's.
@@ -479,16 +527,20 @@ struct MockKRDPServerTests {
     @Test func unreachableRedirectionTargetIsMarkedAsAfterTheRedirect() throws {
         var thrown: RDPConnectionError?
         var port: UInt16 = 0
+        let liveReport = RDPLiveConnectionReport()
         let connected = try runMock(.init(redirectionBehavior: .redirectToClosedPort), { $0.host = "localhost" }, client: {
             configuration in
             port = configuration.port
-            thrown = #expect(throws: RDPConnectionError.self) { try RDPSessionClient().connect(configuration: configuration) }
+            thrown = #expect(throws: RDPConnectionError.self) {
+                try RDPSessionClient().connect(configuration: configuration, liveReport: liveReport)
+            }
             return thrown?.report ?? RDPSessionClient().dryRun(configuration: configuration)
         })
         let error = try #require(thrown)
         let ran = try runMock(.init(redirectionBehavior: .redirectToClosedPort), { $0.host = "localhost" })
 
         #expect(connected.connectionCount == 1)
+        #expect(liveReport.snapshot == error.report)
         #expect(error.failure == .connect(error: RDPSocketError(errno: ECONNREFUSED)))
         #expect(error.redirectionDepth == 1)
         #expect(error.target == "127.0.0.1:\(port)")
@@ -1701,6 +1753,8 @@ struct MockKRDPServerTests {
             contents: Data("hello from remote".utf8)
         )
         let observed = Locked(Observed())
+        let liveReport = RDPLiveConnectionReport()
+        let liveSentNames = Locked<[String]>([])
         let report = try runMock(.init(clipboardFiles: [remoteFile]), { $0.clipboardEnabled = true }, client: {
             RDPSessionClient().run(
                 configuration: $0,
@@ -1730,13 +1784,18 @@ struct MockKRDPServerTests {
                         }
                     case 2:
                         observed.withLock { $0.remoteFileData = response.data }
+                        liveSentNames.withLock { $0 = liveReport.snapshot?.rdpClipboardSentMessages?.map(\.typeName) ?? [] }
                     default:
                         break
                     }
-                }
+                },
+                liveReport: liveReport
             )
         }).report
 
+        // The clipboard PDUs sent so far are in the live report before the run returns.
+        #expect(liveSentNames.value.contains("clipboard-file-contents-request"))
+        #expect(liveReport.snapshot == report)
         let sentNames = report.rdpClipboardSentMessages?.map(\.typeName) ?? []
         let receivedNames = report.rdpClipboardMessages?.map(\.typeName) ?? []
         #expect(report.status == "success")

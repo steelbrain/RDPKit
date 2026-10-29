@@ -53,6 +53,8 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
     private var audioMessage: String?
     private var remoteAudioPlayer = RDPAudioPlayer()
     private var report: RDPConnectionReport?
+    /// The last connection's report while it runs, for Stats for Nerds until `report` arrives.
+    private var liveReport: RDPLiveConnectionReport?
     private var serverCertificateInfo: RDPServerCertificateInfo?
     private var previewFrame: RDPFrameMetadata?
     /// The newest presented frame, for the diagnostics timer to publish its codec.
@@ -574,7 +576,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         let now = Date()
         let nextSnapshot = RemoteSessionDiagnosticsSnapshot(
             title: sessionDisplayName,
-            report: report,
+            report: report ?? liveReport?.snapshot,
             previewFrame: previewFrame,
             previewFrameCount: previewFrameCount,
             presentedFrameCount: presentedFrameCount,
@@ -611,6 +613,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
 
         formError = nil
         report = nil
+        liveReport = nil
         serverCertificateInfo = nil
         previewFrame = nil
         latestPresentedFrame = nil
@@ -712,9 +715,11 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
 
         let connectionID = UUID()
         let cancellation = RDPConnectionCancellation()
+        let liveReport = RDPLiveConnectionReport()
         let connectionStartedAt = Date()
         activeConnectionID = connectionID
         activeCancellation = cancellation
+        self.liveReport = liveReport
         renderMetricsStore.reset(connectionStartedAt: connectionStartedAt)
         updateViewerMetricsSummary(renderMetricsStore.metrics)
         isConnecting = true
@@ -920,6 +925,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                 onWireReceive: { sample in
                     wireReceiveCoalescer.record(sample)
                 },
+                liveReport: liveReport,
                 cancellation: cancellation
             )
             // A license the server issued stays valid even when the user ends the session.

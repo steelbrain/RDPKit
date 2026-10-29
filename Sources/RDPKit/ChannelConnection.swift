@@ -167,14 +167,14 @@ extension RDPClientConnection {
             switch name {
             case RDPStaticVirtualChannel.cliprdr.name:
                 report.rdpClipboardChannelID = channelID
-                let log = clipboardSentLog
+                let storage = reportStorage
                 clipboard = RDPClipboardSession(
                     userChannelID: userChannelID,
                     staticChannelID: channelID,
                     channel: channel,
                     chunkSize: staticChannelChunkSize,
                     requestsRichFormats: callbacks.onClipboardContent != nil,
-                    sentMessageHandler: { summary, _ in log.append(summary) }
+                    sentMessageHandler: { summary, _ in storage.recordClipboardSent(summary) }
                 )
             case RDPStaticVirtualChannel.rdpsnd.name:
                 report.rdpAudioChannelID = channelID

@@ -62,6 +62,7 @@ struct RDPSessionCallbacks {
     var onCertificate: RDPServerCertificateHandler?
     var onWireReceive: RDPWireReceiveHandler?
     var wireTranscript: RDPWireTranscript?
+    var liveReport: RDPLiveConnectionReport?
     var cancellation: RDPConnectionCancellation?
     var shouldCancel: RDPCancellationHandler?
 

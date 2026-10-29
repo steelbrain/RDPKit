@@ -6,7 +6,8 @@ import Foundation
 /// them from a dedicated thread, never from an event loop or a Swift
 /// concurrency executor. Every handler runs synchronously on that thread,
 /// except `onWireReceive`, which runs on the NIO event loop and must not block.
-/// A slow handler delays every channel.
+/// A slow handler delays every channel. Any thread can read the report so far
+/// from `liveReport` while the call runs.
 ///
 /// `onCertificate` runs after the TLS handshake and before any credential is
 /// sent: cancelling `cancellation` (or returning true from `shouldCancel`)
@@ -48,6 +49,7 @@ public struct RDPSessionClient: Sendable {
         onCertificate: RDPServerCertificateHandler? = nil,
         onWireReceive: RDPWireReceiveHandler? = nil,
         wireTranscript: RDPWireTranscript? = nil,
+        liveReport: RDPLiveConnectionReport? = nil,
         cancellation: RDPConnectionCancellation? = nil,
         shouldCancel: RDPCancellationHandler? = nil
     ) -> RDPConnectionReport {
@@ -66,6 +68,7 @@ public struct RDPSessionClient: Sendable {
             onCertificate: onCertificate,
             onWireReceive: onWireReceive,
             wireTranscript: wireTranscript,
+            liveReport: liveReport,
             cancellation: cancellation,
             shouldCancel: shouldCancel
         )
@@ -98,6 +101,7 @@ public struct RDPSessionClient: Sendable {
         onCertificate: RDPServerCertificateHandler? = nil,
         onWireReceive: RDPWireReceiveHandler? = nil,
         wireTranscript: RDPWireTranscript? = nil,
+        liveReport: RDPLiveConnectionReport? = nil,
         cancellation: RDPConnectionCancellation? = nil,
         shouldCancel: RDPCancellationHandler? = nil
     ) throws -> RDPConnectionReport {
@@ -116,6 +120,7 @@ public struct RDPSessionClient: Sendable {
             onCertificate: onCertificate,
             onWireReceive: onWireReceive,
             wireTranscript: wireTranscript,
+            liveReport: liveReport,
             cancellation: cancellation,
             shouldCancel: shouldCancel
         )
