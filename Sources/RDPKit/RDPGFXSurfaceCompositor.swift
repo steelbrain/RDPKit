@@ -914,7 +914,8 @@ final class RDPGFXSurfaceCompositor {
 
     /// Copies a packed `width` x `height` BGRA bitmap to each destination point of a surface
     /// and returns the rectangles written. `decoded` and `decoderLacks` are in bitmap
-    /// coordinates, as `Surface.markCopied` takes them.
+    /// coordinates, as `Surface.markCopied` takes them. A point outside the surface rejects
+    /// the whole copy before anything is written, as the decoder never gets it.
     private func copy(
         _ pixels: Data,
         width: Int,
@@ -925,18 +926,25 @@ final class RDPGFXSurfaceCompositor {
         decoderLacks: [RDPGFXRect16]?
     ) throws -> [RDPGFXRect16] {
         try modifySurface(surfaceID) { surface in
-            try points.map { point in
+            let rects = try points.map { point in
                 let x = Int(point.x)
                 let y = Int(point.y)
+                guard surface.contains(x: x, y: y, width: width, height: height) else {
+                    throw RDPDecodeError.invalidRDPGFXPDU
+                }
+                return RDPGFXRect16(left: UInt16(x), top: UInt16(y), right: UInt16(x + width), bottom: UInt16(y + height))
+            }
+            for rect in rects {
+                let x = Int(rect.left)
+                let y = Int(rect.top)
                 try surface.write(pixels, bytesPerRow: width * 4, width: width, height: height, x: x, y: y)
-                let rect = RDPGFXRect16(left: UInt16(x), top: UInt16(y), right: UInt16(x + width), bottom: UInt16(y + height))
                 surface.markCopied(
                     into: rect,
                     decoded: decoded.offsetBy(dx: x, dy: y),
                     decoderLacks: decoderLacks?.offsetBy(dx: x, dy: y)
                 )
-                return rect
             }
+            return rects
         }
     }
 }

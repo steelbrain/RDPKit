@@ -1836,6 +1836,40 @@ import Testing
     }
 }
 
+/// A copy with a destination point outside the surface is rejected whole, so the copies to
+/// its other points are not recorded as ones the decoder made.
+@Test func compositorRejectsCopiesWithAnyDestinationOutsideTheSurface() throws {
+    let compositor = RDPGFXSurfaceCompositor(outputWidth: 64, outputHeight: 32)
+    let clearCodec = RDPClearCodecDecoder()
+    try compositor.process(try createSurfaceMessage(surfaceID: 0, width: 64, height: 32), clearCodec: clearCodec)
+    try compositor.process(try createSurfaceMessage(surfaceID: 2, width: 64, height: 32), clearCodec: clearCodec)
+    try compositor.process(try mapSurfaceToOutputMessage(surfaceID: 0, x: 0, y: 0), clearCodec: clearCodec)
+    compositor.noteVideo(fullSurfaceVideo(surfaceID: 0, width: 64, height: 32))
+
+    #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
+        try compositor.process(
+            try surfaceToSurfaceMessage(
+                sourceSurfaceID: 0,
+                destinationSurfaceID: 2,
+                sourceRect: RDPGFXRect16(left: 0, top: 0, right: 16, bottom: 16),
+                destinationPoints: [RDPGFXPoint16(x: 0, y: 0), RDPGFXPoint16(x: 56, y: 0)]
+            ),
+            clearCodec: clearCodec
+        )
+    }
+    #expect(!compositor.isOnDecoder(surfaceID: 2))
+    let copyBack = try compositor.process(
+        try surfaceToSurfaceMessage(
+            sourceSurfaceID: 2,
+            destinationSurfaceID: 0,
+            sourceRect: RDPGFXRect16(left: 0, top: 0, right: 16, bottom: 16),
+            destinationPoints: [RDPGFXPoint16(x: 0, y: 0)]
+        ),
+        clearCodec: clearCodec
+    )
+    #expect(copyBack == nil)
+}
+
 @Test func compositorRejectsSurfaceMappingWithMissingSurface() throws {
     let compositor = RDPGFXSurfaceCompositor()
     let clearCodec = RDPClearCodecDecoder()
