@@ -1,3 +1,4 @@
+import Foundation
 import RDPCommandLineSupport
 @testable import RDPFirstFrameCapture
 @testable import RDPFrameBenchmark
@@ -147,6 +148,17 @@ import Testing
     let ended = RDPFrameBenchmark.captureOutcome(capturedFrameCount: 3, requestedFrameCount: 10, report: report)
     #expect(ended.status == "incomplete")
     #expect(ended.error == "captured 3 of 10 requested frames")
+}
+
+@Test func frameBenchmarkPeakMemoryIsNeverBelowItsSamples() {
+    let start = ProcessSample(wallTime: Date(timeIntervalSince1970: 0), cpuTimeSeconds: 0, residentMemoryBytes: 1000)
+    let end = ProcessSample(wallTime: Date(timeIntervalSince1970: 1), cpuTimeSeconds: 0, residentMemoryBytes: 3000)
+
+    // The running peak began before `start` and saw nothing in between, as for a refused connection.
+    let delta = measurementDelta(start: start, end: end, peakResidentMemoryBytes: 800)
+
+    #expect(delta.residentMemoryDeltaBytes == 2000)
+    #expect(delta.residentMemoryPeakDeltaBytes == 2000)
 }
 
 @Test func connectionOptionsRejectPortZero() {

@@ -89,7 +89,7 @@ private struct StrategyBenchmarkReport: Encodable {
     var errors: [String]
 }
 
-private struct ProcessSample {
+struct ProcessSample {
     var wallTime: Date
     var cpuTimeSeconds: Double
     var residentMemoryBytes: Int64
@@ -145,7 +145,7 @@ private final class LiveCaptureAccumulator: @unchecked Sendable {
     }
 }
 
-private struct MeasurementDelta {
+struct MeasurementDelta {
     var wallMilliseconds: Double
     var cpuMilliseconds: Double
     var residentMemoryDeltaBytes: Int64
@@ -564,16 +564,19 @@ private func currentResidentMemoryBytes() -> Int64 {
     return Int64(info.resident_size)
 }
 
-private func measurementDelta(
+/// `peakResidentMemoryBytes` is the most seen between the samples; it can start before
+/// `start`, so the peak also counts both samples.
+func measurementDelta(
     start: ProcessSample,
     end: ProcessSample,
     peakResidentMemoryBytes: Int64
 ) -> MeasurementDelta {
-    MeasurementDelta(
+    let peak = max(peakResidentMemoryBytes, start.residentMemoryBytes, end.residentMemoryBytes)
+    return MeasurementDelta(
         wallMilliseconds: end.wallTime.timeIntervalSince(start.wallTime) * 1000,
         cpuMilliseconds: max(0, end.cpuTimeSeconds - start.cpuTimeSeconds) * 1000,
         residentMemoryDeltaBytes: end.residentMemoryBytes - start.residentMemoryBytes,
-        residentMemoryPeakDeltaBytes: peakResidentMemoryBytes - start.residentMemoryBytes
+        residentMemoryPeakDeltaBytes: peak - start.residentMemoryBytes
     )
 }
 
