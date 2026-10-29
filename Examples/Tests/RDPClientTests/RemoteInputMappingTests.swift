@@ -39,27 +39,28 @@ import Testing
 
 @Test func commandSendsWindowsKeyOnlyWithAnotherKeyOrAsATap() {
     let leftWindows = RDPKeyboardScancode(code: 0x5B, isExtended: true)
+    let nothingDown = RDPInputStateTracker()
     var inputState = RDPInputStateTracker()
     var windowsKey = MacRDPDeferredModifierKeys()
 
     // Command released alone: a Win tap.
-    windowsKey.press(leftWindows)
+    windowsKey.press(leftWindows, inputState: nothingDown)
     #expect(windowsKey.release(leftWindows) == [
         .keyboard(scancode: leftWindows, isReleased: false),
         .keyboard(scancode: leftWindows, isReleased: true),
     ])
 
     // Another key while Command is held: Win down goes first and is then tracked as pressed.
-    windowsKey.press(leftWindows)
+    windowsKey.press(leftWindows, inputState: nothingDown)
     #expect(windowsKey.flush(&inputState) == [.keyboard(scancode: leftWindows, isReleased: false)])
     #expect(inputState.isScancodePressed(leftWindows))
     #expect(windowsKey.release(leftWindows).isEmpty)
 
     // A shortcut handled locally (only its key-up seen), or focus loss: nothing at all.
-    windowsKey.press(leftWindows)
+    windowsKey.press(leftWindows, inputState: nothingDown)
     windowsKey.noteChordedElsewhere()
     #expect(windowsKey.release(leftWindows).isEmpty)
-    windowsKey.press(leftWindows)
+    windowsKey.press(leftWindows, inputState: nothingDown)
     windowsKey.reset()
     #expect(windowsKey.isHeld(leftWindows) == false)
 }
@@ -69,36 +70,57 @@ import Testing
 @Test func rightAltIsHeldBackLikeTheWindowsKeyButNotSentAheadOfModifiers() {
     let leftWindows = RDPKeyboardScancode(code: 0x5B, isExtended: true)
     let rightAlt = RDPKeyboardScancode(code: 0x38, isExtended: true)
+    let nothingDown = RDPInputStateTracker()
     var inputState = RDPInputStateTracker()
     var heldKeys = MacRDPDeferredModifierKeys()
     #expect(MacRDPDeferredModifierKeys.isDeferred(rightAlt))
     #expect(MacRDPDeferredModifierKeys.isDeferred(RDPKeyboardScancode(code: 0x38)) == false)
 
     // Released alone: an Alt tap; ahead of another key: Alt down.
-    heldKeys.press(rightAlt)
+    heldKeys.press(rightAlt, inputState: nothingDown)
     #expect(heldKeys.release(rightAlt) == [
         .keyboard(scancode: rightAlt, isReleased: false),
         .keyboard(scancode: rightAlt, isReleased: true),
     ])
-    heldKeys.press(rightAlt)
+    heldKeys.press(rightAlt, inputState: nothingDown)
     #expect(heldKeys.flush(&inputState) == [.keyboard(scancode: rightAlt, isReleased: false)])
     #expect(inputState.isScancodePressed(rightAlt))
 
     // Ahead of Shift: Win goes, Alt stays held back, and releasing it is no tap.
-    heldKeys.press(leftWindows)
-    heldKeys.press(rightAlt)
+    heldKeys.press(leftWindows, inputState: nothingDown)
+    heldKeys.press(rightAlt, inputState: nothingDown)
     #expect(heldKeys.flushWindowsKeys(&inputState) == [.keyboard(scancode: leftWindows, isReleased: false)])
     #expect(heldKeys.isHeld(rightAlt))
     #expect(heldKeys.release(rightAlt).isEmpty)
-    heldKeys.press(rightAlt)
+    heldKeys.press(rightAlt, inputState: nothingDown)
     #expect(heldKeys.flushWindowsKeys(&inputState).isEmpty)
     #expect(heldKeys.release(rightAlt).isEmpty)
 
     // Held back together, as in Cmd-Option-Esc, which the server never sees: no taps.
-    heldKeys.press(leftWindows)
-    heldKeys.press(rightAlt)
+    heldKeys.press(leftWindows, inputState: nothingDown)
+    heldKeys.press(rightAlt, inputState: nothingDown)
     #expect(heldKeys.release(rightAlt).isEmpty)
     #expect(heldKeys.release(leftWindows).isEmpty)
+}
+
+/// Command-click sends Win, so the other Command or right Option pressed while that Win is
+/// down is a chord too, and the same goes the other way round: released alone, it sends
+/// nothing rather than a tap, and with another key it still goes down ahead of it.
+@Test func aKeyHeldBackWhileAnotherIsOnTheServerIsNoTap() {
+    let leftWindows = RDPKeyboardScancode(code: 0x5B, isExtended: true)
+    let rightWindows = RDPKeyboardScancode(code: 0x5C, isExtended: true)
+    let rightAlt = RDPKeyboardScancode(code: 0x38, isExtended: true)
+    for (first, second) in [(leftWindows, rightWindows), (leftWindows, rightAlt), (rightAlt, leftWindows)] {
+        var inputState = RDPInputStateTracker()
+        var heldKeys = MacRDPDeferredModifierKeys()
+        heldKeys.press(first, inputState: inputState)
+        #expect(heldKeys.flush(&inputState) == [.keyboard(scancode: first, isReleased: false)])
+
+        heldKeys.press(second, inputState: inputState)
+        #expect(heldKeys.release(second).isEmpty)
+        heldKeys.press(second, inputState: inputState)
+        #expect(heldKeys.flush(&inputState) == [.keyboard(scancode: second, isReleased: false)])
+    }
 }
 
 /// The key ANSI keyboards have left of "1" sits between left Shift and Z on ISO keyboards.
@@ -585,6 +607,108 @@ private func keyEvent(
     #expect(input.events == [
         .keyboard(scancode: leftWindows, isReleased: false),
         .keyboard(scancode: leftWindows, isReleased: true),
+    ])
+}
+
+// Command-click sends Win, and the other Command or right Option tapped while it is down must not
+// send a lone tap; nor must Command after Option-click sent Alt. Chords with a key still go.
+@MainActor
+@Test func aModifierTappedWhileAnotherIsOnTheServerSendsNoTap() throws {
+    let leftWindows = RDPKeyboardScancode(code: 0x5B, isExtended: true)
+    let rightWindows = RDPKeyboardScancode(code: 0x5C, isExtended: true)
+    let rightAlt = RDPKeyboardScancode(code: 0x38, isExtended: true)
+    let keyR = RDPKeyboardScancode(code: 0x13)
+    // Device-dependent side bits (NX_DEVICE*KEYMASK).
+    let leftCommand = NSEvent.ModifierFlags(rawValue: NSEvent.ModifierFlags.command.rawValue | 0x08)
+    let bothCommands = NSEvent.ModifierFlags(rawValue: NSEvent.ModifierFlags.command.rawValue | 0x18)
+    let rightOption = NSEvent.ModifierFlags(rawValue: NSEvent.ModifierFlags.option.rawValue | 0x40)
+    let input = RecordedInput()
+    let view = RemoteInputCaptureNSView()
+    view.inputSession = input
+    view.frame = CGRect(x: 0, y: 0, width: 100, height: 100)
+    view.rdpFrame = RDPFrameMetadata(RDPGraphicsFrameSnapshot(
+        frameID: nil,
+        surfaceID: 0,
+        codecID: 0,
+        codecName: "test",
+        pixelFormat: 0,
+        destinationRect: RDPFrameRect(left: 0, top: 0, right: 100, bottom: 100),
+        regionRects: [],
+        encodedVideoData: Data()
+    ))
+    func modifier(_ keyCode: Int, _ flags: NSEvent.ModifierFlags) throws {
+        view.flagsChanged(with: try keyEvent(.flagsChanged, keyCode: keyCode, modifierFlags: flags))
+    }
+    func click(_ flags: NSEvent.ModifierFlags) throws {
+        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            let event = try #require(NSEvent.mouseEvent(
+                with: type,
+                location: CGPoint(x: 10, y: 90),
+                modifierFlags: flags,
+                timestamp: 0,
+                windowNumber: 0,
+                context: nil,
+                eventNumber: 0,
+                clickCount: 1,
+                pressure: 1
+            ))
+            if type == .leftMouseDown {
+                view.mouseDown(with: event)
+            } else {
+                view.mouseUp(with: event)
+            }
+        }
+    }
+    func pressR(_ flags: NSEvent.ModifierFlags) throws {
+        view.keyDown(with: try keyEvent(.keyDown, keyCode: kVK_ANSI_R, characters: "r", modifierFlags: flags))
+        view.keyUp(with: try keyEvent(.keyUp, keyCode: kVK_ANSI_R, characters: "r", modifierFlags: flags))
+    }
+
+    // Command-click; the other Command tapped, then with R; right Option tapped.
+    try modifier(kVK_Command, leftCommand)
+    try click(leftCommand)
+    try modifier(kVK_RightCommand, bothCommands)
+    try modifier(kVK_RightCommand, leftCommand)
+    try modifier(kVK_RightCommand, bothCommands)
+    try pressR(bothCommands)
+    try modifier(kVK_RightCommand, leftCommand)
+    try modifier(kVK_RightOption, leftCommand.union(rightOption))
+    try modifier(kVK_RightOption, leftCommand)
+    try modifier(kVK_Command, [])
+    // Option-click; Command tapped, then with R.
+    try modifier(kVK_RightOption, rightOption)
+    try click(rightOption)
+    try modifier(kVK_Command, rightOption.union(leftCommand))
+    try modifier(kVK_Command, rightOption)
+    try modifier(kVK_Command, rightOption.union(leftCommand))
+    try pressR(rightOption.union(leftCommand))
+    try modifier(kVK_Command, rightOption)
+    try modifier(kVK_RightOption, [])
+
+    // Only the order matters here, not where on the desktop the clicks land.
+    let events = input.events.map { event in
+        guard case let .pointerButton(button, isDown, _, _) = event else {
+            return event
+        }
+        return .pointerButton(button: button, isDown: isDown, x: 0, y: 0)
+    }
+    #expect(events == [
+        .keyboard(scancode: leftWindows, isReleased: false),
+        .pointerButton(button: .left, isDown: true, x: 0, y: 0),
+        .pointerButton(button: .left, isDown: false, x: 0, y: 0),
+        .keyboard(scancode: rightWindows, isReleased: false),
+        .keyboard(scancode: keyR, isReleased: false),
+        .keyboard(scancode: keyR, isReleased: true),
+        .keyboard(scancode: rightWindows, isReleased: true),
+        .keyboard(scancode: leftWindows, isReleased: true),
+        .keyboard(scancode: rightAlt, isReleased: false),
+        .pointerButton(button: .left, isDown: true, x: 0, y: 0),
+        .pointerButton(button: .left, isDown: false, x: 0, y: 0),
+        .keyboard(scancode: leftWindows, isReleased: false),
+        .keyboard(scancode: keyR, isReleased: false),
+        .keyboard(scancode: keyR, isReleased: true),
+        .keyboard(scancode: leftWindows, isReleased: true),
+        .keyboard(scancode: rightAlt, isReleased: true),
     ])
 }
 

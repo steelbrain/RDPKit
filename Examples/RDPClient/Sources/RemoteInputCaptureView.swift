@@ -208,7 +208,7 @@ final class RemoteInputCaptureNSView: NSView {
                inputState.isScancodePressed(change.scancode) == false
             {
                 if change.isDown {
-                    deferredModifierKeys.press(change.scancode)
+                    deferredModifierKeys.press(change.scancode, inputState: inputState)
                 } else {
                     inputSession?.send(deferredModifierKeys.release(change.scancode))
                 }
@@ -392,11 +392,18 @@ enum MacRDPScrollWheel {
 /// nothing. Another modifier pressed meanwhile sends the Windows keys but not Alt, since
 /// Option-Shift types characters too. Left Option goes as Alt at once, for shortcuts.
 struct MacRDPDeferredModifierKeys {
+    /// Both Windows keys and right Alt.
+    private static let deferredScancodes = [
+        RDPKeyboardScancode(code: 0x5B, isExtended: true),
+        RDPKeyboardScancode(code: 0x5C, isExtended: true),
+        RDPKeyboardScancode(code: 0x38, isExtended: true),
+    ]
+
     private var heldScancodes: [RDPKeyboardScancode] = []
     private var isChordedElsewhere = false
 
     static func isDeferred(_ scancode: RDPKeyboardScancode) -> Bool {
-        isWindowsKey(scancode) || scancode == RDPKeyboardScancode(code: 0x38, isExtended: true)
+        deferredScancodes.contains(scancode)
     }
 
     private static func isWindowsKey(_ scancode: RDPKeyboardScancode) -> Bool {
@@ -407,12 +414,17 @@ struct MacRDPDeferredModifierKeys {
         heldScancodes.contains(scancode)
     }
 
-    /// Keys held back together are a chord, so releasing them sends nothing.
-    mutating func press(_ scancode: RDPKeyboardScancode) {
-        if heldScancodes.contains(scancode) == false {
-            noteChordedElsewhere()
-            heldScancodes.append(scancode)
+    /// Keys held back together are a chord, and so is a key pressed while another one already
+    /// went to the server, as Command-click sends Win: releasing it sends nothing, rather than a
+    /// Win or Alt tap with that key still down.
+    mutating func press(_ scancode: RDPKeyboardScancode, inputState: RDPInputStateTracker) {
+        guard heldScancodes.contains(scancode) == false else {
+            return
         }
+        if heldScancodes.isEmpty == false || Self.deferredScancodes.contains(where: inputState.isScancodePressed) {
+            isChordedElsewhere = true
+        }
+        heldScancodes.append(scancode)
     }
 
     /// Sends the held keys down, ahead of another key, button or wheel event.
