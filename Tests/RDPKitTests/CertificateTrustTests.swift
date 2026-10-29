@@ -79,3 +79,36 @@ import Testing
         )
     }
 }
+
+/// Busy threads at the caller's QoS hold every CPU, as a test run's or an
+/// app's decoding work can: the evaluation still runs instead of waiting for
+/// a thread until its deadline and reporting the certificate untrusted.
+@Test func trustEvaluationRunsWhileBusyThreadsHoldEveryCPU() throws {
+    let certificates = try MockKRDPTLS.configuration().certificateChain.compactMap {
+        if case let .certificate(certificate) = $0 { certificate } else { nil }
+    }
+    let stop = Locked(false)
+    let spinners = DispatchGroup()
+    for _ in 0 ..< ProcessInfo.processInfo.activeProcessorCount {
+        DispatchQueue.global(qos: .userInitiated).async(group: spinners) {
+            // Spin, checking the lock only once a millisecond so no spinner blocks on it.
+            while !stop.value {
+                let end = DispatchTime.now() + .milliseconds(1)
+                while DispatchTime.now() < end {}
+            }
+        }
+    }
+    defer {
+        stop.withLock { $0 = true }
+        spinners.wait()
+    }
+
+    let info = try inspectPeerCertificates(
+        certificates,
+        host: "127.0.0.1",
+        hideCertificateWarnings: false,
+        timeoutSeconds: 3,
+        callbacks: RDPSessionCallbacks()
+    )
+    #expect(info.warnings.map(\.message).allSatisfy { !$0.contains("did not finish") })
+}

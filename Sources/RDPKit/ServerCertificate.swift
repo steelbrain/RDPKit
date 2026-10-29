@@ -79,7 +79,10 @@ private func evaluate(
 ) throws -> (trusted: Bool, detail: String?) {
     let result = RDPTrustEvaluation(trust)
     let completed = DispatchSemaphore(value: 0)
-    trustEvaluationQueue.async {
+    // A serial queue of its own is overcommit: it gets a thread even while busy
+    // threads hold every CPU, which would hold a concurrent queue's work back
+    // until the deadline and leave a trusted server reported untrusted.
+    DispatchQueue(label: "RDPKit.certificateTrust").async {
         result.run()
         completed.signal()
     }
@@ -97,8 +100,6 @@ private func evaluate(
     }
     return result.outcome
 }
-
-private let trustEvaluationQueue = DispatchQueue(label: "RDPKit.certificateTrust", attributes: .concurrent)
 
 /// A trust evaluation handed to another thread; `outcome` is read after it ran.
 private final class RDPTrustEvaluation: @unchecked Sendable {
