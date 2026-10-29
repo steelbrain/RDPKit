@@ -1,5 +1,6 @@
 import RDPCommandLineSupport
 @testable import RDPFirstFrameCapture
+@testable import RDPFrameBenchmark
 import RDPKit
 import Testing
 
@@ -90,6 +91,35 @@ import Testing
     }
     #expect(throws: RDPCommandLineError.invalidValue(option: "--desktop-height", value: "8193", expected: "480...8192")) {
         try FirstFrameCaptureOptions.parse(["RDPFirstFrameCapture", "--desktop-height", "8193"])
+    }
+}
+
+@Test func frameBenchmarkParsesSizes() throws {
+    let args = try RDPFrameBenchmark.parseArguments([
+        "RDPFrameBenchmark", "--desktop-size", "1920x1080", "--display-resize", "2768X1492",
+    ])
+
+    #expect(args.connection.desktopWidth == 1920)
+    #expect(args.connection.desktopHeight == 1080)
+    #expect(args.displayResize?.width == 2768)
+    #expect(args.displayResize?.height == 1492)
+}
+
+@Test func frameBenchmarkRejectsSizesOutsideProtocolLimits() {
+    // RDPConnectionConfiguration would otherwise clamp 320x200 to 640x480 without a word.
+    #expect(throws: RDPCommandLineError.invalidValue(
+        option: "--desktop-size",
+        value: "320x200",
+        expected: "<width>x<height> within 640...8192 x 480...8192"
+    )) {
+        try RDPFrameBenchmark.parseArguments(["RDPFrameBenchmark", "--desktop-size", "320x200"])
+    }
+    #expect(throws: RDPCommandLineError.invalidValue(
+        option: "--display-resize",
+        value: "100x100",
+        expected: "<width>x<height> within 200...8192 x 200...8192"
+    )) {
+        try RDPFrameBenchmark.parseArguments(["RDPFrameBenchmark", "--display-resize", "100x100"])
     }
 }
 

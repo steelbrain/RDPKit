@@ -72,6 +72,7 @@ let package = Package(
             dependencies: [
                 "RDPCommandLineSupport",
                 "RDPFirstFrameCapture",
+                "RDPFrameBenchmark",
             ],
             path: "Tests/RDPCommandLineToolTests"
         ),

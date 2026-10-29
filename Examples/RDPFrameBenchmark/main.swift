@@ -5,10 +5,10 @@ import Foundation
 import RDPCommandLineSupport
 import RDPKit
 
-private struct BenchmarkArguments {
+struct BenchmarkArguments {
     var connection = RDPCommandLineConnectionOptions(timeoutSeconds: 60)
     var frames = 10
-    var displayResize: BenchmarkDisplaySize?
+    var displayResize: (width: UInt16, height: UInt16)?
     var json = false
 
     /// Every profile unless `--graphics-profile` selected a subset.
@@ -16,25 +16,6 @@ private struct BenchmarkArguments {
         connection.graphicsCapabilityProfiles.isEmpty
             ? RDPGraphicsCapabilityProfile.allCases
             : connection.graphicsCapabilityProfiles
-    }
-}
-
-private struct BenchmarkDisplaySize: Equatable {
-    var width: UInt16
-    var height: UInt16
-
-    init?(_ text: String) {
-        let parts = text.lowercased().split(separator: "x", maxSplits: 1)
-        guard parts.count == 2,
-              let width = UInt16(parts[0]),
-              let height = UInt16(parts[1]),
-              width > 0,
-              height > 0
-        else {
-            return nil
-        }
-        self.width = width
-        self.height = height
     }
 }
 
@@ -176,7 +157,7 @@ private struct FrameTiming {
     var cpuMilliseconds: Double
 }
 
-private enum RDPFrameBenchmark {
+enum RDPFrameBenchmark {
     static func main() {
         if RDPCommandLineArguments.requestsHelp(CommandLine.arguments) {
             printUsage()
@@ -494,7 +475,7 @@ private enum RDPFrameBenchmark {
         }
     }
 
-    private static func parseArguments(_ values: [String]) throws -> BenchmarkArguments {
+    static func parseArguments(_ values: [String]) throws -> BenchmarkArguments {
         var args = BenchmarkArguments()
         var cursor = RDPCommandLineArguments(values)
         while let option = cursor.nextOption() {
@@ -505,11 +486,16 @@ private enum RDPFrameBenchmark {
             case "--frames":
                 args.frames = try cursor.positiveInteger(for: option)
             case "--desktop-size":
-                let size = try cursor.value(for: option, expected: "<width>x<height>", BenchmarkDisplaySize.init)
+                let size = try cursor.size(
+                    for: option,
+                    widths: RDPCommandLineConnectionOptions.desktopWidths,
+                    heights: RDPCommandLineConnectionOptions.desktopHeights
+                )
                 args.connection.desktopWidth = size.width
                 args.connection.desktopHeight = size.height
             case "--display-resize":
-                args.displayResize = try cursor.value(for: option, expected: "<width>x<height>", BenchmarkDisplaySize.init)
+                // A monitor is 200...8192 pixels each way ([MS-RDPEDISP] 2.2.2.2.1).
+                args.displayResize = try cursor.size(for: option, widths: 200 ... 8192, heights: 200 ... 8192)
             case "--json":
                 args.json = true
             default:

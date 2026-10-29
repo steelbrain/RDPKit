@@ -67,10 +67,34 @@ public struct RDPCommandLineArguments {
             Int(text).flatMap { $0 > 0 ? $0 : nil }
         }
     }
+
+    /// A `<width>x<height>` size within `widths` and `heights`.
+    public mutating func size(
+        for option: String,
+        widths: ClosedRange<UInt16>,
+        heights: ClosedRange<UInt16>
+    ) throws -> (width: UInt16, height: UInt16) {
+        try value(for: option, expected: "<width>x<height> within \(widths) x \(heights)") { text in
+            let parts = text.lowercased().split(separator: "x", omittingEmptySubsequences: false)
+            guard parts.count == 2,
+                  let width = UInt16(parts[0]),
+                  let height = UInt16(parts[1]),
+                  widths.contains(width),
+                  heights.contains(height)
+            else {
+                return nil
+            }
+            return (width, height)
+        }
+    }
 }
 
 /// Connection options shared by the example command-line tools.
 public struct RDPCommandLineConnectionOptions: Equatable, Sendable {
+    /// The desktop sizes RDPConnectionConfiguration keeps; it clamps any other.
+    public static let desktopWidths: ClosedRange<UInt16> = 640 ... 8192
+    public static let desktopHeights: ClosedRange<UInt16> = 480 ... 8192
+
     public var host: String?
     public var port: UInt16 = 3389
     public var username: String?
@@ -108,12 +132,12 @@ public struct RDPCommandLineConnectionOptions: Equatable, Sendable {
         case "--timeout-seconds":
             timeoutSeconds = try arguments.positiveInteger(for: option)
         case "--desktop-width":
-            desktopWidth = try arguments.value(for: option, expected: "640...8192") { text in
-                UInt16(text).flatMap { (640 ... 8192).contains($0) ? $0 : nil }
+            desktopWidth = try arguments.value(for: option, expected: "\(Self.desktopWidths)") { text in
+                UInt16(text).flatMap { Self.desktopWidths.contains($0) ? $0 : nil }
             }
         case "--desktop-height":
-            desktopHeight = try arguments.value(for: option, expected: "480...8192") { text in
-                UInt16(text).flatMap { (480 ... 8192).contains($0) ? $0 : nil }
+            desktopHeight = try arguments.value(for: option, expected: "\(Self.desktopHeights)") { text in
+                UInt16(text).flatMap { Self.desktopHeights.contains($0) ? $0 : nil }
             }
         case "--graphics-profile":
             let expected = RDPGraphicsCapabilityProfile.allCases.map(\.rawValue).joined(separator: "|")
