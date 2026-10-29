@@ -29,6 +29,16 @@ enum MacRDPKeyboardLayout {
     /// reports the layout it types with. Unknown layouts fall back to US English. A Japanese
     /// input source typing with US English gets Windows' Japanese layout instead; see
     /// `windowsKeyboard(_:isJapaneseInputSource:isJISKeyboard:)`.
+    ///
+    /// Windows applies the announced layout only to a session it creates; connecting to an
+    /// existing one, disconnected or on the console, keeps that session's layout ([MS-RDPBCGR]
+    /// 2.2.1.3.2 and its product behavior note 6), though the keyboard type and subtype apply
+    /// (live, Windows 11, 2026-10-29: announcing 0x411 left 0x409 active, with type 7
+    /// reported). Nothing a client sends in a desktop session changes it: the one layout sync
+    /// is RemoteApp's ([MS-RDPERP] 2.2.2.10.1). Nor does any PDU tell the client which layout
+    /// the session kept, so RDPClient cannot detect it; keys sent as scancodes then type that
+    /// layout's characters until the user switches the session's layout on the server, or
+    /// signs out there so that the next connection creates the session.
     @MainActor
     static func current() -> MacRDPWindowsKeyboard {
         let layoutSourceID: String? = TISCopyCurrentKeyboardLayoutInputSource().flatMap {
