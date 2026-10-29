@@ -76,3 +76,35 @@ import Testing
         }
     )
 }
+
+/// With no domain, "DOMAIN\user" names both, as mstsc and FreeRDP read it.
+@Test(arguments: [
+    ("CORP\\alice", nil, "alice", "CORP"),
+    ("CORP\\alice", "", "alice", "CORP"),
+    (".\\alice", nil, "alice", "."),
+    ("\\alice", nil, "alice", nil),
+    ("CORP\\alice\\x", nil, "alice\\x", "CORP"),
+    // A domain given separately keeps the user name as typed.
+    ("CORP\\alice", "LAB", "CORP\\alice", "LAB"),
+    // Nothing after the backslash: no user name to split off.
+    ("CORP\\", nil, "CORP\\", nil),
+    // A UPN is the user name, with an empty domain.
+    ("alice@corp.example", nil, "alice@corp.example", nil),
+] as [(String, String?, String, String?)])
+func credentialsSplitDomainQualifiedUsername(given: String, domain: String?, username: String, splitDomain: String?) {
+    let credentials = RDPCredentials(username: given, domain: domain, password: "secret")
+
+    #expect(credentials.username == username)
+    #expect(credentials.domain == splitDomain)
+}
+
+@Test func validatedCredentialsSplitDomainQualifiedUsername() throws {
+    let credentials = try #require(try RDPCredentials.validated(username: "  CORP\\alice ", domain: " ", password: "secret"))
+    let configuration = RDPConnectionConfiguration(host: "Example.test", credentials: credentials)
+
+    #expect(credentials.username == "alice")
+    #expect(credentials.domain == "CORP")
+    // The account a password is stored under is the one for the name as typed.
+    #expect(configuration.identity.credentialAccountName
+        == RDPConnectionIdentity(host: "Example.test", username: "CORP\\alice").credentialAccountName)
+}

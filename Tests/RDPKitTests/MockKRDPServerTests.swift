@@ -115,6 +115,20 @@ struct MockKRDPServerTests {
         #expect(run.report.error == nil)
     }
 
+    /// A server checks NTLM against the user and domain apart, so "DOMAIN\user" typed as the
+    /// user name must reach it split.
+    @Test func clientSplitsDomainQualifiedUsernameForCredSSP() throws {
+        let serverCredentials = RDPCredentials(username: "rdp-user", domain: "LAB", password: "secret")
+        let run = try runMock(.init(securityProtocol: .credSSP(credentials: serverCredentials))) {
+            $0.credentials = RDPCredentials(username: "LAB\\rdp-user", password: "secret")
+        }
+
+        #expect(run.report.status == "success")
+        #expect(run.report.username == "rdp-user")
+        #expect(run.report.domain == "LAB")
+        #expect(run.transcript.credSSPMessages == ["ntlm-negotiate", "ntlm-authenticate", "credentials"])
+    }
+
     @Test func clientConsumesSuccessfulEarlyUserAuthorizationResult() throws {
         let report = try runMock(.init(securityProtocol: .credSSPWithEarlyUserAuth(
             credentials: mockCredentials,

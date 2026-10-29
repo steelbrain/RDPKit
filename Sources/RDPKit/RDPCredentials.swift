@@ -16,9 +16,20 @@ public struct RDPCredentials: Equatable, Sendable {
     public var domain: String?
     public var password: String
 
+    /// With no domain, a user name in the form "DOMAIN\user" names both and is split at its
+    /// first backslash, as mstsc and FreeRDP (`freerdp_parse_username`) do; NTLM and the
+    /// Client Info PDU carry the two separately. A UPN, "user@domain", stays the user name.
     public init(username: String, domain: String? = nil, password: String) {
-        self.username = username
-        self.domain = domain?.isEmpty == true ? nil : domain
+        if domain?.isEmpty != false,
+           let separator = username.firstIndex(of: "\\"),
+           username.index(after: separator) < username.endIndex
+        {
+            self.username = String(username[username.index(after: separator)...])
+            self.domain = separator == username.startIndex ? nil : String(username[..<separator])
+        } else {
+            self.username = username
+            self.domain = domain?.isEmpty == true ? nil : domain
+        }
         self.password = password
     }
 

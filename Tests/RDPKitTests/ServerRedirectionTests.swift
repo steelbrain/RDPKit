@@ -493,6 +493,27 @@ private func targetNetAddresses(_ addresses: [Data]) -> Data {
     #expect(configuration.redirected(by: redirection)?.redirectionRoutingToken == redirection.loadBalanceInfo)
 }
 
+/// A redirection that names only the user keeps the domain the configured
+/// "DOMAIN\user" named; one that names "DOMAIN\user" itself is split too.
+@Test func redirectionKeepsTheDomainOfADomainQualifiedUsername() throws {
+    let configuration = RDPConnectionConfiguration(
+        host: "broker.example",
+        credentials: RDPCredentials(username: "CORP\\alice", password: "secret")
+    )
+    var redirection = RDPServerRedirectionPDU(channelID: 1003, sessionID: 7, flags: [.loadBalanceInfo, .username])
+    redirection.loadBalanceInfo = Data("Cookie: msts=1\r\n".utf8)
+    redirection.username = "alice"
+    let sameDomain = try #require(configuration.redirected(by: redirection)?.credentials)
+    redirection.username = "LAB\\bob"
+    let otherDomain = try #require(RDPConnectionConfiguration(host: "broker.example", credentials: RDPCredentials(
+        username: "alice",
+        password: "secret"
+    )).redirected(by: redirection)?.credentials)
+
+    #expect([sameDomain.username, sameDomain.domain] == ["alice", "CORP"])
+    #expect([otherDomain.username, otherDomain.domain] == ["bob", "LAB"])
+}
+
 // TPKT entry point for tests; the client parses the indication routed from
 // the I/O channel.
 extension RDPServerRedirectionPDU {
