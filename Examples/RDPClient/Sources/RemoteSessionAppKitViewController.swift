@@ -648,7 +648,9 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
             hideCertificateWarnings: hideCertificateWarnings,
             graphicsFrameCaptureLimit: nil,
             desktopSize: requestedDesktopSize,
-            clipboardEnabled: clipboard.isSharingEnabled,
+            // Joined even when sharing is off, so sharing can start mid-session; the
+            // clipboard bridge decides what crosses.
+            clipboardEnabled: true,
             audioPlaybackEnabled: audioPlaybackEnabled,
             graphicsCapabilityProfile: graphicsCapabilityProfile,
             storedClientLicense: storedClientLicense,
@@ -780,6 +782,9 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                     }
                 },
                 onClipboardReady: { session in
+                    // The server's first copy can arrive before the bridge attaches on the main
+                    // thread, so nothing is fetched until the bridge applies the sharing choice.
+                    session.fetchesRemoteCopies = false
                     sink.apply { controller in
                         controller.clipboard.attach(session)
                         controller.render()

@@ -4,6 +4,7 @@ import RDPKit
 import Testing
 
 private final class RecordedClipboard: RDPClipboardSending {
+    var fetchesRemoteCopies = true
     var publishedTexts: [String?] = []
     var publishedFiles: [[RDPClipboardLocalFile]] = []
 
@@ -56,6 +57,46 @@ private func makePasteboard() -> NSPasteboard {
     clipboard.setSharingEnabled(true)
     clipboard.poll(now: Date().addingTimeInterval(31))
     #expect(clipboard.isSharingEnabled)
+}
+
+/// A session that starts with sharing off still has the clipboard channel, so sharing can be
+/// turned on mid-session; until then nothing crosses either way.
+@MainActor
+@Test func sharingTurnedOnMidSessionStartsSharing() {
+    let pasteboard = makePasteboard()
+    defer { pasteboard.releaseGlobally() }
+    let session = RecordedClipboard()
+    let clipboard = RDPRemoteSessionClipboard(isSharingEnabled: false, pasteboard: pasteboard)
+    clipboard.attach(session)
+    #expect(session.fetchesRemoteCopies == false)
+    #expect(clipboard.statusMessage == "Disabled.")
+    #expect(clipboard.canStartTemporarySharing)
+
+    pasteboard.clearContents()
+    pasteboard.setString("local", forType: .string)
+    clipboard.poll()
+    clipboard.receiveText("remote")
+    clipboard.receiveFileList(RDPClipboardFileGroupDescriptorW(descriptors: [
+        RDPClipboardFileDescriptorW(flags: 0, fileAttributes: 0, fileSize: 1, fileName: "remote.txt"),
+    ]))
+    #expect(pasteboard.string(forType: .string) == "local")
+    #expect(session.publishedTexts == [nil])
+    #expect(session.publishedFiles.isEmpty)
+    #expect(session.sizeRequests.isEmpty)
+
+    clipboard.setSharingEnabled(true)
+    #expect(session.fetchesRemoteCopies)
+    #expect(session.publishedTexts == [nil, "local"])
+    #expect(clipboard.statusMessage == "Local text synced.")
+    #expect(clipboard.canSync)
+    #expect(clipboard.canStartTemporarySharing == false)
+
+    clipboard.setSharingEnabled(false)
+    clipboard.startTemporarySharing()
+    #expect(session.fetchesRemoteCopies)
+    clipboard.poll(now: Date().addingTimeInterval(31))
+    #expect(session.fetchesRemoteCopies == false)
+    #expect(session.publishedTexts.last == .some(nil))
 }
 
 @MainActor

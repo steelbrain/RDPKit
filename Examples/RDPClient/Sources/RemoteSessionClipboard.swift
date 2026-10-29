@@ -7,6 +7,8 @@ private let maximumFileRangeByteCount: UInt64 = 1024 * 1024
 
 /// Where the clipboard bridge sends: the session's `RDPClipboardSession`.
 protocol RDPClipboardSending: AnyObject {
+    /// Off while sharing is off, so the server's copies are not even fetched.
+    var fetchesRemoteCopies: Bool { get set }
     func publishLocalUnicodeText(_ text: String?)
     func publishLocalFiles(_ files: [RDPClipboardLocalFile])
     func requestRemoteFileSize(streamID: UInt32, fileIndex: Int32) throws
@@ -63,6 +65,7 @@ final class RDPRemoteSessionClipboard {
 
     func attach(_ session: any RDPClipboardSending) {
         self.session = session
+        session.fetchesRemoteCopies = isSharingEnabled
         guard isSharingEnabled else {
             session.publishLocalUnicodeText(nil)
             message = "Disabled."
@@ -84,6 +87,7 @@ final class RDPRemoteSessionClipboard {
     func setSharingEnabled(_ enabled: Bool) {
         isSharingEnabled = enabled
         temporarySharingExpiresAt = nil
+        session?.fetchesRemoteCopies = enabled
         guard enabled else {
             discardFileTransfer()
             cancelLocalFileRead()
