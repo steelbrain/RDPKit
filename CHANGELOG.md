@@ -40,7 +40,8 @@
   remove `submit`, `submitReportingCompletion`, the queue-depth initializer
   parameters, `onSkippedFrames`, `RDPFrameDecodeCompletion.dropped` and
   `RDPFrameDecodeQueueError.frameDropped`.
-- `RDPRenderMetrics`: remove the crop timings, the `max*Milliseconds` timings,
+- `RDPRenderMetrics`: remove the crop timings, the per-stage
+  `max*Milliseconds` timings (`maxDecodeMilliseconds` remains),
   `skippedDecodeFrameCount` and `recordSkippedDecodeFrames`.
   `RDPFrameDecodeTiming.cropMilliseconds` is gone too.
 - `RDPInputStateTracker`: `keyboard(scancode:isReleased:)` drops `isRepeat`
