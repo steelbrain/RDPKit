@@ -1040,6 +1040,19 @@ struct MockKRDPServerTests {
         #expect(observed.value.frames.map(\.contentKind) == [.bitmap, .bitmap])
     }
 
+    /// Regions covering the update five times over reach the decoder as their bounding box.
+    @Test func clientCollapsesVideoRegionsCoveringTheSurfaceManyTimesOver() throws {
+        let observed = Locked(Observed())
+        let report = try runMock(.init(graphicsBehavior: .sendVideoRegionsCoveringTheSurfaceFiveTimes), client: {
+            RDPSessionClient().run(configuration: $0, onGraphicsFrame: { frame in
+                observed.withLock { $0.frames.append(frame) }
+            })
+        }).report
+
+        #expect(report.status == "success")
+        #expect(observed.value.frames.map(\.regionRects) == [[RDPFrameRect(left: 0, top: 0, right: 64, bottom: 32)]])
+    }
+
     /// gnome-remote-desktop copies each damage rectangle of its staging surface to the mapped
     /// one. The mapped surface's decoder gets each frame's video with those rectangles as its
     /// regions, and nothing paints the copied areas black.

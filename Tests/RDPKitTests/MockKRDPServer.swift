@@ -133,6 +133,7 @@ enum MockKRDPGraphicsBehavior: Equatable {
     case sendCAProgressiveFrame
     case sendVideoBeforeBitmapCompositionFrame
     case sendMultipleVideoUpdatesInFrame
+    case sendVideoRegionsCoveringTheSurfaceFiveTimes
     case sendTwoFramesInOnePayload
     case deleteAndRecreateSurfaceInSecondFrame
     case copyVideoFromStagingSurfacePerDamageRect
@@ -2121,6 +2122,8 @@ private enum MockKRDPFixtures {
             ))]
         case .sendMultipleBitmapSurfacesInFrame:
             [graphicsDynamicPacket(segmentedGraphicsData(multipleBitmapSurfacesInFrameMessages()))]
+        case .sendVideoRegionsCoveringTheSurfaceFiveTimes:
+            [graphicsDynamicPacket(segmentedGraphicsData(overlappingVideoRegionsFrameMessages()))]
         case .copyVideoFromStagingSurfacePerDamageRect:
             [graphicsDynamicPacket(segmentedGraphicsData(stagedVideoFrameMessages()))]
         case .copyDecodedVideoThroughSurfacesAndCache:
@@ -2189,6 +2192,15 @@ private enum MockKRDPFixtures {
             + wireToSurfaceMessage(surfaceID: 1)
             + wireToSurfaceMessage(surfaceID: 2)
             + endFrameMessage(frameID: 11)
+    }
+
+    static func overlappingVideoRegionsFrameMessages() -> Data {
+        let fullSurface = RDPGFXRect16(left: 0, top: 0, right: MockKRDPConstants.width, bottom: MockKRDPConstants.height)
+        return createSurfaceMessage()
+            + mapSurfaceToOutputMessage(surfaceID: 1, x: 0, y: 0)
+            + startFrameMessage()
+            + wireToSurfaceMessage(bitmapData: avc420BitmapStream(regions: Array(repeating: fullSurface, count: 5)))
+            + endFrameMessage()
     }
 
     /// gnome-remote-desktop's: video into unmapped surface 2, then one SurfaceToSurface per

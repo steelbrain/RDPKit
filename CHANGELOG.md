@@ -204,6 +204,9 @@
   which a server could nest deep enough to overflow the stack.
 - `RDPFrameDecodeQueue` drops deleted surfaces and evicted cache entries even
   when the frame that reports them fails to decode.
+- A video update's region rectangles collapse into their bounding box past
+  1,024 of them or when they cover the update more than four times over, so a
+  server cannot make applying them take unbounded time.
 
 ### Performance and examples
 

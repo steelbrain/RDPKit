@@ -390,6 +390,26 @@ import Testing
     }
 }
 
+/// Regions that would take unbounded work to apply collapse into their bounding box; the
+/// regions servers send, which cover each pixel about once, stay as they are.
+@Test func videoRegionsCollapseWhenTooManyOrCoveringTheUpdateManyTimesOver() {
+    let update = RDPFrameRect(left: 100, top: 0, right: 2148, bottom: 64)
+    let pixels = (0 ..< rdpMaximumVideoRegionCount).map {
+        RDPFrameRect(left: UInt16($0), top: 0, right: UInt16($0 + 1), bottom: 1)
+    }
+    #expect(pixels.boundedVideoRegions(within: update) == pixels)
+    let onePixelMore = pixels + [RDPFrameRect(left: 2000, top: 63, right: 2001, bottom: 64)]
+    #expect(onePixelMore.boundedVideoRegions(within: update) == [RDPFrameRect(left: 0, top: 0, right: 2001, bottom: 64)])
+
+    let whole = RDPFrameRect(left: 100, top: 0, right: 2148, bottom: 64)
+    let fourTimes = Array(repeating: whole, count: 4)
+    #expect(fourTimes.boundedVideoRegions(within: update) == fourTimes)
+    #expect((fourTimes + [RDPFrameRect(left: 100, top: 0, right: 101, bottom: 1)]).boundedVideoRegions(within: update) == [whole])
+    // Only the area inside the update's right and bottom edges counts.
+    let overhanging = Array(repeating: RDPFrameRect(left: 2147, top: 63, right: 65535, bottom: 65535), count: 8)
+    #expect(overhanging.boundedVideoRegions(within: update) == overhanging)
+}
+
 /// gnome-remote-desktop copies each damage rectangle of its staging surface with a
 /// SurfaceToSurface of its own; each copy carries the access unit's part inside it.
 @Test func stagedVideoCopyCarriesTheRegionsInsideTheCopiedRectangle() throws {

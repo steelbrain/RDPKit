@@ -281,8 +281,10 @@ extension RDPClientConnection {
                     }
                     // A second offset would decode the access unit twice; the first one wins.
                     if case var .frame(first) = expanded[stagedIndex], first.destinationRect == staged.destinationRect {
-                        first.regionRects += staged.regionRects
-                        first.auxiliaryRegionRects += staged.auxiliaryRegionRects
+                        first.regionRects = (first.regionRects + staged.regionRects)
+                            .boundedVideoRegions(within: first.destinationRect)
+                        first.auxiliaryRegionRects = (first.auxiliaryRegionRects + staged.auxiliaryRegionRects)
+                            .boundedVideoRegions(within: first.destinationRect)
                         expanded[stagedIndex] = .frame(first)
                     }
                 }
@@ -313,6 +315,7 @@ extension RDPClientConnection {
         default:
             return nil
         }
+        let destinationRect = RDPFrameRect(wire.destinationRect)
         return RDPGraphicsFrameSnapshot(
             frameID: graphicsFrameTracker.activeFrameID,
             surfaceID: wire.surfaceID,
@@ -323,11 +326,12 @@ extension RDPClientConnection {
             graphicsOutputRect: compositor.outputRect(),
             surfaceRect: compositor.surfaceRect(surfaceID: wire.surfaceID),
             mappedOutputRect: compositor.mappedOutputRect(surfaceID: wire.surfaceID),
-            destinationRect: RDPFrameRect(wire.destinationRect),
-            regionRects: primary.regionRects.map(RDPFrameRect.init),
+            destinationRect: destinationRect,
+            regionRects: primary.regionRects.map(RDPFrameRect.init).boundedVideoRegions(within: destinationRect),
             encodedVideoData: primary.encodedBitstream,
             auxiliaryEncodedVideoData: auxiliary?.encodedBitstream,
-            auxiliaryRegionRects: auxiliary?.regionRects.map(RDPFrameRect.init) ?? [],
+            auxiliaryRegionRects: (auxiliary?.regionRects.map(RDPFrameRect.init) ?? [])
+                .boundedVideoRegions(within: destinationRect),
             avc444SubframeLayout: layout
         )
     }
@@ -542,6 +546,38 @@ enum RDPPendingGraphicsUpdate {
 private struct StagedVideoKey: Hashable {
     var videoIndex: Int
     var surfaceID: UInt16
+}
+
+/// The most region rectangles a video update keeps; see `boundedVideoRegions(within:)`.
+let rdpMaximumVideoRegionCount = 1_024
+
+extension [RDPFrameRect] {
+    /// These regions of a video update at `destinationRect`, or their bounding box when there
+    /// are more than `rdpMaximumVideoRegionCount` of them or they cover the update more than
+    /// four times over. Applying regions takes time in their count and in the area they cover,
+    /// which a server could otherwise make as large as a PDU allows; servers' regions cover
+    /// each pixel about once. Regions relative to the update and regions in surface
+    /// coordinates both end within its right and bottom edges.
+    func boundedVideoRegions(within destinationRect: RDPFrameRect) -> [RDPFrameRect] {
+        let right = Int(destinationRect.right)
+        let bottom = Int(destinationRect.bottom)
+        let coveredArea = reduce(0) { area, region in
+            area + Swift.max(0, Swift.min(Int(region.right), right) - Int(region.left))
+                * Swift.max(0, Swift.min(Int(region.bottom), bottom) - Int(region.top))
+        }
+        let updateArea = Int(destinationRect.width) * Int(destinationRect.height)
+        guard count > rdpMaximumVideoRegionCount || coveredArea > 4 * updateArea, let first else {
+            return self
+        }
+        return [dropFirst().reduce(first) { bounds, region in
+            RDPFrameRect(
+                left: Swift.min(bounds.left, region.left),
+                top: Swift.min(bounds.top, region.top),
+                right: Swift.max(bounds.right, region.right),
+                bottom: Swift.max(bounds.bottom, region.bottom)
+            )
+        }]
+    }
 }
 
 /// `video`'s regions inside `sourceRect`, as an update of another surface at `point`.
