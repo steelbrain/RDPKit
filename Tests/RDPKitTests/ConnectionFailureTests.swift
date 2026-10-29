@@ -23,8 +23,13 @@ import Testing
     (0x0000_0100, "ERRINFO_LICENSE_INTERNAL", .licensing),
     (0x0000_010A, "ERRINFO_LICENSE_NO_REMOTE_CONNECTIONS", .licensing),
     (0x0000_0408, "ERRINFO_CB_DESTINATION_POOL_NOT_FREE", .serverError),
-    (0x0000_10C9, "ERRINFO_0x000010c9", .protocolError),
-    (0x0000_1195, "ERRINFO_0x00001195", .protocolError),
+    (0x0000_10C9, "ERRINFO_UNKNOWNPDUTYPE2", .protocolError),
+    (0x0000_10CB, "ERRINFO_DATAPDUSEQUENCE", .protocolError),
+    (0x0000_10E3, "ERRINFO_BADSUPRESSOUTPUTPDU", .protocolError),
+    (0x0000_112C, "ERRINFO_BAD_FRAME_ACK_DATA", .protocolError),
+    (0x0000_1194, "ERRINFO_ENCPKGMISMATCH", .protocolError),
+    (0x0000_1195, "ERRINFO_DECRYPTFAILED2", .protocolError),
+    (0x0000_10CC, "ERRINFO_0x000010cc", .protocolError),
     (0x0000_0008, "ERRINFO_0x00000008", .unknown),
     (0x0000_1196, "ERRINFO_0x00001196", .unknown),
 ] as [(UInt32, String, RDPRemoteTermination.Category)])
@@ -34,6 +39,20 @@ func setErrorInfoCodesAreNamedAndCategorized(code: UInt32, name: String, categor
     #expect(termination.errorInfoName == name)
     #expect(termination.category == category)
     #expect(termination.description == "server ended the session with \(name)")
+}
+
+/// [MS-RDPBCGR] 2.2.5.1.1 names 78 of the RDP-specific codes, 0x10C9-0x1195;
+/// the rest of the range has no name.
+@Test func everyRDPSpecificCodeTheSpecListsIsNamed() {
+    let named = (UInt32(0x10C9) ... 0x1195).filter {
+        RDPRemoteTermination(errorInfo: $0).errorInfoName?.hasPrefix("ERRINFO_0x") == false
+    }
+
+    #expect(named.count == 78)
+    #expect(named.first == 0x10C9)
+    #expect(named.last == 0x1195)
+    #expect(!named.contains(0x10CC))
+    #expect(!named.contains(0x1137))
 }
 
 /// Without Set Error Info, only an rn-user-requested ultimatum is a deliberate end.
