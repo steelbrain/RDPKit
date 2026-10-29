@@ -94,6 +94,40 @@ import Testing
     #expect(compositor.takeCompletedFrameIDs().isEmpty)
 }
 
+/// The areas a frame changed are held until it ends; past 1,024 rectangles they collapse into
+/// their bounding box, so a frame the server never ends does not grow them without bound.
+@Test func primarySurfaceCompositorBoundsTheAreasAnOpenFrameChanged() throws {
+    let compositor = RDPPrimarySurfaceCompositor(width: 64, height: 32)
+    _ = try compositor.process([.frameMarker(RDPSurfaceFrameMarkerCommand(frameAction: 0, frameID: 1))])
+    for index in 0 ..< 1_100 {
+        let left = UInt16(index % 64)
+        let top = UInt16(index / 64)
+        #expect(try compositor.process([.setSurfaceBits(RDPSurfaceBitsCommand(
+            destinationLeft: left,
+            destinationTop: top,
+            destinationRight: left + 1,
+            destinationBottom: top + 1,
+            bitmapData: RDPExtendedBitmapData(
+                bitsPerPixel: 32,
+                flags: 0,
+                codecID: 0,
+                width: 1,
+                height: 1,
+                extendedCompressionHeader: nil,
+                bitmapData: Data(repeating: 0x11, count: 4)
+            )
+        ))]).isEmpty)
+    }
+
+    let frame = try #require(try compositor.process([
+        .frameMarker(RDPSurfaceFrameMarkerCommand(frameAction: 1, frameID: 1)),
+    ]).first)
+
+    // The first 1,025 cells collapsed into rows 0-16; the 75 after them are listed.
+    #expect(frame.regionRects.count == 76)
+    #expect(frame.regionRects.first == RDPFrameRect(left: 0, top: 0, right: 64, bottom: 17))
+}
+
 /// A surface bits command that fails to decode must not swallow the frame
 /// markers after it: every frame still needs its acknowledgement
 /// ([MS-RDPRFX] 2.2.3.3), and the good bits reach the next snapshot.

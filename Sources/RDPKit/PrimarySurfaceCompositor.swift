@@ -2,7 +2,9 @@ import Foundation
 
 final class RDPPrimarySurfaceCompositor {
     private static let maximumCompletedFrameIDCount = 256
-    private static let maximumDirtyRectCount = 256
+    /// Past this many rectangles the changed areas collapse into their bounding box, which
+    /// bounds them however long a server keeps a frame open.
+    private static let maximumDirtyRectCount = 1_024
 
     private let width: Int
     private let height: Int
@@ -61,9 +63,7 @@ final class RDPPrimarySurfaceCompositor {
         }
         if let firstError {
             dirtyRects = frames.flatMap(\.regionRects) + dirtyRects
-            if dirtyRects.count > Self.maximumDirtyRectCount {
-                dirtyRects = [RDPFrameRect(left: 0, top: 0, right: UInt16(width), bottom: UInt16(height))]
-            }
+            boundDirtyRects()
             throw firstError
         }
         if activeFrameID == nil,
@@ -300,6 +300,21 @@ final class RDPPrimarySurfaceCompositor {
             right: UInt16(x + width),
             bottom: UInt16(y + height)
         ))
+        boundDirtyRects()
+    }
+
+    private func boundDirtyRects() {
+        guard dirtyRects.count > Self.maximumDirtyRectCount, let first = dirtyRects.first else {
+            return
+        }
+        dirtyRects = [dirtyRects.dropFirst().reduce(first) { bounds, rect in
+            RDPFrameRect(
+                left: min(bounds.left, rect.left),
+                top: min(bounds.top, rect.top),
+                right: max(bounds.right, rect.right),
+                bottom: max(bounds.bottom, rect.bottom)
+            )
+        }]
     }
 
     private static func convertRow(
