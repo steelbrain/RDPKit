@@ -378,21 +378,6 @@ private func videoFrame(
     )
 }
 
-private func bgraPixel(atX x: Int, y: Int, in imageBuffer: CVImageBuffer) throws -> [UInt8] {
-    CVPixelBufferLockBaseAddress(imageBuffer, .readOnly)
-    defer {
-        CVPixelBufferUnlockBaseAddress(imageBuffer, .readOnly)
-    }
-
-    guard let baseAddress = CVPixelBufferGetBaseAddress(imageBuffer) else {
-        throw PixelReadError.missingBaseAddress
-    }
-
-    let offset = y * CVPixelBufferGetBytesPerRow(imageBuffer) + x * 4
-    let pixel = baseAddress.advanced(by: offset).assumingMemoryBound(to: UInt8.self)
-    return [pixel[0], pixel[1], pixel[2], pixel[3]]
-}
-
 /// Returns the Y, Cb, and Cr samples of an NV12 pixel.
 private func nv12Sample(atX x: Int, y: Int, in imageBuffer: CVImageBuffer) throws -> [UInt8] {
     CVPixelBufferLockBaseAddress(imageBuffer, .readOnly)

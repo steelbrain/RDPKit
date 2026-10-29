@@ -1037,19 +1037,6 @@ private func surfaceCopyFrame(
     )
 }
 
-private func bgraPixel(atX x: Int, y: Int, in imageBuffer: CVImageBuffer) throws -> [UInt8] {
-    CVPixelBufferLockBaseAddress(imageBuffer, .readOnly)
-    defer {
-        CVPixelBufferUnlockBaseAddress(imageBuffer, .readOnly)
-    }
-    guard let baseAddress = CVPixelBufferGetBaseAddress(imageBuffer) else {
-        throw PixelBufferTestError.missingBaseAddress
-    }
-    let offset = y * CVPixelBufferGetBytesPerRow(imageBuffer) + x * 4
-    let pixel = baseAddress.advanced(by: offset).assumingMemoryBound(to: UInt8.self)
-    return [pixel[0], pixel[1], pixel[2], pixel[3]]
-}
-
 private enum PixelBufferTestError: Error {
     case createFailed(CVReturn)
     case missingBaseAddress

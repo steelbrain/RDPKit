@@ -23,10 +23,10 @@ private let fullFrame = [RDPFrameRect(left: 0, top: 0, right: 16, bottom: 16)]
         chromaRegionRects: fullFrame
     )
 
-    #expect(try bgraPixel(x: 1, y: 0, in: reconstructed) == bgra(y: 128, u: 50, v: 190))
-    #expect(try bgraPixel(x: 0, y: 1, in: reconstructed) == bgra(y: 128, u: 40, v: 200))
-    #expect(try bgraPixel(x: 1, y: 1, in: reconstructed) == bgra(y: 128, u: 40, v: 200))
-    #expect(try bgraPixel(x: 0, y: 0, in: reconstructed) == bgra(y: 128, u: 255, v: 10))
+    #expect(try bgraPixel(atX: 1, y: 0, in: reconstructed) == bgra(y: 128, u: 50, v: 190))
+    #expect(try bgraPixel(atX: 0, y: 1, in: reconstructed) == bgra(y: 128, u: 40, v: 200))
+    #expect(try bgraPixel(atX: 1, y: 1, in: reconstructed) == bgra(y: 128, u: 40, v: 200))
+    #expect(try bgraPixel(atX: 0, y: 0, in: reconstructed) == bgra(y: 128, u: 255, v: 10))
 }
 
 @Test func reconstructsAVC444v2FullFrameChroma() throws {
@@ -48,10 +48,10 @@ private let fullFrame = [RDPFrameRect(left: 0, top: 0, right: 16, bottom: 16)]
         chromaRegionRects: fullFrame
     )
 
-    #expect(try bgraPixel(x: 1, y: 0, in: reconstructed) == bgra(y: 128, u: 60, v: 180))
-    #expect(try bgraPixel(x: 0, y: 1, in: reconstructed) == bgra(y: 128, u: 70, v: 170))
-    #expect(try bgraPixel(x: 2, y: 1, in: reconstructed) == bgra(y: 128, u: 80, v: 160))
-    #expect(try bgraPixel(x: 0, y: 0, in: reconstructed) == bgra(y: 128, u: 210, v: 70))
+    #expect(try bgraPixel(atX: 1, y: 0, in: reconstructed) == bgra(y: 128, u: 60, v: 180))
+    #expect(try bgraPixel(atX: 0, y: 1, in: reconstructed) == bgra(y: 128, u: 70, v: 170))
+    #expect(try bgraPixel(atX: 2, y: 1, in: reconstructed) == bgra(y: 128, u: 80, v: 160))
+    #expect(try bgraPixel(atX: 0, y: 0, in: reconstructed) == bgra(y: 128, u: 210, v: 70))
 }
 
 /// FreeRDP packs YUV444v2 at the width of the frames its encoder was given
@@ -75,8 +75,8 @@ private let fullFrame = [RDPFrameRect(left: 0, top: 0, right: 16, bottom: 16)]
         frameWidth: 24
     )
 
-    #expect(try bgraPixel(x: 3, y: 0, in: reconstructed) == bgra(y: 128, u: 4, v: 52))
-    #expect(try bgraPixel(x: 4, y: 1, in: reconstructed) == bgra(y: 128, u: 104, v: 128))
+    #expect(try bgraPixel(atX: 3, y: 0, in: reconstructed) == bgra(y: 128, u: 4, v: 52))
+    #expect(try bgraPixel(atX: 4, y: 1, in: reconstructed) == bgra(y: 128, u: 104, v: 128))
 }
 
 /// freerdp-shadow codes its 1920x1080 AVC444v2 frames as 1920x1088 pictures cropped in the SPS.
@@ -92,7 +92,7 @@ private let fullFrame = [RDPFrameRect(left: 0, top: 0, right: 16, bottom: 16)]
     #expect(CVPixelBufferGetWidth(imageBuffer) == 1920)
     #expect(CVPixelBufferGetHeight(imageBuffer) == 1088)
     for (bar, colour) in [(0, [253, 23, 0]), (1, [0, 216, 0]), (3, [0, 14, 255])] {
-        let pixel = try bgraPixel(x: bar * 213 + 100, y: 660, in: imageBuffer)
+        let pixel = try bgraPixel(atX: bar * 213 + 100, y: 660, in: imageBuffer)
         let decoded = [Int(pixel[2]), Int(pixel[1]), Int(pixel[0])]
         #expect(zip(decoded, colour).allSatisfy { abs($0 - $1) <= 6 }, "bar \(bar): \(decoded)")
     }
@@ -108,7 +108,7 @@ private let fullFrame = [RDPFrameRect(left: 0, top: 0, right: 16, bottom: 16)]
         chromaRegionRects: fullFrame
     )
 
-    #expect(try bgraPixel(x: 0, y: 0, in: reconstructed) == bgra(y: 128, u: 130, v: 255))
+    #expect(try bgraPixel(atX: 0, y: 0, in: reconstructed) == bgra(y: 128, u: 130, v: 255))
 }
 
 @Test func AVC444UsesChromaOnlyInsideChromaRegions() throws {
@@ -119,8 +119,8 @@ private let fullFrame = [RDPFrameRect(left: 0, top: 0, right: 16, bottom: 16)]
         chromaRegionRects: [RDPFrameRect(left: 8, top: 0, right: 16, bottom: 16)]
     )
 
-    #expect(try bgraPixel(x: 1, y: 0, in: reconstructed) == bgra(y: 128, u: 100, v: 150))
-    #expect(try bgraPixel(x: 9, y: 0, in: reconstructed) == bgra(y: 128, u: 50, v: 190))
+    #expect(try bgraPixel(atX: 1, y: 0, in: reconstructed) == bgra(y: 128, u: 100, v: 150))
+    #expect(try bgraPixel(atX: 9, y: 0, in: reconstructed) == bgra(y: 128, u: 50, v: 190))
 }
 
 @Test func AVC444DoesNotApplyChromaOutsideAnEmptyRegionMask() throws {
@@ -131,8 +131,8 @@ private let fullFrame = [RDPFrameRect(left: 0, top: 0, right: 16, bottom: 16)]
         chromaRegionRects: []
     )
 
-    #expect(try bgraPixel(x: 1, y: 0, in: reconstructed) == bgra(y: 128, u: 100, v: 150))
-    #expect(try bgraPixel(x: 0, y: 1, in: reconstructed) == bgra(y: 128, u: 100, v: 150))
+    #expect(try bgraPixel(atX: 1, y: 0, in: reconstructed) == bgra(y: 128, u: 100, v: 150))
+    #expect(try bgraPixel(atX: 0, y: 1, in: reconstructed) == bgra(y: 128, u: 100, v: 150))
 }
 
 @Test func AVC444IgnoresInvertedChromaRegion() throws {
@@ -143,7 +143,7 @@ private let fullFrame = [RDPFrameRect(left: 0, top: 0, right: 16, bottom: 16)]
         chromaRegionRects: [RDPFrameRect(left: 0, top: 10, right: 8, bottom: 4)]
     )
 
-    #expect(try bgraPixel(x: 1, y: 5, in: reconstructed) == bgra(y: 128, u: 100, v: 150))
+    #expect(try bgraPixel(atX: 1, y: 5, in: reconstructed) == bgra(y: 128, u: 100, v: 150))
 }
 
 @Test func AVC444ChromaOnlyUpdateCombinesWithLastLumaView() throws {
@@ -277,7 +277,7 @@ private let fullFrame = [RDPFrameRect(left: 0, top: 0, right: 16, bottom: 16)]
     let result = try decoder.decodeDetailed(frame)
 
     #expect(CVPixelBufferGetPixelFormatType(result.imageBuffer) == kCVPixelFormatType_32BGRA)
-    let pixel = try bgraPixel(x: 10, y: 10, in: result.imageBuffer)
+    let pixel = try bgraPixel(atX: 10, y: 10, in: result.imageBuffer)
     #expect(pixel.prefix(3).allSatisfy { abs(Int($0) - 20) <= 3 })
 }
 
@@ -302,7 +302,7 @@ private let fullFrame = [RDPFrameRect(left: 0, top: 0, right: 16, bottom: 16)]
     _ = try decoder.decodeDetailed(frame(.yuv420Only, left: 0, data: accessUnits[0]))
     let result = try decoder.decodeDetailed(frame(.chroma420Only, left: 64, data: accessUnits[1]))
 
-    let pixel = try bgraPixel(x: 10, y: 10, in: result.imageBuffer)
+    let pixel = try bgraPixel(atX: 10, y: 10, in: result.imageBuffer)
     #expect(pixel.prefix(3).allSatisfy { abs(Int($0) - 20) <= 3 })
 }
 
@@ -373,23 +373,11 @@ private func nv12PixelBuffer(
     return pixelBuffer
 }
 
-private func bgraPixel(x: Int, y: Int, in pixelBuffer: CVPixelBuffer) throws -> [UInt8] {
-    CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
-    defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
-    guard let baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer) else {
-        throw AVC444TestError.missingBaseAddress
-    }
-    let pixel = baseAddress
-        .advanced(by: y * CVPixelBufferGetBytesPerRow(pixelBuffer) + x * 4)
-        .assumingMemoryBound(to: UInt8.self)
-    return [pixel[0], pixel[1], pixel[2], pixel[3]]
-}
-
 private func bgraData(from pixelBuffer: CVPixelBuffer) throws -> [UInt8] {
     let width = CVPixelBufferGetWidth(pixelBuffer)
     let height = CVPixelBufferGetHeight(pixelBuffer)
     return try (0 ..< height).flatMap { y in
-        try (0 ..< width).flatMap { x in try bgraPixel(x: x, y: y, in: pixelBuffer) }
+        try (0 ..< width).flatMap { x in try bgraPixel(atX: x, y: y, in: pixelBuffer) }
     }
 }
 

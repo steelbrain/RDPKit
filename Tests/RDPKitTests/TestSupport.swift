@@ -1,3 +1,4 @@
+import CoreVideo
 import Foundation
 @testable import RDPKit
 import Testing
@@ -62,6 +63,16 @@ func berLength(_ length: Int) -> Data {
 func pixel(atX x: Int, y: Int, data: Data, bytesPerRow: Int) -> [UInt8] {
     let offset = y * bytesPerRow + x * 4
     return Array(data[offset ..< offset + 4])
+}
+
+/// The BGRA pixel at (x, y) of a 32BGRA pixel buffer.
+func bgraPixel(atX x: Int, y: Int, in pixelBuffer: CVPixelBuffer) throws -> [UInt8] {
+    CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
+    defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
+    let pixel = try #require(CVPixelBufferGetBaseAddress(pixelBuffer))
+        .advanced(by: y * CVPixelBufferGetBytesPerRow(pixelBuffer) + x * 4)
+        .assumingMemoryBound(to: UInt8.self)
+    return [pixel[0], pixel[1], pixel[2], pixel[3]]
 }
 
 // MARK: Packets
