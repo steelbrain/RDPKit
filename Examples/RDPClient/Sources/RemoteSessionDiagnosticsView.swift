@@ -107,6 +107,7 @@ private struct PerformanceMetricsView: View {
     var metrics: RDPRenderMetrics
     var rollingFramesPerSecond: Double?
     var rollingWireMegabitsPerSecond: Double?
+    var averageWireMegabitsPerSecond: Double?
     var framePacing: RDPFramePacingState
 
     var body: some View {
@@ -121,7 +122,7 @@ private struct PerformanceMetricsView: View {
                 DiagnosticRow("Display Link", metricFramesPerSecond(framePacing.displayLinkFramesPerSecond))
                 DiagnosticRow("Refresh Range", refreshRange(framePacing))
                 DiagnosticRow("Wire RX", metricMegabitsPerSecond(rollingWireMegabitsPerSecond))
-                DiagnosticRow("Wire RX Average", metricMegabitsPerSecond(metrics.averageWireMegabitsPerSecond))
+                DiagnosticRow("Wire RX Average", metricMegabitsPerSecond(averageWireMegabitsPerSecond))
                 DiagnosticRow("Wire RX Total", metricBytes(metrics.wireByteCount))
                 DiagnosticRow("First Frame Latency", metricMilliseconds(metrics.firstFrameLatencyMilliseconds))
                 DiagnosticRow("Rolling FPS", metricFramesPerSecond(rollingFramesPerSecond))
@@ -176,10 +177,11 @@ struct RemoteSessionDiagnosticsSnapshot: Equatable {
     var presentedFrameCount = 0
     var previewDecodeError: String?
     var renderMetrics = RDPRenderMetrics()
-    /// `renderMetrics`' rolling rates when the snapshot was taken: they fall once traffic
+    /// `renderMetrics`' rates when the snapshot was taken: they change with time once traffic
     /// stops, which records nothing new in `renderMetrics`.
     var rollingFramesPerSecond: Double?
     var rollingWireMegabitsPerSecond: Double?
+    var averageWireMegabitsPerSecond: Double?
     var framePacing = RDPFramePacingState()
     var sessionEndReason: RDPSessionEndReason?
     var serverCertificateInfo: RDPServerCertificateInfo?
@@ -243,6 +245,7 @@ struct RemoteSessionDiagnosticsWindowContent: View {
                         metrics: snapshot.renderMetrics,
                         rollingFramesPerSecond: snapshot.rollingFramesPerSecond,
                         rollingWireMegabitsPerSecond: snapshot.rollingWireMegabitsPerSecond,
+                        averageWireMegabitsPerSecond: snapshot.averageWireMegabitsPerSecond,
                         framePacing: snapshot.framePacing
                     )
                 }

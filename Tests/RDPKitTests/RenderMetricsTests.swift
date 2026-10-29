@@ -151,6 +151,20 @@ import Testing
     #expect(metrics.rollingWireMegabitsPerSecond(at: resumed) == 4)
 }
 
+@Test func renderMetricsAverageWireRateReadsAtTheGivenTime() {
+    let start = Date(timeIntervalSince1970: 700)
+    var metrics = RDPRenderMetrics(connectionStartedAt: start)
+    #expect(metrics.averageWireMegabitsPerSecond(at: start.addingTimeInterval(1)) == nil)
+    #expect(RDPRenderMetrics().averageWireMegabitsPerSecond(at: start) == nil)
+
+    metrics.recordWireReceive(RDPWireReceiveSample(byteCount: 1_000_000, receivedAt: start.addingTimeInterval(1)))
+
+    #expect(metrics.averageWireMegabitsPerSecond(at: start.addingTimeInterval(2)) == 4)
+    #expect(metrics.averageWireMegabitsPerSecond(at: start.addingTimeInterval(8)) == 1)
+    // At least 0.25 s, so a read at the start is not a division by zero.
+    #expect(metrics.averageWireMegabitsPerSecond(at: start) == 32)
+}
+
 @Test func renderMetricsRollingFramesPerSecondNeedsTwoFrames() {
     let start = Date(timeIntervalSince1970: 600)
     var metrics = RDPRenderMetrics(connectionStartedAt: start)

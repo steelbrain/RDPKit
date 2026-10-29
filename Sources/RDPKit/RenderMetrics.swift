@@ -157,11 +157,19 @@ public struct RDPRenderMetrics: Equatable, Sendable {
         return megabitsPerSecond(byteCount: byteCount, elapsedSeconds: elapsed) ?? 0
     }
 
+    /// The rate up to now, read from the clock on each access.
+    @available(*, deprecated, message: "Use averageWireMegabitsPerSecond(at:), which reads at a given time.")
     public var averageWireMegabitsPerSecond: Double? {
+        averageWireMegabitsPerSecond(at: Date())
+    }
+
+    /// Megabits received per second from `connectionStartedAt` to `date`, over at least
+    /// 0.25 s. Nil until bytes have been received.
+    public func averageWireMegabitsPerSecond(at date: Date) -> Double? {
         guard let connectionStartedAt else {
             return nil
         }
-        let elapsed = max(0.25, Date().timeIntervalSince(connectionStartedAt))
+        let elapsed = max(0.25, date.timeIntervalSince(connectionStartedAt))
         return megabitsPerSecond(byteCount: wireByteCount, elapsedSeconds: elapsed)
     }
 
