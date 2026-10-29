@@ -3,7 +3,7 @@ import Foundation
 
 @MainActor
 public final class RDPAudioPlayer {
-    private let engine = AVAudioEngine()
+    let engine = AVAudioEngine()
     private let player = AVAudioPlayerNode()
     private var format: AVAudioFormat?
     private var queuedFrameCount: AVAudioFramePosition = 0
@@ -51,6 +51,11 @@ public final class RDPAudioPlayer {
         }
 
         let format = try playbackFormat(for: sample.format)
+        // Nothing drains while the engine is stopped (a failed start, an audio interruption or
+        // an output device change), so that audio is dropped rather than filling the queue for good.
+        if !engine.isRunning, queuedFrameCount > 0 {
+            stop()
+        }
         guard queuedFrameCount <= AVAudioFramePosition(format.sampleRate * maximumQueuedSeconds) else {
             return false
         }

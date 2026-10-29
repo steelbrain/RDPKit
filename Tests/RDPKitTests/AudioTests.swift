@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import NIOEmbedded
 @testable import RDPKit
@@ -532,4 +533,33 @@ import Testing
 
     #expect(try player.enqueue(sample) == false)
     #expect(player.statusMessage == "Ready.")
+}
+
+/// An audio interruption or output device change stops the engine with buffers still queued;
+/// they never drain, so they must not keep every later sample out of the queue.
+@MainActor
+@Test func audioPlayerResumesAfterTheEngineStopsWithAFullQueue() throws {
+    let player = RDPAudioPlayer()
+    // Offline manual rendering starts without an audio device and never drains the queue.
+    let renderFormat = try #require(AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2))
+    try player.engine.enableManualRenderingMode(.offline, format: renderFormat, maximumFrameCount: 4096)
+    let sample = RDPAudioSample(
+        format: .pcmStereo48k16Bit,
+        timestamp: 0,
+        blockNo: 0,
+        data: Data(count: 4 * 2_400),
+        receivedAt: Date()
+    )
+
+    var acceptedCount = 0
+    while acceptedCount < 32, try player.enqueue(sample) {
+        acceptedCount += 1
+    }
+    #expect(acceptedCount == 16)
+
+    player.engine.stop()
+
+    #expect(try player.enqueue(sample))
+    #expect(player.engine.isRunning)
+    player.reset()
 }
