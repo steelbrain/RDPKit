@@ -80,6 +80,8 @@ final class RDPClearCodecDecoder {
         guard header.sequenceNumber == expectedSequenceNumber else {
             throw RDPDecodeError.invalidRDPGFXPDU
         }
+        // The next stream follows this one even if this one fails to decode (MS-RDPEGFX 2.2.4.1).
+        expectedSequenceNumber &+= 1
 
         if header.flags & Flag.cacheReset != 0 {
             vBarStorageCursor = 0
@@ -117,7 +119,6 @@ final class RDPClearCodecDecoder {
             }
             bitmap = decoded
         }
-        expectedSequenceNumber &+= 1
         return bitmap
     }
 

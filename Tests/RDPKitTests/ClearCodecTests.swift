@@ -278,6 +278,20 @@ import Testing
     }
 }
 
+@Test func decodesClearCodecStreamAfterOneThatFailsToDecode() throws {
+    let decoder = RDPClearCodecDecoder()
+    // Stream 0 hits a glyph that was never stored.
+    var hit = Data([0x03, 0x00])
+    hit.appendLittleEndianUInt16(7)
+    #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
+        try decoder.decode(hit, width: 1, height: 1)
+    }
+
+    let bitmap = try decoder.decode(clearCodecBandsStream(seqNumber: 1, bandsData: Data()), width: 1, height: 1)
+
+    #expect(bitmap.width == 1)
+}
+
 @Test func rejectsClearCodecReservedFlagsAndInvalidGlyphIndices() {
     var reservedFlagsStream = clearCodecBandsStream(seqNumber: 0, bandsData: Data())
     reservedFlagsStream[0] = 0x08
