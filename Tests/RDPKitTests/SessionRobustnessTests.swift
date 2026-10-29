@@ -196,6 +196,39 @@ import Testing
     #expect(acknowledgesOnChannel2.count == 2)
 }
 
+/// A second DisplayControl channel replaces the first, as a second RDPGFX channel does: the
+/// session made for the old channel, and capabilities still arriving on it, are dropped.
+@Test func recreatedDisplayControlChannelForgetsTheOldChannelID() throws {
+    func drdynvc(_ payload: Data) -> Data {
+        mcsSendDataIndication(
+            channelID: KRdpCapture.drdynvcChannelID,
+            userData: RDPStaticVirtualChannelPDU(payload: payload).encodedUserData()
+        )
+    }
+    func create(_ channelID: UInt8) -> Data {
+        drdynvc(Data([0x10, channelID]) + Data("Microsoft::Windows::RDS::DisplayControl".utf8) + Data([0]))
+    }
+    var caps = Data()
+    caps.appendLittleEndianUInt32(5)
+    caps.appendLittleEndianUInt32(20)
+    caps.appendLittleEndianUInt32(1)
+    caps.appendLittleEndianUInt32(3840)
+    caps.appendLittleEndianUInt32(2160)
+    let oldCaps = drdynvc(RDPDynamicVirtualChannelDataPDU(channelID: 2, payload: caps).encoded())
+    // The capture after its CapsConfirm (event 38), up to its first frame.
+    let firstFrame = try KRdpCapture.events()[39...].map { try #require($0.bytes) }
+    let announced = Locked([UInt32]())
+    let run = try KRdpCapture.run(
+        prefix: 39,
+        appending: [create(2), oldCaps, create(3), oldCaps] + firstFrame,
+        onDisplayControlReady: { session in announced.withLock { $0.append(session.dynamicChannelID) } }
+    )
+
+    #expect(run.report.error == nil)
+    #expect(run.report.rdpDisplayControlChannelID == 3)
+    #expect(announced.value.isEmpty)
+}
+
 /// Each connection milestone must arrive within the timeout however much
 /// other traffic the server sends; here a pointer update every 200 ms, which
 /// used to reset the wait forever.
@@ -356,7 +389,8 @@ enum KRdpCapture {
         timeoutSeconds: Int = 10,
         guardSeconds: Double = 20,
         onEnd: (@Sendable (Channel) -> Void)? = nil,
-        onTrailingClientPacket: (@Sendable (Channel, Data) -> Void)? = nil
+        onTrailingClientPacket: (@Sendable (Channel, Data) -> Void)? = nil,
+        onDisplayControlReady: RDPDisplayControlSessionHandler? = nil
     ) throws -> Run {
         var events = try events()
         if let prefix {
@@ -397,6 +431,7 @@ enum KRdpCapture {
                 clipboardEnabled: false,
                 graphicsCapabilityProfile: .avcThinClient
             ),
+            onDisplayControlReady: onDisplayControlReady,
             cancellation: cancellation
         )
         cancellation.cancel()

@@ -86,8 +86,9 @@ extension RDPClientConnection {
         guard let kind else {
             return
         }
-        // A second graphics channel replaces the first, whose data would feed the new decoder.
-        if kind == .graphics, let previous = graphicsChannelID, previous != request.channelID {
+        // A second channel of a kind replaces the first, whose data would otherwise reach the
+        // new channel's decoder or session, and whose Close would end them.
+        if let previous = dynamicChannels.first(where: { $0.value == kind && $0.key != request.channelID })?.key {
             dynamicChannels[previous] = nil
             discardDynamicChannelState(previous)
         }
@@ -102,6 +103,7 @@ extension RDPClientConnection {
         case .displayControl:
             report.rdpDisplayControlChannelID = request.channelID
             report.rdpDisplayControlChannelCreateResponseHex = response.rdpHexString
+            pendingDisplayControlSession = nil
         case .audio:
             guard let channel = transport?.channel, let staticChannelID = drdynvcChannelID else {
                 return
