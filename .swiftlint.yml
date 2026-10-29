@@ -10,15 +10,6 @@ included:
   - Examples/RDPPreflight
   - Examples/Tests
 
-excluded:
-  - DerivedData
-  - target
-  - captures
-  - Examples/RDPClient/Generated
-  - Examples/RDPClient/RDPKitExamples.xcodeproj
-  - RDPClient.xcodeproj
-  - RDPKitExamples.xcodeproj
-
 only_rules:
   - contains_over_filter_count
   - contains_over_filter_is_empty
