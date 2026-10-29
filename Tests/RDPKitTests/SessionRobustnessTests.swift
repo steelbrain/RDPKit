@@ -128,6 +128,50 @@ func reactivationIgnoresADesktopTheClientDoesNotTake(size: [UInt16]) throws {
         == [[1280, 720], [1280, 720]])
 }
 
+/// A Monitor Layout PDU after a reactivation's Demand Active, as Windows 11 sends one when a
+/// Display Control layout reactivates a session without RDPGFX (observed live), is in the live
+/// report by the time `onInputReady` hands out the reactivated session's input.
+@Test func liveReportHoldsTheMonitorLayoutOfAReactivation() throws {
+    let events = try KRdpCapture.events()
+    var deactivate = Data()
+    deactivate.appendLittleEndianUInt32(KRdpCapture.shareID)
+    deactivate.append(contentsOf: [0x01, 0x00, 0x00])
+    let finalization = try [21, 22, 27, 28].map { try #require(events[$0].bytes) }
+    let liveReport = RDPLiveConnectionReport()
+    let layoutsAtInputReady = Locked<[[RDPRemoteMonitor]?]>([])
+
+    let run = try KRdpCapture.run(
+        appending: [
+            KRdpCapture.fastPathSurfaceBits(left: 0, top: 0, pixel: Data([1, 2, 3, 0xFF])),
+            KRdpCapture.ioPacket(KRdpCapture.shareControl(type: 0x6, body: deactivate)),
+            #require(events[19].bytes),
+            KRdpCapture.monitorLayout([
+                RDPMonitorDefinition(left: 0, top: 0, right: 1279, bottom: 719, flags: RDPMonitorDefinition.primary),
+                RDPMonitorDefinition(left: 1280, top: 0, right: 2559, bottom: 719, flags: 0),
+            ]),
+        ] + finalization,
+        frameCaptureLimit: 2,
+        onEnd: { channel in
+            channel.eventLoop.scheduleTask(in: .milliseconds(1500)) {
+                let frame = KRdpCapture.fastPathSurfaceBits(left: 1, top: 1, pixel: Data([1, 2, 3, 0xFF]))
+                var buffer = channel.allocator.buffer(capacity: frame.count)
+                buffer.writeBytes(frame)
+                channel.writeAndFlush(buffer, promise: nil)
+            }
+        },
+        onInputReady: { _ in layoutsAtInputReady.withLock { $0.append(liveReport.snapshot?.rdpMonitorLayout) } },
+        liveReport: liveReport
+    )
+    let layout = [
+        RDPRemoteMonitor(rect: RDPFrameRect(left: 0, top: 0, right: 1280, bottom: 720), isPrimary: true),
+        RDPRemoteMonitor(rect: RDPFrameRect(left: 1280, top: 0, right: 2560, bottom: 720), isPrimary: false),
+    ]
+
+    #expect(run.report.error == nil)
+    #expect(layoutsAtInputReady.value == [nil, layout])
+    #expect(run.report.rdpMonitorLayout == layout)
+}
+
 /// Replays the capture, a frame, then Deactivate All and the capture's Demand Active at
 /// `width` x `height` with its finalization, and 1.5 s later a one-pixel frame at `point`.
 private func runReactivation(
@@ -649,7 +693,9 @@ enum KRdpCapture {
         guardSeconds: Double = 20,
         onEnd: (@Sendable (Channel) -> Void)? = nil,
         onTrailingClientPacket: (@Sendable (Channel, Data) -> Void)? = nil,
-        onDisplayControlReady: RDPDisplayControlSessionHandler? = nil
+        onInputReady: RDPInputSessionHandler? = nil,
+        onDisplayControlReady: RDPDisplayControlSessionHandler? = nil,
+        liveReport: RDPLiveConnectionReport? = nil
     ) throws -> Run {
         var events = try events()
         if let prefix {
@@ -690,7 +736,9 @@ enum KRdpCapture {
                 clipboardEnabled: false,
                 graphicsCapabilityProfile: .avcThinClient
             ),
+            onInputReady: onInputReady,
             onDisplayControlReady: onDisplayControlReady,
+            liveReport: liveReport,
             cancellation: cancellation
         )
         cancellation.cancel()
@@ -731,6 +779,16 @@ enum KRdpCapture {
     }
 
     static let shareID: UInt32 = 0x0001_03EE
+
+    /// A Monitor Layout PDU of `monitors` ([MS-RDPBCGR] 2.2.12.1).
+    static func monitorLayout(_ monitors: [RDPMonitorDefinition]) -> Data {
+        var payload = Data()
+        payload.appendLittleEndianUInt32(UInt32(monitors.count))
+        for monitor in monitors {
+            payload.append(monitor.encoded())
+        }
+        return ioPacket(shareData(pduType2: 0x37, payload: payload))
+    }
 
     /// A Server Redirection PDU carrying a routing token ([MS-RDPBCGR] 2.2.13.3.1).
     static func redirection(flags: UInt32, password: Data? = nil) -> Data {

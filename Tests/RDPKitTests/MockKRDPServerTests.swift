@@ -285,6 +285,30 @@ struct MockKRDPServerTests {
         #expect(blocks.first?.littleEndianUInt16(at: 144) == 0x01AF)
     }
 
+    /// The live report holds the server's Monitor Layout PDU by the time `onInputReady` hands
+    /// out the session's input: Windows 11 and gnome-remote-desktop 51 send it right after the
+    /// Demand Active (observed live), as this server does.
+    @Test func liveReportHoldsTheServersMonitorLayoutWhenInputIsReady() throws {
+        let liveReport = RDPLiveConnectionReport()
+        let layoutAtInputReady = Locked<[RDPRemoteMonitor]?>(nil)
+        let run = try runMock(
+            .init(licensingBehavior: .validClientThenDemandActiveWithMonitorLayout),
+            { $0.monitorLayout = .singlePrimary(width: 1280, height: 720) },
+            client: {
+                RDPSessionClient().run(
+                    configuration: $0,
+                    onInputReady: { _ in layoutAtInputReady.withLock { $0 = liveReport.snapshot?.rdpMonitorLayout } },
+                    liveReport: liveReport
+                )
+            }
+        )
+        let layout = [RDPRemoteMonitor(rect: RDPFrameRect(left: 0, top: 0, right: 1280, bottom: 720), isPrimary: true)]
+
+        #expect(run.report.status == "success")
+        #expect(layoutAtInputReady.value == layout)
+        #expect(run.report.rdpMonitorLayout == layout)
+    }
+
     /// Without a monitor layout the client sends the blocks it always sent.
     @Test func clientSendsNoMonitorDataWithoutALayout() throws {
         let run = try runMock()
