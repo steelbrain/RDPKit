@@ -727,7 +727,9 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                     sink.apply { controller in
                         controller.displayControlSession = session
                         controller.displayControlMessage = "Display Control ready."
-                        controller.scheduleAutoDisplaySizeUpdate(force: true)
+                        // A server redirection's target has not been sent the layout the first server got.
+                        controller.lastRequestedDisplayRequest = nil
+                        controller.scheduleAutoDisplaySizeUpdate()
                         controller.render()
                     }
                 },
@@ -1086,7 +1088,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         }
     }
 
-    private func scheduleAutoDisplaySizeUpdate(force: Bool = false) {
+    private func scheduleAutoDisplaySizeUpdate() {
         guard autoApplyViewerSize,
               isConnecting,
               displayControlSession != nil,
@@ -1096,7 +1098,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         }
 
         let displayRequest = viewerPixelSize.displayRequest
-        guard force || lastRequestedDisplayRequest != displayRequest else {
+        guard lastRequestedDisplayRequest != displayRequest else {
             return
         }
 
@@ -1363,7 +1365,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
             if let viewerPixelSize {
                 syncDisplayFieldsWithViewerSize(viewerPixelSize)
             }
-            scheduleAutoDisplaySizeUpdate(force: true)
+            scheduleAutoDisplaySizeUpdate()
         } else {
             cancelPendingDisplayResize()
         }
