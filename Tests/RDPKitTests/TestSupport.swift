@@ -210,7 +210,8 @@ func rectangleData(_ rect: RDPGFXRect16) -> Data {
     return data
 }
 
-/// A ClearCodec stream ([MS-RDPEGFX] 2.2.4.1) whose residual layer is one raw BGR run.
+/// A ClearCodec stream ([MS-RDPEGFX] 2.2.4.1) whose subcodec layer is one uncompressed
+/// region at the origin.
 func clearCodecRawRegionStream(width: UInt16, height: UInt16, pixels: [UInt8]) -> Data {
     var stream = Data([0x00, 0x00])
     stream.appendLittleEndianUInt32(0)

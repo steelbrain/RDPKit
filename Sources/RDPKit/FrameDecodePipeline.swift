@@ -128,8 +128,8 @@ final class RDPDecodedVideoSurfaceCompositor {
     /// Surfaces holding pixels other codecs drew beside their video, as in Windows mixed
     /// mode. Their decoded video is valid only inside each update's regions.
     private var surfacesWithBitmapContent = Set<UInt16>()
-    /// Cache entries the session's surface copies stored here.
-    private var cache: [UInt16: Surface] = [:]
+    /// Cache entries and ClearCodec glyphs the session's surface copies stored here.
+    private var storedBlocks: [RDPGraphicsSurfaceCopy.Location: Surface] = [:]
     private var graphicsOutput: Surface?
     private let imageConverter = RDPDecodedImageBufferConverter()
     private let pixelBufferPool = RDPBGRAPixelBufferPool()
@@ -283,9 +283,7 @@ final class RDPDecodedVideoSurfaceCompositor {
             blocks.append((pixels, block.destination))
         }
         guard case let .surface(surfaceID) = surfaceCopy.destination else {
-            if case let .cacheSlot(slot) = surfaceCopy.destination {
-                cache[slot] = blocks.last?.pixels
-            }
+            storedBlocks[surfaceCopy.destination] = blocks.last?.pixels
             return nil
         }
 
@@ -331,18 +329,18 @@ final class RDPDecodedVideoSurfaceCompositor {
             surfacesWithBitmapContent.remove(surfaceID)
         }
         for slot in frame.evictedCacheSlots {
-            cache[slot] = nil
+            storedBlocks[.cacheSlot(slot)] = nil
         }
     }
 
-    /// A copy of `rect` of a surface or cache entry, or nil when this compositor never got it.
+    /// A copy of `rect` of a surface or stored block, or nil when this compositor never got it.
     private func pixels(of location: RDPGraphicsSurfaceCopy.Location, in rect: RDPFrameRect) throws -> Surface? {
         let width = Int(rect.width)
         let height = Int(rect.height)
         var pixels = Surface(width: width, height: height, bytesPerRow: width * 4, data: Data(count: width * height * 4))
         switch location {
-        case let .cacheSlot(slot):
-            guard let entry = cache[slot] else {
+        case .cacheSlot, .clearCodecGlyph:
+            guard let entry = storedBlocks[location] else {
                 return nil
             }
             copyBlock(of: entry, in: rect, to: &pixels)

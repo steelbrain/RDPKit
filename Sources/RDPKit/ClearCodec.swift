@@ -1,10 +1,21 @@
 import Foundation
 
 struct RDPClearCodecBitmap: Equatable, Sendable {
+    enum Glyph: Equatable, Sendable {
+        /// The bitmap went into this glyph storage slot.
+        case stored(UInt16)
+        /// The bitmap came from this glyph storage slot.
+        case hit(UInt16)
+    }
+
     var width: Int
     var height: Int
     var bytesPerRow: Int
     var bgraData: Data
+    /// The rectangles the stream's layers wrote, all of the bitmap for a glyph hit; every
+    /// other pixel is the destination's.
+    var coveredRects: [RDPGFXRect16] = []
+    var glyph: Glyph?
 }
 
 struct RDPClearCodecStreamSummary: Equatable, Sendable {
@@ -83,7 +94,14 @@ final class RDPClearCodecDecoder {
             else {
                 throw RDPDecodeError.invalidRDPGFXPDU
             }
-            bitmap = cached
+            bitmap = RDPClearCodecBitmap(
+                width: cached.width,
+                height: cached.height,
+                bytesPerRow: cached.bytesPerRow,
+                bgraData: cached.bgraData,
+                coveredRects: [RDPGFXRect16(left: 0, top: 0, right: UInt16(cached.width), bottom: UInt16(cached.height))],
+                glyph: .hit(glyphIndex)
+            )
         } else {
             var decoded = RDPClearCodecBitmap(
                 width: width,
@@ -93,7 +111,9 @@ final class RDPClearCodecDecoder {
             )
             try decodeCompositePayload(&cursor, into: &decoded)
             if let glyphIndex = header.glyphIndex {
-                glyphCache[glyphIndex] = width * height <= Self.maximumGlyphPixelCount ? decoded : nil
+                let isStored = width * height <= Self.maximumGlyphPixelCount
+                glyphCache[glyphIndex] = isStored ? decoded : nil
+                decoded.glyph = isStored ? .stored(glyphIndex) : nil
             }
             bitmap = decoded
         }
@@ -186,6 +206,11 @@ final class RDPClearCodecDecoder {
             }
             pixelIndex += runLength
         }
+        // The residual layer covers its pixels in raster order: whole rows, then part of one.
+        let rows = pixelIndex / bitmap.width
+        let columns = pixelIndex % bitmap.width
+        bitmap.cover(left: 0, top: 0, right: bitmap.width, bottom: rows)
+        bitmap.cover(left: 0, top: rows, right: columns, bottom: rows + 1)
     }
 
     private func decodeBandsLayer(_ data: Data, into bitmap: inout RDPClearCodecBitmap) throws {
@@ -217,6 +242,7 @@ final class RDPClearCodecDecoder {
                     bitmap.bgraData[destinationOffset ..< destinationOffset + 4] = vBar[row * 4 ..< row * 4 + 4]
                 }
             }
+            bitmap.cover(left: xStart, top: yStart, right: xEnd + 1, bottom: yEnd + 1)
         }
     }
 
@@ -296,6 +322,7 @@ final class RDPClearCodecDecoder {
                 throw RDPDecodeError.invalidRDPGFXPDU
             }
 
+            bitmap.cover(left: x, top: y, right: x + width, bottom: y + height)
             switch codecID {
             case 0x00:
                 try decodeUncompressedSubcodec(bitmapData, x: x, y: y, width: width, height: height, into: &bitmap)
@@ -446,6 +473,13 @@ final class RDPClearCodecDecoder {
 }
 
 private extension RDPClearCodecBitmap {
+    mutating func cover(left: Int, top: Int, right: Int, bottom: Int) {
+        guard right > left, bottom > top else {
+            return
+        }
+        coveredRects.append(RDPGFXRect16(left: UInt16(left), top: UInt16(top), right: UInt16(right), bottom: UInt16(bottom)))
+    }
+
     mutating func setPixel(x: Int, y: Int, blue: UInt8, green: UInt8, red: UInt8) {
         let offset = y * bytesPerRow + x * 4
         bgraData[offset] = blue

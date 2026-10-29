@@ -219,7 +219,31 @@ import Testing
 
     let bitmap = try decoder.decode(hit, width: 2, height: 1)
 
-    #expect(bitmap == cached)
+    #expect(bitmap.bgraData == cached.bgraData)
+    #expect(cached.glyph == .stored(glyphIndex))
+    #expect(bitmap.glyph == .hit(glyphIndex))
+    #expect(bitmap.coveredRects == [RDPGFXRect16(left: 0, top: 0, right: 2, bottom: 1)])
+}
+
+/// Pixels no layer covers keep the destination's, which may be ones only a video decoder holds.
+@Test func reportsTheRectanglesClearCodecLayersCover() throws {
+    let residual = try RDPClearCodecDecoder().decode(
+        clearCodecResidualStream(Data([0x10, 0x20, 0x30, 5])),
+        width: 3,
+        height: 3
+    )
+    #expect(residual.coveredRects == [
+        RDPGFXRect16(left: 0, top: 0, right: 3, bottom: 1),
+        RDPGFXRect16(left: 0, top: 1, right: 2, bottom: 2),
+    ])
+    let subcodec = try RDPClearCodecDecoder().decode(
+        clearCodecRawRegionStream(width: 2, height: 1, pixels: [0x10, 0x20, 0x30, 0x40, 0x50, 0x60]),
+        width: 3,
+        height: 3
+    )
+    #expect(subcodec.coveredRects == [RDPGFXRect16(left: 0, top: 0, right: 2, bottom: 1)])
+    let bands = try RDPClearCodecDecoder().decode(clearCodecBandsStream(seqNumber: 0, bandsData: clearCodecTwoColumnBandsData()), width: 3, height: 3)
+    #expect(bands.coveredRects == [RDPGFXRect16(left: 0, top: 0, right: 2, bottom: 3)])
 }
 
 @Test func rejectsClearCodecGlyphCacheHitWithPayload() throws {

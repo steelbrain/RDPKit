@@ -227,6 +227,9 @@ final class RDPGFXSurfaceCompositor {
 
     private var surfaces: [UInt16: Surface] = [:]
     private var cacheSlots: [UInt16: CacheEntry] = [:]
+    /// What each ClearCodec glyph holds beside its pixels, which the ClearCodec decoder keeps:
+    /// as for a cache entry, in glyph coordinates.
+    private var glyphs: [UInt16: (decoded: [RDPGFXRect16], decoderLacks: [RDPGFXRect16]?)] = [:]
     private var codecContexts: Set<CodecContextKey> = []
     private var cachedByteCount = 0
     private var evictedDecoderCacheSlots: [UInt16] = []
@@ -283,7 +286,7 @@ final class RDPGFXSurfaceCompositor {
         case RDPGFXCommandID.mapSurfaceToScaledOutput:
             try mapSurfaceToScaledOutput(RDPGFXMapSurfaceToScaledOutputPDU.parse(from: message))
         case RDPGFXCommandID.wireToSurface1:
-            try wireToSurface(RDPGFXWireToSurface1PDU.parse(from: message), clearCodec: clearCodec)
+            return try wireToSurface(RDPGFXWireToSurface1PDU.parse(from: message), clearCodec: clearCodec)
         case RDPGFXCommandID.wireToSurface2:
             try wireToSurface(RDPGFXWireToSurface2PDU.parse(from: message))
         case RDPGFXCommandID.solidFill:
@@ -498,7 +501,10 @@ final class RDPGFXSurfaceCompositor {
         }
     }
 
-    private func wireToSurface(_ pdu: RDPGFXWireToSurface1PDU, clearCodec: RDPClearCodecDecoder) throws {
+    private func wireToSurface(
+        _ pdu: RDPGFXWireToSurface1PDU,
+        clearCodec: RDPClearCodecDecoder
+    ) throws -> RDPGraphicsSurfaceCopy? {
         let rect = pdu.destinationRect
         let x = Int(rect.left)
         let y = Int(rect.top)
@@ -534,18 +540,7 @@ final class RDPGFXSurfaceCompositor {
                 try $0.write(pixels, bytesPerRow: width * 4, width: width, height: height, x: x, y: y)
             }
         case RDPGFXCodecID.clearCodec:
-            let destination = try surfaces[pdu.surfaceID]?.pixels(in: rect)
-            let bitmap = try clearCodec.decode(pdu.bitmapData, width: width, height: height, destination: destination)
-            try modifySurface(pdu.surfaceID) {
-                try $0.write(
-                    bitmap.bgraData,
-                    bytesPerRow: bitmap.bytesPerRow,
-                    width: bitmap.width,
-                    height: bitmap.height,
-                    x: x,
-                    y: y
-                )
-            }
+            return try drawClearCodec(pdu, clearCodec: clearCodec)
         case RDPGFXCodecID.alpha:
             let alphaStream = try RDPGFXAlphaBitmapStream.parse(from: pdu.bitmapData, pixelCount: width * height)
             try modifySurface(pdu.surfaceID) {
@@ -553,12 +548,68 @@ final class RDPGFXSurfaceCompositor {
             }
         case RDPGFXCodecID.cavideo:
             try writeRemoteFXTiles(pdu)
-            return
+            return nil
         default:
             // AVC420 and AVC444 bitmaps are decoded from the PDU by the caller.
-            return
+            return nil
         }
         surfaces[pdu.surfaceID]?.markDirty(rect)
+        return nil
+    }
+
+    /// ClearCodec layers draw over the destination's pixels, which stay wherever no layer
+    /// covers them, and a glyph keeps them too. Where only the decoder holds those pixels
+    /// this surface's are stale: only what the layers drew is marked, and a glyph holding
+    /// such pixels is the decoder's to store and draw, as a cache entry would be.
+    private func drawClearCodec(_ pdu: RDPGFXWireToSurface1PDU, clearCodec: RDPClearCodecDecoder) throws -> RDPGraphicsSurfaceCopy? {
+        let destination = try surfaces[pdu.surfaceID]?.pixels(in: pdu.destinationRect)
+        let bitmap = try clearCodec.decode(
+            pdu.bitmapData,
+            width: Int(pdu.destinationRect.width),
+            height: Int(pdu.destinationRect.height),
+            destination: destination
+        )
+        let x = Int(pdu.destinationRect.left)
+        let y = Int(pdu.destinationRect.top)
+        let glyphRect = RDPFrameRect(left: 0, top: 0, right: UInt16(bitmap.width), bottom: UInt16(bitmap.height))
+        let written = RDPGFXRect16(left: UInt16(x), top: UInt16(y), right: UInt16(x + bitmap.width), bottom: UInt16(y + bitmap.height))
+        try modifySurface(pdu.surfaceID) { surface in
+            try surface.write(bitmap.bgraData, bytesPerRow: bitmap.bytesPerRow, width: bitmap.width, height: bitmap.height, x: x, y: y)
+            if case let .hit(index)? = bitmap.glyph {
+                let glyph = glyphs[index]
+                surface.markCopied(
+                    into: written,
+                    decoded: glyph?.decoded.offsetBy(dx: x, dy: y) ?? [],
+                    decoderLacks: glyph?.decoderLacks?.offsetBy(dx: x, dy: y)
+                )
+            } else {
+                bitmap.coveredRects.offsetBy(dx: x, dy: y).forEach { surface.markDirty($0) }
+            }
+        }
+        switch bitmap.glyph {
+        case let .hit(index)?:
+            guard glyphs[index]?.decoderLacks != nil else {
+                return nil
+            }
+            return RDPGraphicsSurfaceCopy(
+                source: .clearCodecGlyph(index),
+                destination: .surface(pdu.surfaceID),
+                blocks: [.init(source: glyphRect, destination: RDPFrameRect(written))]
+            )
+        case let .stored(index)?:
+            let glyph = try modifySurface(pdu.surfaceID) { $0.copiedState(of: written) }
+            glyphs[index] = glyph
+            guard glyph.decoderLacks != nil else {
+                return nil
+            }
+            return RDPGraphicsSurfaceCopy(
+                source: .surface(pdu.surfaceID),
+                destination: .clearCodecGlyph(index),
+                blocks: [.init(source: RDPFrameRect(written), destination: glyphRect)]
+            )
+        case nil:
+            return nil
+        }
     }
 
     private func writeRemoteFXTiles(_ pdu: RDPGFXWireToSurface1PDU) throws {

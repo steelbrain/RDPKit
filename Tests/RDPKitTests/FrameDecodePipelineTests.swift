@@ -506,6 +506,34 @@ import Testing
     #expect(try bgraPixel(atX: 3, y: 2, in: presentation.imageBuffer) == [0, 0, 0, 0])
 }
 
+/// A ClearCodec glyph stored over decoded video keeps that video for where it is drawn.
+@Test func decodedVideoCompositorDrawsClearCodecGlyphsOfDecodedVideo() throws {
+    let compositor = RDPDecodedVideoSurfaceCompositor()
+    let outputRect = RDPFrameRect(left: 0, top: 0, right: 32, bottom: 32)
+    _ = try compositor.presented(
+        for: videoFrame(id: 1, graphicsOutputRect: outputRect, surfaceRect: outputRect, destinationRect: outputRect, regionRects: [outputRect]),
+        decodedImageBuffer: try yuvPixelBuffer(width: 32, height: 32, darkRows: 0 ..< 8)
+    )
+    let glyph = RDPFrameRect(left: 0, top: 0, right: 4, bottom: 4)
+
+    #expect(try compositor.presentation(copying: surfaceCopyFrame(
+        id: 2,
+        outputRect: outputRect,
+        copy: RDPGraphicsSurfaceCopy(source: .surface(1), destination: .clearCodecGlyph(5), blocks: [.init(source: glyph, destination: glyph)])
+    )) == nil)
+    let presentation = try #require(try compositor.presentation(copying: surfaceCopyFrame(
+        id: 2,
+        outputRect: outputRect,
+        copy: RDPGraphicsSurfaceCopy(source: .clearCodecGlyph(5), destination: .surface(1), blocks: [.init(
+            source: glyph,
+            destination: RDPFrameRect(left: 8, top: 24, right: 12, bottom: 28)
+        )])
+    )))
+
+    #expect(try bgraPixel(atX: 9, y: 25, in: presentation.imageBuffer)[1] < 40)
+    #expect(try bgraPixel(atX: 13, y: 25, in: presentation.imageBuffer)[1] > 215)
+}
+
 @Test func decodedVideoCompositorClearsStaleSurfaceOnFullResyncFrame() throws {
     let compositor = RDPDecodedVideoSurfaceCompositor()
     _ = try compositor.presented(

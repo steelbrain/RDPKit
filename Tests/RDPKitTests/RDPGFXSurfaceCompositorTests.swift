@@ -467,6 +467,77 @@ import Testing
     #expect(compositor.decoderCacheSlots.isEmpty)
 }
 
+/// ClearCodec layers draw over the destination: over video, only what they drew is the
+/// session's to paint.
+@Test func compositorKeepsVideoThatClearCodecLayersDoNotCover() throws {
+    let compositor = RDPGFXSurfaceCompositor(outputWidth: 8, outputHeight: 8)
+    let clearCodec = RDPClearCodecDecoder()
+    try compositor.process(try createSurfaceMessage(surfaceID: 0, width: 8, height: 8), clearCodec: clearCodec)
+    try compositor.process(try mapSurfaceToOutputMessage(surfaceID: 0, x: 0, y: 0), clearCodec: clearCodec)
+    compositor.noteVideo(fullSurfaceVideo(surfaceID: 0, width: 8, height: 8))
+
+    try compositor.process(
+        try wireToSurface1Message(
+            surfaceID: 0,
+            codecID: RDPGFXCodecID.clearCodec,
+            pixelFormat: 0x20,
+            destinationRect: RDPGFXRect16(left: 2, top: 2, right: 6, bottom: 6),
+            bitmapData: clearCodecRawRegionStream(width: 2, height: 1, pixels: [0x10, 0x20, 0x30, 0x40, 0x50, 0x60])
+        ),
+        clearCodec: clearCodec
+    )
+
+    #expect(compositor.makeFrames(frameID: 1).map(\.regionRects) == [[RDPFrameRect(left: 2, top: 2, right: 4, bottom: 3)]])
+}
+
+/// A ClearCodec glyph stored over video keeps video pixels only the decoder holds, so the
+/// decoder stores the glyph too, and draws it where the server hits it.
+@Test func compositorHandsClearCodecGlyphsOverVideoToTheDecoder() throws {
+    let compositor = RDPGFXSurfaceCompositor(outputWidth: 8, outputHeight: 8)
+    let clearCodec = RDPClearCodecDecoder()
+    try compositor.process(try createSurfaceMessage(surfaceID: 0, width: 8, height: 8), clearCodec: clearCodec)
+    try compositor.process(try mapSurfaceToOutputMessage(surfaceID: 0, x: 0, y: 0), clearCodec: clearCodec)
+    compositor.noteVideo(fullSurfaceVideo(surfaceID: 0, width: 8, height: 8))
+    let glyphRect = RDPFrameRect(left: 0, top: 0, right: 2, bottom: 2)
+
+    // One covered pixel; the glyph's other three are video.
+    var store = clearCodecRawRegionStream(width: 1, height: 1, pixels: [0x10, 0x20, 0x30])
+    store[0] = 0x01
+    store.insert(contentsOf: [0x05, 0x00], at: 2)
+    let stored = try compositor.process(
+        try wireToSurface1Message(
+            surfaceID: 0,
+            codecID: RDPGFXCodecID.clearCodec,
+            pixelFormat: 0x20,
+            destinationRect: RDPGFXRect16(left: 0, top: 0, right: 2, bottom: 2),
+            bitmapData: store
+        ),
+        clearCodec: clearCodec
+    )
+    #expect(stored == RDPGraphicsSurfaceCopy(source: .surface(0), destination: .clearCodecGlyph(5), blocks: [.init(
+        source: glyphRect,
+        destination: glyphRect
+    )]))
+    #expect(compositor.makeFrames(frameID: 1).map(\.regionRects) == [[RDPFrameRect(left: 0, top: 0, right: 1, bottom: 1)]])
+
+    let hit = try compositor.process(
+        try wireToSurface1Message(
+            surfaceID: 0,
+            codecID: RDPGFXCodecID.clearCodec,
+            pixelFormat: 0x20,
+            destinationRect: RDPGFXRect16(left: 4, top: 4, right: 6, bottom: 6),
+            bitmapData: Data([0x03, 0x01, 0x05, 0x00])
+        ),
+        clearCodec: clearCodec
+    )
+    #expect(hit == RDPGraphicsSurfaceCopy(source: .clearCodecGlyph(5), destination: .surface(0), blocks: [.init(
+        source: glyphRect,
+        destination: RDPFrameRect(left: 4, top: 4, right: 6, bottom: 6)
+    )]))
+    // The decoder's glyph lacks the covered pixel, which the session paints.
+    #expect(compositor.makeFrames(frameID: 2).map(\.regionRects) == [[RDPFrameRect(left: 4, top: 4, right: 5, bottom: 5)]])
+}
+
 @Test func compositorCollapsesHeldBackDirtyRectsIntoBoundingBox() throws {
     let compositor = RDPGFXSurfaceCompositor()
     let clearCodec = RDPClearCodecDecoder()

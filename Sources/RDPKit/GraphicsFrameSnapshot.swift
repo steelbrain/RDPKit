@@ -34,9 +34,12 @@ public enum RDPGraphicsFrameContentKind: String, Encodable, Equatable, Sendable 
 /// holds pixels only the decoder has: video it decoded, or pixels such a copy put there.
 /// The session copies every other area itself and sends it in bitmap snapshots.
 public struct RDPGraphicsSurfaceCopy: Encodable, Equatable, Sendable {
-    public enum Location: Encodable, Equatable, Sendable {
+    public enum Location: Encodable, Hashable, Sendable {
         case surface(UInt16)
         case cacheSlot(UInt16)
+        /// A ClearCodec glyph storage slot ([MS-RDPEGFX] 2.2.4.1): a glyph drawn over such
+        /// pixels keeps those it does not cover.
+        case clearCodecGlyph(UInt16)
     }
 
     /// A rectangle of the source, in its coordinates, and where it goes, in the destination's.

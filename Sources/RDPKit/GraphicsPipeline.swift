@@ -284,11 +284,12 @@ extension RDPClientConnection {
     }
 
     private func surfaceCopyFrame(_ copy: RDPGraphicsSurfaceCopy, typeName: String) -> RDPGraphicsFrameSnapshot {
-        let surfaceID = switch (copy.destination, copy.source) {
-        case let (.surface(surfaceID), _), let (.cacheSlot, .surface(surfaceID)):
+        // The surface copied into, or else out of.
+        let surfaceID: UInt16 = switch (copy.destination, copy.source) {
+        case let (.surface(surfaceID), _), let (_, .surface(surfaceID)):
             surfaceID
-        case (.cacheSlot, .cacheSlot):
-            UInt16(0)
+        default:
+            0
         }
         let destinations = copy.destination == .surface(surfaceID) ? copy.blocks.map(\.destination) : []
         return RDPGraphicsFrameSnapshot(

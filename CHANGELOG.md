@@ -22,8 +22,8 @@
   `destinationRect` and `regionRects` are in unscaled output coordinates, and
   `mappedOutputRect` says where the surface is scaled to.
 - `RDPGraphicsFrameSnapshot`: snapshots of the new content kind `.surfaceCopy`
-  carry, in `surfaceCopy`, a copy among the decoder's surfaces and cache of
-  pixels only the decoder holds, such as decoded video. `evictedCacheSlots`
+  carry, in `surfaceCopy`, a copy among the decoder's surfaces, cache and
+  ClearCodec glyphs of pixels only the decoder holds, such as decoded video. `evictedCacheSlots`
   names the cache entries such copies stored that the server has since evicted.
   `RDPFrameDecodeQueue` applies both; a client that decodes snapshots itself
   must make these copies, or the copied areas keep stale pixels.
@@ -119,6 +119,9 @@
   video decoded in earlier frames, such as a scroll, are made from the decoded
   pixels. An unmapped surface those copies wrote to gets its own video decoded
   too, without showing it, for the copies out of it.
+- ClearCodec drawn over video no longer paints black where its layers leave the
+  pixels underneath, and a ClearCodec glyph stored over video is drawn with that
+  video.
 - Acknowledge every RDPGFX EndFrame and every surface frame marker, including
   after an update that fails to decode, and ignore cosmetic RDPGFX and DVC
   fields instead of ending the session.
