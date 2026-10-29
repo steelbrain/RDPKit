@@ -144,6 +144,17 @@ final class RDPClientConnection {
         return surface
     }
 
+    /// Whether the client takes a Demand Active's desktop size: 1 to the 32,766 pixels each way
+    /// of the largest desktop Client Monitor Data and ResetGraphics describe ([MS-RDPBCGR]
+    /// 2.2.1.3.6, [MS-RDPEGFX] 2.2.2.14), and a primary surface of that size within the memory
+    /// bound RDPGFX surfaces have.
+    static func acceptsDesktopSize(width: UInt16, height: UInt16) -> Bool {
+        let maximum = UInt16(RDPGFXResetGraphicsPDU.maximumDimension)
+        return (1 ... maximum).contains(width)
+            && (1 ... maximum).contains(height)
+            && Int(width) * Int(height) * 4 <= RDPGFXSurfaceCompositor.maximumSurfaceByteCount
+    }
+
     /// Takes the desktop size a Demand Active sets; a new size replaces the primary surface.
     func resizeDesktop(width: UInt16, height: UInt16) {
         guard (width, height) != (desktopWidth, desktopHeight) else {

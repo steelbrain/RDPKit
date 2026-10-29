@@ -103,6 +103,62 @@ import Testing
     ])
 }
 
+/// A reactivation can set a desktop wider than 8192 pixels: Windows 11 sends a Demand Active
+/// of 11520x2160 when a Display Control layout of three 3840x2160 monitors resizes a session
+/// without RDPGFX (observed live). The client confirms it and draws its far corner.
+@Test func reactivationTakesADesktopWiderThan8192Pixels() throws {
+    let run = try runReactivation(toWidth: 11520, height: 2160, thenDrawingAt: (11519, 2159))
+
+    #expect(run.report.error == nil)
+    #expect(run.clientPackets.compactMap(KRdpCapture.confirmActiveDesktopSize).map { [$0.width, $0.height] }
+        == [[1280, 720], [11520, 2160]])
+    let primaryFrames = run.report.rdpGraphicsFrames?.filter { $0.codecName == "surface-bgra" } ?? []
+    #expect(primaryFrames.last?.regionRects == [RDPFrameRect(left: 11519, top: 2159, right: 11520, bottom: 2160)])
+}
+
+/// A Demand Active desktop past what the client takes keeps the size it had: wider than the
+/// 32,766 pixels of the largest desktop RDP describes ([MS-RDPBCGR] 2.2.1.3.6, [MS-RDPEGFX]
+/// 2.2.2.14), or with a primary surface past the memory RDPGFX surfaces may take.
+@Test(arguments: [[32767, 2160], [2160, 32767], [32766, 32766], [0, 2160]])
+func reactivationIgnoresADesktopTheClientDoesNotTake(size: [UInt16]) throws {
+    let run = try runReactivation(toWidth: size[0], height: size[1], thenDrawingAt: (1279, 719))
+
+    #expect(run.report.error == nil)
+    #expect(run.clientPackets.compactMap(KRdpCapture.confirmActiveDesktopSize).map { [$0.width, $0.height] }
+        == [[1280, 720], [1280, 720]])
+}
+
+/// Replays the capture, a frame, then Deactivate All and the capture's Demand Active at
+/// `width` x `height` with its finalization, and 1.5 s later a one-pixel frame at `point`.
+private func runReactivation(
+    toWidth width: UInt16,
+    height: UInt16,
+    thenDrawingAt point: (left: UInt16, top: UInt16)
+) throws -> KRdpCapture.Run {
+    let events = try KRdpCapture.events()
+    var deactivate = Data()
+    deactivate.appendLittleEndianUInt32(KRdpCapture.shareID)
+    deactivate.append(contentsOf: [0x01, 0x00, 0x00])
+    let demandActive = try KRdpCapture.settingDesktopSize(of: #require(events[19].bytes), width: width, height: height)
+    let finalization = try [21, 22, 27, 28].map { try #require(events[$0].bytes) }
+    let frame = KRdpCapture.fastPathSurfaceBits(left: point.left, top: point.top, pixel: Data([1, 2, 3, 0xFF]))
+
+    return try KRdpCapture.run(
+        appending: [
+            KRdpCapture.fastPathSurfaceBits(left: 0, top: 0, pixel: Data([1, 2, 3, 0xFF])),
+            KRdpCapture.ioPacket(KRdpCapture.shareControl(type: 0x6, body: deactivate)),
+            demandActive,
+        ] + finalization,
+        frameCaptureLimit: 2
+    ) { channel in
+        channel.eventLoop.scheduleTask(in: .milliseconds(1500)) {
+            var buffer = channel.allocator.buffer(capacity: frame.count)
+            buffer.writeBytes(frame)
+            channel.writeAndFlush(buffer, promise: nil)
+        }
+    }
+}
+
 /// A live session that has shown frames still bounds a reactivation: a
 /// Demand Active the server never finalizes ends the session at the timeout
 /// instead of leaving it waiting forever.

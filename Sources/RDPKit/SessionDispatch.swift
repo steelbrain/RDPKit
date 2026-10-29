@@ -330,9 +330,11 @@ extension RDPClientConnection {
         stage = .confirmActive
         report.rdpDemandActiveShareID = demandActive.shareID
         report.rdpDemandActiveCapabilitySets = demandActive.capabilitySets
-        // The client confirms the desktop size the server set ([MS-RDPBCGR] 2.2.7.1.2).
+        // The client confirms the desktop size the server set ([MS-RDPBCGR] 2.2.7.1.2). Windows 11
+        // reactivates a session without RDPGFX at 11520x2160 for a Display Control layout of three
+        // 3840x2160 monitors (observed live).
         if let width = demandActive.desktopWidth, let height = demandActive.desktopHeight,
-           (1 ... 8192).contains(width), (1 ... 8192).contains(height)
+           Self.acceptsDesktopSize(width: width, height: height)
         {
             resizeDesktop(width: width, height: height)
         }

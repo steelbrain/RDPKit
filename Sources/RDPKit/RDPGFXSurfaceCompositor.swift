@@ -242,7 +242,7 @@ final class RDPGFXSurfaceCompositor {
     /// The monitors of the last ResetGraphics, in graphics output coordinates.
     private(set) var monitors: [RDPRemoteMonitor] = []
     private let maximumCacheByteCount: Int
-    private static let maximumSurfaceByteCount = 1 << 30
+    static let maximumSurfaceByteCount = 1 << 30
     private let maximumCacheSlot: UInt16
     private let remoteFX = RDPRemoteFXDecoder()
     /// The progressive tiles of each surface decoded in the current RDPGFX frame, by tile
