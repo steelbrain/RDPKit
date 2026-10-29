@@ -822,20 +822,11 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                             cancellation.isCancelled == false
                         }
                     )
-                    if frame.contentKind == .video, completion == .decoded {
-                        keyframeRequests.recordDecodedVideo()
-                    }
-                    // An update that fails to decode leaves stale pixels, not a broken session.
-                    // Failed video waits for a keyframe, which the server is asked for.
-                    if case .failed = completion {
-                        if frame.contentKind == .video, keyframeRequests.shouldRequest(at: Date()) {
-                            sink.apply { controller in
-                                controller.requestKeyframe(connectLayout: connectDesktop.displayRequest)
-                            }
+                    try keyframeRequests.finishGraphicsFrame(frame, decoded: completion, at: Date()) {
+                        sink.apply { controller in
+                            controller.requestKeyframe(connectLayout: connectDesktop.displayRequest)
                         }
-                        return
                     }
-                    try completion.requireDecoded()
                 },
                 onInputReady: { session in
                     let persistenceResult = persistCredentialsIfNeeded(

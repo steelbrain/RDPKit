@@ -207,6 +207,47 @@ private let bitmapFrame = RDPGraphicsFrameSnapshot(
     #expect(requests(atIntervals: [4]) == [true])
 }
 
+/// A frame that fails to decode keeps the session and is acknowledged, but RDPKit hears it was not
+/// shown, so a session none of whose frames decode ends at the connection timeout instead of
+/// staying on "Connecting…". Failed video asks for a keyframe, at the throttle's pace.
+@Test func framesThatFailToDecodeAreNotShownAndVideoAsksForAKeyframe() throws {
+    var throttle = RDPKeyframeRequestThrottle()
+    var keyframeRequests = 0
+    let start = Date()
+    let video = RDPGraphicsFrameSnapshot(
+        frameID: 1,
+        surfaceID: 1,
+        codecID: 0x000B,
+        codecName: "avc420",
+        pixelFormat: 0x20,
+        destinationRect: RDPFrameRect(left: 0, top: 0, right: 64, bottom: 64),
+        regionRects: [],
+        encodedVideoData: Data([0, 0, 0, 1, 0x65])
+    )
+    var bitmap = video
+    bitmap.contentKind = .bitmap
+    func finish(_ frame: RDPGraphicsFrameSnapshot, _ completion: RDPFrameDecodeCompletion, after seconds: TimeInterval) -> String? {
+        do {
+            try throttle.finishGraphicsFrame(frame, decoded: completion, at: start.addingTimeInterval(seconds)) {
+                keyframeRequests += 1
+            }
+            return nil
+        } catch {
+            return "\(type(of: error)): \(error)"
+        }
+    }
+
+    #expect(finish(video, .failed(errorDescription: "awaiting a keyframe"), after: 0)
+        == "RDPGraphicsFrameNotPresented: awaiting a keyframe")
+    #expect(keyframeRequests == 1)
+    #expect(finish(bitmap, .failed(errorDescription: "bad bitmap"), after: 10)
+        == "RDPGraphicsFrameNotPresented: bad bitmap")
+    #expect(keyframeRequests == 1)
+    #expect(finish(video, .decoded, after: 11) == nil)
+    #expect(finish(video, .cancelled, after: 12)
+        == "RDPFrameDecodeQueueError: frame decode was cancelled before updating the graphics output")
+}
+
 @Test func rsaKeyExchangeStaysWithTheTargetWhoseCertificateRefusedECDHE() throws {
     let serverA = try RDPConnectionTarget(host: "a.example", port: 3389)
     let serverB = try RDPConnectionTarget(host: "b.example", port: 3389)

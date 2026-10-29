@@ -255,6 +255,30 @@ struct RDPKeyframeRequestThrottle {
     mutating func recordDecodedVideo() {
         unansweredRequests = 0
     }
+
+    /// Ends `onGraphicsFrame` for `frame` by how it decoded. A frame that fails to decode leaves
+    /// stale pixels, not a broken session, so it is acknowledged; failed video waits for a
+    /// keyframe, which `requestKeyframe` asks the server for when one is due. RDPKit is told
+    /// the frame was not shown, so a session none of whose frames decode, such as video in an
+    /// H.264 profile VideoToolbox refuses, ends at the connection timeout instead of staying on
+    /// "Connecting…". A cancelled decode ends the session.
+    mutating func finishGraphicsFrame(
+        _ frame: RDPGraphicsFrameSnapshot,
+        decoded completion: RDPFrameDecodeCompletion,
+        at date: Date,
+        requestKeyframe: () -> Void
+    ) throws {
+        if frame.contentKind == .video, completion == .decoded {
+            recordDecodedVideo()
+        }
+        if case let .failed(errorDescription) = completion {
+            if frame.contentKind == .video, shouldRequest(at: date) {
+                requestKeyframe()
+            }
+            throw RDPGraphicsFrameNotPresented(reason: errorDescription)
+        }
+        try completion.requireDecoded()
+    }
 }
 
 /// The target whose certificate refused ECDHE. Reconnecting to it uses RSA key exchange from the
