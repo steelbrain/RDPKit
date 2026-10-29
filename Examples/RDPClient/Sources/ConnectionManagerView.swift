@@ -19,6 +19,8 @@ struct ConnectionManagerView: View {
     @State private var domain = ""
     @State private var password = ""
     @State private var rememberPassword = false
+    /// The form's account while it waits for Keychain's answer; nil once Keychain has answered.
+    @State private var passwordRequest: RememberedPasswordRequest?
     /// Keychain's answer for the form's account, once its lookup has answered.
     @State private var passwordAnswer: RememberedPasswordAnswer?
     @State private var keychainMessage: String?
@@ -190,6 +192,7 @@ struct ConnectionManagerView: View {
         domain = ""
         password = ""
         rememberPassword = false
+        passwordRequest = nil
         passwordAnswer = nil
         passwordLookup.cancel()
         keychainMessage = nil
@@ -431,7 +434,10 @@ struct ConnectionManagerView: View {
     private func loadRememberedPasswordIfAvailable(after delay: Duration = RememberedPasswordLookup.typingDelay) {
         keychainMessage = nil
         passwordAnswer = nil
-        guard let key = credentialKey else {
+        passwordRequest = credentialKey.map {
+            RememberedPasswordRequest(key: $0, asked: passwordChoice, keepsEnteredPassword: false)
+        }
+        guard let key = passwordRequest?.key else {
             passwordLookup.cancel()
             return
         }
@@ -440,24 +446,30 @@ struct ConnectionManagerView: View {
         }
     }
 
+    /// Applies Keychain's answer for `key`, as the session window does: a password typed, or a
+    /// Remember choice made, while the answer was on its way stands.
     private func applyRememberedPassword(_ result: Result<String?, Error>, for key: KeychainCredentialKey) {
         // Dropped when the fields changed since the lookup began, as a newer lookup follows.
-        guard key == credentialKey else {
+        guard let request = passwordRequest, request.key == key, key == credentialKey else {
             return
         }
+        passwordRequest = nil
         passwordAnswer = RememberedPasswordAnswer(key: key, result: result)
         switch result {
-        case let .success(savedPassword?):
-            rememberPassword = true
-            password = savedPassword
-            keychainMessage = "Password loaded from Keychain."
-        case .success(nil):
-            if password.isEmpty {
-                rememberPassword = false
+        case let .success(savedPassword):
+            var choice = passwordChoice
+            if request.fill(&choice, with: savedPassword) {
+                keychainMessage = "Password loaded from Keychain."
             }
+            password = choice.password
+            rememberPassword = choice.rememberPassword
         case let .failure(error):
             keychainMessage = String(describing: error)
         }
+    }
+
+    private var passwordChoice: RememberedPasswordChoice {
+        RememberedPasswordChoice(password: password, rememberPassword: rememberPassword)
     }
 
     private var hasRememberedPassword: Bool {
