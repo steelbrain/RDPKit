@@ -21,6 +21,33 @@ public struct RDPDisplayScaleFactors: Equatable, Sendable {
     }
 }
 
+extension RDPDisplayScaleFactors {
+    /// The factors moved into the ranges servers accept ([MS-RDPBCGR] 2.2.1.3.2): the
+    /// desktop factor to 100-500, the device factor to the nearest of 100, 140 and 180.
+    var clamped: RDPDisplayScaleFactors {
+        RDPDisplayScaleFactors(
+            desktopScaleFactor: clampedDesktopScaleFactor(desktopScaleFactor),
+            deviceScaleFactor: nearestDeviceScaleFactor(deviceScaleFactor)
+        )
+    }
+}
+
+/// A display's physical size, from which the server works out its DPI ([MS-RDPBCGR] 2.2.1.3.2).
+public struct RDPDisplayPhysicalSize: Equatable, Sendable {
+    public var widthMillimeters: UInt32
+    public var heightMillimeters: UInt32
+
+    public init(widthMillimeters: UInt32, heightMillimeters: UInt32) {
+        self.widthMillimeters = widthMillimeters
+        self.heightMillimeters = heightMillimeters
+    }
+
+    /// Servers ignore a width or height under 10 mm or over 10,000 mm.
+    var isValid: Bool {
+        (10 ... 10_000).contains(widthMillimeters) && (10 ... 10_000).contains(heightMillimeters)
+    }
+}
+
 public struct RDPDisplayRequest: Equatable, Sendable {
     public var width: UInt32
     public var height: UInt32

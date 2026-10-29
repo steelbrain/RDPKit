@@ -75,6 +75,56 @@ import Testing
     #expect(configuration.timeoutSeconds == 1)
 }
 
+@Test func connectionConfigurationClampsScaleFactorsAndDropsAnIgnoredPhysicalSize() throws {
+    let defaults = RDPConnectionConfiguration(host: "example.test")
+    let clamped = RDPConnectionConfiguration(
+        host: "example.test",
+        scaleFactors: RDPDisplayScaleFactors(desktopScaleFactor: 900, deviceScaleFactor: 150),
+        physicalSize: RDPDisplayPhysicalSize(widthMillimeters: 600, heightMillimeters: 9)
+    )
+    let kept = try RDPConnectionConfiguration(
+        target: RDPConnectionTarget(host: "example.test", portText: "3389"),
+        desktopSize: RDPDesktopSize(width: 1280, height: 720),
+        scaleFactors: RDPDisplayScaleFactors(desktopScaleFactor: 50, deviceScaleFactor: 100),
+        physicalSize: RDPDisplayPhysicalSize(widthMillimeters: 600, heightMillimeters: 340)
+    )
+
+    #expect(defaults.scaleFactors == RDPDisplayScaleFactors(desktopScaleFactor: 100, deviceScaleFactor: 100))
+    #expect(defaults.physicalSize == nil)
+    #expect(clamped.scaleFactors == RDPDisplayScaleFactors(desktopScaleFactor: 500, deviceScaleFactor: 140))
+    #expect(clamped.physicalSize == nil)
+    #expect(kept.scaleFactors == RDPDisplayScaleFactors(desktopScaleFactor: 100, deviceScaleFactor: 100))
+    #expect(kept.physicalSize == RDPDisplayPhysicalSize(widthMillimeters: 600, heightMillimeters: 340))
+}
+
+/// Client Core Data holds 15 UTF-16 code units before its terminator ([MS-RDPBCGR] 2.2.1.3.2);
+/// licensing and rdpdr send the same name. A name set after init is made valid for the
+/// connection too.
+@Test(arguments: [
+    ("Studio Mac", "Studio Mac"),
+    ("  Studio Mac\n", "Studio Mac"),
+    ("Studio\tMac", "StudioMac"),
+    ("Conference-Room-Mac", "Conference-Room"),
+    // Cut between characters, without a space left before the cut.
+    ("ABCDEFGHIJKLMN\u{1F600}", "ABCDEFGHIJKLMN"),
+    ("ABCDEFGHIJKLMN X", "ABCDEFGHIJKLMN"),
+    ("Café-Ü", "Café-Ü"),
+    ("", "RDPKIT"),
+    ("\u{0}\u{7} ", "RDPKIT"),
+])
+func connectionConfigurationKeepsAValidClientName(given: String, clientName: String) throws {
+    var configuration = try RDPConnectionConfiguration(
+        target: RDPConnectionTarget(host: "example.test", portText: "3389"),
+        desktopSize: RDPDesktopSize(width: 1280, height: 720),
+        clientName: given
+    )
+    #expect(configuration.clientName == clientName)
+
+    configuration.clientName = given
+    #expect(RDPClientConnection(configuration: configuration, callbacks: RDPSessionCallbacks()).clientName == clientName)
+    #expect(RDPConnectionConfiguration(host: "example.test").clientName == "RDPKIT")
+}
+
 @Test func connectionConfigurationBuildsFromValidatedTargetAndDesktopSize() throws {
     let target = try RDPConnectionTarget(host: " example.test ", portText: "3390")
     let desktopSize = try RDPDesktopSize(widthText: "1920", heightText: "1080")

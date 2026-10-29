@@ -129,6 +129,24 @@ struct MockKRDPServerTests {
         #expect(run.transcript.credSSPMessages == ["ntlm-negotiate", "ntlm-authenticate", "credentials"])
     }
 
+    /// The configured client name and scale reach the server where it reads them: Client Core
+    /// Data and the licensing request.
+    @Test func clientSendsItsNameAndScale() throws {
+        let run = try runMock(.init(licensingBehavior: .serverLicenseRequest)) {
+            $0.clientName = "Conference-Room-Mac"
+            $0.scaleFactors = RDPDisplayScaleFactors(desktopScaleFactor: 200, deviceScaleFactor: 180)
+            $0.physicalSize = RDPDisplayPhysicalSize(widthMillimeters: 600, heightMillimeters: 340)
+        }
+        let connectInitial = try #require(run.report.mcsConnectInitialHex.flatMap { Data(rdpHexString: $0) })
+        let coreStart = try #require(connectInitial.range(of: Data([0x01, 0xC0, 0xEA, 0x00]))?.lowerBound)
+        let core = Data(connectInitial[coreStart ..< coreStart + 234])
+
+        #expect(run.report.status == "success")
+        #expect(core[24 ..< 56] == utf16LENullTerminated("Conference-Room"))
+        #expect(core[216...] == hexData("58 02 00 00 54 01 00 00 00 00 c8 00 00 00 b4 00 00 00"))
+        #expect(run.transcript.licenseMachineName == "Conference-Room")
+    }
+
     @Test func clientConsumesSuccessfulEarlyUserAuthorizationResult() throws {
         let report = try runMock(.init(securityProtocol: .credSSPWithEarlyUserAuth(
             credentials: mockCredentials,

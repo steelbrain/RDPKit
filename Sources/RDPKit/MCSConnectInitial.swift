@@ -92,6 +92,8 @@ private enum ClientConnectionType {
 struct MCSConnectInitialConfiguration: Equatable, Sendable {
     var desktopWidth: UInt16
     var desktopHeight: UInt16
+    var scaleFactors: RDPDisplayScaleFactors
+    var physicalSize: RDPDisplayPhysicalSize?
     var clientName: String
     var selectedProtocol: RDPSecurityProtocols
     var requestedProtocols: RDPSecurityProtocols
@@ -103,6 +105,8 @@ struct MCSConnectInitialConfiguration: Equatable, Sendable {
     init(
         desktopWidth: UInt16 = 1280,
         desktopHeight: UInt16 = 720,
+        scaleFactors: RDPDisplayScaleFactors = RDPDisplayScaleFactors(desktopScaleFactor: 100, deviceScaleFactor: 100),
+        physicalSize: RDPDisplayPhysicalSize? = nil,
         clientName: String = "RDPKIT",
         selectedProtocol: RDPSecurityProtocols = .tls,
         requestedProtocols: RDPSecurityProtocols = [.tls, .credSSP],
@@ -118,6 +122,8 @@ struct MCSConnectInitialConfiguration: Equatable, Sendable {
 
         self.desktopWidth = desktopWidth
         self.desktopHeight = desktopHeight
+        self.scaleFactors = scaleFactors
+        self.physicalSize = physicalSize
         self.clientName = clientName
         self.selectedProtocol = selectedProtocol
         self.requestedProtocols = requestedProtocols
@@ -225,14 +231,15 @@ struct MCSConnectInitialPDU: Equatable, Sendable {
         body.appendUInt8(ClientConnectionType.autodetect)
         body.appendUInt8(0x00)
         body.appendLittleEndianUInt32(configuration.selectedProtocol.rawValue)
-        // Optional trailing fields (desktopPhysicalWidth through deviceScaleFactor).
-        // Physical dimensions of 0 are ignored per the same section (< 10 mm).
-        // Including them keeps the core length consistent with a full optional tail.
-        body.appendLittleEndianUInt32(0) // desktopPhysicalWidth
-        body.appendLittleEndianUInt32(0) // desktopPhysicalHeight
-        body.appendLittleEndianUInt16(0) // desktopOrientation
-        body.appendLittleEndianUInt32(100) // desktopScaleFactor (percent)
-        body.appendLittleEndianUInt32(100) // deviceScaleFactor (percent)
+        // Optional trailing fields (desktopPhysicalWidth through deviceScaleFactor). Each
+        // one may be sent only with every field before it, so all of them are. Servers
+        // ignore a physical size under 10 mm, such as 0 for none, and scale factors
+        // outside 100-500 and 100, 140 or 180.
+        body.appendLittleEndianUInt32(configuration.physicalSize?.widthMillimeters ?? 0) // desktopPhysicalWidth
+        body.appendLittleEndianUInt32(configuration.physicalSize?.heightMillimeters ?? 0) // desktopPhysicalHeight
+        body.appendLittleEndianUInt16(0) // desktopOrientation: landscape
+        body.appendLittleEndianUInt32(configuration.scaleFactors.desktopScaleFactor) // percent
+        body.appendLittleEndianUInt32(configuration.scaleFactors.deviceScaleFactor) // percent
 
         precondition(body.count == 230)
         return userDataBlock(type: 0xC001, body: body)

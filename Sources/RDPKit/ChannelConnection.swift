@@ -10,6 +10,9 @@ extension RDPClientConnection {
         let mcsConfiguration = MCSConnectInitialConfiguration(
             desktopWidth: configuration.desktopWidth,
             desktopHeight: configuration.desktopHeight,
+            scaleFactors: configuration.scaleFactors,
+            physicalSize: configuration.physicalSize,
+            clientName: clientName,
             selectedProtocol: selectedProtocols,
             requestedProtocols: configuration.negotiationRequest.requestedProtocols,
             channels: configuration.staticVirtualChannels,

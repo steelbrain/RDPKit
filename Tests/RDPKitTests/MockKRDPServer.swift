@@ -303,6 +303,8 @@ struct MockKRDPServerTranscript: Equatable, Sendable {
     var credSSPGates: [String] = []
     var disconnectUltimatumReasons: [UInt8] = []
     var frameAcknowledgeIDs: [UInt32] = []
+    /// The ClientMachineName of a Client New License Request, without its terminator.
+    var licenseMachineName: String?
 }
 
 private enum MockKRDPConstants {
@@ -813,7 +815,8 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
 
         case .clientNewLicenseRequest:
             let request = try MockKRDPFixtures.expectSendDataRequest(packet, channelID: MockKRDPConstants.ioChannelID)
-            try MockKRDPFixtures.expectClientNewLicenseRequest(request.userData)
+            let machineName = try MockKRDPFixtures.expectClientNewLicenseRequest(request.userData)
+            transcript.withLock { $0.licenseMachineName = machineName }
             // A host in its licensing grace period answers with STATUS_VALID_CLIENT
             // ([MS-RDPELE] 3.1.5.3); the X.509 variant goes straight to Demand Active.
             if options.licensingBehavior == .serverLicenseRequest {
@@ -1635,7 +1638,8 @@ private enum MockKRDPFixtures {
         )
     }
 
-    static func expectClientNewLicenseRequest(_ userData: Data) throws {
+    /// Returns the ClientMachineName.
+    static func expectClientNewLicenseRequest(_ userData: Data) throws -> String {
         var cursor = ByteCursor(userData)
         guard try cursor.readLittleEndianUInt16() == 0x0080,
               try cursor.readLittleEndianUInt16() == 0,
@@ -1662,6 +1666,7 @@ private enum MockKRDPFixtures {
               cursor.remaining == 0 else {
             throw MockKRDPServerError.invalidClientPDU
         }
+        return String(decoding: machineName.data.dropLast(), as: UTF8.self)
     }
 
     static func expectClientLicenseInformation(_ userData: Data) throws {

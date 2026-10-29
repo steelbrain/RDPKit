@@ -28,7 +28,9 @@ final class RDPClientConnection {
     /// The display control session onDisplayControlReady last handed out.
     var displayControlSession: RDPDisplayControlSession?
     var serverCertificatePublicKey: RDPRSAPublicKey?
-    let clientName = MCSConnectInitialConfiguration().clientName
+    /// The configuration's client name, made valid again in case it was set after init, so
+    /// the Client Core Data, licensing and the rdpdr Client Name Request send the same one.
+    let clientName: String
 
     // Licensing and activation.
     var licensingComplete = false
@@ -94,6 +96,7 @@ final class RDPClientConnection {
         targetFrameCount = configuration.graphicsFrameCaptureLimit.map { max(1, $0) }
         desktopWidth = configuration.desktopWidth
         desktopHeight = configuration.desktopHeight
+        clientName = RDPConnectionConfiguration.validClientName(configuration.clientName)
         let request = configuration.connectionRequest
         report = RDPConnectionReport(
             status: "failure",

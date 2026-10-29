@@ -9,6 +9,13 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
     public var graphicsFrameCaptureLimit: Int?
     public var desktopWidth: UInt16
     public var desktopHeight: UInt16
+    /// The scale the session starts at, in the Client Core Data ([MS-RDPBCGR] 2.2.1.3.2):
+    /// desktopScaleFactor is clamped to 100-500 and deviceScaleFactor rounded to 100, 140
+    /// or 180. Display Control can change it later.
+    public var scaleFactors: RDPDisplayScaleFactors
+    /// The desktop's physical size, sent with the scale factors; nil, or a size servers
+    /// ignore (under 10 mm or over 10,000 mm), sends none.
+    public var physicalSize: RDPDisplayPhysicalSize?
     public var clipboardEnabled: Bool
     public var audioPlaybackEnabled: Bool
     public var earlyUserAuthorizationEnabled: Bool
@@ -26,6 +33,10 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
     public var legacyRSAKeyExchange: Bool
     /// Local folders the server sees as drives. Sharing one joins the rdpsnd channel too.
     public var sharedDrives: [RDPSharedDrive]
+    /// The name servers show for this client, in session lists and for per-device
+    /// licensing: at most 15 characters ([MS-RDPBCGR] 2.2.1.3.2). Control characters are
+    /// dropped and a longer name is cut; with nothing left it is "RDPKIT".
+    public var clientName: String
     var redirectionRoutingToken: Data?
     var redirectionSessionID: UInt32?
     var redirectionPasswordCookie: Data?
@@ -40,6 +51,8 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
         graphicsFrameCaptureLimit: Int? = 1,
         desktopWidth: UInt16 = 1280,
         desktopHeight: UInt16 = 720,
+        scaleFactors: RDPDisplayScaleFactors = RDPDisplayScaleFactors(desktopScaleFactor: 100, deviceScaleFactor: 100),
+        physicalSize: RDPDisplayPhysicalSize? = nil,
         clipboardEnabled: Bool = true,
         audioPlaybackEnabled: Bool = false,
         earlyUserAuthorizationEnabled: Bool = false,
@@ -50,7 +63,8 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
         keyboardSubType: UInt32 = 0,
         keyboardFunctionKeyCount: UInt32 = 12,
         legacyRSAKeyExchange: Bool = false,
-        sharedDrives: [RDPSharedDrive] = []
+        sharedDrives: [RDPSharedDrive] = [],
+        clientName: String = "RDPKIT"
     ) {
         self.host = host.trimmingCharacters(in: .whitespacesAndNewlines)
         self.port = port
@@ -60,6 +74,8 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
         self.graphicsFrameCaptureLimit = graphicsFrameCaptureLimit.map { min(120, max(1, $0)) }
         self.desktopWidth = min(8192, max(640, desktopWidth))
         self.desktopHeight = min(8192, max(480, desktopHeight))
+        self.scaleFactors = scaleFactors.clamped
+        self.physicalSize = physicalSize?.isValid == true ? physicalSize : nil
         self.clipboardEnabled = clipboardEnabled
         self.audioPlaybackEnabled = audioPlaybackEnabled
         self.earlyUserAuthorizationEnabled = earlyUserAuthorizationEnabled
@@ -71,6 +87,7 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
         self.keyboardFunctionKeyCount = keyboardFunctionKeyCount
         self.legacyRSAKeyExchange = legacyRSAKeyExchange
         self.sharedDrives = sharedDrives
+        self.clientName = Self.validClientName(clientName)
         self.redirectionRoutingToken = nil
         self.redirectionSessionID = nil
         self.redirectionPasswordCookie = nil
@@ -84,6 +101,8 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
         hideCertificateWarnings: Bool = false,
         graphicsFrameCaptureLimit: Int? = 1,
         desktopSize: RDPDesktopSize,
+        scaleFactors: RDPDisplayScaleFactors = RDPDisplayScaleFactors(desktopScaleFactor: 100, deviceScaleFactor: 100),
+        physicalSize: RDPDisplayPhysicalSize? = nil,
         clipboardEnabled: Bool = true,
         audioPlaybackEnabled: Bool = false,
         earlyUserAuthorizationEnabled: Bool = false,
@@ -94,7 +113,8 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
         keyboardSubType: UInt32 = 0,
         keyboardFunctionKeyCount: UInt32 = 12,
         legacyRSAKeyExchange: Bool = false,
-        sharedDrives: [RDPSharedDrive] = []
+        sharedDrives: [RDPSharedDrive] = [],
+        clientName: String = "RDPKIT"
     ) {
         self.init(
             host: target.host,
@@ -105,6 +125,8 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
             graphicsFrameCaptureLimit: graphicsFrameCaptureLimit,
             desktopWidth: desktopSize.width,
             desktopHeight: desktopSize.height,
+            scaleFactors: scaleFactors,
+            physicalSize: physicalSize,
             clipboardEnabled: clipboardEnabled,
             audioPlaybackEnabled: audioPlaybackEnabled,
             earlyUserAuthorizationEnabled: earlyUserAuthorizationEnabled,
@@ -115,7 +137,8 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
             keyboardSubType: keyboardSubType,
             keyboardFunctionKeyCount: keyboardFunctionKeyCount,
             legacyRSAKeyExchange: legacyRSAKeyExchange,
-            sharedDrives: sharedDrives
+            sharedDrives: sharedDrives,
+            clientName: clientName
         )
     }
 
@@ -130,6 +153,24 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
 
     public var displayName: String {
         identity.displayName
+    }
+
+    /// `name` without control characters or surrounding spaces, cut between characters to
+    /// the 15 UTF-16 code units Client Core Data holds before its terminator; "RDPKIT" when
+    /// nothing is left.
+    static func validClientName(_ name: String) -> String {
+        let characters = name.filter { character in
+            !character.unicodeScalars.contains { $0.properties.generalCategory == .control }
+        }
+        var valid = ""
+        for character in characters.trimmingCharacters(in: .whitespaces) {
+            guard valid.utf16.count + character.utf16.count <= 15 else {
+                break
+            }
+            valid.append(character)
+        }
+        valid = valid.trimmingCharacters(in: .whitespaces)
+        return valid.isEmpty ? "RDPKIT" : valid
     }
 
     var clientKeyboard: RDPClientKeyboard {

@@ -97,6 +97,21 @@ import Testing
     #expect(japaneseCore[132...] == defaultCore[132...])
 }
 
+/// MS-RDPBCGR 2.2.1.3.2: desktopPhysicalWidth and desktopPhysicalHeight at 216 and 220,
+/// desktopOrientation at 224, desktopScaleFactor and deviceScaleFactor at 226 and 230.
+@Test func clientCoreDataCarriesScaleFactorsAndPhysicalSize() {
+    let defaultCore = MCSConnectInitialPDU().encodedClientCoreData()
+    let scaledCore = MCSConnectInitialPDU(configuration: MCSConnectInitialConfiguration(
+        scaleFactors: RDPDisplayScaleFactors(desktopScaleFactor: 200, deviceScaleFactor: 180),
+        physicalSize: RDPDisplayPhysicalSize(widthMillimeters: 600, heightMillimeters: 340)
+    )).encodedClientCoreData()
+
+    #expect(defaultCore[216...] == hexData("00 00 00 00 00 00 00 00 00 00 64 00 00 00 64 00 00 00"))
+    #expect(scaledCore[216...] == hexData("58 02 00 00 54 01 00 00 00 00 c8 00 00 00 b4 00 00 00"))
+    // Nothing else moves, the early capability flags included.
+    #expect(scaledCore[..<216] == defaultCore[..<216])
+}
+
 @Test func clientCoreDataNullTerminatesMaximumLengthClientName() {
     let pdu = MCSConnectInitialPDU(configuration: MCSConnectInitialConfiguration(
         clientName: "ABCDEFGHIJKLMNO"
