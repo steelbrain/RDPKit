@@ -24,8 +24,8 @@ import Testing
     #expect(request.height == 200)
     #expect(request.scaleFactors.desktopScaleFactor == 100)
     #expect(request.scaleFactors.deviceScaleFactor == 180)
-    #expect(request.monitorLayoutPDU.monitors.first?.width == 640)
-    #expect(request.monitorLayoutPDU.monitors.first?.height == 200)
+    #expect(request.monitorLayout.monitors.first?.width == 640)
+    #expect(request.monitorLayout.monitors.first?.height == 200)
 }
 
 @Test func displayRequestMapsViewportPointSizeToProtocolPixels() {

@@ -333,3 +333,290 @@ import Testing
     #expect(try channel.readOutbound(as: ByteBuffer.self) == nil)
     _ = try channel.finish()
 }
+
+/// [MS-RDPEDISP] 2.2.2.2: a 40-byte DISPLAYCONTROL_MONITOR_LAYOUT for each monitor, in the
+/// layout's order, with a signed left and top.
+@Test func encodesMultiMonitorDisplayControlMonitorLayoutPDU() throws {
+    let layout = try RDPMonitorLayout(monitors: [
+        .singlePrimary(width: 1920, height: 1080),
+        RDPDisplayControlMonitorLayout(
+            left: -1280,
+            top: 120,
+            width: 1280,
+            height: 1024,
+            physicalWidth: 380,
+            physicalHeight: 300,
+            orientation: 90,
+            desktopScaleFactor: 150,
+            deviceScaleFactor: 140
+        ),
+    ])
+    let encoded = RDPDisplayControlMonitorLayoutPDU(monitors: layout.monitors).encoded()
+
+    #expect(encoded == hexData("""
+    02 00 00 00 60 00 00 00
+    28 00 00 00 02 00 00 00
+    01 00 00 00 00 00 00 00 00 00 00 00
+    80 07 00 00 38 04 00 00
+    00 00 00 00 00 00 00 00
+    00 00 00 00 64 00 00 00 64 00 00 00
+    00 00 00 00 00 fb ff ff 78 00 00 00
+    00 05 00 00 00 04 00 00
+    7c 01 00 00 2c 01 00 00
+    5a 00 00 00 96 00 00 00 8c 00 00 00
+    """))
+    #expect(try RDPDisplayControlMonitorLayoutPDU.parseIfPresent(from: encoded)?.monitors == layout.monitors)
+}
+
+private func primaryMonitor(width: UInt32 = 800, height: UInt32 = 600) -> RDPDisplayControlMonitorLayout {
+    RDPDisplayControlMonitorLayout(flags: RDPDisplayControlMonitorFlags.primary, width: width, height: height)
+}
+
+/// Each of [MS-RDPEDISP] 2.2.2.2.1's rules, with the error that names what breaks it.
+@Test(arguments: [
+    ([], .noMonitors),
+    (
+        [primaryMonitor(width: 200, height: 200)]
+            + (1 ... 16).map { RDPDisplayControlMonitorLayout(left: Int32($0) * 200, width: 200, height: 200) },
+        .tooManyMonitors(count: 17, maximum: 16)
+    ),
+    ([primaryMonitor(width: 801)], .invalidWidth(monitor: 0)),
+    ([primaryMonitor(width: 198)], .invalidWidth(monitor: 0)),
+    ([primaryMonitor(width: 8194)], .invalidWidth(monitor: 0)),
+    ([primaryMonitor(), RDPDisplayControlMonitorLayout(left: 800, width: 800, height: 199)], .invalidHeight(monitor: 1)),
+    ([primaryMonitor(height: 8193)], .invalidHeight(monitor: 0)),
+    (
+        [RDPDisplayControlMonitorLayout(flags: RDPDisplayControlMonitorFlags.primary | 0x2, width: 800, height: 600)],
+        .unsupportedFlags(monitor: 0)
+    ),
+    (
+        [primaryMonitor(), RDPDisplayControlMonitorLayout(left: 800, width: 800, height: 600, orientation: 45)],
+        .invalidOrientation(monitor: 1)
+    ),
+    ([RDPDisplayControlMonitorLayout(flags: 1, width: 800, height: 600, desktopScaleFactor: 99)], .invalidScaleFactors(monitor: 0)),
+    ([RDPDisplayControlMonitorLayout(flags: 1, width: 800, height: 600, deviceScaleFactor: 150)], .invalidScaleFactors(monitor: 0)),
+    ([RDPDisplayControlMonitorLayout(width: 800, height: 600)], .primaryMonitorCount(0)),
+    ([primaryMonitor(), RDPDisplayControlMonitorLayout(flags: 1, left: 800, width: 800, height: 600)], .primaryMonitorCount(2)),
+    ([RDPDisplayControlMonitorLayout(flags: 1, top: -1, width: 800, height: 600)], .primaryMonitorNotAtOrigin),
+    ([primaryMonitor(), RDPDisplayControlMonitorLayout(left: 799, width: 800, height: 600)], .overlappingMonitors(0, 1)),
+    (
+        [
+            primaryMonitor(),
+            RDPDisplayControlMonitorLayout(left: 800, width: 800, height: 600),
+            RDPDisplayControlMonitorLayout(left: -900, width: 800, height: 600),
+        ],
+        .detachedMonitor(monitor: 2)
+    ),
+    (
+        [primaryMonitor(width: 8192)] + (1 ... 4).map {
+            RDPDisplayControlMonitorLayout(left: Int32($0) * 8192, width: 8192, height: 600)
+        },
+        .desktopTooLarge(maximum: 32766)
+    ),
+] as [([RDPDisplayControlMonitorLayout], RDPMonitorLayoutError)])
+func monitorLayoutRefusesALayoutBreakingTheRules(monitors: [RDPDisplayControlMonitorLayout], error: RDPMonitorLayoutError) {
+    #expect(throws: error) {
+        try RDPMonitorLayout(monitors: monitors)
+    }
+}
+
+/// Monitors left of and above the primary one have negative coordinates; the desktop is the
+/// bounding box of them all.
+@Test func monitorLayoutsDesktopIsTheMonitorsBoundingBox() throws {
+    let layout = try RDPMonitorLayout(monitors: [
+        .singlePrimary(width: 1920, height: 1080),
+        RDPDisplayControlMonitorLayout(left: -1280, top: 120, width: 1280, height: 1024),
+        RDPDisplayControlMonitorLayout(top: -1440, width: 2560, height: 1440),
+    ])
+    let single = RDPMonitorLayout.singlePrimary(width: 1441, height: 900, desktopScaleFactor: 150, deviceScaleFactor: 159)
+
+    #expect(layout.desktopWidth == 3840)
+    #expect(layout.desktopHeight == 2584)
+    #expect(single.monitors == [
+        .singlePrimary(width: 1441, height: 900, desktopScaleFactor: 150, deviceScaleFactor: 159),
+    ])
+    #expect(single.desktopWidth == 1440)
+    #expect(single.desktopHeight == 900)
+}
+
+@Test func monitorIsPrimaryReadsAndSetsThePrimaryFlag() {
+    var monitor = RDPDisplayControlMonitorLayout(width: 800, height: 600)
+    #expect(!monitor.isPrimary)
+
+    monitor.isPrimary = true
+    #expect(monitor.flags == RDPDisplayControlMonitorFlags.primary)
+    #expect(monitor.isPrimary)
+
+    monitor.isPrimary = false
+    #expect(monitor.flags == 0)
+    #expect(RDPDisplayControlMonitorLayout.singlePrimary(width: 800, height: 600).isPrimary)
+}
+
+/// [MS-RDPEDISP] 2.2.2.1: at most MaxNumMonitors monitors, covering at most MaxNumMonitors ×
+/// MaxMonitorAreaFactorA × MaxMonitorAreaFactorB pixels.
+@Test func monitorLayoutNamesTheServerCapabilityItExceeds() throws {
+    let layout = try RDPMonitorLayout(monitors: [
+        .singlePrimary(width: 1920, height: 1080),
+        RDPDisplayControlMonitorLayout(left: 1920, width: 1920, height: 1080),
+    ])
+
+    #expect(throws: RDPMonitorLayoutError.tooManyMonitors(count: 2, maximum: 1)) {
+        try layout.validate(for: RDPDisplayControlCapabilities(
+            maxNumMonitors: 1,
+            maxMonitorAreaFactorA: 8192,
+            maxMonitorAreaFactorB: 8192
+        ))
+    }
+    #expect(throws: RDPMonitorLayoutError.areaTooLarge(area: 4_147_200, maximum: 4_143_360)) {
+        try layout.validate(for: RDPDisplayControlCapabilities(
+            maxNumMonitors: 2,
+            maxMonitorAreaFactorA: 1920,
+            maxMonitorAreaFactorB: 1079
+        ))
+    }
+    try layout.validate(for: RDPDisplayControlCapabilities(
+        maxNumMonitors: 2,
+        maxMonitorAreaFactorA: 1920,
+        maxMonitorAreaFactorB: 1080
+    ))
+}
+
+/// The DisplayControl payloads `channel` has to send.
+private func outboundDisplayControlPayloads(_ channel: EmbeddedChannel) throws -> [Data] {
+    channel.embeddedEventLoop.run()
+    var payloads: [Data] = []
+    while var outbound = try channel.readOutbound(as: ByteBuffer.self) {
+        let outboundBytes = outbound.readBytes(length: outbound.readableBytes)
+        let packet = try Data(#require(outboundBytes))
+        let request = try mcsSendDataRequest(fromTPKT: packet)
+        let staticPDU = try RDPStaticVirtualChannelPDU.parse(
+            fromUserData: request.userData,
+            maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumPayloadByteCount
+        )
+        try payloads.append(#require(try RDPDynamicVirtualChannelDataPDU.parseIfPresent(from: staticPDU.payload)).payload)
+    }
+    return payloads
+}
+
+/// A layout the server's capabilities allow goes out whole; one they do not throws and sends
+/// nothing.
+@Test func displayControlSessionSendsAMultiMonitorLayout() throws {
+    let channel = EmbeddedChannel()
+    try channel.connect(to: SocketAddress(ipAddress: "127.0.0.1", port: 3389)).wait()
+    let session = RDPDisplayControlSession(
+        dynamicChannelID: 9,
+        capabilities: RDPDisplayControlCapabilities(
+            maxNumMonitors: 2,
+            maxMonitorAreaFactorA: 8192,
+            maxMonitorAreaFactorB: 8192
+        ),
+        userChannelID: 1001,
+        staticChannelID: 1004,
+        channel: channel
+    )
+    let layout = try RDPMonitorLayout(monitors: [
+        .singlePrimary(width: 1920, height: 1080),
+        RDPDisplayControlMonitorLayout(left: 1920, top: -360, width: 2560, height: 1440),
+    ])
+    let tooMany = try RDPMonitorLayout(monitors: layout.monitors + [
+        RDPDisplayControlMonitorLayout(left: -800, width: 800, height: 600),
+    ])
+
+    #expect(throws: RDPMonitorLayoutError.tooManyMonitors(count: 3, maximum: 2)) {
+        try session.send(tooMany)
+    }
+    try session.send(layout)
+    let payloads = try outboundDisplayControlPayloads(channel)
+
+    #expect(payloads.count == 1)
+    #expect(try payloads.first.flatMap(RDPDisplayControlMonitorLayoutPDU.parseIfPresent)?.monitors == layout.monitors)
+    _ = try channel.finish()
+}
+
+/// The single-monitor calls send what sending ``RDPMonitorLayout/singlePrimary`` sends.
+@Test func singleMonitorCallsSendTheSinglePrimaryLayout() throws {
+    let channel = EmbeddedChannel()
+    try channel.connect(to: SocketAddress(ipAddress: "127.0.0.1", port: 3389)).wait()
+    let session = RDPDisplayControlSession(
+        dynamicChannelID: 9,
+        capabilities: RDPDisplayControlCapabilities(
+            maxNumMonitors: 1,
+            maxMonitorAreaFactorA: 8192,
+            maxMonitorAreaFactorB: 8192
+        ),
+        userChannelID: 1001,
+        staticChannelID: 1004,
+        channel: channel
+    )
+
+    session.sendSingleMonitorLayout(width: 1441, height: 900, desktopScaleFactor: 150, deviceScaleFactor: 159)
+    session.send(RDPDisplayRequest(
+        width: 1441,
+        height: 900,
+        scaleFactors: RDPDisplayScaleFactors(desktopScaleFactor: 150, deviceScaleFactor: 159)
+    ))
+    try session.send(.singlePrimary(width: 1441, height: 900, desktopScaleFactor: 150, deviceScaleFactor: 159))
+    let payloads = try outboundDisplayControlPayloads(channel)
+
+    #expect(payloads.count == 3)
+    #expect(Set(payloads) == [
+        RDPDisplayControlMonitorLayoutPDU.singlePrimary(
+            width: 1440,
+            height: 900,
+            desktopScaleFactor: 150,
+            deviceScaleFactor: 140
+        ).encoded(),
+    ])
+    _ = try channel.finish()
+}
+
+/// A layout of several monitors reaches the server on the session's DisplayControl channel
+/// ([MS-RDPEDISP] 2.2.2.2).
+@Test func multiMonitorLayoutReachesTheServer() throws {
+    func drdynvc(_ payload: Data) -> Data {
+        mcsSendDataIndication(
+            channelID: KRdpCapture.drdynvcChannelID,
+            userData: RDPStaticVirtualChannelPDU(payload: payload).encodedUserData()
+        )
+    }
+    var caps = Data()
+    caps.appendLittleEndianUInt32(5)
+    caps.appendLittleEndianUInt32(20)
+    caps.appendLittleEndianUInt32(4)
+    caps.appendLittleEndianUInt32(3840)
+    caps.appendLittleEndianUInt32(2160)
+    let layout = try RDPMonitorLayout(monitors: [
+        .singlePrimary(width: 1920, height: 1080),
+        RDPDisplayControlMonitorLayout(left: -1920, width: 1920, height: 1080, deviceScaleFactor: 140),
+    ])
+    let layoutData = RDPDynamicVirtualChannelDataPDU(
+        channelID: 2,
+        payload: RDPDisplayControlMonitorLayoutPDU(monitors: layout.monitors).encoded()
+    ).encoded()
+    // The capture after its CapsConfirm (event 38), up to its first frame.
+    let firstFrame = try KRdpCapture.events()[39...].map { try #require($0.bytes) }
+    let sendErrors = Locked([String]())
+    let run = try KRdpCapture.run(
+        prefix: 39,
+        appending: [
+            drdynvc(Data([0x10, 0x02]) + Data("Microsoft::Windows::RDS::DisplayControl".utf8) + Data([0])),
+            drdynvc(RDPDynamicVirtualChannelDataPDU(channelID: 2, payload: caps).encoded()),
+        ] + firstFrame,
+        frameCaptureLimit: nil,
+        onTrailingClientPacket: { channel, packet in
+            if packet.range(of: layoutData) != nil {
+                KRdpCapture.endConnection(channel, .close)
+            }
+        },
+        onDisplayControlReady: { session in
+            do {
+                try session.send(layout)
+            } catch {
+                sendErrors.withLock { $0.append(String(describing: error)) }
+            }
+        }
+    )
+
+    #expect(sendErrors.value.isEmpty)
+    #expect(run.clientPackets.contains { $0.range(of: layoutData) != nil })
+}

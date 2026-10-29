@@ -113,6 +113,19 @@ public struct RDPDisplayControlMonitorLayout: Equatable, Sendable {
         self.deviceScaleFactor = deviceScaleFactor
     }
 
+    /// Whether ``flags`` has DISPLAYCONTROL_MONITOR_PRIMARY: the primary monitor, whose top-left
+    /// is 0,0.
+    public var isPrimary: Bool {
+        get {
+            flags & RDPDisplayControlMonitorFlags.primary != 0
+        }
+        set {
+            flags = newValue
+                ? flags | RDPDisplayControlMonitorFlags.primary
+                : flags & ~RDPDisplayControlMonitorFlags.primary
+        }
+    }
+
     public static func singlePrimary(
         width: UInt32,
         height: UInt32,
@@ -241,53 +254,217 @@ struct RDPDisplayControlMonitorLayoutPDU: Equatable, Sendable {
     }
 
     func isValid(for capabilities: RDPDisplayControlCapabilities) -> Bool {
-        guard monitors.isEmpty == false,
-              monitors.count <= Int(capabilities.maxNumMonitors)
-        else {
-            return false
+        (try? RDPMonitorLayout(monitors: monitors).validate(for: capabilities)) != nil
+    }
+}
+
+/// Why ``RDPMonitorLayout`` or ``RDPDisplayControlSession`` refused a layout. A monitor is
+/// named by its index in ``RDPMonitorLayout/monitors``.
+public enum RDPMonitorLayoutError: Error, Equatable, CustomStringConvertible, Sendable {
+    case noMonitors
+    /// More monitors than a layout holds, or than the server's
+    /// ``RDPDisplayControlCapabilities/maxNumMonitors``.
+    case tooManyMonitors(count: Int, maximum: Int)
+    case invalidWidth(monitor: Int)
+    case invalidHeight(monitor: Int)
+    /// A flag besides DISPLAYCONTROL_MONITOR_PRIMARY.
+    case unsupportedFlags(monitor: Int)
+    case invalidOrientation(monitor: Int)
+    case invalidScaleFactors(monitor: Int)
+    /// This many monitors are primary, rather than one.
+    case primaryMonitorCount(Int)
+    case primaryMonitorNotAtOrigin
+    case overlappingMonitors(Int, Int)
+    /// The monitor touches no other.
+    case detachedMonitor(monitor: Int)
+    /// The monitors' bounding box is wider or taller than `maximum` pixels.
+    case desktopTooLarge(maximum: Int)
+    /// The monitors cover more pixels than the server's capabilities allow.
+    case areaTooLarge(area: UInt64, maximum: UInt64)
+
+    public var description: String {
+        switch self {
+        case .noMonitors:
+            "A monitor layout needs a monitor."
+        case let .tooManyMonitors(count, maximum):
+            "The layout has \(count) monitors; at most \(maximum) are allowed."
+        case let .invalidWidth(monitor):
+            "Monitor \(monitor) must be 200 to 8192 pixels wide, an even number."
+        case let .invalidHeight(monitor):
+            "Monitor \(monitor) must be 200 to 8192 pixels high."
+        case let .unsupportedFlags(monitor):
+            "Monitor \(monitor) has a flag other than primary."
+        case let .invalidOrientation(monitor):
+            "Monitor \(monitor) must be turned 0, 90, 180 or 270 degrees."
+        case let .invalidScaleFactors(monitor):
+            "Monitor \(monitor) needs a desktop scale factor of 100 to 500 and a device scale factor of 100, 140 or 180."
+        case let .primaryMonitorCount(count):
+            "A monitor layout needs one primary monitor, not \(count)."
+        case .primaryMonitorNotAtOrigin:
+            "The primary monitor's top-left must be at 0,0."
+        case let .overlappingMonitors(first, second):
+            "Monitors \(first) and \(second) overlap."
+        case let .detachedMonitor(monitor):
+            "Monitor \(monitor) must touch another monitor along an edge or at a corner."
+        case let .desktopTooLarge(maximum):
+            "The monitors must fit in \(maximum) by \(maximum) pixels."
+        case let .areaTooLarge(area, maximum):
+            "The monitors cover \(area) pixels; the server allows \(maximum)."
         }
+    }
+}
 
-        var totalArea: UInt64 = 0
-        for monitor in monitors {
-            guard monitor.flags & ~RDPDisplayControlMonitorFlags.supportedMask == 0,
-                  monitor.width >= 200,
-                  monitor.width <= 8192,
-                  monitor.width.isMultiple(of: 2),
-                  monitor.height >= 200,
-                  monitor.height <= 8192,
-                  monitor.orientation == 0
-                    || monitor.orientation == 90
-                    || monitor.orientation == 180
-                    || monitor.orientation == 270,
-                  (100 ... 500).contains(monitor.desktopScaleFactor),
-                  [100, 140, 180].contains(monitor.deviceScaleFactor)
-            else {
-                return false
-            }
+/// The monitors of a remote desktop, which ``RDPDisplayControlSession`` asks the server for
+/// ([MS-RDPEDISP] 2.2.2.2). A monitor's left and top are pixels from the primary monitor's
+/// top-left, so one left of or above it has negative ones.
+public struct RDPMonitorLayout: Equatable, Sendable {
+    /// The most Client Monitor Data and ResetGraphics hold ([MS-RDPBCGR] 2.2.1.3.6,
+    /// [MS-RDPEGFX] 2.2.2.14).
+    static let maximumMonitorCount = 16
+    /// The widest and tallest graphics output ResetGraphics describes ([MS-RDPEGFX] 2.2.2.14).
+    static let maximumDesktopDimension = 32766
 
-            let monitorArea = UInt64(monitor.width) * UInt64(monitor.height)
-            let areaSum = totalArea.addingReportingOverflow(monitorArea)
-            guard areaSum.overflow == false else {
-                return false
-            }
-            totalArea = areaSum.partialValue
+    /// In the order the server receives them.
+    public let monitors: [RDPDisplayControlMonitorLayout]
+
+    /// Throws ``RDPMonitorLayoutError`` unless the monitors follow [MS-RDPEDISP] 2.2.2.2.1:
+    /// - 1 to 16 of them, the most Client Monitor Data and ResetGraphics hold;
+    /// - each 200 to 8192 pixels wide, an even number, and 200 to 8192 high, with no flag but
+    ///   the primary one, an orientation of 0, 90, 180 or 270, a desktop scale factor of 100 to
+    ///   500 and a device scale factor of 100, 140 or 180;
+    /// - one primary monitor, at 0,0;
+    /// - none overlapping another, and each touching another along an edge or at a corner;
+    /// - all within 32,766 by 32,766 pixels, the largest desktop RDPGFX describes
+    ///   ([MS-RDPEGFX] 2.2.2.14).
+    public init(monitors: [RDPDisplayControlMonitorLayout]) throws {
+        try Self.validate(monitors)
+        self.monitors = monitors
+    }
+
+    private init(validated monitors: [RDPDisplayControlMonitorLayout]) {
+        self.monitors = monitors
+    }
+
+    /// One primary monitor, its size and scale factors moved into range as
+    /// ``RDPDisplayControlMonitorLayout/singlePrimary(width:height:desktopScaleFactor:deviceScaleFactor:)``
+    /// moves them.
+    public static func singlePrimary(
+        width: UInt32,
+        height: UInt32,
+        desktopScaleFactor: UInt32 = 100,
+        deviceScaleFactor: UInt32 = 100
+    ) -> RDPMonitorLayout {
+        RDPMonitorLayout(validated: [
+            .singlePrimary(
+                width: width,
+                height: height,
+                desktopScaleFactor: desktopScaleFactor,
+                deviceScaleFactor: deviceScaleFactor
+            ),
+        ])
+    }
+
+    /// The width of the monitors' bounding box: the desktop the server makes of them.
+    public var desktopWidth: UInt32 {
+        UInt32(bounds.width)
+    }
+
+    /// The height of the monitors' bounding box.
+    public var desktopHeight: UInt32 {
+        UInt32(bounds.height)
+    }
+
+    /// Throws ``RDPMonitorLayoutError`` unless the server's DisplayControl capabilities allow
+    /// the layout ([MS-RDPEDISP] 2.2.2.1): at most MaxNumMonitors monitors, covering at most
+    /// MaxNumMonitors × MaxMonitorAreaFactorA × MaxMonitorAreaFactorB pixels.
+    public func validate(for capabilities: RDPDisplayControlCapabilities) throws {
+        guard monitors.count <= Int(capabilities.maxNumMonitors) else {
+            throw RDPMonitorLayoutError.tooManyMonitors(
+                count: monitors.count,
+                maximum: Int(capabilities.maxNumMonitors)
+            )
         }
-
-        guard hasValidPrimaryMonitor(monitors),
-              hasNonOverlappingAdjacentMonitors(monitors)
-        else {
-            return false
-        }
-
+        // At most 16 monitors of 8192 by 8192 pixels: no overflow.
+        let area = monitors.reduce(UInt64(0)) { $0 + UInt64($1.width) * UInt64($1.height) }
         let maximumArea = cappedAreaProduct(
             capabilities.maxNumMonitors,
             capabilities.maxMonitorAreaFactorA,
             capabilities.maxMonitorAreaFactorB
         )
-        return totalArea <= maximumArea
+        guard area <= maximumArea else {
+            throw RDPMonitorLayoutError.areaTooLarge(area: area, maximum: maximumArea)
+        }
+    }
+
+    private var bounds: RDPDisplayControlMonitorRect {
+        RDPDisplayControlMonitorRect(bounding: monitors)
+    }
+
+    private static func validate(_ monitors: [RDPDisplayControlMonitorLayout]) throws {
+        guard monitors.isEmpty == false else {
+            throw RDPMonitorLayoutError.noMonitors
+        }
+        guard monitors.count <= maximumMonitorCount else {
+            throw RDPMonitorLayoutError.tooManyMonitors(count: monitors.count, maximum: maximumMonitorCount)
+        }
+        for (index, monitor) in monitors.enumerated() {
+            try validate(monitor, at: index)
+        }
+        let primaryMonitors = monitors.filter(\.isPrimary)
+        guard primaryMonitors.count == 1 else {
+            throw RDPMonitorLayoutError.primaryMonitorCount(primaryMonitors.count)
+        }
+        guard primaryMonitors[0].left == 0, primaryMonitors[0].top == 0 else {
+            throw RDPMonitorLayoutError.primaryMonitorNotAtOrigin
+        }
+        try validateArrangement(monitors.map(RDPDisplayControlMonitorRect.init))
+        let bounds = RDPDisplayControlMonitorRect(bounding: monitors)
+        guard bounds.width <= maximumDesktopDimension, bounds.height <= maximumDesktopDimension else {
+            throw RDPMonitorLayoutError.desktopTooLarge(maximum: maximumDesktopDimension)
+        }
+    }
+
+    private static func validate(_ monitor: RDPDisplayControlMonitorLayout, at index: Int) throws {
+        guard monitor.flags & ~RDPDisplayControlMonitorFlags.supportedMask == 0 else {
+            throw RDPMonitorLayoutError.unsupportedFlags(monitor: index)
+        }
+        guard (200 ... 8192).contains(monitor.width), monitor.width.isMultiple(of: 2) else {
+            throw RDPMonitorLayoutError.invalidWidth(monitor: index)
+        }
+        guard (200 ... 8192).contains(monitor.height) else {
+            throw RDPMonitorLayoutError.invalidHeight(monitor: index)
+        }
+        guard [0, 90, 180, 270].contains(monitor.orientation) else {
+            throw RDPMonitorLayoutError.invalidOrientation(monitor: index)
+        }
+        guard (100 ... 500).contains(monitor.desktopScaleFactor),
+              [100, 140, 180].contains(monitor.deviceScaleFactor)
+        else {
+            throw RDPMonitorLayoutError.invalidScaleFactors(monitor: index)
+        }
+    }
+
+    /// No monitor overlaps another, and each touches another.
+    private static func validateArrangement(_ rectangles: [RDPDisplayControlMonitorRect]) throws {
+        var hasAdjacentMonitor = Array(repeating: rectangles.count == 1, count: rectangles.count)
+        for leftIndex in rectangles.indices {
+            for rightIndex in rectangles.indices where rightIndex > leftIndex {
+                guard rectangles[leftIndex].overlaps(rectangles[rightIndex]) == false else {
+                    throw RDPMonitorLayoutError.overlappingMonitors(leftIndex, rightIndex)
+                }
+                if rectangles[leftIndex].isAdjacent(to: rectangles[rightIndex]) {
+                    hasAdjacentMonitor[leftIndex] = true
+                    hasAdjacentMonitor[rightIndex] = true
+                }
+            }
+        }
+        if let detached = hasAdjacentMonitor.firstIndex(of: false) {
+            throw RDPMonitorLayoutError.detachedMonitor(monitor: detached)
+        }
     }
 }
 
+/// A monitor's rectangle, right and bottom exclusive, in 64 bits so that no sum overflows.
 private struct RDPDisplayControlMonitorRect {
     var left: Int64
     var top: Int64
@@ -301,6 +478,26 @@ private struct RDPDisplayControlMonitorRect {
         bottom = top + Int64(monitor.height)
     }
 
+    /// The bounding box of `monitors`, which must not be empty.
+    init(bounding monitors: [RDPDisplayControlMonitorLayout]) {
+        self = monitors.dropFirst().map(Self.init).reduce(Self(monitors[0])) { bounds, rect in
+            var bounds = bounds
+            bounds.left = min(bounds.left, rect.left)
+            bounds.top = min(bounds.top, rect.top)
+            bounds.right = max(bounds.right, rect.right)
+            bounds.bottom = max(bounds.bottom, rect.bottom)
+            return bounds
+        }
+    }
+
+    var width: Int64 {
+        right - left
+    }
+
+    var height: Int64 {
+        bottom - top
+    }
+
     func overlaps(_ other: RDPDisplayControlMonitorRect) -> Bool {
         max(left, other.left) < min(right, other.right)
             && max(top, other.top) < min(bottom, other.bottom)
@@ -312,32 +509,6 @@ private struct RDPDisplayControlMonitorRect {
         return (right == other.left || other.right == left) && verticalRangesTouch
             || (bottom == other.top || other.bottom == top) && horizontalRangesTouch
     }
-}
-
-private func hasValidPrimaryMonitor(_ monitors: [RDPDisplayControlMonitorLayout]) -> Bool {
-    let primaryMonitors = monitors.filter { $0.flags & RDPDisplayControlMonitorFlags.primary != 0 }
-    return primaryMonitors.count == 1
-        && primaryMonitors[0].left == 0
-        && primaryMonitors[0].top == 0
-}
-
-private func hasNonOverlappingAdjacentMonitors(_ monitors: [RDPDisplayControlMonitorLayout]) -> Bool {
-    let rectangles = monitors.map(RDPDisplayControlMonitorRect.init)
-    var hasAdjacentMonitor = Array(repeating: monitors.count == 1, count: monitors.count)
-
-    for leftIndex in rectangles.indices {
-        for rightIndex in rectangles.indices where rightIndex > leftIndex {
-            guard rectangles[leftIndex].overlaps(rectangles[rightIndex]) == false else {
-                return false
-            }
-            if rectangles[leftIndex].isAdjacent(to: rectangles[rightIndex]) {
-                hasAdjacentMonitor[leftIndex] = true
-                hasAdjacentMonitor[rightIndex] = true
-            }
-        }
-    }
-
-    return hasAdjacentMonitor.allSatisfy { $0 }
 }
 
 private func cappedAreaProduct(_ lhs: UInt32, _ rhs: UInt32, _ other: UInt32) -> UInt64 {
@@ -371,13 +542,15 @@ public final class RDPDisplayControlSession: Sendable {
         self.channel = channel
     }
 
+    /// Sends ``RDPMonitorLayout/singlePrimary(width:height:desktopScaleFactor:deviceScaleFactor:)``,
+    /// or nothing when the server's ``capabilities`` do not allow it.
     public func sendSingleMonitorLayout(
         width: UInt32,
         height: UInt32,
         desktopScaleFactor: UInt32 = 100,
         deviceScaleFactor: UInt32 = 100
     ) {
-        send(RDPDisplayControlMonitorLayoutPDU.singlePrimary(
+        try? send(RDPMonitorLayout.singlePrimary(
             width: width,
             height: height,
             desktopScaleFactor: desktopScaleFactor,
@@ -385,20 +558,25 @@ public final class RDPDisplayControlSession: Sendable {
         ))
     }
 
+    /// Sends the request's one monitor, or nothing when the server's ``capabilities`` do not
+    /// allow it.
     public func send(_ request: RDPDisplayRequest) {
-        send(request.monitorLayoutPDU)
+        try? send(request.monitorLayout)
     }
 
-    /// Sends nothing once the server has closed this session's channel or opened another
-    /// DisplayControl channel, whose session `onDisplayControlReady` hands out.
-    func send(_ layout: RDPDisplayControlMonitorLayoutPDU) {
-        guard !cutoff.isCutOff, layout.isValid(for: capabilities) else {
+    /// Asks the server for `layout` ([MS-RDPEDISP] 2.2.2.2). Throws ``RDPMonitorLayoutError``
+    /// when the server's ``capabilities`` do not allow it. Sends nothing once the server has
+    /// closed this session's channel or opened another DisplayControl channel, whose session
+    /// `onDisplayControlReady` hands out.
+    public func send(_ layout: RDPMonitorLayout) throws {
+        try layout.validate(for: capabilities)
+        guard !cutoff.isCutOff else {
             return
         }
 
         let dynamicPayload = RDPDynamicVirtualChannelDataPDU(
             channelID: dynamicChannelID,
-            payload: layout.encoded()
+            payload: RDPDisplayControlMonitorLayoutPDU(monitors: layout.monitors).encoded()
         ).encoded()
         let packet = RDPStaticVirtualChannelPDU(
             payload: dynamicPayload,

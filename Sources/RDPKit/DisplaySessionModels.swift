@@ -79,7 +79,7 @@ public struct RDPDisplayRequest: Equatable, Sendable {
         )
     }
 
-    var monitorLayoutPDU: RDPDisplayControlMonitorLayoutPDU {
+    var monitorLayout: RDPMonitorLayout {
         .singlePrimary(
             width: width,
             height: height,
