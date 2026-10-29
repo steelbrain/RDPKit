@@ -2153,6 +2153,70 @@ import Testing
     )
 }
 
+/// MS-RDPEGFX 2.2.4.2.1.5: a region may be covered by tiles an earlier WireToSurface2 of
+/// the same RDPGFX frame sent.
+@Test func compositorDrawsProgressiveRegionsWithTilesOfEarlierPDUsInTheFrame() throws {
+    let compositor = RDPGFXSurfaceCompositor()
+    let clearCodec = RDPClearCodecDecoder()
+    try compositor.process(try createSurfaceMessage(surfaceID: 1, width: 128, height: 64), clearCodec: clearCodec)
+    try compositor.process(try mapSurfaceToOutputMessage(surfaceID: 1, x: 0, y: 0), clearCodec: clearCodec)
+    func progressive(_ region: Data) throws -> RDPGFXHeader {
+        try wireToSurface2Message(
+            surfaceID: 1,
+            codecID: RDPGFXCodecID.caProgressive,
+            codecContextID: 1,
+            pixelFormat: 0x20,
+            bitmapData: caprogressiveRemoteFXRegionsStream(regions: [region])
+        )
+    }
+    let frameMessages = { (frameID: UInt32) throws -> (start: RDPGFXHeader, end: RDPGFXHeader) in
+        var start = Data()
+        start.appendLittleEndianUInt32(0)
+        start.appendLittleEndianUInt32(frameID)
+        var end = Data()
+        end.appendLittleEndianUInt32(frameID)
+        return try (
+            makeGraphicsMessage(commandID: RDPGFXCommandID.startFrame, payload: start),
+            makeGraphicsMessage(commandID: RDPGFXCommandID.endFrame, payload: end)
+        )
+    }
+
+    let first = try frameMessages(1)
+    try compositor.process(first.start, clearCodec: clearCodec)
+    try compositor.process(
+        progressive(caprogressiveRemoteFXGrayRegionBlock(
+            regionWidth: 32,
+            tiles: [CAPROGRESSIVERemoteFXGrayTile(xIndex: 0, yIndex: 0)]
+        )),
+        clearCodec: clearCodec
+    )
+    try compositor.process(
+        progressive(caprogressiveRemoteFXGrayRegionBlock(regionX: 32, regionWidth: 32, quantCount: 0, tiles: [])),
+        clearCodec: clearCodec
+    )
+    try compositor.process(first.end, clearCodec: clearCodec)
+    let firstFrame = try #require(compositor.makeFrame(frameID: 1)?.decodedBitmapData)
+
+    #expect(pixel(atX: 40, y: 10, data: firstFrame, bytesPerRow: 512) == [0x80, 0x80, 0x80, 0xFF])
+    #expect(pixel(atX: 70, y: 10, data: firstFrame, bytesPerRow: 512) == [0, 0, 0, 0])
+
+    // The next frame has none of the earlier frame's tiles.
+    let second = try frameMessages(2)
+    try compositor.process(
+        try solidFillMessage(surfaceID: 1, color: [1, 2, 3, 0xFF], rects: [RDPGFXRect16(left: 0, top: 0, right: 64, bottom: 64)]),
+        clearCodec: clearCodec
+    )
+    try compositor.process(second.start, clearCodec: clearCodec)
+    try compositor.process(
+        progressive(caprogressiveRemoteFXGrayRegionBlock(quantCount: 0, tiles: [])),
+        clearCodec: clearCodec
+    )
+    try compositor.process(second.end, clearCodec: clearCodec)
+    let secondFrame = try #require(compositor.makeFrame(frameID: 2)?.decodedBitmapData)
+
+    #expect(pixel(atX: 10, y: 10, data: secondFrame, bytesPerRow: 512) == [1, 2, 3, 0xFF])
+}
+
 @Test func compositorRejectsProgressiveUpdateWithMissingSurface() throws {
     let compositor = RDPGFXSurfaceCompositor()
     let clearCodec = RDPClearCodecDecoder()

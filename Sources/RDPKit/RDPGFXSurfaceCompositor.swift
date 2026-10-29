@@ -243,6 +243,10 @@ final class RDPGFXSurfaceCompositor {
     private static let maximumSurfaceByteCount = 1 << 30
     private let maximumCacheSlot: UInt16
     private let remoteFX = RDPRemoteFXDecoder()
+    /// The progressive tiles of each surface decoded in the current RDPGFX frame, by tile
+    /// position: a region may rely on tiles an earlier WireToSurface2 of the frame sent
+    /// (MS-RDPEGFX 2.2.4.2.1.5).
+    private var progressiveFrameTiles: [UInt16: [Int: RDPRemoteFXDecodedTile]] = [:]
 
     convenience init(
         capabilitySet: RDPGFXCapabilitySet? = nil,
@@ -308,6 +312,8 @@ final class RDPGFXSurfaceCompositor {
                 .map { decoderCopyFrame($0, codecName: message.typeName) }
         case RDPGFXCommandID.evictCacheEntry:
             try evictCacheEntry(RDPGFXEvictCacheEntryPDU.parse(from: message))
+        case RDPGFXCommandID.startFrame, RDPGFXCommandID.endFrame:
+            progressiveFrameTiles = [:]
         default:
             break
         }
@@ -527,6 +533,7 @@ final class RDPGFXSurfaceCompositor {
             throw RDPDecodeError.invalidRDPGFXPDU
         }
         remoteFX.removeProgressiveState(surfaceID: pdu.surfaceID)
+        progressiveFrameTiles[pdu.surfaceID] = nil
     }
 
     // Deleting an unknown context is ignored, as FreeRDP does.
@@ -746,28 +753,38 @@ final class RDPGFXSurfaceCompositor {
             codecContextID: pdu.codecContextID,
             surfaceSize: surfaces[pdu.surfaceID].map { (width: $0.width, height: $0.height) }
         )
+        var tiles = progressiveFrameTiles[pdu.surfaceID, default: [:]]
+        for tile in frame.tiles {
+            tiles[(tile.y / 64) << 16 | tile.x / 64] = tile
+        }
+        progressiveFrameTiles[pdu.surfaceID] = tiles
         try modifySurface(pdu.surfaceID) { surface in
             // Tiles may carry pixels outside the region; only the region rects are updated
             // (MS-RDPEGFX 2.2.4.2.1.5). Progressive tiles are in surface coordinates.
-            for tile in frame.tiles {
-                for region in frame.regionRects {
-                    let left = max(tile.x, Int(region.left))
-                    let top = max(tile.y, Int(region.top))
-                    let right = min(tile.x + 64, Int(region.right), surface.width)
-                    let bottom = min(tile.y + 64, Int(region.bottom), surface.height)
-                    guard right > left, bottom > top else {
-                        continue
+            for region in frame.regionRects {
+                let regionRight = min(Int(region.right), surface.width)
+                let regionBottom = min(Int(region.bottom), surface.height)
+                guard regionRight > Int(region.left), regionBottom > Int(region.top) else {
+                    continue
+                }
+                for yIndex in Int(region.top) / 64 ... (regionBottom - 1) / 64 {
+                    for xIndex in Int(region.left) / 64 ... (regionRight - 1) / 64 {
+                        guard let tile = tiles[yIndex << 16 | xIndex] else {
+                            continue
+                        }
+                        let left = max(tile.x, Int(region.left))
+                        let top = max(tile.y, Int(region.top))
+                        try surface.write(
+                            tile.bgraData,
+                            bytesPerRow: tile.bytesPerRow,
+                            sourceX: left - tile.x,
+                            sourceY: top - tile.y,
+                            width: min(tile.x + 64, regionRight) - left,
+                            height: min(tile.y + 64, regionBottom) - top,
+                            x: left,
+                            y: top
+                        )
                     }
-                    try surface.write(
-                        tile.bgraData,
-                        bytesPerRow: tile.bytesPerRow,
-                        sourceX: left - tile.x,
-                        sourceY: top - tile.y,
-                        width: right - left,
-                        height: bottom - top,
-                        x: left,
-                        y: top
-                    )
                 }
             }
             for region in frame.regionRects {
