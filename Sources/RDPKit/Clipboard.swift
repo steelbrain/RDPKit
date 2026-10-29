@@ -947,6 +947,11 @@ public final class RDPClipboardSession: @unchecked Sendable {
     private var isAwaitingFormatData = false
     /// Each remote Format List is a new copy; answers for an older one are dropped.
     private var remoteCopyID = 0
+    /// The copy of the last event handed to the application, noted under the lock that found
+    /// that copy current.
+    private var deliveredCopyID = 0
+    /// The copy the last publish made current.
+    private var publishedCopyID = 0
     private var remoteContent = RDPClipboardContent()
     private var isFetchingRemoteCopies = true
     /// The last copy the server announced while fetching was off, kept while its clipboard
@@ -988,9 +993,11 @@ public final class RDPClipboardSession: @unchecked Sendable {
     /// copy on the server: a client that turns it off in `onClipboardReady` until it can
     /// decide, say on the main thread, still gets a copy that came in between. One with nothing
     /// to fetch goes to `onClipboardRemoteCopyUnavailable` instead, on the session's thread like
-    /// the other handlers. It does not keep the server's clipboard as it was: joining cliprdr
-    /// announces the client's clipboard, empty until something is published, and Windows then
-    /// empties its own (see `RDPConnectionConfiguration.clipboardEnabled`).
+    /// the other handlers; a client that publishes right after turning fetching on can drop that
+    /// report with `hasPublished(since:)` should it reach the client's thread later. It does not
+    /// keep the server's clipboard as it was: joining cliprdr announces the client's clipboard,
+    /// empty until something is published, and Windows then empties its own (see
+    /// `RDPConnectionConfiguration.clipboardEnabled`).
     public var fetchesRemoteCopies: Bool {
         get {
             lock.withLock { isFetchingRemoteCopies }
@@ -1027,8 +1034,23 @@ public final class RDPClipboardSession: @unchecked Sendable {
     func takePendingEvent() -> RDPClipboardEvent? {
         lock.withLock {
             defer { pendingEvent = nil }
-            return pendingEvent.flatMap { $0.copyID == remoteCopyID ? $0.event : nil }
+            return pendingEvent.flatMap { deliverable($0.event, of: $0.copyID) }
         }
+    }
+
+    /// The number of the remote copy a clipboard handler is called for, read in that handler,
+    /// on the session's thread; outside one, that of the last copy handed over. Each copy gets
+    /// a higher number than the copies, local or remote, before it.
+    public var deliveredRemoteCopyNumber: Int {
+        lock.withLock { deliveredCopyID }
+    }
+
+    /// Whether this client has published since remote copy `remoteCopyNumber` came, replacing
+    /// it on the server. An application that hands a remote copy to another thread, such as
+    /// the main one, can check there whether a publish on that thread has replaced it in the
+    /// meantime, and drop it as the session drops a copy it has not handed over yet.
+    public func hasPublished(since remoteCopyNumber: Int) -> Bool {
+        lock.withLock { publishedCopyID > remoteCopyNumber }
     }
 
     /// Whether a copy the server announced is being fetched: a format of it was asked for
@@ -1176,14 +1198,24 @@ public final class RDPClipboardSession: @unchecked Sendable {
                 return nil
             }
             // Every format failed or came back empty: none of the copy comes.
-            return remoteContent.isEmpty ? unavailable : .content(remoteContent)
+            return deliverable(remoteContent.isEmpty ? unavailable : .content(remoteContent), of: slot.copyID)
         }
     }
 
     /// `event`, decoded from the response to `slot` outside the lock, or nil when fetching
     /// was turned off or a new copy came since, as for a part of a rich copy.
     private func event(_ event: RDPClipboardEvent, ifStillCurrent slot: RDPClipboardFormatDataRequestSlot) -> RDPClipboardEvent? {
-        lock.withLock { slot.copyID == remoteCopyID } ? event : nil
+        lock.withLock { deliverable(event, of: slot.copyID) }
+    }
+
+    /// `event`, of copy `copyID`, noted as the one delivered, or nil when a newer copy has
+    /// replaced that one. Callers hold `lock`.
+    private func deliverable(_ event: RDPClipboardEvent, of copyID: Int) -> RDPClipboardEvent? {
+        guard copyID == remoteCopyID else {
+            return nil
+        }
+        deliveredCopyID = copyID
+        return event
     }
 
     /// The server waits for an answer to these even when they cannot be processed, and
@@ -1261,6 +1293,9 @@ public final class RDPClipboardSession: @unchecked Sendable {
             replaceRemoteCopy(with: isFetchingRemoteCopies ? requests : [])
             if !isFetchingRemoteCopies {
                 unfetchedRemoteCopy = RDPClipboardUnfetchedRemoteCopy(requests: requests, isEmpty: isEmpty)
+            } else if requests.isEmpty {
+                // Nothing to fetch, so the caller reports the copy now.
+                deliveredCopyID = remoteCopyID
             }
             return isFetchingRemoteCopies
         }
@@ -1395,6 +1430,7 @@ public final class RDPClipboardSession: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         replaceRemoteCopy(with: [])
+        publishedCopyID = remoteCopyID
         localContent = content
         // A copy announced while fetching was off is no longer on the server to fetch.
         unfetchedRemoteCopy = nil

@@ -1365,6 +1365,47 @@ private final class ClipboardPublishRace: @unchecked Sendable {
     _ = try channel.finish()
 }
 
+/// A remote copy keeps the number it was handed over under, so an application that passes it
+/// to another thread can tell there whether a publish since replaced it, and one that came
+/// after the publish is newer.
+@Test func clipboardSessionTellsWhetherAPublishFollowedADeliveredCopy() throws {
+    let channel = EmbeddedChannel()
+    let session = RDPClipboardSession(userChannelID: 1006, staticChannelID: 1007, channel: channel)
+    let textCopy = RDPClipboardFormatListPDU(entries: [
+        RDPClipboardFormatListEntry(formatID: RDPClipboardFormatID.unicodeText),
+    ]).encoded()
+    let emptyCopy = RDPClipboardFormatListPDU(entries: []).encoded()
+
+    _ = try session.receive(RDPClipboardPDU.parse(from: RDPClipboardCapabilitiesPDU().encoded()))
+    _ = try session.receive(RDPClipboardPDU(messageType: RDPClipboardMessageType.monitorReady))
+    _ = try session.receive(RDPClipboardPDU.parse(from: textCopy))
+    #expect(try session.receive(RDPClipboardPDU.parse(from: RDPClipboardFormatDataResponsePDU.unicodeText("remote").encoded()))
+        == .text("remote"))
+    let text = session.deliveredRemoteCopyNumber
+    #expect(!session.hasPublished(since: text))
+    // Published after the text was handed over, as on the main thread before it got there.
+    session.publishLocalUnicodeText("local")
+    #expect(session.deliveredRemoteCopyNumber == text)
+    #expect(session.hasPublished(since: text))
+
+    #expect(try session.receive(RDPClipboardPDU.parse(from: emptyCopy)) == .remoteCopyUnavailable(isEmpty: true))
+    let emptied = session.deliveredRemoteCopyNumber
+    #expect(emptied > text)
+    #expect(!session.hasPublished(since: emptied))
+
+    // A copy reported once fetching is back on, then published over before it got anywhere.
+    session.fetchesRemoteCopies = false
+    _ = try session.receive(RDPClipboardPDU.parse(from: emptyCopy))
+    session.fetchesRemoteCopies = true
+    #expect(session.takePendingEvent() == .remoteCopyUnavailable(isEmpty: true))
+    let pending = session.deliveredRemoteCopyNumber
+    #expect(pending > emptied)
+    #expect(!session.hasPublished(since: pending))
+    session.publishLocalUnicodeText("local")
+    #expect(session.hasPublished(since: pending))
+    _ = try channel.finish()
+}
+
 @Test func clipboardSessionOffersAndAnswersEveryLocalFormat() throws {
     let channel = EmbeddedChannel()
     let sent = ClipboardSentMessages()

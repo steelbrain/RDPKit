@@ -19,6 +19,9 @@ protocol RDPClipboardSending: AnyObject {
     /// fetches a copy the server announced while it was off, unless a publish replaced it.
     var fetchesRemoteCopies: Bool { get set }
     var isAwaitingRemoteCopy: Bool { get }
+    /// Whether a publish since replaced, on the server, the remote copy numbered
+    /// `remoteCopyNumber`: the session's `deliveredRemoteCopyNumber` in its handler.
+    func hasPublished(since remoteCopyNumber: Int) -> Bool
     func publishLocalUnicodeText(_ text: String?)
     func publishLocalFiles(_ files: [RDPClipboardLocalFile])
     func requestRemoteFileSize(streamID: UInt32, fileIndex: Int32) throws
@@ -196,8 +199,8 @@ final class RDPRemoteSessionClipboard {
         }
     }
 
-    func receiveText(_ text: String) {
-        guard isSharingEnabled else {
+    func receiveText(_ text: String, copyNumber: Int) {
+        guard isSharingEnabled, isUnreplaced(copyNumber) else {
             return
         }
         cancelLocalFileRead()
@@ -217,8 +220,8 @@ final class RDPRemoteSessionClipboard {
     /// clipboard also clears the pasteboard while it holds what came from the server, as
     /// [MS-RDPECLIP] 3.1.5.2.2 has a Format List replace the local clipboard, so a password a
     /// password manager cleared there does not stay here; a local copy since is kept.
-    func receiveRemoteCopyUnavailable(isEmpty: Bool) {
-        guard isSharingEnabled else {
+    func receiveRemoteCopyUnavailable(isEmpty: Bool, copyNumber: Int) {
+        guard isSharingEnabled, isUnreplaced(copyNumber) else {
             return
         }
         cancelLocalFileRead()
@@ -236,8 +239,8 @@ final class RDPRemoteSessionClipboard {
         serverHoldsLocalCopy = false
     }
 
-    func receiveFileList(_ descriptorList: RDPClipboardFileGroupDescriptorW) {
-        guard isSharingEnabled else {
+    func receiveFileList(_ descriptorList: RDPClipboardFileGroupDescriptorW, copyNumber: Int) {
+        guard isSharingEnabled, isUnreplaced(copyNumber) else {
             return
         }
         cancelLocalFileRead()
@@ -306,6 +309,12 @@ final class RDPRemoteSessionClipboard {
         }
         transfer.receivedData.append(response.data)
         continueFileTransfer(transfer)
+    }
+
+    /// Whether no publish has replaced remote copy `copyNumber` on the server. One the session
+    /// handed over before a publish here can still reach the main thread after it.
+    private func isUnreplaced(_ copyNumber: Int) -> Bool {
+        session?.hasPublished(since: copyNumber) == false
     }
 
     /// `force` sends an unchanged pasteboard too, to a server that has had nothing of it:

@@ -19,15 +19,35 @@ private final class RecordedClipboard: RDPClipboardSending {
     var isAwaitingRemoteCopy = false
     var publishedTexts: [String?] = []
     var publishedFiles: [[RDPClipboardLocalFile]] = []
+    /// Copies, remote and published, are numbered in the order they come, as RDPClipboardSession
+    /// numbers them.
+    private var lastCopyNumber = 0
+    private var publishedCopyNumber = 0
+
+    /// A copy the server announces, and the number its handler gets.
+    func announceRemoteCopy() -> Int {
+        lastCopyNumber += 1
+        return lastCopyNumber
+    }
+
+    func hasPublished(since remoteCopyNumber: Int) -> Bool {
+        publishedCopyNumber > remoteCopyNumber
+    }
 
     func publishLocalUnicodeText(_ text: String?) {
-        unfetchedRemoteCopy = false
+        recordPublish()
         publishedTexts.append(text)
     }
 
     func publishLocalFiles(_ files: [RDPClipboardLocalFile]) {
-        unfetchedRemoteCopy = false
+        recordPublish()
         publishedFiles.append(files)
+    }
+
+    private func recordPublish() {
+        unfetchedRemoteCopy = false
+        lastCopyNumber += 1
+        publishedCopyNumber = lastCopyNumber
     }
 
     var sizeRequests: [UInt32] = []
@@ -90,10 +110,10 @@ private func makePasteboard() -> NSPasteboard {
     pasteboard.setString("local", forType: .string)
     session.unfetchedRemoteCopy = true
     clipboard.poll()
-    clipboard.receiveText("remote")
+    clipboard.receiveText("remote", copyNumber: session.announceRemoteCopy())
     clipboard.receiveFileList(RDPClipboardFileGroupDescriptorW(descriptors: [
         RDPClipboardFileDescriptorW(flags: 0, fileAttributes: 0, fileSize: 1, fileName: "remote.txt"),
-    ]))
+    ]), copyNumber: session.announceRemoteCopy())
     #expect(pasteboard.string(forType: .string) == "local")
     #expect(session.publishedTexts == [nil])
     #expect(session.publishedFiles.isEmpty)
@@ -130,7 +150,7 @@ private func makePasteboard() -> NSPasteboard {
 
     // Copied on the server 25 s into a temporary share.
     clipboard.startTemporarySharing()
-    clipboard.receiveText("remote")
+    clipboard.receiveText("remote", copyNumber: session.announceRemoteCopy())
     clipboard.poll(now: Date().addingTimeInterval(31))
     #expect(clipboard.isSharingEnabled == false)
     #expect(session.publishedTexts == [nil, "local"])
@@ -139,10 +159,10 @@ private func makePasteboard() -> NSPasteboard {
     clipboard.startTemporarySharing()
     clipboard.receiveFileList(RDPClipboardFileGroupDescriptorW(descriptors: [
         RDPClipboardFileDescriptorW(flags: 0, fileAttributes: 0, fileSize: 1, fileName: "remote.txt"),
-    ]))
+    ]), copyNumber: session.announceRemoteCopy())
     clipboard.setSharingEnabled(false)
     clipboard.startTemporarySharing()
-    clipboard.receiveRemoteCopyUnavailable(isEmpty: false)
+    clipboard.receiveRemoteCopyUnavailable(isEmpty: false, copyNumber: session.announceRemoteCopy())
     clipboard.poll(now: Date().addingTimeInterval(31))
     #expect(session.publishedTexts == [nil, "local", "remote", "remote"])
 
@@ -177,7 +197,7 @@ private func makePasteboard() -> NSPasteboard {
     #expect(session.publishedTexts.isEmpty)
     #expect(clipboard.statusMessage == "Ready.")
 
-    clipboard.receiveText("remote")
+    clipboard.receiveText("remote", copyNumber: session.announceRemoteCopy())
     clipboard.poll()
     #expect(pasteboard.string(forType: .string) == "remote")
     #expect(session.publishedTexts.isEmpty)
@@ -200,6 +220,44 @@ private func makePasteboard() -> NSPasteboard {
     #expect(session.publishedTexts.isEmpty)
     clipboard.syncNow()
     #expect(session.publishedTexts == ["local"])
+}
+
+/// A remote copy can reach the main thread after the bridge published there, though the server
+/// announced it before: that publish replaced it on the server, so it is dropped. Here the
+/// server's clipboard, emptied before the bridge attached, is reported once attaching turns
+/// fetching on, and ending sharing still takes back the Mac's copy. A remote copy announced
+/// after the publish is newer and arrives.
+@MainActor
+@Test func aRemoteCopyAPublishReplacedOnTheWayIsDropped() {
+    let pasteboard = makePasteboard()
+    defer { pasteboard.releaseGlobally() }
+    pasteboard.clearContents()
+    pasteboard.setString("local", forType: .string)
+    let session = RecordedClipboard()
+    let clipboard = RDPRemoteSessionClipboard(isSharingEnabled: true, pasteboard: pasteboard)
+
+    let emptied = session.announceRemoteCopy()
+    clipboard.attach(session)
+    clipboard.receiveRemoteCopyUnavailable(isEmpty: true, copyNumber: emptied)
+    #expect(clipboard.statusMessage == "Local text synced.")
+
+    let remoteText = session.announceRemoteCopy()
+    let remoteFiles = session.announceRemoteCopy()
+    pasteboard.clearContents()
+    pasteboard.setString("newer local", forType: .string)
+    clipboard.poll()
+    clipboard.receiveText("older remote", copyNumber: remoteText)
+    clipboard.receiveFileList(RDPClipboardFileGroupDescriptorW(descriptors: [
+        RDPClipboardFileDescriptorW(flags: 0, fileAttributes: 0, fileSize: 1, fileName: "remote.txt"),
+    ]), copyNumber: remoteFiles)
+    #expect(pasteboard.string(forType: .string) == "newer local")
+    #expect(session.sizeRequests.isEmpty)
+    clipboard.setSharingEnabled(false)
+    #expect(session.publishedTexts == ["local", "newer local", nil])
+
+    clipboard.setSharingEnabled(true)
+    clipboard.receiveText("newer remote", copyNumber: session.announceRemoteCopy())
+    #expect(pasteboard.string(forType: .string) == "newer remote")
 }
 
 @MainActor
@@ -268,7 +326,7 @@ private func startRemoteFileDownload(
 ) throws {
     clipboard.receiveFileList(RDPClipboardFileGroupDescriptorW(descriptors: [
         RDPClipboardFileDescriptorW(flags: 0, fileAttributes: 0, fileSize: UInt64(contents.count), fileName: "big.bin"),
-    ]))
+    ]), copyNumber: session.announceRemoteCopy())
     let streamID = try #require(session.sizeRequests.last)
     let size = UInt64(contents.count).littleEndian
     clipboard.receiveFileContents(RDPClipboardFileContentsResponse(
@@ -357,7 +415,7 @@ private func pasteboardFileURLs(_ pasteboard: NSPasteboard) -> [URL] {
 
     // Remote text copied during the download.
     try startRemoteFileDownload(contents, to: clipboard, from: session)
-    clipboard.receiveText("remote text")
+    clipboard.receiveText("remote text", copyNumber: session.announceRemoteCopy())
     try answerRangeRequest(with: contents, to: clipboard, from: session)
     #expect(pasteboard.string(forType: .string) == "remote text")
     #expect(clipboard.statusMessage == "Remote text copied.")
@@ -545,8 +603,8 @@ private func waitUntil(_ condition: () -> Bool) async throws {
     clipboard.attach(session)
     let contents = Data("remote".utf8)
 
-    clipboard.receiveText("password")
-    clipboard.receiveRemoteCopyUnavailable(isEmpty: true)
+    clipboard.receiveText("password", copyNumber: session.announceRemoteCopy())
+    clipboard.receiveRemoteCopyUnavailable(isEmpty: true, copyNumber: session.announceRemoteCopy())
     #expect(pasteboard.string(forType: .string) == nil)
     #expect(clipboard.statusMessage == "Remote clipboard emptied; cleared here too.")
     // The emptied pasteboard is not sent back.
@@ -558,15 +616,15 @@ private func waitUntil(_ condition: () -> Bool) async throws {
     try answerRangeRequest(with: contents, to: clipboard, from: session)
     let directory = try #require(pasteboardFileURLs(pasteboard).first).deletingLastPathComponent()
     defer { try? FileManager.default.removeItem(at: directory) }
-    clipboard.receiveRemoteCopyUnavailable(isEmpty: true)
+    clipboard.receiveRemoteCopyUnavailable(isEmpty: true, copyNumber: session.announceRemoteCopy())
     clipboard.poll()
     #expect(pasteboardFileURLs(pasteboard).isEmpty)
     #expect(FileManager.default.fileExists(atPath: directory.path) == false)
 
-    clipboard.receiveText("remote text")
+    clipboard.receiveText("remote text", copyNumber: session.announceRemoteCopy())
     pasteboard.clearContents()
     pasteboard.setString("local text", forType: .string)
-    clipboard.receiveRemoteCopyUnavailable(isEmpty: true)
+    clipboard.receiveRemoteCopyUnavailable(isEmpty: true, copyNumber: session.announceRemoteCopy())
     #expect(pasteboard.string(forType: .string) == "local text")
     #expect(clipboard.statusMessage == "Remote clipboard emptied.")
     #expect(session.publishedTexts == [nil])
@@ -583,9 +641,9 @@ private func waitUntil(_ condition: () -> Bool) async throws {
     clipboard.attach(session)
     let contents = Data("remote".utf8)
 
-    clipboard.receiveText("remote text")
+    clipboard.receiveText("remote text", copyNumber: session.announceRemoteCopy())
     try startRemoteFileDownload(contents, to: clipboard, from: session)
-    clipboard.receiveRemoteCopyUnavailable(isEmpty: false)
+    clipboard.receiveRemoteCopyUnavailable(isEmpty: false, copyNumber: session.announceRemoteCopy())
     #expect(clipboard.statusMessage == "No text or files arrived from the remote copy.")
     try answerRangeRequest(with: contents, to: clipboard, from: session)
     #expect(pasteboardFileURLs(pasteboard).isEmpty)
@@ -593,7 +651,7 @@ private func waitUntil(_ condition: () -> Bool) async throws {
 
     // The pasteboard still holds text that came from the server, so emptying the server's
     // clipboard takes it too.
-    clipboard.receiveRemoteCopyUnavailable(isEmpty: true)
+    clipboard.receiveRemoteCopyUnavailable(isEmpty: true, copyNumber: session.announceRemoteCopy())
     #expect(pasteboard.string(forType: .string) == nil)
 }
 
@@ -708,7 +766,7 @@ private func waitUntil(_ condition: () -> Bool) async throws {
     #expect(fileManager.fileExists(atPath: directory.path) == false)
 
     directory = try downloadedDirectory()
-    clipboard.receiveText("remote text")
+    clipboard.receiveText("remote text", copyNumber: session.announceRemoteCopy())
     clipboard.poll()
     #expect(fileManager.fileExists(atPath: directory.path) == false)
 
