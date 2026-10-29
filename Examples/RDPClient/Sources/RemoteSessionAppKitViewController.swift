@@ -85,7 +85,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
     private let graphicsProfilePopup = NSPopUpButton()
     private let clipboardSharingButton = NSButton(checkboxWithTitle: "Share Clipboard", target: nil, action: nil)
     private let audioPlaybackButton = NSButton(checkboxWithTitle: "Request Remote Audio", target: nil, action: nil)
-    private let hideCertificateWarningsButton = NSButton(checkboxWithTitle: "Hide certificate warnings", target: nil, action: nil)
+    private let hideCertificateWarningsButton = NSButton(checkboxWithTitle: UntrustedCertificatesOption.title, target: nil, action: nil)
     private let timeoutStepper = NSStepper()
     private let timeoutLabel = NSTextField(labelWithString: "")
     private let keychainLabel = NSTextField(labelWithString: "")
@@ -294,6 +294,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         configureCheckbox(clipboardSharingButton, action: #selector(toggleClipboardSharing(_:)))
         configureCheckbox(audioPlaybackButton, action: #selector(toggleAudioPlayback(_:)))
         configureCheckbox(hideCertificateWarningsButton, action: #selector(toggleHideCertificateWarnings(_:)))
+        hideCertificateWarningsButton.toolTip = UntrustedCertificatesOption.help
 
         graphicsProfilePopup.removeAllItems()
         for profile in RDPGraphicsCapabilityProfile.allCases {

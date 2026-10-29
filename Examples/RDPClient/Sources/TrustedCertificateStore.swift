@@ -9,6 +9,14 @@ enum CertificateRefusal: Equatable {
     case changed
 }
 
+/// The option behind `acceptsUntrusted`. Profiles and drafts save it as `hideCertificateWarnings`.
+enum UntrustedCertificatesOption {
+    static let title = "Accept untrusted certificates"
+    static let help = "Connects even when neither this Mac nor RDPClient trusts the server's certificate, "
+        + "and sends your credentials without asking. Anyone able to intercept the connection could pose "
+        + "as the server and capture them. A certificate that replaced one you trusted is still refused."
+}
+
 /// Sendable because UserDefaults is thread-safe; the session thread checks certificates.
 struct TrustedCertificateStore: @unchecked Sendable {
     private let defaults: UserDefaults
@@ -45,7 +53,7 @@ struct TrustedCertificateStore: @unchecked Sendable {
     }
 
     /// Why `certificate` must be refused before credentials are sent, or nil to go ahead.
-    /// `acceptsUntrusted` (Hide certificate warnings) lets through a certificate nobody trusts,
+    /// `acceptsUntrusted` (Accept untrusted certificates) lets through a certificate nobody trusts,
     /// but never one that replaced a certificate the user trusted.
     func refusal(of certificate: RDPServerCertificateInfo, port: UInt16, acceptsUntrusted: Bool) -> CertificateRefusal? {
         if isChanged(certificate, port: port) {

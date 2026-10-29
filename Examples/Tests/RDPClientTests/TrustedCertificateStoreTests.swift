@@ -45,7 +45,7 @@ private func certificate(_ sha256: String?, host: String = "desktop.example", tr
     #expect(store.refusal(of: certificate("aa"), port: 3389, acceptsUntrusted: false) == .untrusted)
     #expect(store.refusal(of: certificate(nil), port: 3389, acceptsUntrusted: false) == .untrusted)
     #expect(store.refusal(of: certificate("aa", trusted: true), port: 3389, acceptsUntrusted: false) == nil)
-    // Hide certificate warnings lets an untrusted certificate through.
+    // Accept untrusted certificates lets an untrusted certificate through.
     #expect(store.refusal(of: certificate("aa"), port: 3389, acceptsUntrusted: true) == nil)
 
     store.trust(try #require(RDPServerCertificateTrustKey(host: "desktop.example", port: 3389, sha256: "aa")))

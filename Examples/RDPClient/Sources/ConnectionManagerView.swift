@@ -99,7 +99,8 @@ struct ConnectionManagerView: View {
                     .pickerStyle(.menu)
                     Toggle("Share Clipboard", isOn: $clipboardSharingEnabled)
                     Toggle("Request Remote Audio", isOn: $audioPlaybackEnabled)
-                    Toggle("Hide certificate warnings", isOn: $hideCertificateWarnings)
+                    Toggle(UntrustedCertificatesOption.title, isOn: $hideCertificateWarnings)
+                        .help(UntrustedCertificatesOption.help)
                     Stepper(
                         "Timeout: \(Int(timeoutSeconds))s",
                         value: $timeoutSeconds,
