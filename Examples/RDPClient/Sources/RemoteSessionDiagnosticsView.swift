@@ -168,6 +168,8 @@ struct RemoteSessionDiagnosticsSnapshot: Equatable {
     var report: RDPConnectionReport?
     var previewFrame: RDPFrameMetadata?
     var previewFrameCount = 0
+    /// Frames handed to the display; frames the display-link buffer replaced are not counted.
+    var presentedFrameCount = 0
     var previewDecodeError: String?
     var renderMetrics = RDPRenderMetrics()
     var framePacing = RDPFramePacingState()
@@ -273,7 +275,7 @@ struct RemoteSessionDiagnosticsWindowContent: View {
                     DiagnosticRow("Graphics Updates", graphicsUpdateSummary(snapshot.report?.rdpGraphicsUpdateMessages))
                     DiagnosticRow("Graphics Failure", graphicsFailureSummary(snapshot.report))
                     DiagnosticRow("Update Packets", countSummary(snapshot.report?.rdpGraphicsUpdateResponseCount))
-                    DiagnosticRow("Presented Frames", "\(snapshot.previewFrameCount)")
+                    DiagnosticRow("Presented Frames", "\(snapshot.presentedFrameCount)")
                     DiagnosticRow("Input", snapshot.inputReady ? "ready" : "not ready")
                     DiagnosticRow("Display Control", snapshot.displayControlReady ? "ready" : "not ready")
                     DiagnosticRow("Display Channel ID", dynamicChannelID(snapshot.report?.rdpDisplayControlChannelID))

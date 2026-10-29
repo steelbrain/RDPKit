@@ -50,6 +50,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
     /// The newest presented frame, for the diagnostics timer to publish its codec.
     private var latestPresentedFrame: RDPGraphicsFrameSnapshot?
     private var previewFrameCount = 0
+    private var presentedFrameCount = 0
     private var viewerMetricsSummary: String?
     private var previewDecodeError: String?
     private var hasPresentedFrame = false
@@ -552,6 +553,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
             report: report,
             previewFrame: previewFrame,
             previewFrameCount: previewFrameCount,
+            presentedFrameCount: presentedFrameCount,
             previewDecodeError: previewDecodeError,
             renderMetrics: renderMetricsStore.metrics,
             framePacing: framePacing,
@@ -586,6 +588,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         previewFrame = nil
         latestPresentedFrame = nil
         previewFrameCount = 0
+        presentedFrameCount = 0
         viewerMetricsSummary = nil
         previewDecodeError = nil
         resetFramePresentationState()
@@ -1004,7 +1007,8 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         let sizeChanged = previewFrame.map {
             $0.width != presentation.frame.width || $0.height != presentation.frame.height
         } ?? true
-        remoteDesktopRenderer.present(presentation, id: renderMetricsStore.metrics.decodedFrameCount)
+        presentedFrameCount += 1
+        remoteDesktopRenderer.present(presentation, id: presentedFrameCount)
         if sizeChanged {
             previewFrame = RDPFrameMetadata(presentation.frame)
             latestPresentedFrame = nil
