@@ -9,6 +9,8 @@ struct ConnectionManagerView: View {
 
     @State private var profiles: [ConnectionProfile] = []
     @State private var selectedProfileID: UUID?
+    /// The selection the form was last filled from.
+    @State private var appliedProfileID: UUID?
     @State private var profileMessage: String?
     @State private var savedProfilesWarning: String?
     @State private var host = ""
@@ -25,6 +27,8 @@ struct ConnectionManagerView: View {
     @State private var passwordAnswer: RememberedPasswordAnswer?
     @State private var keychainMessage: String?
     @State private var passwordLookup = RememberedPasswordLookup()
+    /// The account fields the form last asked Keychain about.
+    @State private var lookedUpSignature: String?
     @State private var hideCertificateWarnings = false
     @State private var timeoutSeconds = 10.0
     @State private var graphicsCapabilityProfile: RDPGraphicsCapabilityProfile = .automatic
@@ -169,10 +173,16 @@ struct ConnectionManagerView: View {
             loadRememberedPasswordIfAvailable(after: .zero)
         }
         .onChange(of: selectedProfileID) { _, newValue in
-            applySelectedProfile(id: newValue)
+            // Connect fills the form from the profile it selects itself.
+            if newValue != appliedProfileID {
+                applySelectedProfile(id: newValue)
+            }
         }
-        .onChange(of: credentialLookupSignature) { _, _ in
-            loadRememberedPasswordIfAvailable()
+        .onChange(of: credentialLookupSignature) { _, newValue in
+            // Filling the form from a profile already asked about its account.
+            if newValue != lookedUpSignature {
+                loadRememberedPasswordIfAvailable()
+            }
         }
     }
 
@@ -297,6 +307,7 @@ struct ConnectionManagerView: View {
     }
 
     private func applySelectedProfile(id: UUID?) {
+        appliedProfileID = id
         guard let id,
               let profile = profiles.first(where: { $0.id == id })
         else {
@@ -432,6 +443,7 @@ struct ConnectionManagerView: View {
 
     /// Looks up the password saved for the form's account, `after` a pause in typing.
     private func loadRememberedPasswordIfAvailable(after delay: Duration = RememberedPasswordLookup.typingDelay) {
+        lookedUpSignature = credentialLookupSignature
         keychainMessage = nil
         passwordAnswer = nil
         passwordRequest = credentialKey.map {
