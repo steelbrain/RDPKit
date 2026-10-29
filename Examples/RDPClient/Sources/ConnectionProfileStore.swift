@@ -67,6 +67,16 @@ struct ConnectionProfileList: Equatable {
     /// Stored profiles it cannot read, such as ones a newer build wrote. They stay stored as
     /// they are.
     var unreadableCount = 0
+
+    /// Another profile for `profile`'s account on the same server, which shares its saved
+    /// password: one with the same `credentialAccountName`. Saving merges such profiles, but
+    /// ones saved by earlier builds can be two.
+    func profile(sharingSavedPasswordWith profile: ConnectionProfile) -> ConnectionProfile? {
+        guard let account = profile.identity.credentialAccountName else {
+            return nil
+        }
+        return profiles.first { $0.id != profile.id && $0.identity.credentialAccountName == account }
+    }
 }
 
 enum ConnectionProfileStoreError: Error, CustomStringConvertible {

@@ -149,6 +149,38 @@ private func profile(host: String) -> ConnectionProfile {
     #expect(try store.save(domainInUsername).profiles == [domainInUsername])
 }
 
+/// Profiles saved before identities matched by account name can be two for one account, under
+/// one saved password: Delete Profile leaves it to the last of them.
+@Test func aSavedPasswordIsSharedByEveryProfileForItsAccount() throws {
+    let defaults = try makeDefaults()
+    var domainApart = profile(host: "desktop.example")
+    domainApart.domain = "LAB"
+    var domainInUsername = profile(host: "Desktop.Example")
+    domainInUsername.username = "LAB\\anees"
+    let otherAccount = profile(host: "desktop.example")
+    var noUsername = profile(host: "desktop.example")
+    noUsername.username = ""
+    var alsoNoUsername = noUsername
+    alsoNoUsername.id = UUID()
+    let encoder = JSONEncoder()
+    try writeElements(
+        [domainApart, domainInUsername, otherAccount, noUsername, alsoNoUsername].map {
+            try JSONSerialization.jsonObject(with: encoder.encode($0))
+        },
+        to: defaults
+    )
+    let store = ConnectionProfileStore(defaults: defaults)
+
+    let list = try store.profiles()
+    #expect(list.profile(sharingSavedPasswordWith: domainApart) == domainInUsername)
+    #expect(list.profile(sharingSavedPasswordWith: domainInUsername) == domainApart)
+    #expect(list.profile(sharingSavedPasswordWith: otherAccount) == nil)
+    // Without a username there is no saved password to share.
+    #expect(list.profile(sharingSavedPasswordWith: noUsername) == nil)
+
+    #expect(try store.delete(id: domainInUsername.id).profile(sharingSavedPasswordWith: domainApart) == nil)
+}
+
 @Test func storedDataThatIsNotAProfileListIsReportedAndNeverOverwritten() throws {
     let defaults = try makeDefaults()
     let corrupt = Data("{\"connections\": 3}".utf8)

@@ -295,12 +295,21 @@ struct ConnectionManagerView: View {
     private func deleteProfile(_ profile: ConnectionProfile) {
         do {
             let wasSelected = selectedProfileID == profile.id
-            let deletedPassword = try deleteStoredCredentials(for: profile)
+            // The saved password goes with the last profile for its account.
+            let sharingProfile = try profileStore.profiles().profile(sharingSavedPasswordWith: profile)
+            let deletedPassword = try sharingProfile == nil && deleteStoredCredentials(for: profile)
             applyProfileList(try profileStore.delete(id: profile.id))
             if wasSelected {
                 newConnection()
             }
-            profileMessage = deletedPassword ? "Profile and saved password deleted." : "Profile deleted."
+            profileMessage = if let sharingProfile {
+                "Profile deleted. Keychain keeps any password saved for its account, which "
+                    + "\(sharingProfile.displayName) also uses."
+            } else if deletedPassword {
+                "Profile and saved password deleted."
+            } else {
+                "Profile deleted."
+            }
         } catch {
             formError = String(describing: error)
         }
