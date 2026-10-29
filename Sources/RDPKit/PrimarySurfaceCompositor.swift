@@ -304,17 +304,9 @@ final class RDPPrimarySurfaceCompositor {
     }
 
     private func boundDirtyRects() {
-        guard dirtyRects.count > Self.maximumDirtyRectCount, let first = dirtyRects.first else {
-            return
+        if dirtyRects.count > Self.maximumDirtyRectCount, let bounds = dirtyRects.boundingRect {
+            dirtyRects = [bounds]
         }
-        dirtyRects = [dirtyRects.dropFirst().reduce(first) { bounds, rect in
-            RDPFrameRect(
-                left: min(bounds.left, rect.left),
-                top: min(bounds.top, rect.top),
-                right: max(bounds.right, rect.right),
-                bottom: max(bounds.bottom, rect.bottom)
-            )
-        }]
     }
 
     private static func convertRow(

@@ -418,16 +418,7 @@ final class RDPGFXSurfaceCompositor {
             codecID: RDPGFXCodecID.uncompressed,
             codecName: codecName,
             pixelFormat: RDPGFXPixelFormat.xrgb8888,
-            destinationRect: destinations.first.map { first in
-                destinations.dropFirst().reduce(first) {
-                    RDPFrameRect(
-                        left: min($0.left, $1.left),
-                        top: min($0.top, $1.top),
-                        right: max($0.right, $1.right),
-                        bottom: max($0.bottom, $1.bottom)
-                    )
-                }
-            } ?? RDPFrameRect(left: 0, top: 0, right: 0, bottom: 0),
+            destinationRect: destinations.boundingRect ?? RDPFrameRect(left: 0, top: 0, right: 0, bottom: 0),
             regionRects: destinations,
             encodedVideoData: Data(),
             contentKind: .surfaceCopy,

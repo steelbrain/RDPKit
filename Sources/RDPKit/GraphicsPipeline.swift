@@ -566,17 +566,10 @@ extension [RDPFrameRect] {
                 * Swift.max(0, Swift.min(Int(region.bottom), bottom) - Int(region.top))
         }
         let updateArea = Int(destinationRect.width) * Int(destinationRect.height)
-        guard count > rdpMaximumVideoRegionCount || coveredArea > 4 * updateArea, let first else {
+        guard count > rdpMaximumVideoRegionCount || coveredArea > 4 * updateArea, let bounds = boundingRect else {
             return self
         }
-        return [dropFirst().reduce(first) { bounds, region in
-            RDPFrameRect(
-                left: Swift.min(bounds.left, region.left),
-                top: Swift.min(bounds.top, region.top),
-                right: Swift.max(bounds.right, region.right),
-                bottom: Swift.max(bounds.bottom, region.bottom)
-            )
-        }]
+        return [bounds]
     }
 }
 

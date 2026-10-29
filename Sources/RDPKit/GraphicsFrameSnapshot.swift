@@ -96,6 +96,23 @@ public struct RDPFrameRect: Encodable, Equatable, Sendable {
     }
 }
 
+extension [RDPFrameRect] {
+    /// The smallest rectangle holding all of these; nil when there are none.
+    var boundingRect: RDPFrameRect? {
+        guard let first else {
+            return nil
+        }
+        return dropFirst().reduce(first) { bounds, rect in
+            RDPFrameRect(
+                left: Swift.min(bounds.left, rect.left),
+                top: Swift.min(bounds.top, rect.top),
+                right: Swift.max(bounds.right, rect.right),
+                bottom: Swift.max(bounds.bottom, rect.bottom)
+            )
+        }
+    }
+}
+
 public enum RDPAVC444SubframeLayout: String, Encodable, Equatable, Sendable {
     case yuv420AndChroma420
     case yuv420Only

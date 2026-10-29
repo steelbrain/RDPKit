@@ -1836,6 +1836,31 @@ import Testing
     }
 }
 
+/// The decoder's copy to several points of a surface spans all of them.
+@Test func compositorNamesTheAreaADecoderCopyWrites() throws {
+    let compositor = RDPGFXSurfaceCompositor(outputWidth: 64, outputHeight: 32)
+    let clearCodec = RDPClearCodecDecoder()
+    try compositor.process(try createSurfaceMessage(surfaceID: 0, width: 64, height: 32), clearCodec: clearCodec)
+    try compositor.process(try mapSurfaceToOutputMessage(surfaceID: 0, x: 0, y: 0), clearCodec: clearCodec)
+    compositor.noteVideo(fullSurfaceVideo(surfaceID: 0, width: 64, height: 32))
+
+    let copy = try compositor.process(
+        try surfaceToSurfaceMessage(
+            sourceSurfaceID: 0,
+            destinationSurfaceID: 0,
+            sourceRect: RDPGFXRect16(left: 0, top: 0, right: 16, bottom: 16),
+            destinationPoints: [RDPGFXPoint16(x: 32, y: 16), RDPGFXPoint16(x: 8, y: 8)]
+        ),
+        clearCodec: clearCodec
+    )
+
+    #expect(copy?.regionRects == [
+        RDPFrameRect(left: 32, top: 16, right: 48, bottom: 32),
+        RDPFrameRect(left: 8, top: 8, right: 24, bottom: 24),
+    ])
+    #expect(copy?.destinationRect == RDPFrameRect(left: 8, top: 8, right: 48, bottom: 32))
+}
+
 /// A copy with a destination point outside the surface is rejected whole, so the copies to
 /// its other points are not recorded as ones the decoder made.
 @Test func compositorRejectsCopiesWithAnyDestinationOutsideTheSurface() throws {
