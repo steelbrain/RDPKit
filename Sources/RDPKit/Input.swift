@@ -77,6 +77,8 @@ public enum RDPSlowPathInputEvent: Equatable, Sendable {
     case pointerButton(button: RDPPointerButton, isDown: Bool, x: UInt16, y: UInt16)
     case verticalWheel(rotation: Int, x: UInt16, y: UInt16)
     case horizontalWheel(rotation: Int, x: UInt16, y: UInt16)
+    /// One UTF-16 code unit. Send text as it is typed: Windows 11 apps garble a long burst of
+    /// non-ASCII Unicode events sent at once (later characters repeat the last one), even one per PDU.
     case unicode(codeUnit: UInt16, isReleased: Bool)
     case scancode(code: UInt16, flags: UInt16)
 
