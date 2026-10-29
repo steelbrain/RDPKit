@@ -205,6 +205,19 @@
   which a server could nest deep enough to overflow the stack.
 - `RDPFrameDecodeQueue` drops deleted surfaces and evicted cache entries even
   when the frame that reports them fails to decode.
+- Read AVC420/AVC444 region rectangles relative to the update or in surface
+  coordinates the same way in every decoder step, so the regions are presented
+  and chroma-combined where the video wrote them, and ignore an inverted region
+  instead of wrapping it onto another part of the surface.
+- A second DisplayControl or audio dynamic channel replaces the first, as a
+  second RDPGFX channel already did, so the old channel's data and Close no
+  longer reach the new one.
+- Cut long clipboard file names between surrogate pairs, not inside one.
+- Name each deleted surface and evicted cache slot once in the next graphics
+  snapshot, so the lists stop growing for a server that never shows a frame.
+- Certificate trust evaluation gets a thread even while busy work holds every
+  CPU, instead of stalling for the whole timeout and reporting a trusted server
+  as untrusted.
 - A video update's region rectangles collapse into their bounding box past
   1,024 of them or when they cover the update more than four times over, so a
   server cannot make applying them take unbounded time.
