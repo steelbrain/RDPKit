@@ -200,6 +200,28 @@ extension Data {
         appendLittleEndianUInt32(UInt32(value & 0xFFFF_FFFF))
         appendLittleEndianUInt32(UInt32((value >> 32) & 0xFFFF_FFFF))
     }
+
+    /// `string` as UTF-16LE, with no terminator.
+    init(utf16LittleEndian string: String) {
+        self.init(capacity: string.utf16.count * 2)
+        for codeUnit in string.utf16 {
+            appendLittleEndianUInt16(codeUnit)
+        }
+    }
+
+    /// `string` as null-terminated UTF-16LE in a zero-padded field of `codeUnitCount` code
+    /// units, cut to fit but never inside a surrogate pair.
+    init(fixedUTF16LittleEndian string: String, codeUnitCount: Int) {
+        var codeUnits = Array(string.utf16.prefix(codeUnitCount - 1))
+        if let last = codeUnits.last, UTF16.isLeadSurrogate(last) {
+            codeUnits.removeLast()
+        }
+        self.init(capacity: codeUnitCount * 2)
+        for codeUnit in codeUnits {
+            appendLittleEndianUInt16(codeUnit)
+        }
+        append(Data(count: (codeUnitCount - codeUnits.count) * 2))
+    }
 }
 
 extension Data {

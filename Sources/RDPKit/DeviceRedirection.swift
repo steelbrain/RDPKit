@@ -154,7 +154,8 @@ struct RDPDeviceRedirectionClientNameRequest: Equatable, Sendable {
     var computerName: String
 
     func encoded() -> Data {
-        let computerName = utf16LENullTerminated(self.computerName)
+        var computerName = Data(utf16LittleEndian: self.computerName)
+        computerName.appendLittleEndianUInt16(0)
         var payload = Data()
         payload.appendLittleEndianUInt32(1)
         payload.appendLittleEndianUInt32(0)
@@ -288,13 +289,4 @@ final class RDPDeviceRedirectionSession: @unchecked Sendable {
             self.channel.writeAndFlush(buffer, promise: nil)
         }
     }
-}
-
-private func utf16LENullTerminated(_ value: String) -> Data {
-    var data = Data()
-    for codeUnit in value.utf16 {
-        data.appendLittleEndianUInt16(codeUnit)
-    }
-    data.appendLittleEndianUInt16(0)
-    return data
 }

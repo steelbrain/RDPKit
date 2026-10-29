@@ -188,10 +188,10 @@ final class RDPCredSSPNTLMContext {
             encryptedRandomSessionKey = Data()
         }
 
-        let domainName = Self.utf16LittleEndian(domain)
-        let userName = Self.utf16LittleEndian(username)
+        let domainName = Data(utf16LittleEndian: domain)
+        let userName = Data(utf16LittleEndian: username)
         let workstation = negotiatedFlags & Self.negotiateVersion != 0
-            ? Self.utf16LittleEndian(workstationName)
+            ? Data(utf16LittleEndian: workstationName)
             : Data()
         // Payload in Windows order; the header below lists the fields in MS-NLMP 2.2.1.3 order.
         let payload = [
@@ -366,8 +366,8 @@ final class RDPCredSSPNTLMContext {
             }
         }
         return hmacMD5(
-            key: md4(utf16LittleEndian(password)),
-            data: utf16LittleEndian(String(uppercasedUsername) + domain)
+            key: md4(Data(utf16LittleEndian: password)),
+            data: Data(utf16LittleEndian: String(uppercasedUsername) + domain)
         )
     }
 
@@ -427,14 +427,6 @@ final class RDPCredSSPNTLMContext {
         }
         let start = data.index(data.startIndex, offsetBy: offset)
         return data.subdata(in: start ..< data.index(start, offsetBy: count))
-    }
-
-    static func utf16LittleEndian(_ value: String) -> Data {
-        var data = Data()
-        for codeUnit in value.utf16 {
-            data.appendLittleEndianUInt16(codeUnit)
-        }
-        return data
     }
 
     /// RFC 1320 MD4, which NTOWFv2 needs and CryptoKit does not provide.

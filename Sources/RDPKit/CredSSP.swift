@@ -120,11 +120,10 @@ struct RDPCredSSPTSRequest: Equatable, Sendable {
 
 enum RDPCredSSPCredentials {
     static func passwordCredentials(_ credentials: RDPCredentials) -> Data {
-        let utf16LittleEndian = RDPCredSSPNTLMContext.utf16LittleEndian
         var passwordBody = Data()
-        passwordBody.append(RDPASN1.context(0, RDPASN1.octetString(utf16LittleEndian(credentials.domain ?? ""))))
-        passwordBody.append(RDPASN1.context(1, RDPASN1.octetString(utf16LittleEndian(credentials.username))))
-        passwordBody.append(RDPASN1.context(2, RDPASN1.octetString(utf16LittleEndian(credentials.password))))
+        passwordBody.append(RDPASN1.context(0, RDPASN1.octetString(Data(utf16LittleEndian: credentials.domain ?? ""))))
+        passwordBody.append(RDPASN1.context(1, RDPASN1.octetString(Data(utf16LittleEndian: credentials.username))))
+        passwordBody.append(RDPASN1.context(2, RDPASN1.octetString(Data(utf16LittleEndian: credentials.password))))
         let passwordCreds = RDPASN1.sequence(passwordBody)
 
         var credentialsBody = Data()

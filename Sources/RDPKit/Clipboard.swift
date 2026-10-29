@@ -208,11 +208,9 @@ struct RDPClipboardTemporaryDirectoryPDU: Equatable, Sendable {
     }
 
     func encoded() -> Data {
-        var payload = Data()
-        appendFixedUnicodeString(path, codeUnitCount: Self.pathBufferUTF16CodeUnitCount, to: &payload)
-        return RDPClipboardPDU(
+        RDPClipboardPDU(
             messageType: RDPClipboardMessageType.temporaryDirectory,
-            payload: payload
+            payload: Data(fixedUTF16LittleEndian: path, codeUnitCount: Self.pathBufferUTF16CodeUnitCount)
         ).encoded()
     }
 }
@@ -740,7 +738,7 @@ public struct RDPClipboardFileDescriptorW: Equatable, Sendable {
         data.appendLittleEndianUInt64(lastWriteTime)
         data.appendLittleEndianUInt32(UInt32(fileSize >> 32))
         data.appendLittleEndianUInt32(UInt32(truncatingIfNeeded: fileSize))
-        appendFixedUnicodeString(fileName, codeUnitCount: Self.maximumFileNameCodeUnitCount, to: &data)
+        data.append(Data(fixedUTF16LittleEndian: fileName, codeUnitCount: Self.maximumFileNameCodeUnitCount))
         return data
     }
 }
@@ -1314,13 +1312,4 @@ private func decodeNullTerminatedUTF16(_ data: Data) throws -> String {
         codeUnits.append(codeUnit)
     }
     return String(decoding: codeUnits, as: UTF16.self)
-}
-
-/// Writes a NUL-terminated UTF-16LE string into a zero-padded field of `codeUnitCount` code units.
-private func appendFixedUnicodeString(_ text: String, codeUnitCount: Int, to data: inout Data) {
-    let codeUnits = text.utf16.prefix(codeUnitCount - 1)
-    for codeUnit in codeUnits {
-        data.appendLittleEndianUInt16(codeUnit)
-    }
-    data.append(Data(count: (codeUnitCount - codeUnits.count) * 2))
 }

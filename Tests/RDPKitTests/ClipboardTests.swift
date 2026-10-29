@@ -484,6 +484,18 @@ import Testing
     #expect(parsed == descriptor)
 }
 
+/// A name cut to cFileName's 259 code units keeps no half of a surrogate pair.
+@Test func clipboardFileDescriptorDoesNotSplitSurrogatePairWhenTruncatingFileName() throws {
+    let descriptor = RDPClipboardLocalFile(
+        fileName: String(repeating: "a", count: 258) + "\u{1F600}",
+        contents: Data()
+    ).descriptor
+    var cursor = ByteCursor(descriptor.encoded())
+    let parsed = try RDPClipboardFileDescriptorW.parse(from: &cursor)
+
+    #expect(parsed.fileName == String(repeating: "a", count: 258))
+}
+
 @Test func clipboardFileContentsSizeRequestEncodesAndParses() throws {
     let request = RDPClipboardFileContentsRequestPDU.size(
         streamID: 0x1122_3344,

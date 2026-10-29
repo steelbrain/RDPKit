@@ -203,7 +203,7 @@ struct MCSConnectInitialPDU: Equatable, Sendable {
         body.appendLittleEndianUInt16(0xAA03)
         body.appendLittleEndianUInt32(0x0000_0409)
         body.appendLittleEndianUInt32(3790)
-        body.append(fixedUTF16LE(configuration.clientName, codeUnitCount: 16))
+        body.append(Data(fixedUTF16LittleEndian: configuration.clientName, codeUnitCount: 16))
         body.appendLittleEndianUInt32(4)
         body.appendLittleEndianUInt32(0)
         body.appendLittleEndianUInt32(12)
@@ -215,7 +215,7 @@ struct MCSConnectInitialPDU: Equatable, Sendable {
         body.appendLittleEndianUInt16(0x000F)
         let earlyFlags = ClientEarlyCapabilityFlags.flags(for: configuration)
         body.appendLittleEndianUInt16(earlyFlags)
-        body.append(fixedUTF16LE("00000-000-0000000-00000", codeUnitCount: 32))
+        body.append(Data(fixedUTF16LittleEndian: "00000-000-0000000-00000", codeUnitCount: 32))
         // MS-RDPBCGR 2.2.1.3.2: when RNS_UD_CS_VALID_CONNECTION_TYPE is set,
         // connectionType is meaningful. With RNS_UD_CS_SUPPORT_NETCHAR_AUTODETECT,
         // CONNECTION_TYPE_AUTODETECT (0x07) is the consistent choice.
@@ -354,20 +354,6 @@ private func fixedASCII(_ string: String, byteCount: Int) -> Data {
     let bytes = Data(string.utf8)
     precondition(bytes.count <= byteCount)
     return bytes + Data(count: byteCount - bytes.count)
-}
-
-/// Null-terminated UTF-16LE in a fixed field, truncated (never mid surrogate pair) to fit.
-private func fixedUTF16LE(_ string: String, codeUnitCount: Int) -> Data {
-    var codeUnits = Array(string.utf16.prefix(codeUnitCount - 1))
-    if let last = codeUnits.last, UTF16.isLeadSurrogate(last) {
-        codeUnits.removeLast()
-    }
-
-    var data = Data()
-    for codeUnit in codeUnits {
-        data.appendLittleEndianUInt16(codeUnit)
-    }
-    return data + Data(count: codeUnitCount * 2 - data.count)
 }
 
 private extension Data {

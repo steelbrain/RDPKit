@@ -53,7 +53,7 @@ struct RDPClientInfoPDU: Equatable, Sendable {
         // opaque server data (a PK-encrypted one for a 4096-bit key is 512
         // bytes before the terminator), bounded only by the 16-bit cbPassword.
         let password = try rdpUnicodeField(
-            passwordCookie ?? utf16LittleEndian(credentials?.password ?? ""),
+            passwordCookie ?? Data(utf16LittleEndian: credentials?.password ?? ""),
             name: "password",
             maxBytesIncludingNull: passwordCookie == nil
                 ? RDPClientInfoLimits.standardFieldByteCount
@@ -177,15 +177,7 @@ private func rdpUnicodeString(
     name: String,
     maxBytesIncludingNull: Int
 ) throws -> RDPUnicodeString {
-    try rdpUnicodeField(utf16LittleEndian(value), name: name, maxBytesIncludingNull: maxBytesIncludingNull)
-}
-
-private func utf16LittleEndian(_ value: String) -> Data {
-    var bytes = Data()
-    for codeUnit in value.utf16 {
-        bytes.appendLittleEndianUInt16(codeUnit)
-    }
-    return bytes
+    try rdpUnicodeField(Data(utf16LittleEndian: value), name: name, maxBytesIncludingNull: maxBytesIncludingNull)
 }
 
 /// Appends the mandatory null terminator to the field's character data.
