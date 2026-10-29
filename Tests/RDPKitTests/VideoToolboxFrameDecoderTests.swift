@@ -96,6 +96,28 @@ import VideoToolbox
     #expect(matrix(gnome) == kCVImageBufferYCbCrMatrix_ITU_R_709_2 as String)
 }
 
+/// The updates after a failed one refer to a picture the decoder lacks, so they are dropped
+/// undecoded until a keyframe, instead of showing what VideoToolbox makes of them.
+@Test func videoToolboxFrameDecoderAwaitsAKeyframeAfterAFailedDecode() throws {
+    let accessUnits = try encodeH264AnnexB(frames: [(luma: 60, chroma: 128), (luma: 70, chroma: 128), (luma: 80, chroma: 128)])
+    let decoder = RDPVideoToolboxFrameDecoder()
+    func update(_ index: Int) -> RDPGraphicsFrameSnapshot {
+        videoFrame(surfaceID: 1, videoCodec: .h264, encodedVideoData: accessUnits[index])
+    }
+    _ = try decoder.decodeDetailed(update(0))
+
+    #expect(throws: RDPVideoDecodeError.emptySample) {
+        try decoder.decodeDetailed(videoFrame(surfaceID: 1, videoCodec: .h264))
+    }
+    #expect(throws: RDPVideoDecodeError.awaitingKeyframe(surfaceID: 1)) {
+        try decoder.decodeDetailed(update(1))
+    }
+
+    _ = try decoder.decodeDetailed(update(0))
+    let next = try decoder.decodeDetailed(update(1))
+    #expect(CVPixelBufferGetWidth(next.imageBuffer) == 64)
+}
+
 @Test func sequenceDecoderDecodesEncodedH264Stream() throws {
     let accessUnits = try encodeH264AnnexB(frames: [(luma: 60, chroma: 128), (luma: 60, chroma: 128)])
     let decoder = RDPVideoToolboxSequenceDecoder(codec: .h264)
@@ -362,7 +384,8 @@ private func videoFrame(
     surfaceID: UInt16,
     codecID: UInt16 = RDPGFXCodecID.avc420,
     videoCodec: RDPVideoCodec,
-    avc444SubframeLayout: RDPAVC444SubframeLayout? = nil
+    avc444SubframeLayout: RDPAVC444SubframeLayout? = nil,
+    encodedVideoData: Data = Data([0])
 ) -> RDPGraphicsFrameSnapshot {
     RDPGraphicsFrameSnapshot(
         frameID: 1,
@@ -373,7 +396,7 @@ private func videoFrame(
         pixelFormat: 0x20,
         destinationRect: RDPFrameRect(left: 0, top: 0, right: 16, bottom: 16),
         regionRects: [RDPFrameRect(left: 0, top: 0, right: 16, bottom: 16)],
-        encodedVideoData: Data([0]),
+        encodedVideoData: encodedVideoData,
         avc444SubframeLayout: avc444SubframeLayout
     )
 }

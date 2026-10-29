@@ -11,7 +11,16 @@ public final class RDPVideoToolboxFrameDecoder {
         var codec: RDPVideoCodec
     }
 
+    private struct StreamKey: Hashable {
+        var surfaceID: UInt16
+        var codec: RDPVideoCodec
+        var isAVC444: Bool
+    }
+
     private var sequenceDecoders: [SequenceKey: RDPVideoToolboxSequenceDecoder] = [:]
+    /// Streams whose decode failed: the updates after it refer to pictures the decoder lacks,
+    /// so they are dropped until a keyframe starts the stream afresh.
+    private var streamsAwaitingKeyframe = Set<StreamKey>()
     /// x264 lists its options only in the first access unit it encodes, so a surface created
     /// later in the session inherits what an earlier one learned.
     private var sawKPipeWire = false
@@ -25,6 +34,7 @@ public final class RDPVideoToolboxFrameDecoder {
     public func reset() {
         sequenceDecoders.removeAll()
         avc444Decoders.removeAll()
+        streamsAwaitingKeyframe.removeAll()
         sawKPipeWire = false
     }
 
@@ -48,12 +58,25 @@ public final class RDPVideoToolboxFrameDecoder {
         if frame.contentKind == .bitmap {
             return try bitmapDecoder.decodeDetailed(frame)
         }
-        if frame.videoCodec == .h264, frame.avc444SubframeLayout != nil {
-            return try avc444Decoder(for: frame.surfaceID).decodeDetailed(frame)
+        let isAVC444 = frame.videoCodec == .h264 && frame.avc444SubframeLayout != nil
+        let stream = StreamKey(surfaceID: frame.surfaceID, codec: frame.videoCodec, isAVC444: isAVC444)
+        if streamsAwaitingKeyframe.contains(stream) {
+            guard frame.isVideoResyncFrame else {
+                throw RDPVideoDecodeError.awaitingKeyframe(surfaceID: frame.surfaceID)
+            }
+            streamsAwaitingKeyframe.remove(stream)
         }
-        let decoder = sequenceDecoder(for: frame.surfaceID, codec: frame.videoCodec)
-        defer { sawKPipeWire = sawKPipeWire || decoder.encodedByKPipeWire }
-        return try decoder.decodeDetailed(frame.encodedVideoData)
+        do {
+            if isAVC444 {
+                return try avc444Decoder(for: frame.surfaceID).decodeDetailed(frame)
+            }
+            let decoder = sequenceDecoder(for: frame.surfaceID, codec: frame.videoCodec)
+            defer { sawKPipeWire = sawKPipeWire || decoder.encodedByKPipeWire }
+            return try decoder.decodeDetailed(frame.encodedVideoData)
+        } catch {
+            streamsAwaitingKeyframe.insert(stream)
+            throw error
+        }
     }
 
     var decoderContextCount: Int {
@@ -65,6 +88,7 @@ public final class RDPVideoToolboxFrameDecoder {
             return
         }
         sequenceDecoders = sequenceDecoders.filter { !surfaceIDs.contains($0.key.surfaceID) }
+        streamsAwaitingKeyframe = streamsAwaitingKeyframe.filter { !surfaceIDs.contains($0.surfaceID) }
         for surfaceID in surfaceIDs {
             avc444Decoders[surfaceID] = nil
         }
@@ -609,6 +633,10 @@ public enum RDPVideoDecodeError: Error, Equatable, CustomStringConvertible {
     case missingImageBuffer
     case imageConversionFailed
     case videoToolbox(operation: String, status: OSStatus)
+    /// The surface's video failed to decode, and the updates since refer to pictures the decoder
+    /// lacks, so they are dropped until a keyframe. Windows sends none by itself, but answers the
+    /// client's monitor layout sent again (`RDPDisplayControlSession`) by resetting its graphics.
+    case awaitingKeyframe(surfaceID: UInt16)
 
     public var description: String {
         switch self {
@@ -626,6 +654,8 @@ public enum RDPVideoDecodeError: Error, Equatable, CustomStringConvertible {
             "Core Image could not convert the decoded frame."
         case let .videoToolbox(operation, status):
             "\(operation) failed with OSStatus \(status)."
+        case let .awaitingKeyframe(surfaceID):
+            "Surface \(surfaceID) is waiting for a keyframe after its video failed to decode."
         }
     }
 }
