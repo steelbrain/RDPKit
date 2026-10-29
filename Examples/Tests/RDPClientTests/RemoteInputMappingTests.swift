@@ -40,7 +40,7 @@ import Testing
 @Test func commandSendsWindowsKeyOnlyWithAnotherKeyOrAsATap() {
     let leftWindows = RDPKeyboardScancode(code: 0x5B, isExtended: true)
     var inputState = RDPInputStateTracker()
-    var windowsKey = MacRDPDeferredWindowsKey()
+    var windowsKey = MacRDPDeferredModifierKeys()
 
     // Command released alone: a Win tap.
     windowsKey.press(leftWindows)
@@ -62,6 +62,43 @@ import Testing
     windowsKey.press(leftWindows)
     windowsKey.reset()
     #expect(windowsKey.isHeld(leftWindows) == false)
+}
+
+/// Shift and the other modifiers send held Windows keys ahead of them, but not Alt, since
+/// Option-Shift types characters too.
+@Test func rightAltIsHeldBackLikeTheWindowsKeyButNotSentAheadOfModifiers() {
+    let leftWindows = RDPKeyboardScancode(code: 0x5B, isExtended: true)
+    let rightAlt = RDPKeyboardScancode(code: 0x38, isExtended: true)
+    var inputState = RDPInputStateTracker()
+    var heldKeys = MacRDPDeferredModifierKeys()
+    #expect(MacRDPDeferredModifierKeys.isDeferred(rightAlt))
+    #expect(MacRDPDeferredModifierKeys.isDeferred(RDPKeyboardScancode(code: 0x38)) == false)
+
+    // Released alone: an Alt tap; ahead of another key: Alt down.
+    heldKeys.press(rightAlt)
+    #expect(heldKeys.release(rightAlt) == [
+        .keyboard(scancode: rightAlt, isReleased: false),
+        .keyboard(scancode: rightAlt, isReleased: true),
+    ])
+    heldKeys.press(rightAlt)
+    #expect(heldKeys.flush(&inputState) == [.keyboard(scancode: rightAlt, isReleased: false)])
+    #expect(inputState.isScancodePressed(rightAlt))
+
+    // Ahead of Shift: Win goes, Alt stays held back, and releasing it is no tap.
+    heldKeys.press(leftWindows)
+    heldKeys.press(rightAlt)
+    #expect(heldKeys.flushWindowsKeys(&inputState) == [.keyboard(scancode: leftWindows, isReleased: false)])
+    #expect(heldKeys.isHeld(rightAlt))
+    #expect(heldKeys.release(rightAlt).isEmpty)
+    heldKeys.press(rightAlt)
+    #expect(heldKeys.flushWindowsKeys(&inputState).isEmpty)
+    #expect(heldKeys.release(rightAlt).isEmpty)
+
+    // Held back together, as in Cmd-Option-Esc, which the server never sees: no taps.
+    heldKeys.press(leftWindows)
+    heldKeys.press(rightAlt)
+    #expect(heldKeys.release(rightAlt).isEmpty)
+    #expect(heldKeys.release(leftWindows).isEmpty)
 }
 
 /// The key ANSI keyboards have left of "1" sits between left Shift and Z on ISO keyboards.
@@ -107,21 +144,49 @@ import Testing
     }
 }
 
+private func sendsScancode(
+    _ keyCode: Int,
+    _ modifierFlags: NSEvent.ModifierFlags,
+    characters: String = "a",
+    ignoringModifiers: String? = nil,
+    isHeldAsScancode: Bool = false,
+    isAltPressed: Bool = false
+) -> Bool {
+    MacRDPKeyboardMapping.shouldSendScancode(
+        forKeyCode: UInt16(keyCode),
+        characters: characters,
+        charactersIgnoringModifiers: ignoringModifiers ?? characters,
+        modifierFlags: modifierFlags,
+        isHeldAsScancode: isHeldAsScancode,
+        isAltPressed: isAltPressed
+    )
+}
+
 /// Character keys without modifiers go as scancodes only when the layout check agrees.
 @Test func functionKeysAndModifiedKeysAlwaysSendScancodes() {
-    func sendsScancode(_ keyCode: Int, _ modifierFlags: NSEvent.ModifierFlags) -> Bool {
-        MacRDPKeyboardMapping.shouldSendScancode(
-            forKeyCode: UInt16(keyCode),
-            modifierFlags: modifierFlags,
-            isHeldAsScancode: false
-        )
-    }
-    #expect(sendsScancode(kVK_F2, []))
-    #expect(sendsScancode(kVK_F4, []))
+    #expect(sendsScancode(kVK_F2, [], characters: "\u{F705}"))
+    #expect(sendsScancode(kVK_F4, [], characters: "\u{F707}"))
     #expect(sendsScancode(kVK_ANSI_A, []) == false)
+    #expect(sendsScancode(kVK_ANSI_A, .control, characters: "\u{1}", ignoringModifiers: "a"))
     #expect(sendsScancode(kVK_ANSI_A, .option))
 }
 
+/// Right Option is held back, so Option with no Alt on the server types what the Mac layout
+/// puts on the key ("@" is Option-L on German); with Alt there, or with Command or Control, the
+/// key goes as its scancode.
+@Test func optionTypesTheMacLayoutsCharactersUnlessAltIsOnTheServer() {
+    #expect(sendsScancode(kVK_ANSI_L, .option, characters: "@", ignoringModifiers: "l") == false)
+    #expect(sendsScancode(kVK_ANSI_7, [.option, .shift], characters: "\\", ignoringModifiers: "/") == false)
+    // A dead key types nothing; the next key types its accent.
+    #expect(sendsScancode(kVK_ANSI_E, .option, characters: "", ignoringModifiers: "e") == false)
+
+    #expect(sendsScancode(kVK_ANSI_L, .option, characters: "@", ignoringModifiers: "l", isAltPressed: true))
+    #expect(sendsScancode(kVK_ANSI_L, [.option, .command], characters: "@", ignoringModifiers: "l"))
+    #expect(sendsScancode(kVK_ANSI_L, .option, characters: "@", ignoringModifiers: "l", isHeldAsScancode: true))
+    #expect(sendsScancode(kVK_LeftArrow, .option, characters: "\u{F702}"))
+    #expect(MacRDPKeyboardMapping.optionTypes("\u{F702}", charactersIgnoringModifiers: "\u{F703}") == false)
+    #expect(MacRDPKeyboardMapping.optionTypes("\u{1B}", charactersIgnoringModifiers: "a") == false)
+}
 /// A remote IME commits its candidate with Space, so it goes as its scancode on every layout,
 /// and as Unicode only when a dead key composed with it.
 @Test func spaceSendsItsScancodeUnlessADeadKeyComposedWithIt() {
@@ -244,11 +309,7 @@ private func windowsTypes(
 }
 
 @Test func aKeyHeldAsAScancodeRepeatsAsThatScancodeAfterItsModifierIsReleased() {
-    #expect(MacRDPKeyboardMapping.shouldSendScancode(
-        forKeyCode: UInt16(kVK_ANSI_C),
-        modifierFlags: [],
-        isHeldAsScancode: true
-    ))
+    #expect(sendsScancode(kVK_ANSI_C, [], characters: "c", isHeldAsScancode: true))
 }
 
 @Test func unicodeEventsSkipAppKitFunctionKeyCharacters() {
@@ -395,6 +456,101 @@ private func keyEvent(
         .keyboard(scancode: leftWindows, isReleased: false),
         .keyboard(scancode: leftWindows, isReleased: true),
     ])
+}
+
+// Device-dependent side bits (NX_DEVICE*KEYMASK), which tell left and right Option apart.
+private let leftOptionFlags = NSEvent.ModifierFlags(rawValue: NSEvent.ModifierFlags.option.rawValue | 0x20)
+private let rightOptionFlags = NSEvent.ModifierFlags(rawValue: NSEvent.ModifierFlags.option.rawValue | 0x40)
+
+@MainActor
+@Test func rightOptionTypesWhatTheMacLayoutPutsOnOptionWithoutAlt() throws {
+    let leftShift = RDPKeyboardScancode(code: 0x2A)
+    let rightOptionShift = rightOptionFlags.union(NSEvent.ModifierFlags(rawValue: NSEvent.ModifierFlags.shift.rawValue | 0x2))
+    let input = RecordedInput()
+    let view = RemoteInputCaptureNSView()
+    view.inputSession = input
+    view.keyboardLayout = RDPKeyboardLayout(rawValue: 0x0000_0407)
+    func key(_ type: NSEvent.EventType, _ keyCode: Int, _ characters: String, _ ignoring: String, _ flags: NSEvent.ModifierFlags) throws {
+        let event = try keyEvent(type, keyCode: keyCode, characters: characters, charactersIgnoringModifiers: ignoring, modifierFlags: flags)
+        if type == .keyDown {
+            view.keyDown(with: event)
+        } else {
+            view.keyUp(with: event)
+        }
+    }
+
+    view.flagsChanged(with: try keyEvent(.flagsChanged, keyCode: kVK_RightOption, modifierFlags: rightOptionFlags))
+    // Option-L types "@" on a German Mac, and its auto-repeat again.
+    try key(.keyDown, kVK_ANSI_L, "@", "l", rightOptionFlags)
+    try key(.keyDown, kVK_ANSI_L, "@", "l", rightOptionFlags)
+    try key(.keyUp, kVK_ANSI_L, "@", "l", rightOptionFlags)
+    // Option-Shift-7 types "\".
+    view.flagsChanged(with: try keyEvent(.flagsChanged, keyCode: kVK_Shift, modifierFlags: rightOptionShift))
+    try key(.keyDown, kVK_ANSI_7, "\\", "/", rightOptionShift)
+    try key(.keyUp, kVK_ANSI_7, "\\", "/", rightOptionShift)
+    view.flagsChanged(with: try keyEvent(.flagsChanged, keyCode: kVK_Shift, modifierFlags: rightOptionFlags))
+    // Option-E types a dead key; the accent comes with the next key, after Option is up.
+    try key(.keyDown, kVK_ANSI_E, "", "e", rightOptionFlags)
+    try key(.keyUp, kVK_ANSI_E, "", "e", rightOptionFlags)
+    view.flagsChanged(with: try keyEvent(.flagsChanged, keyCode: kVK_RightOption))
+    try key(.keyDown, kVK_ANSI_E, "é", "e", [])
+
+    #expect(input.events == [
+        .unicode(codeUnit: 0x40, isReleased: false),
+        .unicode(codeUnit: 0x40, isReleased: true),
+        .unicode(codeUnit: 0x40, isReleased: false),
+        .unicode(codeUnit: 0x40, isReleased: true),
+        .keyboard(scancode: leftShift, isReleased: false),
+        .unicode(codeUnit: 0x5C, isReleased: false),
+        .unicode(codeUnit: 0x5C, isReleased: true),
+        .keyboard(scancode: leftShift, isReleased: true),
+        .unicode(codeUnit: 0xE9, isReleased: false),
+        .unicode(codeUnit: 0xE9, isReleased: true),
+    ])
+}
+
+/// Left Option goes as Alt at once, for shortcuts; right Option goes as Alt ahead of a key it
+/// types nothing new with, or as a tap when released alone.
+@MainActor
+@Test func optionGoesAsAltForShortcutsAndATap() throws {
+    let leftAlt = RDPKeyboardScancode(code: 0x38)
+    let rightAlt = RDPKeyboardScancode(code: 0x38, isExtended: true)
+    let leftArrow = RDPKeyboardScancode(code: 0x4B, isExtended: true)
+    let keyL = RDPKeyboardScancode(code: 0x26)
+    let input = RecordedInput()
+    let view = RemoteInputCaptureNSView()
+    view.inputSession = input
+
+    view.flagsChanged(with: try keyEvent(.flagsChanged, keyCode: kVK_RightOption, modifierFlags: rightOptionFlags))
+    view.keyDown(with: try keyEvent(.keyDown, keyCode: kVK_LeftArrow, characters: "\u{F702}", modifierFlags: rightOptionFlags))
+    view.keyUp(with: try keyEvent(.keyUp, keyCode: kVK_LeftArrow, characters: "\u{F702}", modifierFlags: rightOptionFlags))
+    view.flagsChanged(with: try keyEvent(.flagsChanged, keyCode: kVK_RightOption))
+    view.flagsChanged(with: try keyEvent(.flagsChanged, keyCode: kVK_Option, modifierFlags: leftOptionFlags))
+    view.keyDown(with: try keyEvent(.keyDown, keyCode: kVK_ANSI_L, characters: "@", charactersIgnoringModifiers: "l", modifierFlags: leftOptionFlags))
+    view.keyUp(with: try keyEvent(.keyUp, keyCode: kVK_ANSI_L, characters: "@", charactersIgnoringModifiers: "l", modifierFlags: leftOptionFlags))
+    view.flagsChanged(with: try keyEvent(.flagsChanged, keyCode: kVK_Option))
+    view.flagsChanged(with: try keyEvent(.flagsChanged, keyCode: kVK_RightOption, modifierFlags: rightOptionFlags))
+    view.flagsChanged(with: try keyEvent(.flagsChanged, keyCode: kVK_RightOption))
+
+    #expect(input.events == [
+        .keyboard(scancode: rightAlt, isReleased: false),
+        .keyboard(scancode: leftArrow, isReleased: false),
+        .keyboard(scancode: leftArrow, isReleased: true),
+        .keyboard(scancode: rightAlt, isReleased: true),
+        .keyboard(scancode: leftAlt, isReleased: false),
+        .keyboard(scancode: keyL, isReleased: false),
+        .keyboard(scancode: keyL, isReleased: true),
+        .keyboard(scancode: leftAlt, isReleased: true),
+        .keyboard(scancode: rightAlt, isReleased: false),
+        .keyboard(scancode: rightAlt, isReleased: true),
+    ])
+
+    // Focus lost while right Option is held back: nothing reached the server, so nothing is sent.
+    input.events.removeAll()
+    view.flagsChanged(with: try keyEvent(.flagsChanged, keyCode: kVK_RightOption, modifierFlags: rightOptionFlags))
+    _ = view.resignFirstResponder()
+    view.flagsChanged(with: try keyEvent(.flagsChanged, keyCode: kVK_RightOption))
+    #expect(input.events.isEmpty)
 }
 
 // A drag that leaves the letterboxed desktop holds the pointer on its edge; a plain move there
