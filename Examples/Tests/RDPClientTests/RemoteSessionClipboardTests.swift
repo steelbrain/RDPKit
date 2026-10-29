@@ -99,6 +99,48 @@ private func makePasteboard() -> NSPasteboard {
     #expect(session.publishedTexts.last == .some(nil))
 }
 
+/// Ending sharing takes back only a copy of this Mac's. A copy the server's user made since is
+/// theirs, and Windows empties its clipboard for an empty Format List, so it is left alone.
+@MainActor
+@Test func endingSharingLeavesTheServersOwnCopy() {
+    let pasteboard = makePasteboard()
+    defer { pasteboard.releaseGlobally() }
+    let session = RecordedClipboard()
+    let clipboard = RDPRemoteSessionClipboard(isSharingEnabled: false, pasteboard: pasteboard)
+    clipboard.attach(session)
+    pasteboard.clearContents()
+    pasteboard.setString("local", forType: .string)
+
+    // Copied on the server 25 s into a temporary share.
+    clipboard.startTemporarySharing()
+    clipboard.receiveText("remote")
+    clipboard.poll(now: Date().addingTimeInterval(31))
+    #expect(clipboard.isSharingEnabled == false)
+    #expect(session.publishedTexts == [nil, "local"])
+
+    // Files, and a copy of nothing this bridge takes, are the server's own too.
+    clipboard.startTemporarySharing()
+    clipboard.receiveFileList(RDPClipboardFileGroupDescriptorW(descriptors: [
+        RDPClipboardFileDescriptorW(flags: 0, fileAttributes: 0, fileSize: 1, fileName: "remote.txt"),
+    ]))
+    clipboard.setSharingEnabled(false)
+    clipboard.startTemporarySharing()
+    clipboard.receiveRemoteCopyUnavailable(isEmpty: false)
+    clipboard.poll(now: Date().addingTimeInterval(31))
+    #expect(session.publishedTexts == [nil, "local", "remote", "remote"])
+
+    // The Mac's copy is taken back, once.
+    clipboard.startTemporarySharing()
+    clipboard.setSharingEnabled(false)
+    clipboard.setSharingEnabled(false)
+    #expect(session.publishedTexts == [nil, "local", "remote", "remote", "remote", nil])
+    // An empty pasteboard sent leaves nothing to take back.
+    pasteboard.clearContents()
+    clipboard.startTemporarySharing()
+    clipboard.poll(now: Date().addingTimeInterval(31))
+    #expect(session.publishedTexts == [nil, "local", "remote", "remote", "remote", nil, nil])
+}
+
 @MainActor
 @Test func copiedLocalFilesAreReadOffTheMainThread() async throws {
     let pasteboard = makePasteboard()
