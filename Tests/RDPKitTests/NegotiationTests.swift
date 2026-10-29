@@ -396,6 +396,14 @@ import Testing
     #expect(Data(rdpHexString: "00 0A\nb7") == Data([0x00, 0x0A, 0xB7]))
 }
 
+@Test func rdpHexStringRejectsWhatIsNotHexDigits() {
+    #expect(Data(rdpHexString: "+f") == nil)
+    #expect(Data(rdpHexString: "-0 01") == nil)
+    #expect(Data(rdpHexString: "0g") == nil)
+    #expect(Data(rdpHexString: "0") == nil)
+    #expect(Data(rdpHexString: "\u{FF10}\u{FF11}") == nil)
+}
+
 @Test func byteCursorRejectsNegativeReadCount() {
     var cursor = ByteCursor(Data([0x01, 0x02]))
 

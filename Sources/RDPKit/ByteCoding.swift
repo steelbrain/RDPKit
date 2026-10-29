@@ -226,18 +226,30 @@ extension Data {
     /// newlines). Returns `nil` if the remaining digits are not an even number of
     /// valid hex characters. Round-trips with ``rdpHexString``.
     init?(rdpHexString: String) {
-        let digits = rdpHexString.unicodeScalars.filter { !$0.properties.isWhitespace }
-        guard digits.count.isMultiple(of: 2) else {
-            return nil
+        // Not UInt8(_:radix:), which also takes a sign: "+f" would read as 0x0F.
+        func nibble(_ scalar: Unicode.Scalar) -> UInt8? {
+            switch scalar {
+            case "0" ... "9": UInt8(scalar.value - 0x30)
+            case "a" ... "f": UInt8(scalar.value - 0x61 + 10)
+            case "A" ... "F": UInt8(scalar.value - 0x41 + 10)
+            default: nil
+            }
         }
         var bytes = [UInt8]()
-        bytes.reserveCapacity(digits.count / 2)
-        var iterator = digits.makeIterator()
-        while let high = iterator.next(), let low = iterator.next() {
-            guard let byte = UInt8(String(String.UnicodeScalarView([high, low])), radix: 16) else {
+        var high: UInt8?
+        for scalar in rdpHexString.unicodeScalars where !scalar.properties.isWhitespace {
+            guard let value = nibble(scalar) else {
                 return nil
             }
-            bytes.append(byte)
+            if let pending = high {
+                bytes.append(pending << 4 | value)
+                high = nil
+            } else {
+                high = value
+            }
+        }
+        guard high == nil else {
+            return nil
         }
         self = Data(bytes)
     }
