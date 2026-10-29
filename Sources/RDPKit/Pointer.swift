@@ -1,5 +1,7 @@
 import Foundation
 
+/// A pointer shape as the server sends it: XOR and AND masks. ``RDPRemotePointerBitmap``
+/// turns it into RGBA pixels for a cursor.
 public struct RDPRemotePointerImage: Equatable, Sendable {
     public var cacheIndex: UInt16
     public var hotSpot: RDPRemotePoint
@@ -268,11 +270,15 @@ final class RDPRemotePointerState {
     }
 }
 
-// Mask scan-lines are padded to a 2-byte boundary (2.2.9.1.1.4.4); nil for an unusable depth.
+// Mask scan-lines are padded to a 2-byte boundary (2.2.9.1.1.4.4).
+func pointerMaskRowByteCount(width: UInt16, bitsPerPixel: UInt16) -> Int {
+    ((Int(width) * Int(bitsPerPixel) + 7) / 8 + 1) & ~1
+}
+
+// Nil for an unusable depth.
 private func pointerMaskByteCount(width: UInt16, height: UInt16, bitsPerPixel: UInt16) -> Int? {
     guard bitsPerPixel > 0 else {
         return nil
     }
-    let rowBytes = (Int(width) * Int(bitsPerPixel) + 7) / 8
-    return ((rowBytes + 1) & ~1) * Int(height)
+    return pointerMaskRowByteCount(width: width, bitsPerPixel: bitsPerPixel) * Int(height)
 }

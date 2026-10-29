@@ -340,6 +340,255 @@ import Testing
     #expect(malformed?.pointerDecodeError == .invalidPointerPDU)
 }
 
+@Test func pointerBitmapDecodesOneBitMasksBottomUp() throws {
+    // Rows from the top: black, white, transparent; transparent, transparent, white.
+    // Each scan-line is padded to 2 bytes; the unused bits and the pad bytes are set.
+    let bitmap = try #require(RDPRemotePointerBitmap(pointerImage(
+        width: 3,
+        height: 2,
+        xorBitsPerPixel: 1,
+        xorMask: [0x3f, 0xff, 0x5f, 0xff],
+        andMask: [0xdf, 0xff, 0x3f, 0xff]
+    )))
+
+    #expect(bitmap.width == 3)
+    #expect(bitmap.height == 2)
+    #expect(bitmap.bytesPerRow == 12)
+    #expect(bitmap.pixels == pointerPixels(black, white, clear, clear, clear, white))
+}
+
+@Test func pointerBitmapDecodesSixteenBitsAsRGB565() throws {
+    // Rows from the top: red, green; grey, transparent.
+    let bitmap = try #require(RDPRemotePointerBitmap(pointerImage(
+        width: 2,
+        height: 2,
+        xorBitsPerPixel: 16,
+        xorMask: [0x10, 0x84, 0x00, 0x00, 0x00, 0xf8, 0xe0, 0x07],
+        andMask: [0x40, 0x00, 0x00, 0x00]
+    )))
+
+    #expect(bitmap.pixels == pointerPixels(
+        [0xff, 0x00, 0x00, 0xff], [0x00, 0xff, 0x00, 0xff],
+        [132, 130, 132, 0xff], clear
+    ))
+}
+
+@Test func pointerBitmapDecodesTwentyFourBitsWithPaddedRows() throws {
+    // 3 pixels of 3 bytes take 9 bytes, padded to 10 with 0xee.
+    let bitmap = try #require(RDPRemotePointerBitmap(pointerImage(
+        width: 3,
+        height: 2,
+        xorBitsPerPixel: 24,
+        xorMask: [
+            0x00, 0x00, 0x00, 0xc0, 0xb0, 0xa0, 0x00, 0x00, 0x00, 0xee,
+            0x30, 0x20, 0x10, 0x60, 0x50, 0x40, 0x00, 0x00, 0x00, 0xee,
+        ],
+        andMask: [0x80, 0x00, 0x20, 0x00]
+    )))
+
+    #expect(bitmap.pixels == pointerPixels(
+        [0x10, 0x20, 0x30, 0xff], [0x40, 0x50, 0x60, 0xff], clear,
+        clear, [0xa0, 0xb0, 0xc0, 0xff], black
+    ))
+}
+
+@Test func pointerBitmapPremultipliesThirtyTwoBitAlphaAndIgnoresAndMask() throws {
+    // AND bits are set under the half-transparent orange and both bottom pixels; with
+    // no alpha the white one would invert the screen.
+    let bitmap = try #require(RDPRemotePointerBitmap(pointerImage(
+        width: 2,
+        height: 2,
+        xorBitsPerPixel: 32,
+        xorMask: [
+            0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0xff,
+            0x00, 0x40, 0xff, 0x80, 0x10, 0x20, 0x30, 0x00,
+        ],
+        andMask: [0xc0, 0x00, 0x80, 0x00]
+    )))
+
+    #expect(bitmap.pixels == pointerPixels(
+        [0x80, 0x20, 0x00, 0x80], clear,
+        white, black
+    ))
+}
+
+@Test func pointerBitmapTakesThirtyTwoBitShapeFromAlphaWithoutAndMask() throws {
+    let bitmap = try #require(RDPRemotePointerBitmap(pointerImage(
+        width: 1,
+        height: 2,
+        xorBitsPerPixel: 32,
+        xorMask: [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff],
+        andMask: []
+    )))
+    let invisible = try #require(RDPRemotePointerBitmap(pointerImage(
+        width: 1,
+        height: 1,
+        xorBitsPerPixel: 32,
+        xorMask: [0x10, 0x20, 0x30, 0x00],
+        andMask: []
+    )))
+
+    #expect(bitmap.pixels == pointerPixels([0xff, 0x00, 0x00, 0xff], clear))
+    #expect(invisible.pixels == pointerPixels(clear))
+}
+
+@Test func pointerBitmapCombinesThirtyTwoBitsWithoutAlphaWithAndMask() throws {
+    // AND 1, 0, 1, 1: transparent, a color, transparent next to an inverting pixel, and
+    // an inverting pixel whose XOR is not white.
+    let bitmap = try #require(RDPRemotePointerBitmap(pointerImage(
+        width: 4,
+        height: 1,
+        xorBitsPerPixel: 32,
+        xorMask: [
+            0x00, 0x00, 0x00, 0x00, 0x30, 0x20, 0x10, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x56, 0x34, 0x12, 0x00,
+        ],
+        andMask: [0xb0, 0x00]
+    )))
+
+    #expect(bitmap.pixels == pointerPixels(clear, [0x10, 0x20, 0x30, 0xff], white, black))
+}
+
+@Test func pointerBitmapDrawsInvertingPixelsBlackWithWhiteOutline() throws {
+    // Rows from the top, with I inverting and B black:
+    // . . . .      W W W .
+    // . I . .  ->  W B W .
+    // B . . .      B W W .
+    let bitmap = try #require(RDPRemotePointerBitmap(pointerImage(
+        width: 4,
+        height: 3,
+        xorBitsPerPixel: 1,
+        xorMask: [0x00, 0x00, 0x40, 0x00, 0x00, 0x00],
+        andMask: [0x70, 0x00, 0xf0, 0x00, 0xf0, 0x00]
+    )))
+
+    #expect(bitmap.pixels == pointerPixels(
+        white, white, white, clear,
+        white, black, white, clear,
+        black, white, white, clear
+    ))
+}
+
+@Test func pointerBitmapClampsHotSpotIntoImage() throws {
+    let inside = try #require(RDPRemotePointerBitmap(pointerImage(
+        width: 2,
+        height: 2,
+        xorBitsPerPixel: 1,
+        xorMask: [0x00, 0x00, 0x00, 0x00],
+        andMask: [0x00, 0x00, 0x00, 0x00],
+        hotSpot: RDPRemotePoint(x: 1, y: 0)
+    )))
+    let outside = try #require(RDPRemotePointerBitmap(pointerImage(
+        width: 2,
+        height: 2,
+        xorBitsPerPixel: 1,
+        xorMask: [0x00, 0x00, 0x00, 0x00],
+        andMask: [0x00, 0x00, 0x00, 0x00],
+        hotSpot: RDPRemotePoint(x: 9, y: 7)
+    )))
+
+    #expect(inside.hotSpot == RDPRemotePoint(x: 1, y: 0))
+    #expect(outside.hotSpot == RDPRemotePoint(x: 1, y: 1))
+}
+
+@Test func pointerBitmapRejectsMalformedImages() {
+    // 2x2 at 24 bpp: 6-byte XOR rows and 2-byte AND rows.
+    let xorMask = [UInt8](repeating: 0, count: 12)
+    let andMask = [UInt8](repeating: 0, count: 4)
+    let malformed = [
+        pointerImage(width: 0, height: 2, xorBitsPerPixel: 24, xorMask: [], andMask: []),
+        pointerImage(width: 2, height: 0, xorBitsPerPixel: 24, xorMask: [], andMask: []),
+        pointerImage(width: 2, height: 2, xorBitsPerPixel: 24, xorMask: Array(xorMask.dropLast()), andMask: andMask),
+        pointerImage(width: 2, height: 2, xorBitsPerPixel: 24, xorMask: xorMask + [0], andMask: andMask),
+        pointerImage(width: 2, height: 2, xorBitsPerPixel: 24, xorMask: xorMask, andMask: Array(andMask.dropLast())),
+        pointerImage(width: 2, height: 2, xorBitsPerPixel: 24, xorMask: xorMask, andMask: []),
+        pointerImage(width: 2, height: 2, xorBitsPerPixel: 32, xorMask: xorMask, andMask: andMask),
+        pointerImage(width: 2, height: 2, xorBitsPerPixel: 0, xorMask: [], andMask: andMask),
+        // Palette and other depths, with masks of the right length.
+        pointerImage(width: 2, height: 2, xorBitsPerPixel: 4, xorMask: andMask, andMask: andMask),
+        pointerImage(width: 2, height: 2, xorBitsPerPixel: 8, xorMask: andMask, andMask: andMask),
+        pointerImage(width: 2, height: 2, xorBitsPerPixel: 15, xorMask: Array(xorMask[..<8]), andMask: andMask),
+    ]
+
+    for image in malformed {
+        #expect(RDPRemotePointerBitmap(image) == nil)
+    }
+}
+
+@Test func pointerBitmapMakesPremultipliedCGImage() throws {
+    let bitmap = try #require(RDPRemotePointerBitmap(pointerImage(
+        width: 3,
+        height: 2,
+        xorBitsPerPixel: 1,
+        xorMask: [0x20, 0x00, 0x40, 0x00],
+        andMask: [0xc0, 0x00, 0x20, 0x00]
+    )))
+    let image = try #require(bitmap.cgImage)
+
+    #expect(image.width == 3)
+    #expect(image.height == 2)
+    #expect(image.bytesPerRow == 12)
+    #expect(image.bitsPerPixel == 32)
+    #expect(image.alphaInfo == .premultipliedLast)
+    #expect(image.dataProvider?.data as Data? == bitmap.pixels)
+}
+
+@Test func pointerBitmapDecodesKRDPAlphaPointer() throws {
+    let url = try #require(Bundle.module.url(
+        forResource: "krdp-negotiation-transcript",
+        withExtension: "json",
+        subdirectory: "Fixtures"
+    ))
+    let events = try JSONDecoder().decode([RDPWireEvent].self, from: Data(contentsOf: url))
+    let newPointer = try RDPFastPathOutputPDU.parse(try #require(events.first { $0.sequence == 36 }?.bytes))
+    let update = try #require(newPointer.updates.first?.pointerUpdate)
+    guard case let .image(image) = try RDPRemotePointerState().apply(update) else {
+        Issue.record("Expected a resolved pointer image")
+        return
+    }
+
+    let bitmap = try #require(RDPRemotePointerBitmap(image))
+    let pixels = [UInt8](bitmap.pixels)
+    let alphas = stride(from: 3, to: pixels.count, by: 4).map { pixels[$0] }
+    #expect(bitmap.width == 46)
+    #expect(bitmap.height == 46)
+    #expect(bitmap.hotSpot == RDPRemotePoint(x: 7, y: 3))
+    // Some of KRdp's colors exceed their alpha, so they are not premultiplied; the bitmap's are.
+    #expect(stride(from: 0, to: pixels.count, by: 4).allSatisfy {
+        max(pixels[$0], pixels[$0 + 1], pixels[$0 + 2]) <= pixels[$0 + 3]
+    })
+    // Read bottom-up, the arrow starts at the top and its last 10 rows are empty.
+    #expect(alphas[..<46].contains { $0 != 0 })
+    #expect(alphas[(46 * 36)...].allSatisfy { $0 == 0 })
+}
+
+private let black: [UInt8] = [0x00, 0x00, 0x00, 0xff]
+private let white: [UInt8] = [0xff, 0xff, 0xff, 0xff]
+private let clear: [UInt8] = [0x00, 0x00, 0x00, 0x00]
+
+private func pointerPixels(_ pixels: [UInt8]...) -> Data {
+    Data(pixels.flatMap { $0 })
+}
+
+private func pointerImage(
+    width: UInt16,
+    height: UInt16,
+    xorBitsPerPixel: UInt16,
+    xorMask: [UInt8],
+    andMask: [UInt8],
+    hotSpot: RDPRemotePoint = RDPRemotePoint(x: 0, y: 0)
+) -> RDPRemotePointerImage {
+    RDPRemotePointerImage(
+        cacheIndex: 0,
+        hotSpot: hotSpot,
+        width: width,
+        height: height,
+        xorBitsPerPixel: xorBitsPerPixel,
+        xorMaskData: Data(xorMask),
+        andMaskData: Data(andMask)
+    )
+}
+
 private func pointerAttribute(cacheIndex: UInt16, marker: UInt8) -> RDPColorPointerAttribute {
     RDPColorPointerAttribute(
         cacheIndex: cacheIndex,
