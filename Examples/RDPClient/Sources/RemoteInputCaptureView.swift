@@ -127,6 +127,7 @@ final class RemoteInputCaptureNSView: NSView {
     }
 
     override func scrollWheel(with event: NSEvent) {
+        releaseModifiers(missingFrom: event.modifierFlags)
         guard let point = remotePoint(from: event) else {
             return
         }
@@ -144,6 +145,7 @@ final class RemoteInputCaptureNSView: NSView {
     }
 
     override func keyDown(with event: NSEvent) {
+        releaseModifiers(missingFrom: event.modifierFlags)
         if let scancode = MacRDPKeyboardMapping.scancode(forKeyCode: event.keyCode),
            MacRDPKeyboardMapping.shouldSendScancode(
                forKeyCode: event.keyCode,
@@ -165,6 +167,7 @@ final class RemoteInputCaptureNSView: NSView {
     }
 
     override func keyUp(with event: NSEvent) {
+        releaseModifiers(missingFrom: event.modifierFlags)
         guard let scancode = MacRDPKeyboardMapping.scancode(forKeyCode: event.keyCode),
               inputState.isScancodePressed(scancode)
         else {
@@ -176,12 +179,15 @@ final class RemoteInputCaptureNSView: NSView {
     override func flagsChanged(with event: NSEvent) {
         if Int(event.keyCode) == kVK_CapsLock {
             synchronizeToggleKeys(event.modifierFlags)
-            return
+        } else if let modifier = MacRDPModifierKey(keyCode: event.keyCode) {
+            sendChanges(of: modifier, in: event.modifierFlags)
         }
-        guard let modifier = MacRDPModifierKey(keyCode: event.keyCode) else {
-            return
-        }
-        let changes = modifier.changes(in: event.modifierFlags) {
+        // After the change itself, so that Command released alone still sends its deferred tap.
+        releaseModifiers(missingFrom: event.modifierFlags)
+    }
+
+    private func sendChanges(of modifier: MacRDPModifierKey, in modifierFlags: NSEvent.ModifierFlags) {
+        let changes = modifier.changes(in: modifierFlags) {
             inputState.isScancodePressed($0) || deferredWindowsKey.isHeld($0)
         }
         for change in changes {
@@ -265,7 +271,24 @@ final class RemoteInputCaptureNSView: NSView {
         keyUp(with: event)
     }
 
+    /// AppKit does not deliver every modifier release to the view, for example one made while a menu
+    /// is open, so a modifier the server still holds is released by the next event that shows it up.
+    private func releaseModifiers(missingFrom modifierFlags: NSEvent.ModifierFlags) {
+        var events: [RDPSlowPathInputEvent] = []
+        for modifier in MacRDPModifierKey.all where modifier.isDown(in: modifierFlags) == false {
+            if inputState.isScancodePressed(modifier.scancode) {
+                events.append(inputState.keyboard(scancode: modifier.scancode, isReleased: true))
+            }
+            // A deferred Windows key whose release went elsewhere never reached the server.
+            deferredWindowsKey.discard(modifier.scancode)
+        }
+        if events.isEmpty == false {
+            inputSession?.send(events)
+        }
+    }
+
     private func sendPointerMove(_ event: NSEvent) {
+        releaseModifiers(missingFrom: event.modifierFlags)
         guard let point = remotePoint(from: event) else {
             return
         }
@@ -273,6 +296,7 @@ final class RemoteInputCaptureNSView: NSView {
     }
 
     private func sendPointerButton(_ button: RDPPointerButton, isDown: Bool, event: NSEvent) {
+        releaseModifiers(missingFrom: event.modifierFlags)
         guard let inputEvent = inputState.pointerButton(button, isDown: isDown, at: remotePoint(from: event)) else {
             return
         }
@@ -383,6 +407,13 @@ struct MacRDPDeferredWindowsKey {
         return isTap ? [.keyboard(scancode: scancode, isReleased: false), .keyboard(scancode: scancode, isReleased: true)] : []
     }
 
+    mutating func discard(_ scancode: RDPKeyboardScancode) {
+        heldScancodes.removeAll { $0 == scancode }
+        if heldScancodes.isEmpty {
+            isChordedElsewhere = false
+        }
+    }
+
     mutating func reset() {
         heldScancodes.removeAll()
         isChordedElsewhere = false
@@ -408,6 +439,11 @@ struct MacRDPModifierKey {
     private static let rightOptionScancode = RDPKeyboardScancode(code: 0x38, isExtended: true)
     private static let leftCommandScancode = RDPKeyboardScancode(code: 0x5B, isExtended: true)
     private static let rightCommandScancode = RDPKeyboardScancode(code: 0x5C, isExtended: true)
+
+    static let all = [
+        kVK_Shift, kVK_RightShift, kVK_Control, kVK_RightControl,
+        kVK_Option, kVK_RightOption, kVK_Command, kVK_RightCommand,
+    ].compactMap { MacRDPModifierKey(keyCode: UInt16($0)) }
 
     let scancode: RDPKeyboardScancode
     /// The other side's key, which shares `flag`.

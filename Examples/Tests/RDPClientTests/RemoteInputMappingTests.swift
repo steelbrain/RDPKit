@@ -188,3 +188,80 @@ private func keyEvent(
         .keyboard(scancode: RDPKeyboardScancode(code: 0x50, isExtended: true), isReleased: true),
     ])
 }
+
+// A modifier released while a menu is open never reaches the view as flagsChanged.
+@MainActor
+@Test func aModifierReleaseTheViewMissedIsSentBeforeTheNextEvent() throws {
+    let leftControl = RDPKeyboardScancode(code: 0x1D)
+    let input = RecordedInput()
+    let view = RemoteInputCaptureNSView()
+    view.inputSession = input
+    view.frame = CGRect(x: 0, y: 0, width: 100, height: 100)
+    view.rdpFrame = RDPFrameMetadata(RDPGraphicsFrameSnapshot(
+        frameID: nil,
+        surfaceID: 0,
+        codecID: 0,
+        codecName: "test",
+        pixelFormat: 0,
+        destinationRect: RDPFrameRect(left: 0, top: 0, right: 100, bottom: 100),
+        regionRects: [],
+        encodedVideoData: Data()
+    ))
+
+    view.flagsChanged(with: try keyEvent(.flagsChanged, keyCode: kVK_Control, modifierFlags: .control))
+    view.keyDown(with: try keyEvent(.keyDown, keyCode: kVK_ANSI_X, characters: "x"))
+    #expect(input.events == [
+        .keyboard(scancode: leftControl, isReleased: false),
+        .keyboard(scancode: leftControl, isReleased: true),
+        .unicode(codeUnit: 0x78, isReleased: false),
+        .unicode(codeUnit: 0x78, isReleased: true),
+    ])
+
+    view.flagsChanged(with: try keyEvent(.flagsChanged, keyCode: kVK_Control, modifierFlags: .control))
+    input.events.removeAll()
+    view.mouseDown(with: try #require(NSEvent.mouseEvent(
+        with: .leftMouseDown,
+        location: CGPoint(x: 10, y: 90),
+        modifierFlags: [],
+        timestamp: 0,
+        windowNumber: 0,
+        context: nil,
+        eventNumber: 0,
+        clickCount: 1,
+        pressure: 1
+    )))
+    #expect(input.events == [
+        .keyboard(scancode: leftControl, isReleased: true),
+        .pointerButton(button: .left, isDown: true, x: 10, y: 10),
+    ])
+}
+
+// Command released while another app (Spotlight) had the keyboard: Win never reached the
+// server, so the next key must not take it down there.
+@MainActor
+@Test func aCommandReleaseTheViewMissedDropsTheDeferredWindowsKey() throws {
+    let input = RecordedInput()
+    let view = RemoteInputCaptureNSView()
+    view.inputSession = input
+    view.flagsChanged(with: try keyEvent(.flagsChanged, keyCode: kVK_Command, modifierFlags: .command))
+
+    view.keyDown(with: try keyEvent(.keyDown, keyCode: kVK_LeftArrow))
+
+    #expect(input.events == [.keyboard(scancode: RDPKeyboardScancode(code: 0x4B, isExtended: true), isReleased: false)])
+}
+
+@MainActor
+@Test func commandReleasedAloneStillTapsTheWindowsKey() throws {
+    let leftWindows = RDPKeyboardScancode(code: 0x5B, isExtended: true)
+    let input = RecordedInput()
+    let view = RemoteInputCaptureNSView()
+    view.inputSession = input
+
+    view.flagsChanged(with: try keyEvent(.flagsChanged, keyCode: kVK_Command, modifierFlags: .command))
+    view.flagsChanged(with: try keyEvent(.flagsChanged, keyCode: kVK_Command))
+
+    #expect(input.events == [
+        .keyboard(scancode: leftWindows, isReleased: false),
+        .keyboard(scancode: leftWindows, isReleased: true),
+    ])
+}
