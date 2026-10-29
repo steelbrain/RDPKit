@@ -420,6 +420,29 @@ func monitorLayoutRefusesALayoutBreakingTheRules(monitors: [RDPDisplayControlMon
     }
 }
 
+/// Monitors form one group when each reaches every other through monitors that touch, along an
+/// edge or at a corner. Separate groups, each monitor touching another, still make a layout
+/// Display Control sends: [MS-RDPEDISP] 3.1.5.2 asks no more, and Windows 11 applies it.
+@Test func monitorLayoutTellsWhetherItsMonitorsFormOneGroup() throws {
+    let right = RDPDisplayControlMonitorLayout(left: 800, width: 800, height: 600)
+    let below = RDPDisplayControlMonitorLayout(top: 600, width: 800, height: 600)
+    let diagonal = RDPDisplayControlMonitorLayout(left: 800, top: 600, width: 800, height: 600)
+    let farRight = RDPDisplayControlMonitorLayout(left: 1600, width: 800, height: 600)
+    let farthestRight = RDPDisplayControlMonitorLayout(left: 2400, width: 800, height: 600)
+    let separate = [
+        RDPDisplayControlMonitorLayout(left: 2000, width: 800, height: 600),
+        RDPDisplayControlMonitorLayout(left: 2800, width: 800, height: 600),
+    ]
+
+    #expect(try RDPMonitorLayout(monitors: [primaryMonitor()]).formsOneGroup)
+    #expect(try RDPMonitorLayout(monitors: [primaryMonitor(), right]).formsOneGroup)
+    #expect(try RDPMonitorLayout(monitors: [primaryMonitor(), diagonal]).formsOneGroup)
+    #expect(try RDPMonitorLayout(monitors: [primaryMonitor(), below, right]).formsOneGroup)
+    // The first monitor reaches the primary one only through the two between them.
+    #expect(try RDPMonitorLayout(monitors: [farthestRight, primaryMonitor(), farRight, right]).formsOneGroup)
+    #expect(try !RDPMonitorLayout(monitors: [primaryMonitor(), right] + separate).formsOneGroup)
+}
+
 /// Monitors left of and above the primary one have negative coordinates; the desktop is the
 /// bounding box of them all.
 @Test func monitorLayoutsDesktopIsTheMonitorsBoundingBox() throws {

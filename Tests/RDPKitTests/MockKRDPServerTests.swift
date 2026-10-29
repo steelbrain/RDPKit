@@ -263,6 +263,28 @@ struct MockKRDPServerTests {
         ])
     }
 
+    /// A layout of separate groups of monitors set after the initializer goes out as no layout:
+    /// the desktop is the configuration's, and the client asks for no Monitor Layout PDU.
+    @Test func clientSendsNoMonitorDataForSeparateGroups() throws {
+        let separateGroups = try RDPMonitorLayout(monitors: [
+            .singlePrimary(width: 1280, height: 720),
+            RDPDisplayControlMonitorLayout(left: 1280, width: 1280, height: 720),
+            RDPDisplayControlMonitorLayout(left: 3000, width: 1280, height: 720),
+            RDPDisplayControlMonitorLayout(left: 4280, width: 1280, height: 720),
+        ])
+        let run = try runMock {
+            $0.desktopWidth = 1440
+            $0.desktopHeight = 900
+            $0.monitorLayout = separateGroups
+        }
+        let blocks = run.transcript.clientDataBlocks
+
+        #expect(run.report.status == "success")
+        #expect(blocks.map { $0.littleEndianUInt16(at: 0) } == [0xC001, 0xC004, 0xC002, 0xC003, 0xC006])
+        #expect(blocks.first?[8 ..< 12] == hexData("a0 05 84 03"))
+        #expect(blocks.first?.littleEndianUInt16(at: 144) == 0x01AF)
+    }
+
     /// Without a monitor layout the client sends the blocks it always sent.
     @Test func clientSendsNoMonitorDataWithoutALayout() throws {
         let run = try runMock()

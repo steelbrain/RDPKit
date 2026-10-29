@@ -119,6 +119,27 @@ import Testing
     #expect(configuration.connectionMonitorLayout(extendedClientDataSupported: true) == layout)
 }
 
+/// A layout of separate groups of monitors is dropped, by the initializer or, when set after it,
+/// before the connection sends it: given one at connect, Windows 11 starts one monitor of their
+/// bounding box (observed live).
+@Test func connectionConfigurationDropsAMonitorLayoutOfSeparateGroups() throws {
+    let group = try RDPMonitorLayout(monitors: [
+        .singlePrimary(width: 1280, height: 720),
+        RDPDisplayControlMonitorLayout(left: 1280, width: 1280, height: 720),
+    ])
+    let separateGroups = try RDPMonitorLayout(monitors: group.monitors + [
+        RDPDisplayControlMonitorLayout(left: 3000, width: 1280, height: 720),
+        RDPDisplayControlMonitorLayout(left: 4280, width: 1280, height: 720),
+    ])
+    var configuration = RDPConnectionConfiguration(host: "example.test", monitorLayout: group)
+
+    #expect(RDPConnectionConfiguration(host: "example.test", monitorLayout: separateGroups).monitorLayout == nil)
+    #expect(configuration.connectionMonitorLayout(extendedClientDataSupported: true) == group)
+
+    configuration.monitorLayout = separateGroups
+    #expect(configuration.connectionMonitorLayout(extendedClientDataSupported: true) == nil)
+}
+
 /// Client Core Data holds 15 UTF-16 code units before its terminator ([MS-RDPBCGR] 2.2.1.3.2);
 /// licensing and rdpdr send the same name. A name set after init is made valid for the
 /// connection too.

@@ -316,9 +316,9 @@ public enum RDPMonitorLayoutError: Error, Equatable, CustomStringConvertible, Se
 
 /// The monitors of a remote desktop: what ``RDPDisplayControlSession`` asks the server for
 /// ([MS-RDPEDISP] 2.2.2.2), and what a connection can start with
-/// (``RDPConnectionConfiguration/monitorLayout``, [MS-RDPBCGR] 2.2.1.3.6). A monitor's left and
-/// top are pixels from the primary monitor's top-left, so one left of or above it has negative
-/// ones.
+/// (``RDPConnectionConfiguration/monitorLayout``, [MS-RDPBCGR] 2.2.1.3.6) when they form one
+/// group. A monitor's left and top are pixels from the primary monitor's top-left, so one left
+/// of or above it has negative ones.
 public struct RDPMonitorLayout: Equatable, Sendable {
     /// The most Client Monitor Data and ResetGraphics hold ([MS-RDPBCGR] 2.2.1.3.6,
     /// [MS-RDPEGFX] 2.2.2.14).
@@ -396,6 +396,25 @@ public struct RDPMonitorLayout: Equatable, Sendable {
         guard area <= maximumArea else {
             throw RDPMonitorLayoutError.areaTooLarge(area: area, maximum: maximumArea)
         }
+    }
+
+    /// Whether every monitor reaches every other through monitors that touch, along an edge or
+    /// at a corner, as [MS-RDPEDISP] 3.1.5.2 counts touching. That section asks only that each
+    /// monitor touch another, and Windows 11 applies separate groups through Display Control,
+    /// but a connection drops them (``RDPConnectionConfiguration/monitorLayout``).
+    var formsOneGroup: Bool {
+        let rectangles = monitors.map(RDPDisplayControlMonitorRect.init)
+        var reached: Set<Int> = [0]
+        var unvisited = [0]
+        while let index = unvisited.popLast() {
+            for other in rectangles.indices where !reached.contains(other)
+                && rectangles[index].isAdjacent(to: rectangles[other])
+            {
+                reached.insert(other)
+                unvisited.append(other)
+            }
+        }
+        return reached.count == rectangles.count
     }
 
     private var bounds: RDPDisplayControlMonitorRect {

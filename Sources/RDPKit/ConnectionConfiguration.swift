@@ -21,7 +21,9 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
     /// 2.2.1.3.10), and the desktop is their bounding box, up to the 32,766 pixels each way
     /// Client Monitor Data allows: Windows 11 and gnome-remote-desktop 51 start one of three
     /// 3840x2160 monitors at 11520x2160 (observed live). A server that does not accept extended
-    /// client data blocks gets neither, and the session starts as without a layout.
+    /// client data blocks gets neither, and the session starts as without a layout. A layout
+    /// whose monitors form separate groups is dropped, as Windows 11 makes one monitor of their
+    /// bounding box; Display Control can ask for it once the session runs.
     public var monitorLayout: RDPMonitorLayout?
     /// Joins cliprdr. Joining sends the Format List [MS-RDPECLIP] 1.3.2.1 requires at startup, of
     /// what the client has published, empty until it publishes; Windows 11 takes that as the
@@ -95,7 +97,7 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
         (self.desktopWidth, self.desktopHeight) = Self.validDesktopSize(width: desktopWidth, height: desktopHeight)
         self.scaleFactors = scaleFactors.clamped
         self.physicalSize = physicalSize?.isValid == true ? physicalSize : nil
-        self.monitorLayout = monitorLayout
+        self.monitorLayout = Self.validMonitorLayout(monitorLayout)
         self.clipboardEnabled = clipboardEnabled
         self.audioPlaybackEnabled = audioPlaybackEnabled
         self.earlyUserAuthorizationEnabled = earlyUserAuthorizationEnabled
@@ -204,10 +206,23 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
         (min(8192, max(640, width)), min(8192, max(480, height)))
     }
 
+    /// `layout` when its monitors form one group. [MS-RDPBCGR] 2.2.1.3.6 does not rule out
+    /// separate groups, but given them Windows 11 starts one monitor of their bounding box, and
+    /// with the automatic graphics profile confirms RDPGFX with AVC_DISABLED and AVC_THINCLIENT
+    /// together, which [MS-RDPEGFX] 2.2.3.6 forbids, so the session fails. Monitors touching
+    /// only at a corner start as sent (observed live).
+    static func validMonitorLayout(_ layout: RDPMonitorLayout?) -> RDPMonitorLayout? {
+        guard let layout, layout.formsOneGroup else {
+            return nil
+        }
+        return layout
+    }
+
     /// The monitor layout to send at connect: none to a server that does not accept extended
-    /// client data blocks ([MS-RDPBCGR] 2.2.1.3).
+    /// client data blocks ([MS-RDPBCGR] 2.2.1.3), and none that the initializer would drop,
+    /// since it can be set after it.
     func connectionMonitorLayout(extendedClientDataSupported: Bool) -> RDPMonitorLayout? {
-        extendedClientDataSupported ? monitorLayout : nil
+        extendedClientDataSupported ? Self.validMonitorLayout(monitorLayout) : nil
     }
 
     var clientKeyboard: RDPClientKeyboard {
