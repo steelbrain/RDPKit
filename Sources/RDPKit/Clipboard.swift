@@ -947,6 +947,9 @@ public final class RDPClipboardSession: @unchecked Sendable {
     private var remoteCopyID = 0
     private var remoteContent = RDPClipboardContent()
     private var isFetchingRemoteCopies = true
+    /// The requests of the last copy the server announced while fetching was off, kept while
+    /// its clipboard holds that copy: until it announces another or this client publishes.
+    private var unfetchedRemoteCopy: [RDPClipboardRequestedFormatDataResponse]?
     /// nil until the server sends its Clipboard Capabilities PDU.
     private var serverGeneralFlags: UInt32?
     /// Flags this client advertised; 0, the protocol default, when it sent no Capabilities PDU.
@@ -974,9 +977,13 @@ public final class RDPClipboardSession: @unchecked Sendable {
     /// Format Lists are acknowledged and nothing is requested, so none of its clipboard reaches
     /// this client, and the rest of a copy already being fetched is dropped. Set it in
     /// `onClipboardReady`, which runs before the server's first copy is handled, to keep that
-    /// copy from being fetched too. It does not keep the server's clipboard as it was: joining
-    /// cliprdr announces the client's clipboard, empty until something is published, and
-    /// Windows then empties its own (see `RDPConnectionConfiguration.clipboardEnabled`).
+    /// copy from being fetched too. Turned back on, it fetches the last copy the server
+    /// announced while it was off, unless this client has published since, which replaced that
+    /// copy on the server: a client that turns it off in `onClipboardReady` until it can
+    /// decide, say on the main thread, still gets a copy that came in between. It does not
+    /// keep the server's clipboard as it was: joining cliprdr announces the client's clipboard,
+    /// empty until something is published, and Windows then empties its own (see
+    /// `RDPConnectionConfiguration.clipboardEnabled`).
     public var fetchesRemoteCopies: Bool {
         get {
             lock.withLock { isFetchingRemoteCopies }
@@ -985,10 +992,21 @@ public final class RDPClipboardSession: @unchecked Sendable {
             lock.withLock {
                 if isFetchingRemoteCopies, !newValue {
                     replaceRemoteCopy(with: [])
+                } else if !isFetchingRemoteCopies, newValue, let unfetchedRemoteCopy {
+                    replaceRemoteCopy(with: unfetchedRemoteCopy)
+                    self.unfetchedRemoteCopy = nil
                 }
                 isFetchingRemoteCopies = newValue
             }
+            sendNextFormatDataRequest()
         }
+    }
+
+    /// Whether a copy the server announced is being fetched: a format of it was asked for
+    /// and has not been answered. Read right after turning `fetchesRemoteCopies` on, it tells
+    /// whether that fetched a copy announced while it was off, which publishing would replace.
+    public var isAwaitingRemoteCopy: Bool {
+        lock.withLock { formatDataRequests.contains { $0.copyID == remoteCopyID } }
     }
 
     public func publishLocalUnicodeText(_ text: String?) {
@@ -1199,13 +1217,16 @@ public final class RDPClipboardSession: @unchecked Sendable {
     }
 
     /// Starts fetching a remote copy: its requests replace those of an older copy that
-    /// have not gone out yet. While fetching is off, nothing is requested. Returns whether
-    /// fetching is on.
+    /// have not gone out yet. While fetching is off, nothing is requested, and the copy
+    /// waits for fetching to be turned back on. Returns whether fetching is on.
     func requestRemoteCopy(_ requests: [RDPClipboardRequestedFormatDataResponse]) -> Bool {
         let isFetching = lock.withLock {
             // Checked under the lock that queues the requests, so turning fetching off
             // on another thread cannot come between the check and the queueing.
             replaceRemoteCopy(with: isFetchingRemoteCopies ? requests : [])
+            if !isFetchingRemoteCopies {
+                unfetchedRemoteCopy = requests
+            }
             return isFetchingRemoteCopies
         }
         sendNextFormatDataRequest()
@@ -1340,6 +1361,8 @@ public final class RDPClipboardSession: @unchecked Sendable {
         defer { lock.unlock() }
         replaceRemoteCopy(with: [])
         localContent = content
+        // A copy announced while fetching was off is no longer on the server to fetch.
+        unfetchedRemoteCopy = nil
         if hasAnsweredMonitorReady {
             sendFormatList(for: content)
         }

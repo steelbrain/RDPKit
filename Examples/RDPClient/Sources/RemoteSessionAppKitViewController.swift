@@ -848,7 +848,8 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                 },
                 onClipboardReady: { session in
                     // The server's first copy can arrive before the bridge attaches on the main
-                    // thread, so nothing is fetched until the bridge applies the sharing choice.
+                    // thread, so nothing is fetched until the bridge applies the sharing choice;
+                    // turning fetching on then fetches a copy that came in between.
                     session.fetchesRemoteCopies = false
                     sink.apply { controller in
                         controller.clipboard.attach(session)

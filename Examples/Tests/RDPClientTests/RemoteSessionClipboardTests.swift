@@ -4,15 +4,29 @@ import RDPKit
 import Testing
 
 private final class RecordedClipboard: RDPClipboardSending {
-    var fetchesRemoteCopies = true
+    /// Turned on, fetches `unfetchedRemoteCopy` as RDPClipboardSession does.
+    var fetchesRemoteCopies = true {
+        didSet {
+            if fetchesRemoteCopies, !oldValue, unfetchedRemoteCopy {
+                isAwaitingRemoteCopy = true
+                unfetchedRemoteCopy = false
+            }
+        }
+    }
+
+    /// Whether the server announced a copy while fetching was off that no publish has replaced.
+    var unfetchedRemoteCopy = false
+    var isAwaitingRemoteCopy = false
     var publishedTexts: [String?] = []
     var publishedFiles: [[RDPClipboardLocalFile]] = []
 
     func publishLocalUnicodeText(_ text: String?) {
+        unfetchedRemoteCopy = false
         publishedTexts.append(text)
     }
 
     func publishLocalFiles(_ files: [RDPClipboardLocalFile]) {
+        unfetchedRemoteCopy = false
         publishedFiles.append(files)
     }
 
@@ -74,6 +88,7 @@ private func makePasteboard() -> NSPasteboard {
 
     pasteboard.clearContents()
     pasteboard.setString("local", forType: .string)
+    session.unfetchedRemoteCopy = true
     clipboard.poll()
     clipboard.receiveText("remote")
     clipboard.receiveFileList(RDPClipboardFileGroupDescriptorW(descriptors: [
@@ -84,8 +99,10 @@ private func makePasteboard() -> NSPasteboard {
     #expect(session.publishedFiles.isEmpty)
     #expect(session.sizeRequests.isEmpty)
 
+    // The pasteboard replaces the copy the server announced while sharing was off.
     clipboard.setSharingEnabled(true)
     #expect(session.fetchesRemoteCopies)
+    #expect(session.isAwaitingRemoteCopy == false)
     #expect(session.publishedTexts == [nil, "local"])
     #expect(clipboard.statusMessage == "Local text synced.")
     #expect(clipboard.canSync)
@@ -139,6 +156,50 @@ private func makePasteboard() -> NSPasteboard {
     clipboard.startTemporarySharing()
     clipboard.poll(now: Date().addingTimeInterval(31))
     #expect(session.publishedTexts == [nil, "local", "remote", "remote", "remote", nil, nil])
+}
+
+/// The session turns fetching off until the bridge attaches on the main thread. The server's
+/// first copy, announced in between, reaches the pasteboard, and the pasteboard the Mac had
+/// does not replace it on the server.
+@MainActor
+@Test func theServersFirstCopyReachesThePasteboardWhenItComesBeforeTheBridgeAttaches() {
+    let pasteboard = makePasteboard()
+    defer { pasteboard.releaseGlobally() }
+    pasteboard.clearContents()
+    pasteboard.setString("local", forType: .string)
+    let session = RecordedClipboard()
+    session.fetchesRemoteCopies = false
+    session.unfetchedRemoteCopy = true
+    let clipboard = RDPRemoteSessionClipboard(isSharingEnabled: true, pasteboard: pasteboard)
+
+    clipboard.attach(session)
+    #expect(session.isAwaitingRemoteCopy)
+    #expect(session.publishedTexts.isEmpty)
+    #expect(clipboard.statusMessage == "Ready.")
+
+    clipboard.receiveText("remote")
+    clipboard.poll()
+    #expect(pasteboard.string(forType: .string) == "remote")
+    #expect(session.publishedTexts.isEmpty)
+}
+
+/// Should the server's first copy never arrive, Sync Now sends the pasteboard instead.
+@MainActor
+@Test func syncNowSendsThePasteboardWhenTheServersFirstCopyNeverArrives() {
+    let pasteboard = makePasteboard()
+    defer { pasteboard.releaseGlobally() }
+    pasteboard.clearContents()
+    pasteboard.setString("local", forType: .string)
+    let session = RecordedClipboard()
+    session.fetchesRemoteCopies = false
+    session.unfetchedRemoteCopy = true
+    let clipboard = RDPRemoteSessionClipboard(isSharingEnabled: true, pasteboard: pasteboard)
+
+    clipboard.attach(session)
+    clipboard.poll()
+    #expect(session.publishedTexts.isEmpty)
+    clipboard.syncNow()
+    #expect(session.publishedTexts == ["local"])
 }
 
 @MainActor

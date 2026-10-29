@@ -1169,11 +1169,86 @@ private final class ClipboardPublishRace: @unchecked Sendable {
     ])
     #expect(try sentFormatDataRequestIDs(sent) == [13])
 
+    // Turned back on, it fetches the last copy announced meanwhile, until a newer one comes.
     session.fetchesRemoteCopies = true
+    #expect(session.outstandingFormatDataRequests == [.fileGroupDescriptorW(formatID: 0xC0A3)])
     _ = try session.receive(RDPClipboardPDU.parse(from: textCopy))
+    #expect(try session.receive(RDPClipboardPDU.parse(from: RDPClipboardFormatDataResponsePDU.failure().encoded())) == nil)
     #expect(try session.receive(RDPClipboardPDU.parse(from: RDPClipboardFormatDataResponsePDU.unicodeText("new").encoded()))
         == .content(RDPClipboardContent(text: "new")))
-    #expect(try sentFormatDataRequestIDs(sent) == [13, 13])
+    #expect(try sentFormatDataRequestIDs(sent) == [13, 0xC0A3, 13])
+    _ = try channel.finish()
+}
+
+/// A client that turns fetching off in `onClipboardReady` until it can decide, as RDPClient
+/// does until its clipboard bridge attaches on the main thread, still gets the server's first
+/// copy when that copy comes in between.
+@Test func clipboardSessionFetchesTheCopyAnnouncedBeforeFetchingIsTurnedOn() throws {
+    let channel = EmbeddedChannel()
+    let sent = ClipboardSentMessages()
+    let session = RDPClipboardSession(
+        userChannelID: 1006,
+        staticChannelID: 1007,
+        channel: channel,
+        sentMessageHandler: sent.record
+    )
+    let textCopy = RDPClipboardFormatListPDU(entries: [
+        RDPClipboardFormatListEntry(formatID: RDPClipboardFormatID.unicodeText),
+    ]).encoded()
+
+    _ = try session.receive(RDPClipboardPDU.parse(from: RDPClipboardCapabilitiesPDU().encoded()))
+    #expect(try session.receive(RDPClipboardPDU(messageType: RDPClipboardMessageType.monitorReady)) == .ready)
+    session.fetchesRemoteCopies = false
+    #expect(try session.receive(RDPClipboardPDU.parse(from: textCopy)) == nil)
+    #expect(try sentFormatDataRequestIDs(sent).isEmpty)
+
+    session.fetchesRemoteCopies = true
+    #expect(try session.receive(RDPClipboardPDU.parse(from: RDPClipboardFormatDataResponsePDU.unicodeText("first").encoded()))
+        == .text("first"))
+    #expect(try sentFormatDataRequestIDs(sent) == [RDPClipboardFormatID.unicodeText])
+    _ = try channel.finish()
+}
+
+/// Turned back on, fetching takes only the copy the server's clipboard still holds: the last
+/// one announced, and none once this client has published, which replaced it there.
+@Test func clipboardSessionFetchesOnlyTheCopyTheServerStillHolds() throws {
+    let channel = EmbeddedChannel()
+    let sent = ClipboardSentMessages()
+    let session = RDPClipboardSession(
+        userChannelID: 1006,
+        staticChannelID: 1007,
+        channel: channel,
+        sentMessageHandler: sent.record
+    )
+    let textCopy = RDPClipboardFormatListPDU(entries: [
+        RDPClipboardFormatListEntry(formatID: RDPClipboardFormatID.unicodeText),
+    ]).encoded()
+    let fileCopy = RDPClipboardFormatListPDU(entries: [
+        RDPClipboardFormatListEntry(formatID: 0xC0A3, formatName: "FileGroupDescriptorW"),
+    ]).encoded()
+    let files = RDPClipboardFileGroupDescriptorW(descriptors: [
+        RDPClipboardLocalFile(fileName: "notes.txt", contents: Data([1])).descriptor,
+    ])
+
+    _ = try session.receive(RDPClipboardPDU.parse(from: RDPClipboardCapabilitiesPDU().encoded()))
+    _ = try session.receive(RDPClipboardPDU(messageType: RDPClipboardMessageType.monitorReady))
+    session.fetchesRemoteCopies = false
+    _ = try session.receive(RDPClipboardPDU.parse(from: textCopy))
+    _ = try session.receive(RDPClipboardPDU.parse(from: fileCopy))
+    #expect(!session.isAwaitingRemoteCopy)
+    session.fetchesRemoteCopies = true
+    #expect(session.isAwaitingRemoteCopy)
+    #expect(session.outstandingFormatDataRequests == [.fileGroupDescriptorW(formatID: 0xC0A3)])
+    #expect(try session.receive(RDPClipboardPDU.parse(from: RDPClipboardFormatDataResponsePDU.fileGroupDescriptorW(files).encoded()))
+        == .fileGroupDescriptor(files))
+    #expect(!session.isAwaitingRemoteCopy)
+
+    session.fetchesRemoteCopies = false
+    _ = try session.receive(RDPClipboardPDU.parse(from: textCopy))
+    session.publishLocalUnicodeText("local")
+    session.fetchesRemoteCopies = true
+    #expect(!session.isAwaitingRemoteCopy)
+    #expect(try sentFormatDataRequestIDs(sent) == [0xC0A3])
     _ = try channel.finish()
 }
 

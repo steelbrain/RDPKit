@@ -15,8 +15,10 @@ private let staleDownloadDirectoryAge: TimeInterval = 60 * 60
 
 /// Where the clipboard bridge sends: the session's `RDPClipboardSession`.
 protocol RDPClipboardSending: AnyObject {
-    /// Off while sharing is off, so the server's copies are not even fetched.
+    /// Off while sharing is off, so the server's copies are not even fetched. Turned on, it
+    /// fetches a copy the server announced while it was off, unless a publish replaced it.
     var fetchesRemoteCopies: Bool { get set }
+    var isAwaitingRemoteCopy: Bool { get }
     func publishLocalUnicodeText(_ text: String?)
     func publishLocalFiles(_ files: [RDPClipboardLocalFile])
     func requestRemoteFileSize(streamID: UInt32, fileIndex: Int32) throws
@@ -91,6 +93,14 @@ final class RDPRemoteSessionClipboard {
             return
         }
         message = "Ready."
+        // The session is fetching a copy the server announced before the bridge attached. It is
+        // newer than the pasteboard, which publishing now would put in its place on the server;
+        // should it never arrive, Sync Now sends the pasteboard.
+        guard session.isAwaitingRemoteCopy == false else {
+            pasteboardChangeCount = pasteboard.changeCount
+            localCopyIsUnsent = true
+            return
+        }
         publishPasteboardIfChanged(force: true)
     }
 
@@ -111,8 +121,8 @@ final class RDPRemoteSessionClipboard {
         let wasEnabled = isSharingEnabled
         isSharingEnabled = enabled
         temporarySharingExpiresAt = nil
-        session?.fetchesRemoteCopies = enabled
         guard enabled else {
+            session?.fetchesRemoteCopies = false
             discardFileTransfer()
             cancelLocalFileRead()
             // Windows empties its clipboard for an empty Format List, so a copy the server's
@@ -132,7 +142,10 @@ final class RDPRemoteSessionClipboard {
             return
         }
         message = session == nil ? nil : "Ready."
+        // The pasteboard goes first: it replaces on the server a copy announced while sharing
+        // was off, which turning fetching on would fetch.
         publishPasteboardIfChanged(force: true)
+        session?.fetchesRemoteCopies = true
     }
 
     /// Sends a local copy the next poll would, or again one that has not reached the server,
