@@ -7,6 +7,8 @@
 - `RDPConnectionError` is a struct with `failure` (`RDPConnectionFailure`)
   and `description` instead of an enum: match `error.failure` instead of its
   cases. `connect` now throws only `RDPConnectionError`.
+- `RDPCredentialValidationError` has a new case, `fieldTooLong(_:)`: a
+  `switch` over it needs that case or a `default`.
 - Once the graphics have opened, a session that an administrator, a time
   limit or another connection ends is an ended session (`status` "success",
   no `error`, `remoteTermination` set), not a failure.
@@ -28,7 +30,7 @@
   or closed connections, timeouts, cancellation, protocol violations and a
   throwing `onGraphicsFrame`. A configuration RDPKit cannot send
   (`invalidConfiguration`: credentials longer than the Client Info PDU or
-  NTLM holds, or a `storedClientLicense` too large to present) and a failure
+  NTLM holds) and a failure
   on the client's side (`clientFailure`) are not protocol violations.
   `error` keeps the details in words.
 - `RDPConnectionStage` is public, and `report.connectionStage` returns it.
@@ -138,12 +140,27 @@
   time, so they fall once traffic stops, to 0 when that window holds none.
   The `rollingFramesPerSecond` and `rollingWireMegabitsPerSecond` properties
   are deprecated: they keep the rate as of the last frame or sample.
+  `averageWireMegabitsPerSecond(at:)` reads the average the same way; the
+  `averageWireMegabitsPerSecond` property, deprecated, reads it at the
+  current time.
+- `RDPCredentials.validated` also throws
+  `RDPCredentialValidationError.fieldTooLong(_:)`, naming the
+  `RDPCredentialField` (user name, domain or password) longer than
+  `RDPCredentials.maximumFieldLength`: 255 UTF-16 code units, the Client
+  Info PDU's limit, checked after `DOMAIN\user` is split. Apps can report
+  the field before connecting instead of failing with
+  `invalidConfiguration`.
 - `RDPInputSession.supportsUnicodeInput` tells whether the server takes
   Unicode keyboard events (INPUT_FLAG_UNICODE). `send` drops `.unicode`
   events when it does not, so an app can send scancodes instead.
 
 ### Compatibility and fixes
 
+- A `storedClientLicense` too large for the Client License Information PDU
+  no longer fails every connect: RDPKit asks the server for a new license
+  instead and adds a `stored-license-too-large` report warning. A license
+  the server then issues arrives in `report.rdpIssuedClientLicense`, so the
+  app can replace the stored one.
 - A Demand Active may set a desktop of up to 32,766 pixels each way, not
   only 8192. A session without RDPGFX that Windows 11 reactivates at
   11520x2160, for a Display Control layout of three 4K monitors, now draws
@@ -277,7 +294,10 @@
     they are read, so its copy from while sharing was off is not fetched in
     their place; a copy the server's user makes during the read still wins.
     A server copy that brings nothing, such as an image or one that failed
-    to arrive, shows "No text or files arrived from the remote copy."
+    to arrive, shows "No text or files arrived from the remote copy." Text
+    too large to send (over 16 MiB) empties the server's clipboard, as files
+    over 32 MiB do, so turning sharing back on with it no longer brings an
+    older server copy onto the Mac.
   - The server's first copy reaches the Mac even when it comes before the
     clipboard bridge is ready, and the Mac's older clipboard no longer
     replaces it on the server; Sync Now sends the Mac's clipboard should
@@ -307,7 +327,12 @@
     and rx overlay, and Stats for Nerds' Rolling FPS and Wire RX, fall to 0
     within 5 s of the screen going still instead of keeping the last
     burst's rates. The session window's footer shows the graphics path,
-    such as the RDPGFX version and codec, while the session runs.
+    such as the RDPGFX version and codec, while the session runs. The
+    display link rate shows the screen's maximum refresh rate until the
+    link first fires on that screen, not nothing or the previous screen's
+    rate, and Stats for Nerds reads the average wire rate at the same
+    instant as the rolling rates. A frame clock whose window closed no
+    longer keeps watching screen changes.
   - Only a refused certificate offers trust; other warnings are listed in
     Stats for Nerds. "Hide certificate warnings" is renamed "Accept untrusted
     certificates" and explains its risk.
@@ -360,6 +385,8 @@
   - Prints `rdp graphics frame acknowledge count`, the number of frame
     acknowledgements sent, ahead of the first few it lists in full; the JSON
     carries it as `rdpGraphicsFrameAcknowledgeCount`.
+- The command-line tools check credentials' length before connecting,
+  naming the field that is too long.
 
 ## 0.4.0
 
