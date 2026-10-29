@@ -108,6 +108,11 @@ category, or `.tlsKeyUsageIncorrect` (retry with `legacyRSAKeyExchange`);
 `report.error` describes it in words. `report.remoteTermination?.category`
 says how the server ended a session: logoff, an administrator, an idle limit,
 another connection, and so on.
+`connect` throws `RDPConnectionError` with the same `failure`, and its `report`
+is the one `run` would have returned. After a Server Redirection,
+`redirectionDepth` above 0, on the report and on the error, together with
+`target`, says the failure belongs to the redirection target, not to the
+configured server.
 
 `RDPSessionClient` exposes callbacks for graphics frames, remote pointer
 updates, input readiness, display control, clipboard messages, audio

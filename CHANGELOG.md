@@ -52,6 +52,15 @@
   a client can find a password saved under it with a direct lookup and move
   it. `credentialAccountName` is documented as stable: the host is lowercased,
   and the username and domain keep their case.
+- `RDPConnectionError.report` carries the report `run` returns for the same
+  failure, so a client that calls `connect` keeps the stage reached and the
+  negotiation details. `connect` throws only before the TLS handshake, so
+  this report holds no captured frames.
+- `RDPConnectionReport.redirectionDepth` counts the Server Redirections that
+  led to `target`, and `RDPConnectionError.redirectionDepth` and `target`
+  read it from the attached report, so a redirection target that cannot be
+  reached no longer looks like a failure of the configured server, which
+  already took the sign-in.
 - `RDPClipboardSession.fetchesRemoteCopies` lets a client join cliprdr
   without fetching the server's copies: their Format Lists are acknowledged
   and nothing is requested. Set it in `onClipboardReady` to cover the
@@ -90,8 +99,11 @@
     Nerds. A session shown through bitmap updates without RDPGFX no longer
     ends as one that never opened RDPGFX.
   - Connects again once with RSA key exchange when the server's certificate
-    refuses ECDHE (`KEY_USAGE_BIT_INCORRECT`), and says that this window has
-    no forward secrecy.
+    refuses ECDHE (`KEY_USAGE_BIT_INCORRECT`), keeps it only for reconnects
+    to that host and port, and says that such a connection has no forward
+    secrecy.
+  - When a Server Redirection's target cannot be reached, says so, instead of
+    blaming the server typed in, which already took the sign-in.
   - On a Retina Mac, Reconnect and Trust and Connect ask for the view's point
     size at 100% instead of its pixel size, so a server without Display
     Control no longer shows a half-size desktop. Display Control still raises
@@ -139,7 +151,11 @@
   - Saved passwords are looked up off the main thread once typing pauses, and
     ones saved before 0.4.0 are found by their old name instead of by listing
     every Keychain item. RDPClient no longer sets a Keychain accessibility
-    that the login keychain ignores.
+    that the login keychain ignores. Connecting before a lookup has answered
+    reads Keychain then, so the saved password is still filled in, or removed
+    with Remember unticked; a password typed or a Remember choice made while
+    the lookup was on its way stands. A session window connects by itself
+    only with the fields it opened with; editing a field first cancels that.
   - Each saved connection is read on its own. One it cannot read, such as one
     a newer build wrote, no longer empties the list, and saving keeps it and
     any fields a newer build added.
