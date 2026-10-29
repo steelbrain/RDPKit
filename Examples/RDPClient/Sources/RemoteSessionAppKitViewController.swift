@@ -21,6 +21,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
     private var username = ""
     private var domain = ""
     private var password = ""
+    private var passwordFieldSync = RDPPasswordFieldSync()
     private var rememberPassword = false
     private var hasRememberedPassword = false
     /// The form's account while it waits for Keychain's answer; nil once Keychain has answered.
@@ -208,7 +209,10 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         }
     }
 
-    func controlTextDidChange(_: Notification) {
+    func controlTextDidChange(_ notification: Notification) {
+        if notification.object as? NSTextField === passwordField {
+            passwordFieldSync.userEdited()
+        }
         // The window connects by itself only with the fields it opened with, and a connection
         // waiting for Keychain only with the fields it was started with.
         shouldAutoConnect = false
@@ -1522,7 +1526,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         desktopHeight = desktopHeightField.stringValue
         username = usernameField.stringValue
         domain = domainField.stringValue
-        password = passwordField.stringValue
+        passwordFieldSync.read(passwordField, into: &password)
         graphicsCapabilityProfile = selectedGraphicsProfile()
     }
 
@@ -1533,17 +1537,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         syncTextField(desktopHeightField, value: desktopHeight)
         syncTextField(usernameField, value: username)
         syncTextField(domainField, value: domain)
-        syncTextField(passwordField, value: password)
-    }
-
-    private func syncTextField(_ field: NSTextField, value: String) {
-        guard field.stringValue != value else {
-            return
-        }
-        if let editor = field.currentEditor(), view.window?.firstResponder === editor {
-            return
-        }
-        field.stringValue = value
+        passwordFieldSync.show(password, in: passwordField)
     }
 
     private var connectButtonTitle: String {

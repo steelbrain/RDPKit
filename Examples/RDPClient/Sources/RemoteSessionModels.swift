@@ -365,3 +365,44 @@ struct RDPConnectDesktop: Equatable {
         "\(size.width)x\(size.height)"
     }
 }
+
+/// Shows `value` in `field`, unless the user is editing it: AppKit leaves a field being edited as
+/// it is. Returns whether the field shows `value`.
+@MainActor
+@discardableResult
+func syncTextField(_ field: NSTextField, value: String) -> Bool {
+    guard field.stringValue != value else {
+        return true
+    }
+    if let editor = field.currentEditor(), field.window?.firstResponder === editor {
+        return false
+    }
+    field.stringValue = value
+    return true
+}
+
+/// Keeps a session window's Password field and the password it stands for in step. A password
+/// that Keychain's answer fills in while the user edits the field shows only once editing ends;
+/// until then the field's text is not the password, but anything the user types into it is.
+@MainActor
+struct RDPPasswordFieldSync {
+    /// False while the field shows text from before the password changed.
+    private var fieldShowsPassword = true
+
+    /// Shows `password` in `field`, unless the user is editing it.
+    mutating func show(_ password: String, in field: NSTextField) {
+        fieldShowsPassword = syncTextField(field, value: password)
+    }
+
+    /// The user changed the field's text, which is the password from now on.
+    mutating func userEdited() {
+        fieldShowsPassword = true
+    }
+
+    /// Reads `field`'s text into `password`, unless the field still shows older text.
+    func read(_ field: NSTextField, into password: inout String) {
+        if fieldShowsPassword {
+            password = field.stringValue
+        }
+    }
+}

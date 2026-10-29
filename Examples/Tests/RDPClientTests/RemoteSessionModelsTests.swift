@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 @testable import RDPClient
 import RDPKit
@@ -282,4 +283,64 @@ private let bitmapFrame = RDPGraphicsFrameSnapshot(
     // Before the view has a size, the fields are all there is.
     let early = RDPConnectDesktop(fieldSize: typed, followsViewSize: true, viewerPointSize: .zero, viewerPixelSize: nil)
     #expect(early.size == typed)
+}
+
+/// A Password field in a window, showing the form's password as the session window does.
+@MainActor
+private func passwordField(showing password: String) -> (window: NSWindow, field: NSSecureTextField, sync: RDPPasswordFieldSync) {
+    _ = NSApplication.shared
+    let window = NSWindow(
+        contentRect: CGRect(x: 0, y: 0, width: 200, height: 100),
+        styleMask: [.titled],
+        backing: .buffered,
+        defer: true
+    )
+    let field = NSSecureTextField(frame: CGRect(x: 0, y: 0, width: 200, height: 24))
+    window.contentView?.addSubview(field)
+    var sync = RDPPasswordFieldSync()
+    sync.show(password, in: field)
+    return (window, field, sync)
+}
+
+/// Keychain's answer fills in the saved password while the user edits the Password field, which
+/// AppKit leaves as it is: Connect still gets the saved password, not the field's older text,
+/// which a server without NLA would take and Remember would then save over the saved one.
+@MainActor
+@Test func aPasswordFieldBeingEditedGivesThePasswordFilledInMeanwhile() {
+    var (window, field, sync) = passwordField(showing: "other")
+    #expect(window.makeFirstResponder(field))
+    var password = "secret"
+    sync.show(password, in: field)
+    #expect(field.stringValue == "other")
+
+    sync.read(field, into: &password)
+    #expect(password == "secret")
+
+    // Once editing ends, the field shows it.
+    #expect(window.makeFirstResponder(nil))
+    sync.show(password, in: field)
+    #expect(field.stringValue == "secret")
+    sync.read(field, into: &password)
+    #expect(password == "secret")
+}
+
+/// The user can still change or clear the password in a field that shows older text.
+@MainActor
+@Test func whatTheUserTypesIntoAPasswordFieldShowingOlderTextIsThePassword() throws {
+    var (window, field, sync) = passwordField(showing: "")
+    #expect(window.makeFirstResponder(field))
+    var password = "secret"
+    sync.show(password, in: field)
+    let editor = try #require(field.currentEditor() as? NSTextView)
+
+    editor.insertText("newer", replacementRange: editor.selectedRange())
+    sync.userEdited()
+    sync.read(field, into: &password)
+    #expect(password == "newer")
+
+    editor.selectAll(nil)
+    editor.deleteBackward(nil)
+    sync.userEdited()
+    sync.read(field, into: &password)
+    #expect(password.isEmpty)
 }
