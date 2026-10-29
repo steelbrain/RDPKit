@@ -124,6 +124,11 @@
     character goes as Unicode without Alt; other keys still get Alt, and
     right Option released alone still taps Alt. Left Option goes as Alt at
     once, for shortcuts.
+  - With a Japanese input source, or a JIS keyboard on ABC or US, announces
+    Windows' Japanese layout (0x00000411) on a 106/109-key keyboard (type 7,
+    subtype 2), so the server starts its Japanese IME and the JIS keys go as
+    their scancodes. Eisu and Kana go as 0x71 and 0x72 (LANG2 and LANG1) to
+    turn the remote IME off and on, instead of typing a space.
   - Scrolling with Command held sends the Windows key with the wheel, so
     releasing Command no longer opens the server's Start menu. Keypad "="
     goes as Unicode where the remote layout has no "=" on the main "=" key,
