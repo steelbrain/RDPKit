@@ -16,6 +16,9 @@
   by renaming a directory under another case than an open handle spells it
   and moving a directory holding a link to outside into its place. A rename
   over an open file is refused, as NTFS refuses it.
+- Once the server announces a copy of its own, the clipboard no longer offers
+  what the app last published: a server could ask for the user's earlier
+  copy, text or files, for the rest of the session, even with fetching off.
 - A server can no longer exhaust the app's file descriptors through a shared
   drive: all drives together hold at most 64. FIFOs, sockets and devices in a
   shared folder are neither opened nor listed, so opening one can't block the

@@ -965,6 +965,8 @@ public final class RDPClipboardSession: @unchecked Sendable {
     private var negotiatedGeneralFlags: UInt32 = 0
     /// Format Lists wait for the initialization sequence (MS-RDPECLIP 1.3.2.1).
     private var hasAnsweredMonitorReady = false
+    /// Format Lists sent that the server has not answered with a Format List Response.
+    private var unansweredFormatListCount = 0
 
     init(
         userChannelID: UInt16,
@@ -1064,7 +1066,9 @@ public final class RDPClipboardSession: @unchecked Sendable {
         publish(text.map { .content(RDPClipboardContent(text: $0)) } ?? .empty)
     }
 
-    /// Offers every format `content` has; the server asks for the one it wants.
+    /// Offers every format `content` has; the server asks for the one it wants. What is
+    /// published is offered until the next publish, or until the server announces a copy of
+    /// its own, which replaces it there.
     public func publishLocalContent(_ content: RDPClipboardContent) {
         publish(content.isEmpty ? .empty : .content(content))
     }
@@ -1103,10 +1107,25 @@ public final class RDPClipboardSession: @unchecked Sendable {
             respondToMonitorReady()
             return .ready
         }
+        if pdu.header.messageType == RDPClipboardMessageType.formatListResponse {
+            lock.withLock {
+                unansweredFormatListCount = max(0, unansweredFormatListCount - 1)
+            }
+            return nil
+        }
         if let formatList = try RDPClipboardFormatListPDU.parseIfPresent(
             from: pdu,
             useLongFormatNames: usesLongFormatNames
         ) {
+            // The list makes the server the clipboard owner (MS-RDPECLIP 1.3.2.2.1), so the local
+            // copy is no longer offered: the server cannot read what the user has since copied
+            // over. The server handles PDUs in order, so while a list of ours is unanswered, the
+            // server sent this one before it took ours, and ours is the one it keeps.
+            lock.withLock {
+                if unansweredFormatListCount == 0 {
+                    localContent = .empty
+                }
+            }
             sendFormatListResponse(ok: true)
             let requests: [RDPClipboardRequestedFormatDataResponse] = if let formatID = formatList.fileGroupDescriptorWFormatID {
                 [.fileGroupDescriptorW(formatID: formatID)]
@@ -1442,6 +1461,7 @@ public final class RDPClipboardSession: @unchecked Sendable {
     /// Callers hold `lock`, so Format Lists go out in the order the local content
     /// changed and the server's last one always matches `localContent`.
     private func sendFormatList(for content: RDPClipboardLocalContent) {
+        unansweredFormatListCount += 1
         let entries: [RDPClipboardFormatListEntry] = switch content {
         case .empty:
             []

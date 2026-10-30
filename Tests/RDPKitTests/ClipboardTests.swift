@@ -873,6 +873,45 @@ private final class ClipboardPublishRace: @unchecked Sendable {
     _ = try channel.finish()
 }
 
+/// A server Format List makes the server the clipboard owner, so the copy the user made
+/// before is no longer offered: the server cannot read it later, whatever it asks.
+@Test func clipboardSessionStopsOfferingTheLocalCopyOnceTheServerOwnsTheClipboard() throws {
+    let channel = EmbeddedChannel()
+    let sent = ClipboardSentMessages()
+    let session = RDPClipboardSession(
+        userChannelID: 1006,
+        staticChannelID: 1007,
+        channel: channel,
+        sentMessageHandler: sent.record
+    )
+    let formatList = RDPClipboardFormatListPDU(entries: [
+        RDPClipboardFormatListEntry(formatID: RDPClipboardFormatID.unicodeText),
+    ]).encoded()
+    let formatListResponse = RDPClipboardPDU(
+        messageType: RDPClipboardMessageType.formatListResponse,
+        messageFlags: RDPClipboardMessageFlags.responseOK
+    ).encoded()
+    func lastResponseFlags(afterRequesting formatID: UInt32) throws -> UInt16 {
+        _ = try session.receive(RDPClipboardPDU.parse(from: RDPClipboardFormatDataRequestPDU(formatID: formatID).encoded()))
+        return try RDPClipboardPDU.parse(from: clipboardPayload(fromPackets: #require(sent.packets.last))).header.messageFlags
+    }
+
+    session.publishLocalUnicodeText("secret")
+    _ = try session.receive(RDPClipboardPDU.parse(from: RDPClipboardCapabilitiesPDU().encoded()))
+    _ = try session.receive(RDPClipboardPDU(messageType: RDPClipboardMessageType.monitorReady))
+    #expect(try lastResponseFlags(afterRequesting: RDPClipboardFormatID.unicodeText) == RDPClipboardMessageFlags.responseOK)
+    _ = try session.receive(RDPClipboardPDU.parse(from: formatListResponse))
+    _ = try session.receive(RDPClipboardPDU.parse(from: formatList))
+    #expect(try lastResponseFlags(afterRequesting: RDPClipboardFormatID.unicodeText) == RDPClipboardMessageFlags.responseFail)
+
+    // A list of ours the server has not answered crossed the server's on the way: the server
+    // takes ours after its own, so the copy is still offered.
+    session.publishLocalUnicodeText("newer")
+    _ = try session.receive(RDPClipboardPDU.parse(from: formatList))
+    #expect(try lastResponseFlags(afterRequesting: RDPClipboardFormatID.unicodeText) == RDPClipboardMessageFlags.responseOK)
+    _ = try channel.finish()
+}
+
 @Test func clipboardSessionRequestsAnnouncedTextAndDropsUnsolicitedResponses() throws {
     let channel = EmbeddedChannel()
     let sent = ClipboardSentMessages()
