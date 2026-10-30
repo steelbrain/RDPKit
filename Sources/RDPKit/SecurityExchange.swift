@@ -3,13 +3,17 @@ import Foundation
 
 extension RDPClientConnection {
     /// TLS, the certificate check, then CredSSP and the Early User
-    /// Authorization Result when the server selected them ([MS-RDPBCGR] 5.4.5).
+    /// Authorization Result, or RDSTLS, when the server selected them ([MS-RDPBCGR] 5.4.5).
     func establishSecurity() throws {
         guard let transport else {
             throw RDPConnectionError.tls("not connected")
         }
         stage = .tlsHandshake
         try transport.setRecordedLayer(nil)
+        if selectedProtocols.contains(.rdSTLS) {
+            // The server sends its Capabilities PDU as soon as the handshake completes.
+            try transport.setFraming(.rdSTLS)
+        }
         let tls = try transport.startTLS(
             serverHostname: sniHostname(for: configuration.host),
             legacyRSAKeyExchange: configuration.legacyRSAKeyExchange
@@ -41,6 +45,11 @@ extension RDPClientConnection {
                 certificateDER: Data(tls.certificates[0].toDERBytes()),
                 then: usesEarlyUserAuthorization ? .earlyUserAuthorizationResult : .rdp
             )
+            callbacks.wireTranscript?.recordMarker(direction: .clientToServer, layer: .security)
+        }
+        if selectedProtocols.contains(.rdSTLS) {
+            stage = .rdSTLS
+            try authenticateRDSTLS()
             callbacks.wireTranscript?.recordMarker(direction: .clientToServer, layer: .security)
         }
         if usesEarlyUserAuthorization {
@@ -122,6 +131,29 @@ extension RDPClientConnection {
             authInfo: authInfo,
             clientNonce: version >= 5 ? nonce : nil
         ).encoded())
+    }
+
+    /// RDSTLS with the password credentials a Server Redirection gave: the server's
+    /// Capabilities PDU, the client's Authentication Request, the server's Authentication
+    /// Response (FreeRDP 3.32, rdstls_client_authenticate).
+    private func authenticateRDSTLS() throws {
+        guard let transport else {
+            throw RDPConnectionError.tls("not connected")
+        }
+        // The negotiation offers RDSTLS only with these credentials.
+        guard let credentials = configuration.redirectionRDSTLSCredentials else {
+            throw RDPConnectionError.clientFailure("RDSTLS was selected without redirection credentials")
+        }
+        try RDPRDSTLS.checkCapabilities(receive("RDSTLS Capabilities PDU"))
+        try transport.send(RDPRDSTLS.authenticationRequest(credentials))
+        let resultCode = try RDPRDSTLS.authenticationResult(receive("RDSTLS Authentication Response PDU"))
+        try transport.setFraming(.rdp)
+        guard resultCode == .success else {
+            throw RDPConnectionError(
+                .rdSTLS(resultCode: resultCode),
+                description: "RDSTLS server rejected the redirection's credentials with \(resultCode)"
+            )
+        }
     }
 
     private func receiveTSRequest() throws -> RDPCredSSPTSRequest {

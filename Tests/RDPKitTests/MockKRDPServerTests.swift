@@ -538,6 +538,125 @@ struct MockKRDPServerTests {
         #expect(liveReport.snapshot == run.report)
     }
 
+    /// gnome-remote-desktop hands a Remote Login over with one-time credentials whose password
+    /// is flagged PK-encrypted: the reconnect offers RDSTLS beside TLS and CredSSP and, given
+    /// it, sends them as the redirection gave them; the Client Info PDU carries the one-time
+    /// user name and password. A wire transcript keeps the password nowhere.
+    @Test func clientAuthenticatesAGnomeHandoverRedirectionByRDSTLS() throws {
+        let transcript = RDPWireTranscript()
+        let run = try runMock(.init(redirectionBehavior: .redirectLikeGnomeHandover), client: {
+            RDPSessionClient().run(configuration: $0, wireTranscript: transcript)
+        })
+        let password = utf16LENullTerminated(MockGnomeHandover.password(1))
+        let username = utf16LENullTerminated(MockGnomeHandover.username(1))
+
+        #expect(run.connectionCount == 2)
+        #expect(run.report.status == "success")
+        #expect(run.report.error == nil)
+        #expect(run.report.redirectionDepth == 1)
+        #expect(run.transcript.requestedProtocols == [0x0000_0003, 0x0000_0007])
+        #expect(run.report.requestedProtocols == ["tls", "credssp", "rdstls"])
+        #expect(run.report.selectedProtocols == ["rdstls"])
+        #expect(run.transcript.rdSTLSAuthenticationRequests == [gnomeHandoverAuthenticationRequest(1)])
+        #expect(run.transcript.clientInfo?.range(of: username + password + hexData("00 00")) != nil)
+        #expect(!transcript.events.isEmpty)
+        #expect(!transcript.events.contains { $0.bytes?.range(of: password) != nil })
+    }
+
+    /// gnome hands a Remote Login over twice, system daemon to greeter and greeter to user
+    /// session, each time with new credentials, which each reconnect sends.
+    @Test func clientFollowsTwoGnomeHandoversWithTheirOwnCredentials() throws {
+        let run = try runMock(.init(redirectionBehavior: .redirectLikeGnomeHandover, gnomeHandoverCount: 2))
+
+        #expect(run.connectionCount == 3)
+        #expect(run.report.status == "success")
+        #expect(run.report.redirectionDepth == 2)
+        #expect(run.transcript.requestedProtocols == [0x0000_0003, 0x0000_0007, 0x0000_0007])
+        #expect(run.transcript.rdSTLSAuthenticationRequests
+            == [gnomeHandoverAuthenticationRequest(1), gnomeHandoverAuthenticationRequest(2)])
+        #expect(run.transcript.clientInfo?.range(of: utf16LENullTerminated(MockGnomeHandover.username(2))) != nil)
+    }
+
+    /// A target that does not take RDSTLS selects another protocol it was offered; the
+    /// Client Info PDU still carries the redirection's password.
+    @Test func gnomeHandoverToATargetWithoutRDSTLSConnectsWithTLS() throws {
+        let run = try runMock(.init(redirectionBehavior: .redirectLikeGnomeHandover, rdSTLSSupported: false))
+        let password = utf16LENullTerminated(MockGnomeHandover.password(1))
+
+        #expect(run.connectionCount == 2)
+        #expect(run.report.status == "success")
+        #expect(run.report.selectedProtocols == ["tls"])
+        #expect(run.transcript.rdSTLSAuthenticationRequests.isEmpty)
+        #expect(run.transcript.clientInfo?.range(of: password + hexData("00 00")) != nil)
+    }
+
+    /// A target that selects CredSSP, with or without Early User Authorization, after a
+    /// flagged redirection gets what 0.5.0 sent: the redirection's user name with the
+    /// configured password.
+    @Test func gnomeHandoverToACredSSPTargetSignsInWithTheConfiguredPassword() throws {
+        let targets: [(MockKRDPSecurityProtocol, earlyUserAuthorization: Bool, requested: UInt32, selected: [String])] = [
+            (.credSSP(credentials: mockCredentials), false, 0x0000_0007, ["credssp"]),
+            (
+                .credSSPWithEarlyUserAuth(credentials: mockCredentials, authorizationResult: .success),
+                true,
+                0x0000_000F,
+                ["credssp-early-user-auth"]
+            ),
+        ]
+        for target in targets {
+            let run = try runMock(
+                .init(securityProtocol: target.0, redirectionBehavior: .redirectLikeGnomeHandover, rdSTLSSupported: false),
+                { $0.earlyUserAuthorizationEnabled = target.earlyUserAuthorization }
+            )
+
+            #expect(run.connectionCount == 2)
+            #expect(run.report.status == "success")
+            #expect(run.report.redirectionDepth == 1)
+            #expect(run.report.selectedProtocols == target.selected)
+            #expect(run.transcript.requestedProtocols.last == target.requested)
+            #expect(run.transcript.rdSTLSAuthenticationRequests.isEmpty)
+        }
+    }
+
+    /// Cancelling from onCertificate on the reconnect sends no RDSTLS credentials.
+    @Test func cancellingFromTheReconnectCertificateCallbackSendsNoRDSTLSCredentials() throws {
+        let cancellation = RDPConnectionCancellation()
+        let certificates = Locked(0)
+        let run = try runMock(.init(redirectionBehavior: .redirectLikeGnomeHandover), client: {
+            RDPSessionClient().run(
+                configuration: $0,
+                onCertificate: { _ in
+                    let count = certificates.withLock { count in
+                        count += 1
+                        return count
+                    }
+                    if count == 2 {
+                        cancellation.cancel()
+                    }
+                },
+                cancellation: cancellation
+            )
+        })
+
+        #expect(run.connectionCount == 2)
+        #expect(run.report.redirectionDepth == 1)
+        #expect(run.report.stage == "tls-handshake")
+        #expect(run.report.failure == .cancelled)
+        #expect(run.transcript.rdSTLSAuthenticationRequests.isEmpty)
+    }
+
+    /// The redirection's credentials are rejected with their own failure, not as the user's.
+    @Test func rejectedRDSTLSCredentialsFailWithTheResultCode() throws {
+        let run = try runMock(.init(redirectionBehavior: .redirectLikeGnomeHandover, rdSTLSResultCode: 0x52E))
+
+        #expect(run.connectionCount == 2)
+        #expect(run.report.redirectionDepth == 1)
+        #expect(run.report.connectionStage == .rdSTLS)
+        #expect(run.report.failure == .rdSTLS(resultCode: .logonFailure))
+        #expect(run.report.error
+            == "RDSTLS server rejected the redirection's credentials with ERROR_LOGON_FAILURE (0x0000052e)")
+    }
+
     /// Credentials the Client Info PDU cannot hold are the configuration's fault, not the server's.
     @Test func credentialsTooLongForClientInfoAreAnInvalidConfiguration() throws {
         let report = try runMock {
@@ -2184,6 +2303,22 @@ private struct MockRun {
 /// Starts a mock server with `options`, runs `client` against it with the
 /// usual test configuration (changed by `configure`) and returns the client's
 /// report and what the server received.
+/// The RDSTLS Authentication Request for `redirectLikeGnomeHandover`'s hand-over `handover`:
+/// its GUID, one-time user name, no domain and password.
+private func gnomeHandoverAuthenticationRequest(_ handover: Int) -> Data {
+    var request = hexData("01 00 02 00 01 00")
+    for field in [
+        MockGnomeHandover.redirectionGuid(handover),
+        utf16LENullTerminated(MockGnomeHandover.username(handover)),
+        hexData("00 00"),
+        utf16LENullTerminated(MockGnomeHandover.password(handover)),
+    ] {
+        request.appendLittleEndianUInt16(UInt16(field.count))
+        request.append(field)
+    }
+    return request
+}
+
 private func runMock(
     _ options: MockKRDPServer.Options = .init(),
     _ configure: (inout RDPConnectionConfiguration) -> Void = { _ in },

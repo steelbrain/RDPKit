@@ -114,7 +114,7 @@ extension RDPSecurityProtocols {
     }
 
     var usesTLS: Bool {
-        contains(.tls) || contains(.credSSP) || contains(.credSSPWithEarlyUserAuth)
+        contains(.tls) || contains(.credSSP) || contains(.rdSTLS) || contains(.credSSPWithEarlyUserAuth)
     }
 
     var usesCredSSP: Bool {

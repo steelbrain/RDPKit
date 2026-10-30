@@ -129,6 +129,10 @@ private let bitmapFrame = RDPGraphicsFrameSnapshot(
     ), showedDesktop: false)
     #expect(redirectedRefused.message == "The server passed the session on to 127.0.0.1:3389, which this Mac could not reach.")
     #expect(reason(.licensing(errorCode: 0x0000_0007)).message.hasPrefix("The server could not license this connection."))
+    // gnome's one-time credentials are its own, so typing others would not help.
+    let redirectedSignIn = reason(.rdSTLS(resultCode: .logonFailure))
+    #expect(redirectedSignIn.message == "The server refused the sign-in it passed the session on with.")
+    #expect(redirectedSignIn.offersCredentials == false)
     let freshCredentials = reason(.serverTermination(termination: RDPRemoteTermination(errorInfo: 0x0000_000A)))
     #expect(freshCredentials.message == "The server requires the credentials to be entered again.")
     #expect(freshCredentials.offersCredentials)

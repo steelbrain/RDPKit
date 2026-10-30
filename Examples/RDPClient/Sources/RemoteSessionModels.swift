@@ -97,6 +97,8 @@ struct RDPSessionEndReason: Equatable {
             message(for: status)
         case .earlyUserAuthorizationDenied:
             ("The server denied this account access.", false)
+        case .rdSTLS:
+            ("The server refused the sign-in it passed the session on with.", false)
         case .licensing:
             ("The server could not license this connection. Its administrator has to check its Remote Desktop licensing.", false)
         case let .serverTermination(termination):

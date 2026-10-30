@@ -13,6 +13,8 @@ enum RDPTransportFraming: Equatable, Sendable {
     case credSSP
     /// The 4-byte Early User Authorization Result PDU ([MS-RDPBCGR] 2.2.10.2).
     case earlyUserAuthorizationResult
+    /// One RDSTLS Capabilities or Authentication Response PDU, whose type sets its length.
+    case rdSTLS
     /// The answer to the CredSSP credentials: the next layer's messages, unless
     /// the server rejects them with a TSRequest errorCode ([MS-CSSP] 2.2.1, 3.1.5).
     /// Neither a TPKT, a fast-path header nor an EUA result starts with its 0x30 tag.
@@ -294,6 +296,8 @@ final class RDPTransportReader: ChannelDuplexHandler, RemovableChannelHandler {
                 try RDPTransportPacketFraming.credSSPMessageLength(readableByteCount: readable, byteAt: byteAt)
             case .earlyUserAuthorizationResult:
                 4
+            case .rdSTLS:
+                try RDPRDSTLS.serverPDULength(readableByteCount: readable, byteAt: byteAt)
             }
             guard let length, readable >= length else {
                 return nil

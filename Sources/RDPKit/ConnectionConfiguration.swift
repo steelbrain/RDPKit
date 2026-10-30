@@ -60,6 +60,9 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
     var redirectionRoutingToken: Data?
     var redirectionSessionID: UInt32?
     var redirectionPasswordCookie: Data?
+    /// Set after a Server Redirection whose password is PK-encrypted: the reconnect offers
+    /// RDSTLS beside TLS and CredSSP, and authenticates with these when the target selects it.
+    var redirectionRDSTLSCredentials: RDPRDSTLSPasswordCredentials?
     var redirectionDepth: Int
 
     public init(
@@ -114,6 +117,7 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
         self.redirectionRoutingToken = nil
         self.redirectionSessionID = nil
         self.redirectionPasswordCookie = nil
+        self.redirectionRDSTLSCredentials = nil
         self.redirectionDepth = 0
     }
 
@@ -250,11 +254,18 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
     }
 
     var negotiationRequest: RDPNegotiationRequest {
-        RDPNegotiationRequest(
-            requestedProtocols: earlyUserAuthorizationEnabled
-                ? [.tls, .credSSP, .credSSPWithEarlyUserAuth]
-                : [.tls, .credSSP]
-        )
+        var protocols: RDPSecurityProtocols = earlyUserAuthorizationEnabled
+            ? [.tls, .credSSP, .credSSPWithEarlyUserAuth]
+            : [.tls, .credSSP]
+        // After a redirection with RDSTLS credentials, FreeRDP 3.32 asks for RDSTLS and,
+        // when the target refuses it, connects again for CredSSP (nego_attempt_rdstls).
+        // Offering both does that in one connection: a FreeRDP-based server with RDSTLS
+        // security on selects it when it is offered (rdp_server_accept_nego), and
+        // gnome-remote-desktop's handover daemon has it on (grd-session-rdp.c).
+        if redirectionRDSTLSCredentials != nil {
+            protocols.insert(.rdSTLS)
+        }
+        return RDPNegotiationRequest(requestedProtocols: protocols)
     }
 
     var connectionRequest: X224ConnectionRequest {

@@ -514,6 +514,72 @@ private func targetNetAddresses(_ addresses: [Data]) -> Data {
     #expect([otherDomain.username, otherDomain.domain] == ["bob", "LAB"])
 }
 
+/// gnome-remote-desktop 50.2 on Ubuntu 26.04.1 handing a Remote Login over to the GDM
+/// greeter (Fixtures/gnome-remote-login-redirection.json, the Password field zeroed by the
+/// transcript): one-time credentials flagged PK-encrypted for a client that announces macOS,
+/// though the 34 bytes are a 16-character password in plain UTF-16. The reconnect asks for RDSTLS.
+@Test func capturedGnomeRemoteLoginRedirectionAuthenticatesByRDSTLS() throws {
+    let packet = try #require(loadTranscriptFixture("gnome-remote-login-redirection").first?.bytes)
+    let pdu = try #require(try RDPServerRedirectionPDU.parseIfPresent(fromTPKT: packet, channelID: 1003))
+
+    #expect(pdu.flags == [.loadBalanceInfo, .username, .password, .passwordIsPKEncrypted, .redirectionGuid, .targetCertificate])
+    #expect(pdu.routingToken == Data("Cookie: msts=2367407727\r\n".utf8))
+    #expect(pdu.username?.count == 16)
+    #expect(pdu.passwordCookie?.count == 34)
+    #expect(pdu.redirectionGuid?.count == 50)
+    let configuration = RDPConnectionConfiguration(
+        host: "gnome.example",
+        credentials: RDPCredentials(username: "system", password: "system-secret")
+    )
+    let redirected = try #require(configuration.redirected(by: pdu))
+    #expect(redirected.negotiationRequest.requestedProtocols == [.tls, .credSSP, .rdSTLS])
+    #expect(redirected.redirectionRDSTLSCredentials?.username == pdu.username)
+    #expect(redirected.redirectionRDSTLSCredentials?.password == pdu.passwordCookie)
+}
+
+/// A PK-encrypted password is for the target, so the reconnect asks for RDSTLS and
+/// hands the password on as sent, with the redirection's user name and the domain the
+/// configuration had, as FreeRDP 3.32 does, offering CredSSP too. A plain one keeps CredSSP.
+@Test func pkEncryptedRedirectionPasswordAuthenticatesTheReconnectByRDSTLS() throws {
+    let configuration = RDPConnectionConfiguration(
+        host: "gnome.example",
+        credentials: RDPCredentials(username: "system", domain: "LAB", password: "system-secret")
+    )
+    var redirection = RDPServerRedirectionPDU(
+        channelID: 1003,
+        sessionID: 0,
+        flags: [.loadBalanceInfo, .username, .password, .passwordIsPKEncrypted, .redirectionGuid]
+    )
+    redirection.loadBalanceInfo = Data("Cookie: msts=2830625411\r\n".utf8)
+    redirection.username = "kq7Zp2_Lr9xWv4Tn"
+    redirection.passwordCookie = utf16LENullTerminated("one-time")
+    redirection.redirectionGuid = Data([0x01, 0x02])
+
+    let redirected = try #require(configuration.redirected(by: redirection))
+    #expect(redirected.redirectionRDSTLSCredentials == RDPRDSTLSPasswordCredentials(
+        redirectionGuid: Data([0x01, 0x02]),
+        username: "kq7Zp2_Lr9xWv4Tn",
+        domain: "LAB",
+        password: utf16LENullTerminated("one-time")
+    ))
+    #expect(redirected.negotiationRequest.requestedProtocols == [.tls, .credSSP, .rdSTLS])
+    #expect(redirected.redirectionPasswordCookie == utf16LENullTerminated("one-time"))
+    #expect(redirected.credentials?.username == "kq7Zp2_Lr9xWv4Tn")
+
+    redirection.flags.remove(.passwordIsPKEncrypted)
+    let plain = try #require(configuration.redirected(by: redirection))
+    #expect(plain.redirectionRDSTLSCredentials == nil)
+    #expect(plain.negotiationRequest.requestedProtocols == [.tls, .credSSP])
+
+    // A later redirection without the flag goes back to CredSSP.
+    #expect(redirected.redirected(by: redirection)?.redirectionRDSTLSCredentials == nil)
+
+    // An empty password has nothing to hand on.
+    redirection.flags.insert(.passwordIsPKEncrypted)
+    redirection.passwordCookie = Data()
+    #expect(configuration.redirected(by: redirection)?.redirectionRDSTLSCredentials == nil)
+}
+
 // TPKT entry point for tests; the client parses the indication routed from
 // the I/O channel.
 extension RDPServerRedirectionPDU {

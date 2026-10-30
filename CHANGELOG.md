@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+### Breaking changes
+
+- `RDPConnectionFailure` has a new case, `rdSTLS(resultCode:)`: the server
+  rejected the credentials a Server Redirection gave, with an
+  `RDPRDSTLSResultCode` such as `.logonFailure`. `RDPConnectionStage` has a
+  new stage, `rdSTLS`.
+
+### Compatibility and fixes
+
+- GNOME Remote Login gets past the system sign-in. After a Server
+  Redirection whose password is flagged PK-encrypted, the reconnect offers
+  RDSTLS beside TLS and CredSSP and, when the server selects it, sends the
+  redirection's user name and password as given, as FreeRDP does. It used
+  to run CredSSP with the redirection's user name and the configured
+  password, which gnome-remote-desktop's handover daemon rejects
+  (`STATUS_LOGON_FAILURE`); a target that does not take RDSTLS still gets
+  that. gnome-remote-desktop 50 flags its
+  one-time password this way for every client but iOS and Android ones.
+  Checked live on Ubuntu 26.04.1 from the system sign-in through the GDM
+  greeter to the user's desktop.
+
 ## 0.5.0
 
 ### Breaking changes

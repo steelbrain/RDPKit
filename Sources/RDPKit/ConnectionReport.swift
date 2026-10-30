@@ -389,6 +389,10 @@ public enum RDPConnectionFailure: Encodable, Equatable, Sendable {
     case credSSP(status: RDPLogonStatus)
     /// The Early User Authorization Result denied access ([MS-RDPBCGR] 2.2.10.2).
     case earlyUserAuthorizationDenied
+    /// The server rejected the credentials a Server Redirection gave, during RDSTLS
+    /// authentication, with this result code. The redirection named the user and password;
+    /// gnome-remote-desktop's are one-time credentials of its own.
+    case rdSTLS(resultCode: RDPRDSTLSResultCode)
     /// Licensing failed with this Licensing Error Message dwErrorCode ([MS-RDPBCGR] 2.2.1.12.1.3).
     case licensing(errorCode: UInt32)
     /// The server ended the session: before it ran, or for a reason that is

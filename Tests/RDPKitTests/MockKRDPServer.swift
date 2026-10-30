@@ -71,6 +71,14 @@ final class MockKRDPServer: LoopbackTestServer {
         var redirectionBehavior = MockKRDPRedirectionBehavior.none
         /// The user name `redirectFirstConnection` sends the client on with.
         var redirectionUsername: String?
+        /// How many times `redirectLikeGnomeHandover` hands the session over, each time with
+        /// new credentials, like gnome's system daemon to the greeter and the greeter to the user.
+        var gnomeHandoverCount = 1
+        /// Whether the server selects RDSTLS when a reconnect asks for it; if not, it selects
+        /// `securityProtocol`.
+        var rdSTLSSupported = true
+        /// The resultCode the RDSTLS Authentication Response of `redirectLikeGnomeHandover` gives.
+        var rdSTLSResultCode: UInt32 = 0
         var finalizationBehavior = MockKRDPFinalizationBehavior.grantBeforeFontList
         var auxiliaryDynamicChannelBehavior = MockKRDPAuxiliaryDynamicChannelBehavior.none
         var dynamicChannelVersion: UInt16 = 2
@@ -247,6 +255,26 @@ enum MockKRDPRedirectionBehavior {
     /// Redirect like `redirectFirstConnection`, but to TargetNetAddress
     /// 127.0.0.1, and stop listening first, so the client's reconnect is refused.
     case redirectToClosedPort
+    /// Redirect like gnome-remote-desktop 50 hands a session over: a routing token, a
+    /// one-time user name and password, LB_PASSWORD_IS_PK_ENCRYPTED, a redirection GUID and
+    /// a target certificate. The reconnect must ask for RDSTLS, which the server selects.
+    case redirectLikeGnomeHandover
+}
+
+/// The one-time credentials and GUID of each `redirectLikeGnomeHandover` hand-over,
+/// counted from 1.
+enum MockGnomeHandover {
+    static func username(_ handover: Int) -> String {
+        "kq7Zp2_Lr9xWv4T\(handover)"
+    }
+
+    static func password(_ handover: Int) -> String {
+        "Q8!vR#2mK)t5wZ&\(handover)"
+    }
+
+    static func redirectionGuid(_ handover: Int) -> Data {
+        utf16LENullTerminated("AAECAwQFBgcICQoLDA0OD\(handover)==")
+    }
 }
 
 enum MockKRDPFinalizationBehavior: Equatable {
@@ -326,6 +354,10 @@ struct MockKRDPServerTranscript: Equatable, Sendable {
     var ntlmWorkstation: Data?
     /// The MCS Connect Initial's client data blocks, headers included, in the order sent.
     var clientDataBlocks: [Data] = []
+    /// The requestedProtocols of each connection's X.224 Connection Request, in order.
+    var requestedProtocols: [UInt32] = []
+    /// Each RDSTLS Authentication Request PDU, as sent.
+    var rdSTLSAuthenticationRequests: [Data] = []
 }
 
 private enum MockKRDPConstants {
@@ -696,6 +728,7 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
     private enum Stage {
         case x224
         case credSSP
+        case rdSTLSAuthenticationRequest
         case mcsConnectInitial
         case erectDomain
         case attachUser
@@ -765,6 +798,18 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
                     return
                 }
                 try handleCredSSP(message, context: context)
+            } else if case .rdSTLSAuthenticationRequest = stage {
+                guard let request = received.nextRDSTLSAuthenticationRequest() else {
+                    return
+                }
+                transcript.withLock { $0.rdSTLSAuthenticationRequests.append(request) }
+                write(MockKRDPFixtures.rdSTLSAuthenticationResponse(resultCode: options.rdSTLSResultCode), context: context)
+                if options.rdSTLSResultCode == 0 {
+                    stage = .mcsConnectInitial
+                } else {
+                    stage = .done
+                    context.close(promise: nil)
+                }
             } else {
                 guard let packet = try received.nextPacket() else {
                     return
@@ -789,13 +834,17 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
         switch stage {
         case .x224:
             _ = try TPKT.unwrap(packet)
+            // RDP_NEG_REQ ends the Connection Request.
+            var negotiationRequest = ByteCursor(packet.suffix(4))
+            let requestedProtocols = try negotiationRequest.readLittleEndianUInt32()
+            transcript.withLock { $0.requestedProtocols.append(requestedProtocols) }
             connectionIndex = connections.withLock { count in
                 count += 1
                 return count
             }
             try answerConnectionRequest(context: context)
 
-        case .credSSP:
+        case .credSSP, .rdSTLSAuthenticationRequest:
             throw MockKRDPServerError.invalidClientPDU
 
         case .mcsConnectInitial:
@@ -960,16 +1009,24 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
     }
 
     private func answerConnectionRequest(context: ChannelHandlerContext) throws {
+        if selectsRDSTLS {
+            write(MockKRDPFixtures.x224ConnectionConfirm(selectedProtocols: .rdSTLS), context: context)
+            try context.channel.pipeline.syncOperations.addHandler(NIOSSLServerHandler(context: tlsContext), position: .first)
+            // Sent once the TLS handshake completes.
+            write(MockKRDPFixtures.rdSTLSCapabilities(), context: context)
+            stage = .rdSTLSAuthenticationRequest
+            return
+        }
         let selectedProtocols: RDPSecurityProtocols
         switch options.securityProtocol {
         case .tls:
             selectedProtocols = .tls
         case let .credSSP(credentials):
             selectedProtocols = .credSSP
-            credSSPServer = try MockCredSSPServer(credentials: credentials, transcript: transcript)
+            credSSPServer = try MockCredSSPServer(credentials: connectionCredentials(credentials), transcript: transcript)
         case let .credSSPWithEarlyUserAuth(credentials, _):
             selectedProtocols = .credSSPWithEarlyUserAuth
-            credSSPServer = try MockCredSSPServer(credentials: credentials, transcript: transcript)
+            credSSPServer = try MockCredSSPServer(credentials: connectionCredentials(credentials), transcript: transcript)
         case .rdSTLS:
             write(MockKRDPFixtures.x224ConnectionConfirm(selectedProtocols: .rdSTLS), context: context)
             stage = .done
@@ -1084,6 +1141,11 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
             stage = .done
             return
         }
+        if options.redirectionBehavior == .redirectLikeGnomeHandover, connectionIndex <= options.gnomeHandoverCount {
+            write(MockKRDPFixtures.gnomeHandoverRedirection(connectionIndex), context: context)
+            stage = .done
+            return
+        }
         if options.redirectionBehavior == .redirectToClosedPort {
             // The listener shares this event loop, so it is closed before the redirect is sent.
             context.channel.parent?.close(promise: nil)
@@ -1159,8 +1221,31 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
             || options.emptyRemoteClipboard
     }
 
+    /// A reconnect after a `redirectLikeGnomeHandover` redirection.
+    private var isGnomeHandoverReconnect: Bool {
+        options.redirectionBehavior == .redirectLikeGnomeHandover && connectionIndex > 1
+    }
+
+    /// A reconnect that asked for RDSTLS, which the server selects.
+    private var selectsRDSTLS: Bool {
+        isGnomeHandoverReconnect && options.rdSTLSSupported
+            && transcript.value.requestedProtocols.last.map { $0 & RDPSecurityProtocols.rdSTLS.rawValue != 0 } == true
+    }
+
+    /// What CredSSP accepts: after a `redirectLikeGnomeHandover` hand-over, the redirection's
+    /// user name with the configured password, which the client sends when RDSTLS is not selected.
+    private func connectionCredentials(_ credentials: RDPCredentials) -> RDPCredentials {
+        guard isGnomeHandoverReconnect else {
+            return credentials
+        }
+        return RDPCredentials(username: MockGnomeHandover.username(connectionIndex - 1), password: credentials.password)
+    }
+
     private var clientRequestedProtocols: RDPSecurityProtocols {
-        switch options.securityProtocol {
+        if isGnomeHandoverReconnect, let requested = transcript.value.requestedProtocols.last {
+            return RDPSecurityProtocols(rawValue: requested)
+        }
+        return switch options.securityProtocol {
         case .credSSPWithEarlyUserAuth:
             [.tls, .credSSP, .credSSPWithEarlyUserAuth]
         default:
@@ -1665,6 +1750,50 @@ private enum MockKRDPFixtures {
             channelID: MockKRDPConstants.ioChannelID,
             userData: payload
         )
+    }
+
+    /// A redirection laid out as gnome-remote-desktop 50's
+    /// grd_session_rdp_send_server_redirection: the password flagged PK-encrypted but
+    /// sent as plain null-terminated UTF-16, and a GUID and certificate after it.
+    static func gnomeHandoverRedirection(_ handover: Int) -> Data {
+        let flags: RDPServerRedirectionPDU.Flags = [
+            .loadBalanceInfo, .username, .password, .passwordIsPKEncrypted, .redirectionGuid, .targetCertificate,
+        ]
+        var fields = Data()
+        for field in [
+            Data("Cookie: msts=2830625411\r\n".utf8),
+            utf16LENullTerminated(MockGnomeHandover.username(handover)),
+            utf16LENullTerminated(MockGnomeHandover.password(handover)),
+            MockGnomeHandover.redirectionGuid(handover),
+            Data([0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
+        ] {
+            fields.appendLittleEndianUInt32(UInt32(field.count))
+            fields.append(field)
+        }
+        let redirectionLength = UInt16(12 + fields.count)
+        var payload = Data()
+        payload.appendLittleEndianUInt16(UInt16(8 + Int(redirectionLength)))
+        payload.appendLittleEndianUInt16(0x001A)
+        payload.appendLittleEndianUInt16(0)
+        payload.appendLittleEndianUInt16(0)
+        payload.appendLittleEndianUInt16(0x0400)
+        payload.appendLittleEndianUInt16(redirectionLength)
+        payload.appendLittleEndianUInt32(0)
+        payload.appendLittleEndianUInt32(flags.rawValue)
+        payload.append(fields)
+        return mcsSendDataIndication(channelID: MockKRDPConstants.ioChannelID, userData: payload)
+    }
+
+    /// An RDSTLS Capabilities PDU offering versions 1 and 2, as FreeRDP 3.32's server
+    /// sends it (rdstls_new, rdstls_write_capabilities).
+    static func rdSTLSCapabilities() -> Data {
+        Data([0x01, 0x00, 0x01, 0x00, 0x01, 0x00, 0x03, 0x00])
+    }
+
+    static func rdSTLSAuthenticationResponse(resultCode: UInt32) -> Data {
+        var data = Data([0x01, 0x00, 0x04, 0x00, 0x01, 0x00])
+        data.appendLittleEndianUInt32(resultCode)
+        return data
     }
 
     static func licenseValidClient() -> Data {

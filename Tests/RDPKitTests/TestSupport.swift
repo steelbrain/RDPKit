@@ -322,6 +322,21 @@ struct ClientByteStream {
         try take(RDPTransportPacketFraming.packetLength(from: bytes))
     }
 
+    /// An RDSTLS Authentication Request with password credentials: a 6-byte header,
+    /// then four fields, each after its 16-bit length.
+    mutating func nextRDSTLSAuthenticationRequest() -> Data? {
+        var cursor = ByteCursor(bytes)
+        do {
+            _ = try cursor.readData(count: 6)
+            for _ in 0 ..< 4 {
+                _ = try cursor.readData(count: Int(cursor.readLittleEndianUInt16()))
+            }
+        } catch {
+            return nil
+        }
+        return take(bytes.count - cursor.remaining)
+    }
+
     mutating func nextCredSSPMessage() throws -> Data? {
         let bytes = bytes
         return try take(RDPTransportPacketFraming.credSSPMessageLength(readableByteCount: bytes.count) {

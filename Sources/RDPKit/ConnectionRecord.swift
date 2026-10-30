@@ -10,6 +10,8 @@ public enum RDPConnectionStage: String, Sendable {
     case tlsHandshake = "tls-handshake"
     /// Network Level Authentication.
     case credSSP = "credssp"
+    /// RDSTLS authentication with the credentials a Server Redirection gave.
+    case rdSTLS = "rdstls"
     /// The Early User Authorization Result.
     case earlyUserAuthorization = "early-user-authorization"
     /// MCS connect and the channel joins.

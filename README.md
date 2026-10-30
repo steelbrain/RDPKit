@@ -192,7 +192,9 @@ let report = client.run(
   channels
 - Connect-time and continuous bandwidth auto-detection, and reactivation after
   Deactivate All
-- Server redirection to a routing token or target host
+- Server redirection to a routing token or target host, with RDSTLS
+  authentication when the redirection's password is PK-encrypted, as GNOME
+  Remote Login's handover sends it
 - New, upgraded, and stored RDP client license handling
 - System trust evaluation of the server's certificate chain, certificate
   SHA-256 reporting, early TLS certificate callbacks, and configurable

@@ -177,6 +177,7 @@ extension RDPConnectionConfiguration {
         // The password field is an opaque cookie for the Client Info PDU, not a
         // password for CredSSP ([MS-RDPBCGR] 3.1.5.2.1).
         redirected.redirectionPasswordCookie = redirection.passwordCookie
+        redirected.redirectionRDSTLSCredentials = redirection.rdSTLSCredentials(fallback: credentials)
         if let username = redirection.username, let credentials {
             redirected.credentials = RDPCredentials(
                 username: username,
@@ -186,5 +187,27 @@ extension RDPConnectionConfiguration {
         }
         redirected.redirectionDepth += 1
         return redirected
+    }
+}
+
+extension RDPServerRedirectionPDU {
+    /// The RDSTLS credentials for a PK-encrypted password, which only the target can
+    /// read, so the client hands it on as sent. FreeRDP 3.32 authenticates the
+    /// reconnect by RDSTLS when the flag is set (rdp_client_redirect), with the
+    /// redirection's user name and domain, or the ones it had. gnome-remote-desktop 50
+    /// sets the flag for every client that does not announce iOS or Android, though
+    /// it sends the one-time password unencrypted (grd_session_rdp_send_server_redirection;
+    /// Fixtures/gnome-remote-login-redirection.json), and its handover daemon takes those
+    /// credentials by RDSTLS or CredSSP; Remote Login on Ubuntu 26.04.1 signs in this way.
+    func rdSTLSCredentials(fallback credentials: RDPCredentials?) -> RDPRDSTLSPasswordCredentials? {
+        guard flags.contains(.passwordIsPKEncrypted), let passwordCookie, !passwordCookie.isEmpty else {
+            return nil
+        }
+        return RDPRDSTLSPasswordCredentials(
+            redirectionGuid: redirectionGuid ?? Data(),
+            username: username ?? credentials?.username ?? "",
+            domain: domain ?? credentials?.domain ?? "",
+            password: passwordCookie
+        )
     }
 }
