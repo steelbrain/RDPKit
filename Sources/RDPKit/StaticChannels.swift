@@ -139,7 +139,7 @@ extension RDPClientConnection {
 
     private func deliverAudio(_ sample: RDPAudioSample, session: RDPAudioSession) {
         callbacks.onAudioSample?(sample)
-        session.confirmConsumed(sample)
+        session.confirmConsumed(sample, playbackDelay: callbacks.audioPlaybackDelay?() ?? .zero)
     }
 
     /// A broken rdpdr exchange stops device redirection only.

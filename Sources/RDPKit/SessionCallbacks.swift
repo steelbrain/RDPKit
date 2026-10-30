@@ -52,6 +52,12 @@ public typealias RDPClipboardFileGroupDescriptorHandler = @Sendable (RDPClipboar
 public typealias RDPClipboardRemoteCopyUnavailableHandler = @Sendable (_ isEmpty: Bool) -> Void
 public typealias RDPClipboardFileContentsHandler = @Sendable (RDPClipboardFileContentsResponse) -> Void
 public typealias RDPAudioSampleHandler = @Sendable (RDPAudioSample) -> Void
+/// How long audio that `onAudioSample` hands on now waits before it is heard: the audio
+/// queued ahead of it and the output's latency, as `RDPAudioPlayer.playbackDelay` reports.
+/// Called on the session's thread after each `onAudioSample`. The Wave Confirm for the
+/// sample reports when it is heard ([MS-RDPEA] 2.2.3.8), so the server can keep video in
+/// step with the sound; FreeRDP adds its audio device's latency the same way.
+public typealias RDPAudioPlaybackDelayHandler = @Sendable () -> Duration
 /// Runs on the NIO event loop for every server message, before it is processed.
 public typealias RDPWireReceiveHandler = @Sendable (RDPWireReceiveSample) -> Void
 
@@ -82,6 +88,7 @@ struct RDPSessionCallbacks {
     var onClipboardFileContents: RDPClipboardFileContentsHandler?
     var onClipboardRemoteCopyUnavailable: RDPClipboardRemoteCopyUnavailableHandler?
     var onAudioSample: RDPAudioSampleHandler?
+    var audioPlaybackDelay: RDPAudioPlaybackDelayHandler?
     var onCertificate: RDPServerCertificateHandler?
     var onWireReceive: RDPWireReceiveHandler?
     var wireTranscript: RDPWireTranscript?

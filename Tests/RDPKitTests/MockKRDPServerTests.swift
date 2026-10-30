@@ -2200,7 +2200,8 @@ struct MockKRDPServerTests {
                     },
                     onClipboardReady: { session in session.publishLocalUnicodeText(localClipboardText) },
                     onClipboardText: { text in observed.withLock { $0.clipboardTexts.append(text) } },
-                    onAudioSample: { sample in observed.withLock { $0.audioSamples.append(sample) } }
+                    onAudioSample: { sample in observed.withLock { $0.audioSamples.append(sample) } },
+                    audioPlaybackDelay: { .milliseconds(500) }
                 )
             }
         )
@@ -2310,6 +2311,11 @@ struct MockKRDPServerTests {
         #expect(observed.value.audioSamples.count == 1)
         #expect(observed.value.audioSamples.first?.format == .pcmStereo48k16Bit)
         #expect(observed.value.audioSamples.first?.data == Data([0x11, 0x22, 0x33, 0x44]))
+        // The Wave2's timestamp, 0x2233, plus the 500 ms before the sample is heard and the
+        // moment it took to hand on ([MS-RDPEA] 2.2.3.8).
+        let confirmDelay = transcript.audioWaveConfirmTimestamps.map { Int($0) - 0x2233 }
+        #expect(confirmDelay.count == 1)
+        #expect(confirmDelay.allSatisfy { (500 ..< 1_000).contains($0) })
         #expect(report.error == nil)
     }
 }

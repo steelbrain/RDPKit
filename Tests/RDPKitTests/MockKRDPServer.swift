@@ -339,6 +339,8 @@ struct MockKRDPServerTranscript: Equatable, Sendable {
     var clientClipboardMessages: [RDPClipboardMessageSummary] = []
     var receivedLocalClipboardText: String?
     var audioClientMessages: [RDPAudioMessageSummary] = []
+    /// The wTimeStamp of each Wave Confirm the client sent.
+    var audioWaveConfirmTimestamps: [UInt16] = []
     var dynamicCreateStatuses: [UInt32: Int32] = [:]
     var deviceRedirectionClientMessages: [String] = []
     var displayControlLayouts: [MockDisplayControlLayoutSummary] = []
@@ -1329,6 +1331,9 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
             transcript.withLock {
                 $0.audioDynamicStaticFlags.append(staticPDU.flags)
                 $0.audioClientMessages.append(.summarize(audioPDU))
+                if audioPDU.header.messageType == RDPAudioMessageType.waveConfirm, audioPDU.payload.count >= 2 {
+                    $0.audioWaveConfirmTimestamps.append(audioPDU.payload.littleEndianUInt16(at: 0))
+                }
             }
         case MockKRDPConstants.displayControlDynamicChannelID where options.waitForCompatibilityTraffic:
             guard let layout = try MockKRDPFixtures.displayControlLayoutSummary(from: dataPDU.payload) else {

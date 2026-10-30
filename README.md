@@ -262,6 +262,9 @@ let report = client.run(
   channel
 - PCM format negotiation
 - Wave info, wave data, Wave2, training, quality mode, and wave confirm PDUs
+- Wave confirms that report when each sample is heard: pass
+  `audioPlaybackDelay: { player.playbackDelay }` with an `RDPAudioPlayer`, or
+  your own output's delay, so the server can keep video in step with the sound
 - Optional audio playback support in the macOS example
 
 ### Testing And Diagnostics

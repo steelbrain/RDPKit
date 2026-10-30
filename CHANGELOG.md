@@ -12,6 +12,15 @@
   take are `@Sendable`: they run on threads of their own, where a handler
   that captures non-Sendable state races with its caller.
 
+### Additions
+
+- `run` and `connect` take `audioPlaybackDelay`: how long audio handed to
+  `onAudioSample` waits before it is heard. Each Wave Confirm then reports
+  when its sample is heard, as [MS-RDPEA] 2.2.3.8 asks and FreeRDP does with
+  its device's latency, instead of when it was handed on, so the server can
+  keep video in step with the sound. `RDPAudioPlayer.playbackDelay` reports
+  its queue and output latency from any thread; the macOS example passes it.
+
 ### Security
 
 - A shared drive's handles stay inside its folder. A handle's path is checked

@@ -740,6 +740,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         let credentialStore = credentialStore
         let clientLicenseStore = clientLicenseStore
         let trustedCertificateStore = trustedCertificateStore
+        let remoteAudioPlayer = remoteAudioPlayer
         let acceptsUntrustedCertificates = hideCertificateWarnings
         // RDPSessionClient.run blocks for the whole session, so it gets its own thread
         // rather than holding a Swift concurrency worker.
@@ -910,6 +911,11 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                             controller.render()
                         }
                     }
+                },
+                // The sample reaches the player on the main actor after this, so the queue
+                // ahead of it is the one the player holds now.
+                audioPlaybackDelay: {
+                    remoteAudioPlayer.playbackDelay
                 },
                 onCertificate: { certificateInfo in
                     // Cancelling here closes the connection before any credential is sent.

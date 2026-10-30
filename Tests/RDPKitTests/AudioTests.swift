@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import NIOCore
 import NIOEmbedded
 @testable import RDPKit
 import Testing
@@ -406,6 +407,38 @@ import Testing
     #expect(wave2.data == Data([0x01, 0x02, 0x03, 0x04]))
 }
 
+/// A Wave Confirm reports when its sample is heard ([MS-RDPEA] 2.2.3.8): the sample's
+/// timestamp plus the time to hand it on and the playback delay, wrapping as timestamps do.
+@Test func audioSessionConfirmsASampleWhenItIsHeard() throws {
+    let channel = EmbeddedChannel()
+    try channel.connect(to: SocketAddress(ipAddress: "127.0.0.1", port: 3389)).wait()
+    let session = RDPAudioSession(userChannelID: 1006, staticChannelID: 1004, channel: channel)
+    func confirmedTimestamp(timestamp: UInt16, playbackDelay: Duration) throws -> Int {
+        session.confirmConsumed(RDPAudioSample(
+            format: .pcmStereo48k16Bit,
+            timestamp: timestamp,
+            blockNo: 3,
+            data: Data(count: 4),
+            receivedAt: Date()
+        ), playbackDelay: playbackDelay)
+        channel.embeddedEventLoop.run()
+        var packet = try #require(try channel.readOutbound(as: ByteBuffer.self))
+        let chunk = try RDPStaticVirtualChannelPDU.parse(
+            fromUserData: mcsSendDataRequest(fromTPKT: Data(packet.readBytes(length: packet.readableBytes) ?? [])).userData,
+            maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumPayloadByteCount
+        )
+        let confirm = try RDPAudioPDU.parse(from: chunk.payload)
+        #expect(confirm.header.messageType == RDPAudioMessageType.waveConfirm)
+        #expect(confirm.payload[confirm.payload.startIndex + 2] == 3)
+        return Int(confirm.payload.littleEndianUInt16(at: 0))
+    }
+
+    #expect((0x1000 ..< 0x1000 + 50).contains(try confirmedTimestamp(timestamp: 0x1000, playbackDelay: .zero)))
+    #expect((0x1000 + 300 ..< 0x1000 + 350).contains(try confirmedTimestamp(timestamp: 0x1000, playbackDelay: .milliseconds(300))))
+    #expect((299 ..< 350).contains(try confirmedTimestamp(timestamp: 0xFFFF, playbackDelay: .milliseconds(300))))
+    _ = try channel.finish()
+}
+
 @Test func audioSessionEnforcesNegotiatedVirtualChannelWaveVersion() throws {
     let channel = EmbeddedChannel()
     let session = RDPAudioSession(userChannelID: 1006, staticChannelID: 1004, channel: channel)
@@ -583,3 +616,30 @@ import Testing
     }
     player.reset()
 }
+
+/// The delay a session reports for each sample: the audio queued ahead of the next one,
+/// readable from the session's thread.
+@MainActor
+@Test func audioPlayerReportsHowLongTheNextSampleWaits() async throws {
+    let player = RDPAudioPlayer()
+    let renderFormat = try #require(AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2))
+    try player.engine.enableManualRenderingMode(.offline, format: renderFormat, maximumFrameCount: 4096)
+    // 2,400 frames: 50 ms at 48 kHz.
+    let sample = RDPAudioSample(
+        format: .pcmStereo48k16Bit,
+        timestamp: 0,
+        blockNo: 0,
+        data: Data(count: 4 * 2_400),
+        receivedAt: Date()
+    )
+
+    #expect(player.playbackDelay == .zero)
+    for _ in 0..<4 {
+        #expect(try player.enqueue(sample))
+    }
+    let reportedDelay = await Task.detached { player.playbackDelay }.value
+    #expect((Duration.milliseconds(200) ... .milliseconds(250)).contains(reportedDelay))
+    player.reset()
+    #expect(player.playbackDelay == .zero)
+}
+

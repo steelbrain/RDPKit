@@ -1,12 +1,19 @@
 import AVFoundation
 import Foundation
+import os
 
 @MainActor
 public final class RDPAudioPlayer {
     let engine = AVAudioEngine()
     private let player = AVAudioPlayerNode()
     private var format: AVAudioFormat?
-    private var queuedFrameCount: AVAudioFramePosition = 0
+    private var queuedFrameCount: AVAudioFramePosition = 0 {
+        didSet {
+            updatePlaybackDelay()
+        }
+    }
+    /// What `playbackDelay` reports, kept current on the main actor.
+    private nonisolated let reportedPlaybackDelay = OSAllocatedUnfairLock(initialState: Duration.zero)
     /// Advanced on every stop so completions of discarded buffers leave the new queue count alone.
     private var queueGeneration = 0
     private let maximumQueuedSeconds: Double
@@ -14,6 +21,13 @@ public final class RDPAudioPlayer {
     public init(maximumQueuedSeconds: Double = 0.75) {
         self.maximumQueuedSeconds = max(0, maximumQueuedSeconds)
         engine.attach(player)
+    }
+
+    /// How long a sample enqueued now waits before it is heard: the audio queued ahead of
+    /// it and the output's presentation latency. Any thread may read it, so a session's
+    /// `audioPlaybackDelay` can return it.
+    public nonisolated var playbackDelay: Duration {
+        reportedPlaybackDelay.withLock { $0 }
     }
 
     public var statusMessage: String {
@@ -89,7 +103,15 @@ public final class RDPAudioPlayer {
         if !player.isPlaying {
             player.play()
         }
+        // The output's latency is known once the engine runs.
+        updatePlaybackDelay()
         return true
+    }
+
+    private func updatePlaybackDelay() {
+        let queuedSeconds = format.map { Double(queuedFrameCount) / $0.sampleRate } ?? 0
+        let outputSeconds = engine.isRunning ? engine.outputNode.presentationLatency : 0
+        reportedPlaybackDelay.withLock { $0 = .seconds(queuedSeconds + outputSeconds) }
     }
 
     private func playbackFormat(for sampleFormat: RDPAudioFormat) throws -> AVAudioFormat {
