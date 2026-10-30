@@ -308,6 +308,8 @@ final class RDPDeviceRedirectionSession: @unchecked Sendable {
     private let chunkSize: RDPStaticVirtualChannelChunkSize
     private let drives: [RDPSharedDriveDevice]
     private let ioQueue = DispatchQueue(label: "RDPKit.device-redirection")
+    /// Drive I/O waits on it, so a server that stops reading stops the reads it asked for.
+    private let replyBudget = RDPOutboundByteBudget()
     private let lock = NSLock()
     private var minorVersion = RDPDeviceRedirectionVersion.minorRDP6
     private var announcedClientID: UInt32?
@@ -431,7 +433,7 @@ final class RDPDeviceRedirectionSession: @unchecked Sendable {
         }
         ioQueue.async {
             if let completion = drive.completion(for: request) {
-                self.send(completion.encoded())
+                self.replyBudget.write(self.packets(completion.encoded()), to: self.channel)
             }
         }
     }
@@ -441,15 +443,19 @@ final class RDPDeviceRedirectionSession: @unchecked Sendable {
         ioQueue.sync {}
     }
 
-    /// Sends one message, chunked; its chunks reach the wire together, as one event
-    /// loop task.
-    private func send(_ payload: Data) {
-        let packets = RDPStaticVirtualChannelPDU.encodedTPKTs(
+    private func packets(_ payload: Data) -> [Data] {
+        RDPStaticVirtualChannelPDU.encodedTPKTs(
             payload: payload,
             chunkByteCount: chunkSize.byteCount,
             initiator: userChannelID,
             channelID: staticChannelID
         )
+    }
+
+    /// Sends one message, chunked; its chunks reach the wire together, as one event
+    /// loop task.
+    private func send(_ payload: Data) {
+        let packets = packets(payload)
         channel.eventLoop.execute {
             guard self.channel.isActive else {
                 return

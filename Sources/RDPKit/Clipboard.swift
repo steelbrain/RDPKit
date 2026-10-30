@@ -940,6 +940,9 @@ public final class RDPClipboardSession: @unchecked Sendable {
     /// Whether a remote copy is fetched in HTML, RTF and bitmap form as well as text.
     private let requestsRichFormats: Bool
     private let lock = NSLock()
+    /// Replies to the server's requests wait on it, so a server that asks and stops reading
+    /// cannot make the client queue copies of the local content without bound.
+    private let replyBudget = RDPOutboundByteBudget()
     private var localContent = RDPClipboardLocalContent.empty
     /// Format Data Requests not yet answered, oldest first. They go out one at a time,
     /// so each response is matched to its request whatever the server's ordering.
@@ -1380,7 +1383,7 @@ public final class RDPClipboardSession: @unchecked Sendable {
                 send(RDPClipboardFormatDataResponsePDU.failure().encoded())
                 return
             }
-            send(RDPClipboardFormatDataResponsePDU(ok: true, data: data).encoded())
+            send(RDPClipboardFormatDataResponsePDU(ok: true, data: data).encoded(), waitingForRoom: true)
         case let .files(files) where request.formatID == RDPClipboardLocalFormatID.fileGroupDescriptorW:
             let descriptors = files.map(\.descriptor)
             let response = RDPClipboardFormatDataResponsePDU.fileGroupDescriptorW(
@@ -1429,17 +1432,22 @@ public final class RDPClipboardSession: @unchecked Sendable {
         }
 
         // cbRequested is an upper bound; a range that runs past the end of the
-        // file returns the bytes that remain (MS-RDPECLIP 2.2.5.3).
+        // file returns the bytes that remain (MS-RDPECLIP 2.2.5.3), and one larger than a
+        // channel message holds returns as many as it does.
         guard request.position <= UInt64(file.contents.count) else {
             send(RDPClipboardFileContentsResponse.failure(streamID: request.streamID).encoded())
             return
         }
         let lowerBound = file.contents.startIndex + Int(request.position)
-        let upperBound = lowerBound + min(Int(request.requestedByteCount), file.contents.endIndex - lowerBound)
+        let byteCount = min(
+            Int(request.requestedByteCount),
+            file.contents.endIndex - lowerBound,
+            RDPClipboardLimits.maximumFormatDataByteCount - 4
+        )
         send(RDPClipboardFileContentsResponse.range(
             streamID: request.streamID,
-            data: file.contents.subdata(in: lowerBound ..< upperBound)
-        ).encoded())
+            data: file.contents.subdata(in: lowerBound ..< lowerBound + byteCount)
+        ).encoded(), waitingForRoom: true)
     }
 
     /// The Format List makes this client the Shared Clipboard Owner (MS-RDPECLIP 1.3.2.2.1), so
@@ -1504,7 +1512,9 @@ public final class RDPClipboardSession: @unchecked Sendable {
         return localContent
     }
 
-    private func send(_ payload: Data) {
+    /// Sends one message, chunked. A reply to the server's request waits for room in
+    /// `replyBudget` first.
+    private func send(_ payload: Data, waitingForRoom: Bool = false) {
         let packets = RDPStaticVirtualChannelPDU.encodedTPKTs(
             payload: payload,
             flags: RDPStaticVirtualChannelFlags.showProtocol,
@@ -1514,6 +1524,10 @@ public final class RDPClipboardSession: @unchecked Sendable {
         )
         if let sentMessageHandler, let pdu = try? RDPClipboardPDU.parse(from: payload), let first = packets.first {
             sentMessageHandler(.summarize(pdu), first)
+        }
+        if waitingForRoom {
+            replyBudget.write(packets, to: channel)
+            return
         }
         channel.eventLoop.execute {
             guard self.channel.isActive else {

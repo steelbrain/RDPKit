@@ -29,6 +29,11 @@
   each hold a surface. A SolidFill, copy or progressive update that would
   write more than sixteen times its surface is refused, and marking a
   rectangle that many dirty ones enter no longer takes seconds.
+- Shared drive reads and clipboard replies wait while 32 MiB of earlier ones
+  have not reached the socket, so a server that asks for file data and stops
+  reading can no longer make the client queue it until memory runs out. A
+  clipboard file range reply holds at most what a channel message can, which
+  also keeps a range of 4 GiB or more from crashing.
 - A server can no longer exhaust the app's file descriptors through a shared
   drive: all drives together hold at most 64. FIFOs, sockets and devices in a
   shared folder are neither opened nor listed, so opening one can't block the

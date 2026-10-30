@@ -1,4 +1,5 @@
 import Foundation
+@preconcurrency import NIOCore
 
 /// CHANNEL_PDU_HEADER flags ([MS-RDPBCGR] 2.2.6.1.1).
 enum RDPStaticVirtualChannelFlags {
@@ -254,3 +255,65 @@ struct RDPStaticVirtualChannelReassembler: Sendable {
         return completePDU
     }
 }
+
+/// Bytes of replies the server asked for, such as file reads, that a channel session has
+/// handed to the event loop and the socket has not taken yet. A reply waits while they would
+/// pass the limit, so a server that asks and stops reading cannot make the client queue
+/// replies without bound; one larger than the limit still goes once nothing else is pending.
+final class RDPOutboundByteBudget: @unchecked Sendable {
+    static let defaultLimit = 32 * 1_024 * 1_024
+
+    private let limit: Int
+    private let condition = NSCondition()
+    private var pendingByteCount = 0
+
+    init(limit: Int = defaultLimit) {
+        self.limit = limit
+    }
+
+    /// Waits for room for `byteCount` more bytes, then counts them as pending. Never call it
+    /// on the event loop, whose writes `release` the bytes.
+    func reserve(_ byteCount: Int) {
+        condition.lock()
+        defer { condition.unlock() }
+        while pendingByteCount > 0, pendingByteCount + byteCount > limit {
+            condition.wait()
+        }
+        pendingByteCount += byteCount
+    }
+
+    func release(_ byteCount: Int) {
+        condition.lock()
+        defer { condition.unlock() }
+        pendingByteCount -= byteCount
+        condition.broadcast()
+    }
+
+    /// Writes `packets` to `channel` in one event loop task, after waiting for room when not on
+    /// the event loop; their bytes are released once the socket takes the last, or the write fails.
+    func write(_ packets: [Data], to channel: Channel) {
+        let byteCount = packets.reduce(0) { $0 + $1.count }
+        if !channel.eventLoop.inEventLoop {
+            reserve(byteCount)
+        } else {
+            condition.withLock { pendingByteCount += byteCount }
+        }
+        channel.eventLoop.execute {
+            guard channel.isActive else {
+                self.release(byteCount)
+                return
+            }
+            let written = channel.eventLoop.makePromise(of: Void.self)
+            for (index, packet) in packets.enumerated() {
+                var buffer = channel.allocator.buffer(capacity: packet.count)
+                buffer.writeBytes(packet)
+                channel.write(buffer, promise: index == packets.count - 1 ? written : nil)
+            }
+            channel.flush()
+            written.futureResult.whenComplete { _ in
+                self.release(byteCount)
+            }
+        }
+    }
+}
+

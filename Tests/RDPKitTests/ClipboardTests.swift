@@ -2,6 +2,7 @@ import CoreGraphics
 import Foundation
 import NIOCore
 import NIOEmbedded
+import NIOPosix
 @testable import RDPKit
 import Testing
 
@@ -871,6 +872,64 @@ private final class ClipboardPublishRace: @unchecked Sendable {
         RDPClipboardFormatListEntry(formatID: RDPClipboardFormatID.unicodeText),
     ]).encoded(useLongFormatNames: false))
     _ = try channel.finish()
+}
+
+/// A server that asks for file contents and stops reading its socket gets its replies only as
+/// it takes them: the session waits for room instead of queueing copies of the file.
+@Test func clipboardSessionWaitsForTheServerToTakeItsReplies() throws {
+    let server = try ServerBootstrap(group: MultiThreadedEventLoopGroup.singleton)
+        .childChannelOption(.autoRead, value: false)
+        .childChannelInitializer { $0.eventLoop.makeSucceededVoidFuture() }
+        .bind(host: "127.0.0.1", port: 0)
+        .wait()
+    defer { server.close(promise: nil) }
+    let channel = try ClientBootstrap(group: MultiThreadedEventLoopGroup.singleton)
+        .connect(host: "127.0.0.1", port: try #require(server.localAddress?.port))
+        .wait()
+    defer { channel.close(promise: nil) }
+    let session = RDPClipboardSession(userChannelID: 1006, staticChannelID: 1007, channel: channel)
+    session.publishLocalFiles([RDPClipboardLocalFile(fileName: "large.bin", contents: Data(count: 8 * 1_024 * 1_024))])
+    _ = try session.receive(RDPClipboardPDU.parse(from: RDPClipboardCapabilitiesPDU().encoded()))
+    _ = try session.receive(RDPClipboardPDU(messageType: RDPClipboardMessageType.monitorReady))
+
+    let answered = Locked(0)
+    let finished = DispatchSemaphore(value: 0)
+    DispatchQueue.global().async {
+        for streamID in 0 ..< 64 {
+            let request = RDPClipboardFileContentsRequestPDU.range(
+                streamID: UInt32(streamID),
+                fileIndex: 0,
+                position: 0,
+                requestedByteCount: UInt32.max
+            )
+            _ = try? session.receive(RDPClipboardPDU.parse(from: request.encoded()))
+            answered.withLock { $0 += 1 }
+        }
+        finished.signal()
+    }
+    #expect(finished.wait(timeout: .now() + 1) == .timedOut)
+    #expect(answered.value < 16)
+    // Closing fails the writes in flight, which frees the waiting reply.
+    channel.close(promise: nil)
+    #expect(finished.wait(timeout: .now() + 10) == .success)
+}
+
+/// One reply waits while earlier ones would pass the budget, and goes, however large, once
+/// nothing else is pending.
+@Test func outboundByteBudgetHoldsAReplyUntilThereIsRoom() {
+    let budget = RDPOutboundByteBudget(limit: 10)
+    budget.reserve(8)
+    let reserved = DispatchSemaphore(value: 0)
+    DispatchQueue.global().async {
+        budget.reserve(4)
+        reserved.signal()
+    }
+    #expect(reserved.wait(timeout: .now() + 0.2) == .timedOut)
+    budget.release(8)
+    #expect(reserved.wait(timeout: .now() + 5) == .success)
+    budget.release(4)
+    budget.reserve(64)
+    budget.release(64)
 }
 
 /// A server Format List makes the server the clipboard owner, so the copy the user made
