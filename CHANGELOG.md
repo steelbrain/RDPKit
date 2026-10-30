@@ -26,6 +26,9 @@
 - A shared drive deletes what the server's handles had pending when the
   session ends, as closing them would, and refuses an undefined
   CreateDisposition instead of truncating the file.
+- A Windows 11 graphics confirmation with both AVC_DISABLED and
+  AVC_THINCLIENT set (0x62), which [MS-RDPEGFX] 2.2.3.6 forbids, no longer
+  ends the session; AVC_DISABLED wins, as for FreeRDP.
 - GNOME Remote Login gets past the system sign-in. After a Server
   Redirection whose password is flagged PK-encrypted, the reconnect offers
   RDSTLS beside TLS and CredSSP and, when the server selects it, sends the

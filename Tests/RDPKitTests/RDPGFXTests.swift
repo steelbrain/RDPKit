@@ -244,14 +244,34 @@ import Testing
     #expect(capabilitySet.flags == nil)
 }
 
-@Test func rejectsNewerCapabilitySetWithIncompatibleAVCFlags() {
-    var bytes = Data()
-    bytes.appendLittleEndianUInt32(RDPGFXCapabilityVersion.version107)
-    bytes.appendLittleEndianUInt32(4)
-    bytes.appendLittleEndianUInt32(RDPGFXCapabilityFlags.avcDisabled | RDPGFXCapabilityFlags.avcThinClient)
+/// Windows 11 confirms 10.7 with AVC_DISABLED and AVC_THINCLIENT (0x62) though [MS-RDPEGFX]
+/// 2.2.3.6 forbids the pair, so only an advertisement is rejected for it.
+@Test func acceptsAConfirmWithIncompatibleAVCFlagsButNotAnAdvertisement() throws {
+    var capabilitySet = Data()
+    capabilitySet.appendLittleEndianUInt32(RDPGFXCapabilityVersion.version107)
+    capabilitySet.appendLittleEndianUInt32(4)
+    capabilitySet.appendLittleEndianUInt32(0x62)
 
+    let confirm = try #require(try RDPGFXCapsConfirmPDU.parse(from: RDPGFXHeader(
+        commandID: RDPGFXCommandID.capsConfirm,
+        payload: capabilitySet
+    )))
+    #expect(confirm.capabilitySet.hasConflictingAVCFlags)
+    #expect(RDPGraphicsPathDescription.describe(
+        selectedCapabilityVersion: confirm.capabilitySet.version,
+        selectedCapabilityFlags: confirm.capabilitySet.flags,
+        firstFrame: nil,
+        updateMessages: nil
+    ) == "RDPGFX v10.7 AVC disabled flags=0x00000062")
+
+    var advertisement = Data()
+    advertisement.appendLittleEndianUInt16(1)
+    advertisement.append(capabilitySet)
     #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
-        try RDPGFXCapabilitySet.parse(from: bytes)
+        try RDPGFXCapsAdvertisePDU.parseIfPresent(from: graphicsMessage(
+            commandID: RDPGFXCommandID.capsAdvertise,
+            payload: advertisement
+        ))
     }
 }
 

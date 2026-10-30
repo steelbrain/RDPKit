@@ -213,8 +213,8 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
     /// `layout` when its monitors form one group. [MS-RDPBCGR] 2.2.1.3.6 does not rule out
     /// separate groups, but given them Windows 11 starts one monitor of their bounding box, and
     /// with the automatic graphics profile confirms RDPGFX with AVC_DISABLED and AVC_THINCLIENT
-    /// together, which [MS-RDPEGFX] 2.2.3.6 forbids, so the session fails. Monitors touching
-    /// only at a corner start as sent (observed live).
+    /// together, which [MS-RDPEGFX] 2.2.3.6 forbids, so without AVC. Monitors touching only at
+    /// a corner start as sent (observed live).
     static func validMonitorLayout(_ layout: RDPMonitorLayout?) -> RDPMonitorLayout? {
         guard let layout, layout.formsOneGroup else {
             return nil

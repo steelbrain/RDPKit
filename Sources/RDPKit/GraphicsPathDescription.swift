@@ -46,7 +46,9 @@ public enum RDPGraphicsPathDescription {
         switch version {
         case RDPGFXCapabilityVersion.version107:
             parts = ["RDPGFX v10.7"]
-            if let flags, flags & RDPGFXCapabilityFlags.avcThinClient != 0 {
+            if let flags, flags & RDPGFXCapabilityFlags.avcDisabled != 0 {
+                parts.append("AVC disabled")
+            } else if let flags, flags & RDPGFXCapabilityFlags.avcThinClient != 0 {
                 parts.append("AVC thin-client")
             }
             if let flags, flags & RDPGFXCapabilityFlags.scaledMapDisabled != 0 {

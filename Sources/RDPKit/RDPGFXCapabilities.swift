@@ -195,13 +195,17 @@ struct RDPGFXCapabilitySet: Equatable, Sendable {
         guard data.count == expectedDataLength else {
             return false
         }
-        // The 10.1 set's 16 bytes are reserved; their values are ignored.
-        guard let flags = RDPGFXCapabilitySet(version: version, data: data).flags else {
-            return true
-        }
-        // AVC_THINCLIENT and AVC_DISABLED MUST NOT be set together (MS-RDPEGFX 2.2.3.6).
+        return true
+    }
+
+    /// AVC_THINCLIENT and AVC_DISABLED MUST NOT be set together (MS-RDPEGFX 2.2.3.6). Windows 11
+    /// confirms 10.7 with both all the same (0x62, observed live with separate monitor groups),
+    /// so only an advertisement is held to it; in a confirm AVC_DISABLED wins, as for FreeRDP,
+    /// which accepts any flags there (rdpgfx_recv_caps_confirm_pdu). The 10.1 set's 16 bytes
+    /// are reserved; their values are ignored.
+    var hasConflictingAVCFlags: Bool {
         let avcFlags = RDPGFXCapabilityFlags.avcDisabled | RDPGFXCapabilityFlags.avcThinClient
-        return flags & avcFlags != avcFlags
+        return flags.map { $0 & avcFlags == avcFlags } ?? false
     }
 }
 
@@ -241,6 +245,9 @@ struct RDPGFXCapsAdvertisePDU: Equatable, Sendable {
         var capabilitySets: [RDPGFXCapabilitySet] = []
         for _ in 0 ..< capabilitySetCount {
             let capabilitySet = try RDPGFXCapabilitySet.parse(from: &cursor)
+            guard !capabilitySet.hasConflictingAVCFlags else {
+                throw RDPDecodeError.invalidRDPGFXPDU
+            }
             if RDPGFXCapabilitySet.isKnownVersion(capabilitySet.version) {
                 capabilitySets.append(capabilitySet)
             }
