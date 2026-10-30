@@ -8,6 +8,9 @@
   rejected the credentials a Server Redirection gave, with an
   `RDPRDSTLSResultCode` such as `.logonFailure`. `RDPConnectionStage` has a
   new stage, `rdSTLS`.
+- The handlers `RDPFrameDecodeQueue` and `RDPWireReceiveMetricsCoalescer`
+  take are `@Sendable`: they run on threads of their own, where a handler
+  that captures non-Sendable state races with its caller.
 
 ### Security
 

@@ -356,17 +356,18 @@ public final class RDPWireReceiveMetricsCoalescer: @unchecked Sendable {
     private let flushQueue = DispatchQueue(label: "RDPKit.WireReceiveMetricsFlush", qos: .utility)
     private let flushQueueKey = DispatchSpecificKey<Void>()
     private let flushDelay: DispatchTimeInterval
-    private let shouldCancel: () -> Bool
-    private let onFlush: (RDPWireReceiveSample) -> Void
+    private let shouldCancel: @Sendable () -> Bool
+    private let onFlush: @Sendable (RDPWireReceiveSample) -> Void
     private var pendingByteCount = 0
     private var pendingReceivedAt: Date?
     private var isFlushScheduled = false
     private var isCancelled = false
 
+    /// A timed flush calls `onFlush` on a thread of its own.
     public init(
         flushDelay: DispatchTimeInterval = .milliseconds(250),
-        shouldCancel: @escaping () -> Bool,
-        onFlush: @escaping (RDPWireReceiveSample) -> Void
+        shouldCancel: @escaping @Sendable () -> Bool,
+        onFlush: @escaping @Sendable (RDPWireReceiveSample) -> Void
     ) {
         self.flushDelay = flushDelay
         self.shouldCancel = shouldCancel

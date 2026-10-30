@@ -1118,24 +1118,25 @@ public final class RDPFrameDecodeQueue: @unchecked Sendable {
     private let videoCompositor = RDPDecodedVideoSurfaceCompositor()
     private let lock = NSLock()
     private var isCancelled = false
-    private let shouldCancel: () -> Bool
-    private let onDecoded: (
+    private let shouldCancel: @Sendable () -> Bool
+    private let onDecoded: @Sendable (
         RDPDecodedFramePresentation,
         Date,
         Date,
         RDPFrameDecodeTiming
     ) -> Void
-    private let onDecodeFailed: (Date, String) -> Void
+    private let onDecodeFailed: @Sendable (Date, String) -> Void
 
+    /// The handlers run on the queue's own thread.
     public init(
-        shouldCancel: @escaping () -> Bool,
-        onDecoded: @escaping (
+        shouldCancel: @escaping @Sendable () -> Bool,
+        onDecoded: @escaping @Sendable (
             RDPDecodedFramePresentation,
             Date,
             Date,
             RDPFrameDecodeTiming
         ) -> Void,
-        onDecodeFailed: @escaping (Date, String) -> Void
+        onDecodeFailed: @escaping @Sendable (Date, String) -> Void
     ) {
         self.shouldCancel = shouldCancel
         self.onDecoded = onDecoded
