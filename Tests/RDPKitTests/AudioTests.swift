@@ -563,3 +563,23 @@ import Testing
     #expect(player.engine.isRunning)
     player.reset()
 }
+
+/// `.infinity` means an unbounded queue; converting it to a frame position trapped.
+@MainActor
+@Test func audioPlayerTakesALimitTooLargeForAFramePosition() throws {
+    let player = RDPAudioPlayer(maximumQueuedSeconds: .infinity)
+    let renderFormat = try #require(AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2))
+    try player.engine.enableManualRenderingMode(.offline, format: renderFormat, maximumFrameCount: 4096)
+    let sample = RDPAudioSample(
+        format: .pcmStereo48k16Bit,
+        timestamp: 0,
+        blockNo: 0,
+        data: Data(count: 4 * 2_400),
+        receivedAt: Date()
+    )
+
+    for _ in 0..<32 {
+        #expect(try player.enqueue(sample))
+    }
+    player.reset()
+}

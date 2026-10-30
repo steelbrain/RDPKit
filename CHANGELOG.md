@@ -41,6 +41,9 @@
 
 ### Compatibility and fixes
 
+- `RDPAudioPlayer(maximumQueuedSeconds: .infinity)`, or any limit too large
+  for a frame position, means an unbounded queue instead of a crash on the
+  first sample.
 - A connect-time Bandwidth Measure Stop with no payload gets its results.
   FreeRDP's server sends one when asked for fewer than 4 bytes; RDPKit
   dropped it as malformed and left the server waiting for the reply.

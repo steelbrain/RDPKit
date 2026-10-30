@@ -56,7 +56,8 @@ public final class RDPAudioPlayer {
         if !engine.isRunning, queuedFrameCount > 0 {
             stop()
         }
-        guard queuedFrameCount <= AVAudioFramePosition(format.sampleRate * maximumQueuedSeconds) else {
+        // Compared as Double: a limit no frame position can hold, such as .infinity, means no limit.
+        guard Double(queuedFrameCount) <= format.sampleRate * maximumQueuedSeconds else {
             return false
         }
         guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frameCount)),
