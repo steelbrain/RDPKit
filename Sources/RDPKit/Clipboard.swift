@@ -580,7 +580,7 @@ public struct RDPClipboardFileGroupDescriptorW: Equatable, Sendable {
             throw RDPClipboardRemoteFileTransferPlanningError.emptyFileList
         }
 
-        var usedFileNames = Set<String>()
+        var usedFileNames = RDPClipboardUsedFileNames()
         var files: [RDPClipboardRemoteFileTransferFile] = []
         var knownByteCount: UInt64 = 0
         for (offset, descriptor) in descriptors.enumerated() where descriptor.isDirectory == false {
@@ -1107,6 +1107,11 @@ public final class RDPClipboardSession: @unchecked Sendable {
             return nil
         }
         if pdu.header.messageType == RDPClipboardMessageType.monitorReady {
+            // A server whose clipboard restarted answers no request made before.
+            lock.withLock {
+                formatDataRequests = []
+                isAwaitingFormatData = false
+            }
             respondToMonitorReady()
             return .ready
         }
@@ -1154,10 +1159,30 @@ public final class RDPClipboardSession: @unchecked Sendable {
         if let response = try RDPClipboardFileContentsResponse.parseIfPresent(from: pdu) {
             return .fileContents(response)
         }
-        if let response = try RDPClipboardFormatDataResponsePDU.parseIfPresent(from: pdu) {
+        let response: RDPClipboardFormatDataResponsePDU?
+        do {
+            response = try RDPClipboardFormatDataResponsePDU.parseIfPresent(from: pdu)
+        } catch {
+            // A response that does not parse still answers the request it was for; left
+            // outstanding, it would hold back every later request of the session.
+            dropAnsweredFormatDataRequest()
+            throw error
+        }
+        if let response {
             return try receiveFormatData(response)
         }
         return nil
+    }
+
+    private func dropAnsweredFormatDataRequest() {
+        lock.withLock {
+            guard isAwaitingFormatData, !formatDataRequests.isEmpty else {
+                return
+            }
+            isAwaitingFormatData = false
+            formatDataRequests.removeFirst()
+        }
+        sendNextFormatDataRequest()
     }
 
     /// Decodes a Format Data Response for the request it answers. A response with no

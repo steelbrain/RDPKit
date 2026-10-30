@@ -687,6 +687,23 @@ import Testing
     ])
 }
 
+/// Each name tries numbers from where it left off, so many files of one name take linear time.
+@Test func clipboardRemoteFileTransferFilesNumberManyFilesOfOneNameQuickly() throws {
+    let list = RDPClipboardFileGroupDescriptorW(descriptors: Array(
+        repeating: fileDescriptor(flags: RDPClipboardFileDescriptorFlags.unicode, fileName: "a.txt"),
+        count: 4_000
+    ) + [fileDescriptor(flags: RDPClipboardFileDescriptorFlags.unicode, fileName: "a-2.txt")])
+
+    let started = Date()
+    let names = try list.remoteFileTransferFiles().map(\.fileName)
+
+    #expect(Date().timeIntervalSince(started) < 2)
+    #expect(names.prefix(3) == ["a.txt", "a-2.txt", "a-3.txt"])
+    #expect(names[3_999] == "a-4000.txt")
+    #expect(names.last == "a-2-2.txt")
+    #expect(Set(names.map { $0.lowercased() }).count == names.count)
+}
+
 @Test func clipboardRemoteFileTransferFilesNeverEscapeTheDownloadDirectory() throws {
     let longName = String(repeating: "\u{3042}", count: 200) + ".txt"
     let list = RDPClipboardFileGroupDescriptorW(descriptors: [
@@ -930,6 +947,41 @@ private final class ClipboardPublishRace: @unchecked Sendable {
     budget.release(4)
     budget.reserve(64)
     budget.release(64)
+}
+
+/// One request is out at a time, so a response that does not parse, or a server whose
+/// clipboard restarted, must not leave it outstanding for the rest of the session.
+@Test func clipboardSessionKeepsFetchingAfterAResponseItCannotRead() throws {
+    let channel = EmbeddedChannel()
+    let sent = ClipboardSentMessages()
+    let session = RDPClipboardSession(
+        userChannelID: 1006,
+        staticChannelID: 1007,
+        channel: channel,
+        sentMessageHandler: sent.record
+    )
+    let formatList = RDPClipboardFormatListPDU(entries: [
+        RDPClipboardFormatListEntry(formatID: RDPClipboardFormatID.unicodeText),
+    ]).encoded()
+    var unflagged = RDPClipboardFormatDataResponsePDU.unicodeText("lost").encoded()
+    unflagged[unflagged.startIndex + 2] = 0
+
+    _ = try session.receive(RDPClipboardPDU.parse(from: RDPClipboardCapabilitiesPDU().encoded()))
+    _ = try session.receive(RDPClipboardPDU(messageType: RDPClipboardMessageType.monitorReady))
+    _ = try session.receive(RDPClipboardPDU.parse(from: formatList))
+    #expect(throws: RDPDecodeError.invalidClipboardPDU) {
+        try session.receive(RDPClipboardPDU.parse(from: unflagged))
+    }
+    _ = try session.receive(RDPClipboardPDU.parse(from: formatList))
+    #expect(try sentFormatDataRequestIDs(sent).count == 2)
+
+    // The second is never answered; the server's clipboard restarts.
+    _ = try session.receive(RDPClipboardPDU(messageType: RDPClipboardMessageType.monitorReady))
+    _ = try session.receive(RDPClipboardPDU.parse(from: formatList))
+    #expect(try sentFormatDataRequestIDs(sent).count == 3)
+    #expect(try session.receive(RDPClipboardPDU.parse(from: RDPClipboardFormatDataResponsePDU.unicodeText("found").encoded()))
+        == .text("found"))
+    _ = try channel.finish()
 }
 
 /// A server Format List makes the server the clipboard owner, so the copy the user made

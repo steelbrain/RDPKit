@@ -41,6 +41,12 @@
 
 ### Compatibility and fixes
 
+- Remote copies keep coming after a Format Data Response that does not parse,
+  or after the server's clipboard restarts (a new Monitor Ready): the request
+  it left outstanding held back every later one for the rest of the session.
+- Naming a remote file list with many files of one name takes linear time;
+  each "-2", "-3" and so on was found by trying every number from 1, so
+  thousands of "a.txt" took minutes on the thread that planned the transfer.
 - A receive whose deadline had passed by the time the event loop got to it,
   behind other work such as input or clipboard sends, could wait for good:
   its timeout fired before the wait existed. Phase timeouts, and the polling

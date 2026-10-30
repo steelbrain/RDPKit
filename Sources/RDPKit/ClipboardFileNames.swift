@@ -2,6 +2,13 @@ import Foundation
 
 /// The file names the side a clipboard file is copied to accepts: `apple` for remote files
 /// saved on this device, `windows` for local files the server pastes.
+/// The paths a set of files has taken, ignoring case, and the number each name tries next, so
+/// the thousandth "a.txt" does not try the 999 numbers before its own.
+struct RDPClipboardUsedFileNames {
+    fileprivate var paths = Set<String>()
+    fileprivate var nextNumbers: [String: Int] = [:]
+}
+
 enum RDPClipboardFileNameRules {
     /// APFS and HFS+: no "/" or ":", at most 255 UTF-8 bytes. Control characters and line
     /// separators go too, so a name shows on one line, and so do the bidi embeddings,
@@ -44,7 +51,7 @@ enum RDPClipboardFileNameRules {
     /// `fileName` made valid, as a single component, and different, ignoring case, from every
     /// name in `usedFileNames`, which it joins. A clash gets "-2", "-3" and so on before the
     /// extension.
-    func uniqueFileName(_ fileName: String, usedFileNames: inout Set<String>) -> String {
+    func uniqueFileName(_ fileName: String, usedFileNames: inout RDPClipboardUsedFileNames) -> String {
         uniquePath(of: sanitizedFileName(fileName), in: nil, usedPaths: &usedFileNames)
     }
 
@@ -57,7 +64,7 @@ enum RDPClipboardFileNameRules {
     /// spelled: "What?" and "What*" both become "What_", and the second is "What_-2" with
     /// everything in it.
     static func windowsPaths(of entries: [(fileName: String, isDirectory: Bool)]) -> [String] {
-        var usedPaths = Set<String>()
+        var usedPaths = RDPClipboardUsedFileNames()
         // Each folder's path, by its components as given, joined with "\".
         var folderPaths: [String: String] = [:]
         return entries.map { entry in
@@ -96,9 +103,11 @@ enum RDPClipboardFileNameRules {
     /// `folder` leaves no room for one character of its base name, its extension and its
     /// number, it goes to the top level alone: pasted outside its folder, but whole and under
     /// its own name.
-    private func uniquePath(of name: String, in folder: String?, usedPaths: inout Set<String>) -> String {
+    private func uniquePath(of name: String, in folder: String?, usedPaths: inout RDPClipboardUsedFileNames) -> String {
+        // Names are never given back, so every number below the next one for this name is taken.
+        let key = ((folder ?? "") + "\\" + name).lowercased()
         var folder = folder
-        var number = 1
+        var number = usedPaths.nextNumbers[key] ?? 1
         while true {
             guard let candidate = candidate(name, numbered: number, in: folder) else {
                 // No room left in the folders: the top level.
@@ -106,7 +115,8 @@ enum RDPClipboardFileNameRules {
                 number = 1
                 continue
             }
-            if usedPaths.insert(candidate.lowercased()).inserted {
+            if usedPaths.paths.insert(candidate.lowercased()).inserted {
+                usedPaths.nextNumbers[key] = number + 1
                 return candidate
             }
             number += 1
