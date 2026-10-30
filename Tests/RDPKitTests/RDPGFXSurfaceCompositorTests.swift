@@ -980,6 +980,75 @@ import Testing
     #expect(pixel(atX: 2, y: 1, data: bitmapData, bytesPerRow: 16) == [0x50, 0x60, 0x70, 0xFF])
 }
 
+/// A SolidFill or a copy can list 65,535 rectangles or points, each as large as the surface;
+/// one that would write more than sixteen surfaces' worth of pixels is refused.
+@Test func compositorRefusesAPDUThatWritesManyTimesTheSurface() throws {
+    let compositor = RDPGFXSurfaceCompositor()
+    let clearCodec = RDPClearCodecDecoder()
+    let whole = RDPGFXRect16(left: 0, top: 0, right: 1920, bottom: 1080)
+    try compositor.process(try createSurfaceMessage(surfaceID: 1, width: 1920, height: 1080), clearCodec: clearCodec)
+
+    try compositor.process(
+        try solidFillMessage(surfaceID: 1, color: [1, 2, 3, 0xFF], rects: Array(repeating: whole, count: 2)),
+        clearCodec: clearCodec
+    )
+    #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
+        try compositor.process(
+            try solidFillMessage(surfaceID: 1, color: [1, 2, 3, 0xFF], rects: Array(repeating: whole, count: 65_535)),
+            clearCodec: clearCodec
+        )
+    }
+    #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
+        try compositor.process(
+            try surfaceToSurfaceMessage(
+                sourceSurfaceID: 1,
+                destinationSurfaceID: 1,
+                sourceRect: whole,
+                destinationPoints: Array(repeating: RDPGFXPoint16(x: 0, y: 0), count: 65_535)
+            ),
+            clearCodec: clearCodec
+        )
+    }
+}
+
+/// Rectangles already dirty that enter a new one from two sides would cut it into a number
+/// of pieces quadratic in theirs; the cut gives up early, so one fill stays cheap.
+@Test func compositorMarksARectangleManyDirtyOnesEnterQuickly() throws {
+    let compositor = RDPGFXSurfaceCompositor()
+    let clearCodec = RDPClearCodecDecoder()
+    try compositor.process(try createSurfaceMessage(surfaceID: 1, width: 2048, height: 2048), clearCodec: clearCodec)
+    try compositor.process(try mapSurfaceToOutputMessage(surfaceID: 1, x: 0, y: 0), clearCodec: clearCodec)
+    // One-pixel teeth entering the fill below from its left and from its top.
+    var teeth: [RDPGFXRect16] = []
+    for index in 0 ..< 512 {
+        let top = UInt16(500 + 2 * index)
+        teeth.append(RDPGFXRect16(left: 400, top: top, right: 510, bottom: top + 1))
+    }
+    for index in 0 ..< 511 {
+        let left = UInt16(520 + 2 * index)
+        teeth.append(RDPGFXRect16(left: left, top: 400, right: left + 1, bottom: 510))
+    }
+    try compositor.process(try solidFillMessage(surfaceID: 1, color: [1, 2, 3, 0xFF], rects: teeth), clearCodec: clearCodec)
+
+    let started = Date()
+    try compositor.process(
+        try solidFillMessage(
+            surfaceID: 1,
+            color: [4, 5, 6, 0xFF],
+            rects: [RDPGFXRect16(left: 500, top: 500, right: 1900, bottom: 1900)]
+        ),
+        clearCodec: clearCodec
+    )
+    #expect(Date().timeIntervalSince(started) < 0.5)
+    // The dirty area is the fill and the parts of the teeth outside it, each pixel once.
+    let frame = try #require(compositor.makeFrame(frameID: 1))
+    var dirtyArea = 0
+    for rect in frame.regionRects {
+        dirtyArea += Int(rect.width) * Int(rect.height)
+    }
+    #expect(dirtyArea == 1_400 * 1_400 + 512 * 100 + 511 * 100)
+}
+
 @Test func compositorBlitsPlanarBitmapIntoMappedSurface() throws {
     let compositor = RDPGFXSurfaceCompositor()
     let clearCodec = RDPClearCodecDecoder()

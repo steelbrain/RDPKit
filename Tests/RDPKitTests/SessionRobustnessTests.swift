@@ -311,6 +311,21 @@ func deactivatedSessionThatNeverReactivatesFails(closes: Bool, failure: RDPConne
     #expect(run.report.error == "server sent more than 64 video updates without ending the frame")
 }
 
+/// An Alpha update over video copies its whole rectangle and is held until the frame ends, so
+/// a few bytes each on the wire, a server that never ends the frame must not grow them without bound.
+@Test func frameWhoseUpdatesHoldTooManyBytesIsBounded() throws {
+    let updates = (0 ... RDPClientConnection.maximumPendingGraphicsDesktopCount).map { _ in
+        KRdpCapture.graphicsPacket(KRdpCapture.alphaUpdate())
+    }
+    let run = try KRdpCapture.run(
+        appending: [KRdpCapture.graphicsPacket(KRdpCapture.startFrame(id: 1) + KRdpCapture.avc420Update())] + updates,
+        frameCaptureLimit: 2,
+        timeoutSeconds: 3
+    )
+
+    #expect(run.report.error == "server sent more than 16 desktops of updates without ending the frame")
+}
+
 /// The next snapshot names each surface deleted since the last one once, so a server that
 /// creates and deletes surfaces it never shows cannot grow the list without bound.
 @Test func surfacesDeletedBetweenSnapshotsAreNamedOnce() throws {
@@ -950,6 +965,24 @@ enum KRdpCapture {
         body.appendLittleEndianUInt16(RDPGFXCodecID.avc420)
         body.appendUInt8(0x20)
         body.append(contentsOf: [0, 0, 0, 0, 16, 0, 16, 0])
+        body.appendLittleEndianUInt32(UInt32(stream.count))
+        body.append(stream)
+        return graphicsMessage(commandID: RDPGFXCommandID.wireToSurface1, payload: body)
+    }
+
+    /// A WireToSurface1 Alpha update of one run over the capture's whole surface 1
+    /// ([MS-RDPEGFX] 2.2.4.3).
+    static func alphaUpdate() -> Data {
+        var stream = Data()
+        stream.appendLittleEndianUInt16(0x414C)
+        stream.appendLittleEndianUInt16(1)
+        stream.append(contentsOf: [0x80, 0xFF, 0xFF, 0xFF])
+        stream.appendLittleEndianUInt32(1280 * 720)
+        var body = Data()
+        body.appendLittleEndianUInt16(1)
+        body.appendLittleEndianUInt16(RDPGFXCodecID.alpha)
+        body.appendUInt8(0x21)
+        body.append(contentsOf: [0, 0, 0, 0, 0x00, 0x05, 0xD0, 0x02])
         body.appendLittleEndianUInt32(UInt32(stream.count))
         body.append(stream)
         return graphicsMessage(commandID: RDPGFXCommandID.wireToSurface1, payload: body)

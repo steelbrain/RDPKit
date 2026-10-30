@@ -12,6 +12,9 @@ extension RDPClientConnection {
     static let maximumPendingVideoFrameCount = 64
     /// The same for copies, which servers send one per rectangle.
     static let maximumPendingGraphicsUpdateCount = 4_096
+    /// The bytes they may hold, in desktops of 32-bit pixels: an Alpha update over video
+    /// copies its whole rectangle, so a few bytes on the wire can hold a surface each.
+    static let maximumPendingGraphicsDesktopCount = 16
 
     func openGraphicsPipeline(channelID: UInt32) throws {
         graphicsChannelID = channelID
@@ -166,6 +169,12 @@ extension RDPClientConnection {
         guard pendingGraphicsUpdates.count < Self.maximumPendingGraphicsUpdateCount else {
             throw RDPConnectionError.protocolViolation(
                 "server sent more than \(Self.maximumPendingGraphicsUpdateCount) updates without ending the frame"
+            )
+        }
+        let byteCount = pendingGraphicsUpdates.reduce(update.byteCount) { $0 + $1.byteCount }
+        guard byteCount <= Self.maximumPendingGraphicsDesktopCount * Int(desktopWidth) * Int(desktopHeight) * 4 else {
+            throw RDPConnectionError.protocolViolation(
+                "server sent more than \(Self.maximumPendingGraphicsDesktopCount) desktops of updates without ending the frame"
             )
         }
         pendingGraphicsUpdates.append(update)
@@ -529,6 +538,17 @@ enum RDPPendingGraphicsUpdate {
             frame.contentKind == .video ? frame : nil
         case .stagedVideoCopy, .deletedSurface, .evictedCacheSlot:
             nil
+        }
+    }
+
+    /// The decoded pixels and encoded video this holds.
+    var byteCount: Int {
+        switch self {
+        case let .frame(frame), let .resolved(frame):
+            (frame.decodedBitmapData?.count ?? 0) + frame.encodedVideoData.count
+                + (frame.auxiliaryEncodedVideoData?.count ?? 0)
+        case .stagedVideoCopy, .deletedSurface, .evictedCacheSlot:
+            0
         }
     }
 

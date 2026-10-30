@@ -130,6 +130,15 @@ final class RDPGFXSurfaceCompositor {
             )
         }
 
+        /// Throws when one PDU would write more than sixteen times the surface's pixels, or 16M
+        /// on a small one: a SolidFill or a copy can list 65,535 rectangles or points, each as
+        /// large as the surface, which would keep the session busy for minutes.
+        func checkPixelsWritten(_ pixelCount: Int) throws {
+            guard pixelCount <= max(16 * width * height, 1 << 24) else {
+                throw RDPDecodeError.invalidRDPGFXPDU
+            }
+        }
+
         /// Fills `rect`, clipped to the surface; the fill alpha applies only to ARGB surfaces.
         mutating func fill(_ rect: RDPGFXRect16, color: RDPGFXColor32) {
             guard let rect = clipped(rect) else {
@@ -189,9 +198,12 @@ final class RDPGFXSurfaceCompositor {
             let kept = dirtyRects.filter { !rect.contains($0) }
             var marked = kept + [rect]
             if kept.contains(where: { $0.intersects(rect) }) {
-                let cutRect = kept + [rect].subtracting(kept)
                 marked = kept.subtracting(rect) + [rect]
-                marked = cutRect.count < marked.count ? cutRect : marked
+                // Rectangles entering `rect` from two sides can cut it into a number of pieces
+                // quadratic in theirs, so the cut stops once it leaves no fewer.
+                if let pieces = [rect].subtracting(kept, limit: min(marked.count - kept.count - 1, 64)) {
+                    marked = kept + pieces
+                }
             }
             dirtyRects = marked.collapsed(beyond: Self.maximumDirtyRectCount)
             decodedRects = decodedRects.subtracting(rect)
@@ -773,6 +785,7 @@ final class RDPGFXSurfaceCompositor {
         try modifySurface(pdu.surfaceID) { surface in
             // Tiles may carry pixels outside the region; only the region rects are updated
             // (MS-RDPEGFX 2.2.4.2.1.5). Progressive tiles are in surface coordinates.
+            try surface.checkPixelsWritten(frame.regionRects.reduce(0) { $0 + Int($1.width) * Int($1.height) })
             for region in frame.regionRects {
                 let regionRight = min(Int(region.right), surface.width)
                 let regionBottom = min(Int(region.bottom), surface.height)
@@ -812,6 +825,7 @@ final class RDPGFXSurfaceCompositor {
 
     private func solidFill(_ pdu: RDPGFXSolidFillPDU) throws {
         try modifySurface(pdu.surfaceID) { surface in
+            try surface.checkPixelsWritten(pdu.fillRects.reduce(0) { $0 + Int($1.width) * Int($1.height) })
             for rect in pdu.fillRects {
                 surface.fill(rect, color: pdu.fillPixel)
                 surface.markDirty(rect)
@@ -935,6 +949,7 @@ final class RDPGFXSurfaceCompositor {
         decoderLacks: [RDPGFXRect16]?
     ) throws -> [RDPGFXRect16] {
         try modifySurface(surfaceID) { surface in
+            try surface.checkPixelsWritten(points.count * width * height)
             let rects = try points.map { point in
                 let x = Int(point.x)
                 let y = Int(point.y)
@@ -988,6 +1003,18 @@ private extension [RDPGFXRect16] {
 
     func subtracting(_ rects: [RDPGFXRect16]) -> [RDPGFXRect16] {
         rects.reduce(self) { $0.subtracting($1) }
+    }
+
+    /// These rectangles less `rects`, or nil once the pieces number more than `limit`.
+    func subtracting(_ rects: [RDPGFXRect16], limit: Int) -> [RDPGFXRect16]? {
+        var pieces = self
+        for rect in rects {
+            pieces = pieces.subtracting(rect)
+            guard pieces.count <= limit else {
+                return nil
+            }
+        }
+        return pieces
     }
 
     /// The parts of these rectangles inside `rect`.

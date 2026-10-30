@@ -23,6 +23,12 @@
   the Server Redirection PDU has a flag RDPKit does not know or bytes it
   cannot place: everything after its flags is zeroed, and everything after
   the header of a Save Session Info PDU that does not parse.
+- A graphics frame's held updates are bounded by bytes as well as count, at
+  sixteen desktops of pixels: an Alpha update over video copies its whole
+  rectangle, so a server that never ended the frame could make a few bytes
+  each hold a surface. A SolidFill, copy or progressive update that would
+  write more than sixteen times its surface is refused, and marking a
+  rectangle that many dirty ones enter no longer takes seconds.
 - A server can no longer exhaust the app's file descriptors through a shared
   drive: all drives together hold at most 64. FIFOs, sockets and devices in a
   shared folder are neither opened nor listed, so opening one can't block the
