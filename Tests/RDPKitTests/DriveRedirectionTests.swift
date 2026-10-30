@@ -603,6 +603,51 @@ import Testing
     #expect(FileManager.default.fileExists(atPath: drive.root.appendingPathComponent("hello.txt").path))
 }
 
+/// A server that starts device redirection over gets the drives again, and the handles it
+/// forgot are closed, as the session's end would close them.
+@Test func deviceRedirectionSessionAnnouncesDrivesAgainWhenTheServerStartsOver() throws {
+    let drive = try TemporaryDrive()
+    let channel = EmbeddedChannel()
+    try channel.connect(to: SocketAddress(ipAddress: "127.0.0.1", port: 3389)).wait()
+    let session = RDPDeviceRedirectionSession(
+        userChannelID: 1006,
+        staticChannelID: 1004,
+        channel: channel,
+        computerName: "RDPKIT",
+        drives: [RDPSharedDrive(name: "Docs", url: drive.root)]
+    )
+    func setUp() throws {
+        for packet: [UInt8] in [
+            [0x72, 0x44, 0x6E, 0x49, 0x01, 0x00, 0x0C, 0x00, 0x78, 0x56, 0x34, 0x12],
+            [0x72, 0x44, 0x50, 0x53],
+            [0x72, 0x44, 0x43, 0x43, 0x01, 0x00, 0x0C, 0x00, 0x78, 0x56, 0x34, 0x12],
+            [0x72, 0x44, 0x4C, 0x55],
+        ] {
+            try session.receive(RDPDeviceRedirectionPDU.parse(from: Data(packet)))
+        }
+    }
+
+    try setUp()
+    var create = Data([0x72, 0x44, 0x52, 0x49])
+    create.append(driveRequest(major: RDPDriveMajorFunction.create, body: createBody(
+        path: "\\scratch.txt",
+        disposition: RDPDriveCreateDisposition.create,
+        options: RDPDriveCreateOptions.deleteOnClose
+    )).encodedHeaderAndBody)
+    try session.receive(RDPDeviceRedirectionPDU.parse(from: create))
+    session.waitForDriveIO()
+    #expect(FileManager.default.fileExists(atPath: drive.root.appendingPathComponent("scratch.txt").path))
+    try setUp()
+    session.waitForDriveIO()
+
+    let announcements = try sentDeviceRedirectionPDUs(channel).filter { $0.typeName == "rdpdr-device-list-announce" }
+    let docs = RDPDeviceRedirectionPDU.parse(fromEncoded: RDPDeviceRedirectionDeviceListAnnounce(devices: [
+        .drive(deviceID: 1, name: "Docs"),
+    ]).encoded())
+    #expect(announcements.filter { $0 == docs }.count == 2)
+    #expect(!FileManager.default.fileExists(atPath: drive.root.appendingPathComponent("scratch.txt").path))
+}
+
 @Test func deviceRedirectionSessionReportsADriveTheServerRefused() throws {
     let drive = try TemporaryDrive()
     let channel = EmbeddedChannel()

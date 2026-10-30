@@ -41,6 +41,10 @@
 
 ### Compatibility and fixes
 
+- A server that starts device redirection over, with a new Server Announce,
+  gets the shared drives again; they were announced once per connection, so
+  the drives vanished. The handles it forgot are closed, deleting what they
+  had pending, as at the session's end.
 - `RDPClipboardBitmap.deviceIndependentBitmap(from:)` returns nil for an
   image of 4 GiB or more, which a DIB's size field cannot hold, instead of
   crashing.

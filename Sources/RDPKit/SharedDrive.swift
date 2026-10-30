@@ -60,9 +60,16 @@ final class RDPSharedDriveDevice: @unchecked Sendable {
     /// The session's end closes the server's handles, deleting what they had pending, as
     /// closing each would.
     deinit {
+        closeAllFiles()
+    }
+
+    /// Closes every handle, as the session's end does: for a server starting device
+    /// redirection over, which has forgotten them.
+    func closeAllFiles() {
         for file in openFiles.values {
             release(file)
         }
+        openFiles = [:]
     }
 
     /// Resolves the shared folder, so a drive is announced only while it exists.

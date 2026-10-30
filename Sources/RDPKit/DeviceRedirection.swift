@@ -351,6 +351,16 @@ final class RDPDeviceRedirectionSession: @unchecked Sendable {
                 minorVersion = min(RDPDeviceRedirectionVersion.minorRDP6, announce.minor)
                 announcedClientID = clientID
             }
+            // A server starting over has forgotten the devices and their handles. FreeRDP
+            // 3.32 re-initializes its devices and announces them again on each Server
+            // Announce, which Windows servers send with I/O still pending (rdpdr_main.c,
+            // rdpdr_process_init).
+            announcedDriveIDs = []
+            hasAnnouncedDrives = false
+            let drives = drives
+            ioQueue.async {
+                drives.forEach { $0.closeAllFiles() }
+            }
             send(announce.clientAnnounceReplyEncoded(clientID: clientID))
             send(RDPDeviceRedirectionClientNameRequest(computerName: computerName).encoded())
 
@@ -399,7 +409,7 @@ final class RDPDeviceRedirectionSession: @unchecked Sendable {
     }
 
     /// The device list: empty until drives are due, then each drive whose folder exists,
-    /// once per connection.
+    /// once per Server Announce.
     private func announceDevices(includingDrives: Bool) -> [RDPDeviceRedirectionEvent] {
         var devices: [RDPDeviceAnnounce] = []
         var events: [RDPDeviceRedirectionEvent] = []
