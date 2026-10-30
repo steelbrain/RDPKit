@@ -41,6 +41,9 @@
 
 ### Compatibility and fixes
 
+- A SurfaceToCache that RDPKit refuses, such as one over the cache's byte
+  budget, empties its slot: a later CacheToSurface painted what the slot
+  held before, which the server had already replaced.
 - Once `run` or `connect` returns, `onWireReceive` is not called and the
   wire transcript gets no entries: messages the event loop was still reading
   as the connection closed reached both afterwards.

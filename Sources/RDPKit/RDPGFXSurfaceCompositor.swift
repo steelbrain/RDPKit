@@ -862,9 +862,26 @@ final class RDPGFXSurfaceCompositor {
     }
 
     private func surfaceToCache(_ pdu: RDPGFXSurfaceToCachePDU) throws -> RDPGraphicsSurfaceCopy? {
-        guard pdu.cacheSlot <= maximumCacheSlot,
-              let source = surfaces[pdu.surfaceID]
-        else {
+        guard pdu.cacheSlot <= maximumCacheSlot else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
+        do {
+            return try fillCacheSlot(pdu)
+        } catch {
+            // The server takes the slot to hold the new pixels either way, so a rejected
+            // copy empties it rather than leave the old ones for a later CacheToSurface.
+            if let entry = cacheSlots.removeValue(forKey: pdu.cacheSlot) {
+                cachedByteCount -= entry.data.count
+                if entry.decoderLacks != nil {
+                    evictedDecoderCacheSlots.append(pdu.cacheSlot)
+                }
+            }
+            throw error
+        }
+    }
+
+    private func fillCacheSlot(_ pdu: RDPGFXSurfaceToCachePDU) throws -> RDPGraphicsSurfaceCopy? {
+        guard let source = surfaces[pdu.surfaceID] else {
             throw RDPDecodeError.invalidRDPGFXPDU
         }
         let pixels = try source.pixels(in: pdu.sourceRect)

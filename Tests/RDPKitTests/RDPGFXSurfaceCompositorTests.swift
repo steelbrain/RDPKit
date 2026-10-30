@@ -701,6 +701,52 @@ import Testing
     }
 }
 
+/// A SurfaceToCache the budget refuses still replaces the slot on the server's side, so
+/// CacheToSurface must not paint what the slot held before.
+@Test func compositorEmptiesTheSlotOfARejectedSurfaceToCache() throws {
+    let compositor = RDPGFXSurfaceCompositor(maximumCacheByteCount: 16, maximumCacheSlot: 2)
+    let clearCodec = RDPClearCodecDecoder()
+
+    try compositor.process(try createSurfaceMessage(surfaceID: 21, width: 3, height: 3), clearCodec: clearCodec)
+    try compositor.process(
+        try surfaceToCacheMessage(
+            surfaceID: 21,
+            cacheKey: 1,
+            cacheSlot: 1,
+            sourceRect: RDPGFXRect16(left: 0, top: 0, right: 1, bottom: 1)
+        ),
+        clearCodec: clearCodec
+    )
+    #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
+        try compositor.process(
+            try surfaceToCacheMessage(
+                surfaceID: 21,
+                cacheKey: 2,
+                cacheSlot: 1,
+                sourceRect: RDPGFXRect16(left: 0, top: 0, right: 3, bottom: 3)
+            ),
+            clearCodec: clearCodec
+        )
+    }
+
+    #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
+        try compositor.process(
+            try cacheToSurfaceMessage(cacheSlot: 1, surfaceID: 21, points: [RDPGFXPoint16(x: 1, y: 1)]),
+            clearCodec: clearCodec
+        )
+    }
+    // The emptied slot's bytes no longer count against the budget.
+    try compositor.process(
+        try surfaceToCacheMessage(
+            surfaceID: 21,
+            cacheKey: 3,
+            cacheSlot: 2,
+            sourceRect: RDPGFXRect16(left: 0, top: 0, right: 2, bottom: 2)
+        ),
+        clearCodec: clearCodec
+    )
+}
+
 @Test func compositorEnforcesNegotiatedSmallCacheSlotLimit() throws {
     let compositor = RDPGFXSurfaceCompositor(
         capabilitySet: .version8(flags: RDPGFXCapabilityFlags.smallCache)
