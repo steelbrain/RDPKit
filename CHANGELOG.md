@@ -38,6 +38,9 @@
   drive: all drives together hold at most 64. FIFOs, sockets and devices in a
   shared folder are neither opened nor listed, so opening one can't block the
   drive, and search patterns longer than a file name are refused.
+- A remote file copied to this Mac is never saved under a hidden name: a
+  leading "." becomes "_", so a server can't leave ".zshrc" or ".ssh"
+  unseen wherever the user pastes.
 
 ### Compatibility and fixes
 

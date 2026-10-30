@@ -14,6 +14,8 @@ enum RDPClipboardFileNameRules {
     /// separators go too, so a name shows on one line, and so do the bidi embeddings,
     /// overrides and isolates, which can show "x\u{202E}fdp.command" as "xdnammoc.pdf".
     /// Other format characters, such as ZWNJ, ZWJ and bidi marks, spell names and are kept.
+    /// A leading "." becomes "_": Finder hides such a name, so a server could leave ".zshrc"
+    /// or ".ssh" unseen wherever the user pastes.
     case apple
     /// Windows (Naming Files, Paths, and Namespaces), for a path relative to where the server
     /// pastes: cFileName carries a file inside a folder as "folder\file", as the shell's
@@ -167,6 +169,9 @@ enum RDPClipboardFileNameRules {
         }
         guard sanitized.isEmpty == false, sanitized != ".", sanitized != ".." else {
             return nil
+        }
+        if self == .apple, sanitized.hasPrefix(".") {
+            sanitized = "_" + sanitized.dropFirst()
         }
         return sanitized
     }

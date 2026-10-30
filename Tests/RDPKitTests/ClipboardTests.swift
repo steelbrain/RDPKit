@@ -726,6 +726,16 @@ import Testing
     #expect(names.allSatisfy { $0 != "." && $0 != ".." && !$0.contains("/") })
 }
 
+/// A name with a leading dot is hidden in Finder; a remote file is never saved under one.
+@Test func clipboardRemoteFileNamesAreNeverHidden() throws {
+    let names = try RDPClipboardFileGroupDescriptorW(descriptors: [".zshrc", ".ssh\\authorized_keys", "...", "notes.txt"].map {
+        fileDescriptor(fileName: $0)
+    }).remoteFileTransferFiles().map(\.fileName)
+
+    #expect(names == ["_zshrc", "authorized_keys", "_..", "notes.txt"])
+    #expect(RDPClipboardRemoteFileTransferFile(fileIndex: 0, fileName: ".hidden").fileName == "_hidden")
+}
+
 @Test func clipboardRemoteFileNamesStayUniqueWhenOversizedGraphemesAreCut() throws {
     // One grapheme of 401 UTF-8 bytes fits the 260-unit cFileName but not a 255-byte file name.
     let marks = String(repeating: "\u{301}", count: 200)
