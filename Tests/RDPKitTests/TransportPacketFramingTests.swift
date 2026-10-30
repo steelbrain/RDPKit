@@ -292,8 +292,10 @@ private let tpkt = Data([0x03, 0x00, 0x00, 0x07, 0x02, 0xF0, 0x80])
     eventLoop.execute {}
     let result = Locked<Result<Data, Error>?>(nil)
     let returned = DispatchSemaphore(value: 0)
+    // Only that thread receives; this one may close, which any thread can.
+    nonisolated(unsafe) let receivingTransport = transport
     DispatchQueue.global().async {
-        result.withLock { $0 = Result { try transport.receive(timeout: .milliseconds(1)) } }
+        result.withLock { $0 = Result { try receivingTransport.receive(timeout: .milliseconds(1)) } }
         returned.signal()
     }
     let timedOutInTime = returned.wait(timeout: .now() + 5) == .success
