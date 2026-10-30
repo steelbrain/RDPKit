@@ -8,11 +8,15 @@ extension RDPClientConnection {
         let isDynamicChannelTransport = name == RDPStaticVirtualChannel.drdynvc.name
         let maximumChunkByteCount = staticChannelChunkSize.byteCount
         let payload: Data
+        var firstChunk: RDPStaticVirtualChannelPDU?
         do {
             let chunk = try RDPStaticVirtualChannelPDU.parse(
                 fromUserData: indication.userData,
                 maximumChunkByteCount: maximumChunkByteCount
             )
+            if chunk.isFirst {
+                firstChunk = chunk
+            }
             // Appended in place: a copy out of the dictionary would copy the partial message per chunk.
             guard let message = try staticChannelReassemblers[indication.channelID, default: .init()]
                 .append(chunk, maximumChunkByteCount: maximumChunkByteCount)
@@ -25,6 +29,9 @@ extension RDPClientConnection {
                 throw error
             }
             recordChannelError(name, error)
+            if name == RDPStaticVirtualChannel.cliprdr.name, let firstChunk {
+                handleLostClipboardMessage(startingWith: firstChunk.payload)
+            }
             return
         }
 
@@ -59,6 +66,19 @@ extension RDPClientConnection {
         } catch {
             recordChannelError(RDPStaticVirtualChannel.cliprdr.name, error)
         }
+    }
+
+    /// A Format Data Response dropped whole, such as one over the 64 MiB a message may
+    /// hold, still answers the request it was for: left outstanding, that request would
+    /// hold back every later remote copy of the session.
+    private func handleLostClipboardMessage(startingWith payload: Data) {
+        var cursor = ByteCursor(payload)
+        guard let clipboard,
+              (try? cursor.readLittleEndianUInt16()) == RDPClipboardMessageType.formatDataResponse
+        else {
+            return
+        }
+        deliver(clipboard.receiveLostFormatDataResponse(), from: clipboard)
     }
 
     /// Delivers the event turning `fetchesRemoteCopies` on queued, if it still holds.

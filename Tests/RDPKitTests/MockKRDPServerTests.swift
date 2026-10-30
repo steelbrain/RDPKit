@@ -2077,6 +2077,30 @@ struct MockKRDPServerTests {
         )])
     }
 
+    /// A Format Data Response longer than a channel message may be is dropped whole, but it
+    /// still answers its request: the client asks for the copy's next format, and the copy
+    /// arrives without the text.
+    @Test func clientFetchesOnAfterAResponseTooLongToReassemble() throws {
+        let observed = Locked(Observed())
+        let run = try runMock(
+            .init(remoteClipboardText: "remote", remoteClipboardHTML: "<b>remote</b>", oversizedRemoteClipboardText: true),
+            { $0.clipboardEnabled = true },
+            client: {
+                RDPSessionClient().run(
+                    configuration: $0,
+                    onClipboardText: { text in observed.withLock { $0.clipboardTexts.append(text) } },
+                    onClipboardContent: { content in observed.withLock { $0.clipboardContents.append(content) } }
+                )
+            }
+        )
+
+        #expect(run.report.status == "success")
+        #expect(observed.value.clipboardTexts.isEmpty)
+        #expect(observed.value.clipboardContents == [RDPClipboardContent(
+            html: "<html><body><!--StartFragment--><b>remote</b><!--EndFragment--></body></html>"
+        )])
+    }
+
     /// A server whose clipboard is emptied sends a Format List with no formats; the
     /// application hears of it, as nothing would be fetched.
     @Test func clientReportsAnEmptiedRemoteClipboard() throws {

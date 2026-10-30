@@ -44,6 +44,10 @@
 
 ### Compatibility and fixes
 
+- A remote copy whose data is over the 64 MiB a channel message may hold,
+  such as a large image, no longer stops every later remote copy: the
+  dropped response fails its request, and the copy's other formats still
+  come.
 - Remote files whose names APFS takes for one, such as "σ" and "Σ" or "ß"
   and "SS", are numbered apart; names were compared lowercased, so the
   second was saved over the first.

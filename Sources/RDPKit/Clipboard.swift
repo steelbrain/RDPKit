@@ -1174,6 +1174,12 @@ public final class RDPClipboardSession: @unchecked Sendable {
         return nil
     }
 
+    /// A Format Data Response the channel dropped before it could be read: the request it
+    /// answers failed, as if the server had said so.
+    func receiveLostFormatDataResponse() -> RDPClipboardEvent? {
+        try? receiveFormatData(RDPClipboardFormatDataResponsePDU(ok: false, data: Data()))
+    }
+
     private func dropAnsweredFormatDataRequest() {
         lock.withLock {
             guard isAwaitingFormatData, !formatDataRequests.isEmpty else {

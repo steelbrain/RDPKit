@@ -88,6 +88,9 @@ final class MockKRDPServer: LoopbackTestServer {
         var remoteClipboardHTML: String?
         /// Announce an empty clipboard: a Format List with no formats.
         var emptyRemoteClipboard = false
+        /// Answer the request for `remoteClipboardText` with the first chunk of a response
+        /// longer than the client reassembles.
+        var oversizedRemoteClipboardText = false
         var audioEnabled = false
         var waitForCompatibilityTraffic = false
         var requireBitmapCodecsCapability = false
@@ -1354,6 +1357,10 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
             transcript.withLock { $0.receivedLocalClipboardText = text }
             maybeReleaseCompatibilityGraphicsFrame(context: context)
         } else if let request = try RDPClipboardFormatDataRequestPDU.parseIfPresent(from: clipboardPDU) {
+            if request.formatID == RDPClipboardFormatID.unicodeText, options.oversizedRemoteClipboardText {
+                write(MockKRDPFixtures.oversizedClipboardFormatDataResponseStart(), context: context)
+                return
+            }
             for chunk in MockKRDPFixtures.clipboardPackets(clipboardFormatDataResponse(for: request).encoded()) {
                 write(chunk, context: context)
             }
@@ -2176,6 +2183,20 @@ private enum MockKRDPFixtures {
 
     static func clipboardPacket(_ payload: Data) -> Data {
         staticVirtualChannelPacket(payload, channelID: MockKRDPConstants.clipboardChannelID)
+    }
+
+    /// The FIRST chunk of a Format Data Response one byte longer than a static virtual
+    /// channel message may be; the rest never comes.
+    static func oversizedClipboardFormatDataResponseStart() -> Data {
+        let totalLength = UInt32(RDPStaticVirtualChannelReassembler.defaultMaximumTotalLength + 1)
+        var userData = Data()
+        userData.appendLittleEndianUInt32(totalLength)
+        userData.appendLittleEndianUInt32(RDPStaticVirtualChannelFlags.first | RDPStaticVirtualChannelFlags.showProtocol)
+        userData.appendLittleEndianUInt16(RDPClipboardMessageType.formatDataResponse)
+        userData.appendLittleEndianUInt16(RDPClipboardMessageFlags.responseOK)
+        userData.appendLittleEndianUInt32(totalLength - 8)
+        userData.append(Data(count: 1_000))
+        return mcsSendDataIndication(channelID: MockKRDPConstants.clipboardChannelID, userData: userData)
     }
 
     /// Splits a payload into the 1,600-byte chunks the client advertises

@@ -52,7 +52,7 @@ struct RDPStaticVirtualChannelPDU: Equatable, Sendable {
         self.payload = payload
     }
 
-    fileprivate var isFirst: Bool {
+    var isFirst: Bool {
         flags & RDPStaticVirtualChannelFlags.first != 0
     }
 
