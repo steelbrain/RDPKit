@@ -174,11 +174,12 @@ private extension ByteCursor {
             }
             return 0
 
-        case 0x0002:
-            return try readPayloadLength(headerLength: headerLength, requiresNonzeroPayload: false)
-
-        case 0x002B:
-            return try readPayloadLength(headerLength: headerLength, requiresNonzeroPayload: true)
+        // A connect-time Stop may carry no payload: FreeRDP 3.32 rounds its
+        // payloadLength down to a multiple of 4 and sends 0 for anything
+        // shorter, and its own client accepts that (libfreerdp/core/autodetect.c,
+        // autodetect_send_bandwidth_measure_stop and _recv_bandwidth_measure_stop).
+        case 0x0002, 0x002B:
+            return try readPayloadLength(headerLength: headerLength)
 
         case 0x0840, 0x0880:
             guard headerLength == 0x0E, remaining == 8 else {
@@ -204,17 +205,12 @@ private extension ByteCursor {
         }
     }
 
-    private mutating func readPayloadLength(
-        headerLength: UInt8,
-        requiresNonzeroPayload: Bool
-    ) throws -> Int {
+    private mutating func readPayloadLength(headerLength: UInt8) throws -> Int {
         guard headerLength == 0x08, remaining >= 2 else {
             throw RDPDecodeError.invalidAutoDetectRequest
         }
         let payloadByteCount = Int(try readLittleEndianUInt16())
-        guard remaining == payloadByteCount,
-              requiresNonzeroPayload == false || payloadByteCount > 0
-        else {
+        guard remaining == payloadByteCount else {
             throw RDPDecodeError.invalidAutoDetectRequest
         }
         _ = try readData(count: payloadByteCount)

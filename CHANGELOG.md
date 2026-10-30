@@ -41,6 +41,9 @@
 
 ### Compatibility and fixes
 
+- A connect-time Bandwidth Measure Stop with no payload gets its results.
+  FreeRDP's server sends one when asked for fewer than 4 bytes; RDPKit
+  dropped it as malformed and left the server waiting for the reply.
 - Remote copies keep coming after a Format Data Response that does not parse,
   or after the server's clipboard restarts (a new Monitor Ready): the request
   it left outstanding held back every later one for the rest of the session.

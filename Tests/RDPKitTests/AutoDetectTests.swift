@@ -88,7 +88,9 @@ import Testing
     }
 }
 
-@Test func rejectsBandwidthMeasureStopWithoutRequiredPayload() {
+/// FreeRDP 3.32 sends a connect-time Stop with payloadLength 0 when asked for
+/// fewer than 4 bytes, and its client answers it (libfreerdp/core/autodetect.c).
+@Test func answersBandwidthMeasureStopWithoutPayload() throws {
     var pdu = Data()
     pdu.appendUInt8(0x68)
     pdu.appendBigEndianUInt16(5)
@@ -102,10 +104,10 @@ import Testing
         0x2B, 0x00,
         0x00, 0x00,
     ])
+    let request = try #require(try RDPServerAutoDetectRequest.parseIfPresent(fromTPKT: X224DataTPDU.wrap(pdu)))
 
-    #expect(throws: RDPDecodeError.invalidAutoDetectRequest) {
-        try RDPServerAutoDetectRequest.parseIfPresent(fromTPKT: X224DataTPDU.wrap(pdu))
-    }
+    #expect(request.payloadByteCount == 0)
+    #expect(meterResponse(to: request)?.responseType == RDPClientAutoDetectResponsePDU.ResponseType.bandwidthMeasureResults)
 }
 
 @Test func parsesBandwidthMeasurePayloadWithoutResponse() throws {
