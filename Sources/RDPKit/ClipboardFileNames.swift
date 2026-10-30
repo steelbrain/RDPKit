@@ -107,7 +107,7 @@ enum RDPClipboardFileNameRules {
     /// its own name.
     private func uniquePath(of name: String, in folder: String?, usedPaths: inout RDPClipboardUsedFileNames) -> String {
         // Names are never given back, so every number below the next one for this name is taken.
-        let key = ((folder ?? "") + "\\" + name).lowercased()
+        let key = Self.folded((folder ?? "") + "\\" + name)
         var folder = folder
         var number = usedPaths.nextNumbers[key] ?? 1
         while true {
@@ -117,12 +117,19 @@ enum RDPClipboardFileNameRules {
                 number = 1
                 continue
             }
-            if usedPaths.paths.insert(candidate.lowercased()).inserted {
+            if usedPaths.paths.insert(Self.folded(candidate)).inserted {
                 usedPaths.nextNumbers[key] = number + 1
                 return candidate
             }
             number += 1
         }
+    }
+
+    /// `path` as a file system that ignores case compares it. APFS folds case as Unicode does,
+    /// so "a\u{3C2}" and "A\u{3A3}", or "\u{DF}" and "SS", name one file, which `lowercased()`
+    /// keeps apart; String equality already makes canonically equivalent names one.
+    private static func folded(_ path: String) -> String {
+        path.folding(options: .caseInsensitive, locale: nil)
     }
 
     /// `name` in `folder`, from 2 on with "-`number`" before its extension, and shortened to

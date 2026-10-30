@@ -44,6 +44,9 @@
 
 ### Compatibility and fixes
 
+- Remote files whose names APFS takes for one, such as "σ" and "Σ" or "ß"
+  and "SS", are numbered apart; names were compared lowercased, so the
+  second was saved over the first.
 - A server that starts device redirection over, with a new Server Announce,
   gets the shared drives again; they were announced once per connection, so
   the drives vanished. The handles it forgot are closed, deleting what they

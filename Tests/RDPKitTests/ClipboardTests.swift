@@ -736,6 +736,18 @@ import Testing
     #expect(RDPClipboardRemoteFileTransferFile(fileIndex: 0, fileName: ".hidden").fileName == "_hidden")
 }
 
+/// APFS folds case as Unicode does: final and capital sigma, sharp s and "SS", and the
+/// "ff" ligature and "ff" each name one file, so the second of each pair is numbered
+/// rather than saved over the first.
+@Test func clipboardRemoteFileNamesDifferAsAPFSComparesThem() throws {
+    let rawNames = ["a\u{3C2}.txt", "A\u{3A3}.txt", "\u{DF}.txt", "SS.txt", "\u{FB00}.txt", "ff.txt"]
+    let names = try RDPClipboardFileGroupDescriptorW(descriptors: rawNames.map { fileDescriptor(fileName: $0) })
+        .remoteFileTransferFiles()
+        .map(\.fileName)
+
+    #expect(names == ["a\u{3C2}.txt", "A\u{3A3}-2.txt", "\u{DF}.txt", "SS-2.txt", "\u{FB00}.txt", "ff-2.txt"])
+}
+
 @Test func clipboardRemoteFileNamesStayUniqueWhenOversizedGraphemesAreCut() throws {
     // One grapheme of 401 UTF-8 bytes fits the 260-unit cFileName but not a 255-byte file name.
     let marks = String(repeating: "\u{301}", count: 200)
