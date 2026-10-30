@@ -1052,6 +1052,26 @@ private func replaceLittleEndianUInt32(in data: inout Data, at offset: Int, with
         == ntlmChannelBindingsHash(certificateDigest: Data(SHA512.hash(data: ecdsaCertificate))))
 }
 
+/// An RSASSA-PSS signature names its hash in its parameters (RFC 4055 3.1); SHA-1, the
+/// default when they name none, binds with SHA-256 as for any SHA-1 signature.
+@Test func credSSPCertificateTakesTheChannelBindingHashOfAnRSAPSSSignatureFromItsParameters() throws {
+    let rsassaPSS = Data([0x06, 0x09, 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0A])
+    func pssCertificate(hashOID: [UInt8]) -> Data {
+        let hashAlgorithm = sequence(Data([0x06, UInt8(hashOID.count)] + hashOID) + Data([0x05, 0x00]))
+        return testCertificate(signatureAlgorithm: rsassaPSS + sequence(context(0, hashAlgorithm)))
+    }
+    let sha384Certificate = pssCertificate(hashOID: [0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x02])
+    let sha512Certificate = pssCertificate(hashOID: [0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x03])
+    let defaultCertificate = testCertificate(signatureAlgorithm: rsassaPSS + sequence(Data()))
+
+    #expect(try RDPCredSSPCertificate.ntlmChannelBindingsHash(fromCertificateDER: sha384Certificate)
+        == ntlmChannelBindingsHash(certificateDigest: Data(SHA384.hash(data: sha384Certificate))))
+    #expect(try RDPCredSSPCertificate.ntlmChannelBindingsHash(fromCertificateDER: sha512Certificate)
+        == ntlmChannelBindingsHash(certificateDigest: Data(SHA512.hash(data: sha512Certificate))))
+    #expect(try RDPCredSSPCertificate.ntlmChannelBindingsHash(fromCertificateDER: defaultCertificate)
+        == ntlmChannelBindingsHash(certificateDigest: Data(SHA256.hash(data: defaultCertificate))))
+}
+
 private func ntlmChannelBindingsHash(certificateDigest: Data) -> Data {
     let token = Data("tls-server-end-point:".utf8) + certificateDigest
     var bindings = Data()

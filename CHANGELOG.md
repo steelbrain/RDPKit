@@ -41,6 +41,10 @@
 
 ### Compatibility and fixes
 
+- NLA signs in to a server whose certificate has an RSASSA-PSS signature
+  with SHA-384 or SHA-512: the NTLM channel binding took SHA-256 instead of
+  the hash the signature's parameters name (RFC 5929 4.1, RFC 4055 3.1), so
+  the server refused it.
 - A SurfaceToCache that RDPKit refuses, such as one over the cache's byte
   budget, empties its slot: a later CacheToSurface painted what the slot
   held before, which the server had already replaced.

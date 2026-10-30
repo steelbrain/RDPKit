@@ -196,11 +196,15 @@ enum RDPCredSSPCertificate {
     /// application data is the RFC 5929 tls-server-end-point binding.
     static func ntlmChannelBindingsHash(fromCertificateDER certificate: Data) throws -> Data {
         var signatureAlgorithm = try certificateFields(certificate).signatureAlgorithm
+        var algorithm = try signatureAlgorithm.readObjectIdentifier()
+        if algorithm == rsassaPSS {
+            algorithm = try pssHashAlgorithm(parameters: &signatureAlgorithm)
+        }
         // RFC 5929 4.1: the certificate signature's hash, with SHA-256 replacing MD5 and SHA-1.
-        let certificateDigest = switch try signatureAlgorithm.readObjectIdentifier() {
-        case sha384WithRSAEncryption, ecdsaWithSHA384:
+        let certificateDigest = switch algorithm {
+        case sha384WithRSAEncryption, ecdsaWithSHA384, sha384:
             Data(SHA384.hash(data: certificate))
-        case sha512WithRSAEncryption, ecdsaWithSHA512:
+        case sha512WithRSAEncryption, ecdsaWithSHA512, sha512:
             Data(SHA512.hash(data: certificate))
         default:
             Data(SHA256.hash(data: certificate))
@@ -211,6 +215,21 @@ enum RDPCredSSPCertificate {
         bindings.appendLittleEndianUInt32(UInt32(applicationData.count))
         bindings.append(applicationData)
         return Data(Insecure.MD5.hash(data: bindings))
+    }
+
+    /// The hashAlgorithm of RSASSA-PSS-params (RFC 4055 3.1), which an RSASSA-PSS signature
+    /// names in its parameters rather than its OID; empty, as for the default SHA-1, when absent.
+    private static func pssHashAlgorithm(parameters signatureAlgorithm: inout RDPASN1Reader) throws -> Data {
+        guard signatureAlgorithm.peekTag == 0x30 else {
+            return Data()
+        }
+        var parameters = try signatureAlgorithm.readConstructed(tag: 0x30)
+        guard parameters.peekTag == 0xA0 else {
+            return Data()
+        }
+        var hashAlgorithm = try parameters.readConstructed(tag: 0xA0)
+        var identifier = try hashAlgorithm.readConstructed(tag: 0x30)
+        return try identifier.readObjectIdentifier()
     }
 
     /// RFC 5280 4.1 Certificate: tbsCertificate, signatureAlgorithm, signatureValue.
@@ -232,6 +251,9 @@ enum RDPCredSSPCertificate {
     private static let sha512WithRSAEncryption = Data([0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0D])
     private static let ecdsaWithSHA384 = Data([0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x04, 0x03, 0x03])
     private static let ecdsaWithSHA512 = Data([0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x04, 0x03, 0x04])
+    private static let rsassaPSS = Data([0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0A])
+    private static let sha384 = Data([0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x02])
+    private static let sha512 = Data([0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x03])
 }
 
 /// Server tokens come as raw NTLM messages or SPNEGO NegTokenResp (MS-CSSP 2.2.1.1);
