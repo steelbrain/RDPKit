@@ -19,6 +19,10 @@
 - Once the server announces a copy of its own, the clipboard no longer offers
   what the app last published: a server could ask for the user's earlier
   copy, text or files, for the rest of the session, even with fetching off.
+- Wire transcripts and report hex no longer keep a redirection password when
+  the Server Redirection PDU has a flag RDPKit does not know or bytes it
+  cannot place: everything after its flags is zeroed, and everything after
+  the header of a Save Session Info PDU that does not parse.
 - A server can no longer exhaust the app's file descriptors through a shared
   drive: all drives together hold at most 64. FIFOs, sockets and devices in a
   shared folder are neither opened nor listed, so opening one can't block the

@@ -65,6 +65,11 @@ struct RDPServerRedirectionPDU: Equatable, Sendable {
         return passwordCookie.map(decodeUTF16LEString)
     }
 
+    /// Whether a flag this client does not know left the optional fields unread.
+    var hasUnreadFields: Bool {
+        flags.rawValue & ~Flags.knownFieldMask != 0
+    }
+
     /// Parses a Server Redirection PDU, or returns nil for other PDUs.
     static func parseIfPresent(from indication: MCSSendDataIndicationPDU) throws -> RDPServerRedirectionPDU? {
         guard indication.userData.count >= 20 else {

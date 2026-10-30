@@ -155,6 +155,11 @@ extension Data {
     /// password unless PK-encrypted ([MS-RDPBCGR] 2.2.13.1), and the
     /// auto-reconnect cookie of a Save Session Info PDU, which reconnects to
     /// the session without a password ([MS-RDPBCGR] 2.2.4.2, 5.5).
+    ///
+    /// A Server Redirection PDU this client does not read in full, for a flag it does not
+    /// know or a layout it rejects, has everything after its RedirFlags zeroed, and a
+    /// Save Session Info PDU it cannot read everything after its Share Data header: the
+    /// secret could be anywhere in them.
     var redactingServerSecrets: Data {
         guard first == TPKT.version, let indication = try? MCSSendDataIndicationPDU.parse(fromTPKT: self) else {
             return self
@@ -164,15 +169,27 @@ extension Data {
             data.appendLittleEndianUInt32(value)
             return data
         }
+        let userData = indication.userData
+        // The Share Control PDU ends the packet: its header, pad2Octets, Flags, Length,
+        // SessionId and RedirFlags come before a redirection's fields, and the 18-byte
+        // Share Data header before a Save Session Info's.
+        let userDataStart = endIndex - userData.count
+        let shareControlType = userData.count >= 4 ? userData[userData.startIndex + 2] & 0x0F : nil
         // Each secret is found with the field just before it, so a short one
         // cannot match a header.
         let secret: (prefix: Data, bytes: Data)?
-        if let redirection = try? RDPServerRedirectionPDU.parseIfPresent(from: indication) {
+        if shareControlType == 0x0A {
+            guard let redirection = try? RDPServerRedirectionPDU.parseIfPresent(from: indication),
+                  !redirection.hasUnreadFields
+            else {
+                return zeroing(from: userDataStart + 20)
+            }
             secret = redirection.passwordCookie.map { (littleEndian(UInt32($0.count)), $0) }
-        } else if let reconnect = (try? RDPShareDataPDU.parseIfPresent(from: indication))?
-            .saveSessionInfo?.autoReconnectPacket
-        {
-            secret = (littleEndian(reconnect.logonID), reconnect.arcRandomBits)
+        } else if shareControlType == 0x07, userData.count > 14, userData[userData.startIndex + 14] == 0x26 {
+            guard let saveSessionInfo = (try? RDPShareDataPDU.parseIfPresent(from: indication))?.saveSessionInfo else {
+                return zeroing(from: userDataStart + 18)
+            }
+            secret = saveSessionInfo.autoReconnectPacket.map { (littleEndian($0.logonID), $0.arcRandomBits) }
         } else {
             secret = nil
         }
@@ -181,6 +198,15 @@ extension Data {
         }
         var redacted = self
         redacted.resetBytes(in: range.lowerBound + secret.prefix.count ..< range.upperBound)
+        return redacted
+    }
+
+    private func zeroing(from offset: Index) -> Data {
+        guard offset < endIndex else {
+            return self
+        }
+        var redacted = self
+        redacted.resetBytes(in: offset ..< endIndex)
         return redacted
     }
 }
