@@ -30,6 +30,10 @@
 
 ### Compatibility and fixes
 
+- A receive whose deadline had passed by the time the event loop got to it,
+  behind other work such as input or clipboard sends, could wait for good:
+  its timeout fired before the wait existed. Phase timeouts, and the polling
+  of `shouldCancel`, now always end such a wait.
 - A shared drive deletes what the server's handles had pending when the
   session ends, as closing them would, and refuses an undefined
   CreateDisposition instead of truncating the file.

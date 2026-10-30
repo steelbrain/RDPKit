@@ -266,6 +266,48 @@ private let tpkt = Data([0x03, 0x00, 0x00, 0x07, 0x02, 0xF0, 0x80])
     #expect(error.map(String.init(describing:)) == "TLS failed: connection closed before the TLS handshake completed")
 }
 
+/// A receive whose deadline has passed by the time the event loop gets to it, behind other
+/// tasks, still times out: its timeout is scheduled once the wait exists.
+@Test func aReceiveQueuedBehindOtherTasksStillTimesOut() throws {
+    let server = try ServerBootstrap(group: MultiThreadedEventLoopGroup.singleton)
+        .childChannelInitializer { $0.eventLoop.makeSucceededVoidFuture() }
+        .bind(host: "127.0.0.1", port: 0)
+        .wait()
+    defer { server.close(promise: nil) }
+    let transport = try RDPTransport.connect(
+        host: "127.0.0.1",
+        port: UInt16(try #require(server.localAddress?.port)),
+        timeoutSeconds: 10,
+        callbacks: RDPSessionCallbacks()
+    )
+    defer { transport.close() }
+
+    let eventLoop = transport.channel.eventLoop
+    let blocking = DispatchSemaphore(value: 0)
+    eventLoop.execute {
+        blocking.signal()
+        usleep(100_000)
+    }
+    blocking.wait()
+    eventLoop.execute {}
+    let result = Locked<Result<Data, Error>?>(nil)
+    let returned = DispatchSemaphore(value: 0)
+    DispatchQueue.global().async {
+        result.withLock { $0 = Result { try transport.receive(timeout: .milliseconds(1)) } }
+        returned.signal()
+    }
+    let timedOutInTime = returned.wait(timeout: .now() + 5) == .success
+    if !timedOutInTime {
+        // Closing ends the wait, so the test ends either way.
+        transport.close()
+        returned.wait()
+    }
+    #expect(timedOutInTime)
+    #expect(throws: RDPTransportError.timedOut) {
+        try result.value?.get()
+    }
+}
+
 /// Closes the connection on the client's first bytes.
 private final class ClosingHandler: ChannelInboundHandler, Sendable {
     typealias InboundIn = ByteBuffer

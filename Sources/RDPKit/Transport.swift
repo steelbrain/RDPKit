@@ -611,13 +611,15 @@ final class RDPTransport {
         let promise = eventLoop.makePromise(of: Data.self)
         eventLoop.execute {
             reader.value.next(promise)
-        }
-        if let deadline {
-            let timeout = eventLoop.scheduleTask(deadline: deadline) {
-                reader.value.abandon(promise, error: RDPTransportError.timedOut)
-            }
-            promise.futureResult.whenComplete { _ in
-                timeout.cancel()
+            // Scheduled once the wait exists: a deadline already past when the loop gets here,
+            // behind other tasks, must not fire before it and leave it waiting for good.
+            if let deadline {
+                let timeout = eventLoop.scheduleTask(deadline: deadline) {
+                    reader.value.abandon(promise, error: RDPTransportError.timedOut)
+                }
+                promise.futureResult.whenComplete { _ in
+                    timeout.cancel()
+                }
             }
         }
         return try promise.futureResult.wait()
