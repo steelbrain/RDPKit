@@ -9,8 +9,23 @@
   `RDPRDSTLSResultCode` such as `.logonFailure`. `RDPConnectionStage` has a
   new stage, `rdSTLS`.
 
+### Security
+
+- A shared drive's handles stay inside its folder. A handle's path is checked
+  again before each use, so a server can no longer reach outside the folder
+  by renaming a directory under another case than an open handle spells it
+  and moving a directory holding a link to outside into its place. A rename
+  over an open file is refused, as NTFS refuses it.
+- A server can no longer exhaust the app's file descriptors through a shared
+  drive: all drives together hold at most 64. FIFOs, sockets and devices in a
+  shared folder are neither opened nor listed, so opening one can't block the
+  drive, and search patterns longer than a file name are refused.
+
 ### Compatibility and fixes
 
+- A shared drive deletes what the server's handles had pending when the
+  session ends, as closing them would, and refuses an undefined
+  CreateDisposition instead of truncating the file.
 - GNOME Remote Login gets past the system sign-in. After a Server
   Redirection whose password is flagged PK-encrypted, the reconnect offers
   RDSTLS beside TLS and CredSSP and, when the server selects it, sends the

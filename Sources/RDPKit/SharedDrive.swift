@@ -31,13 +31,17 @@ struct RDPDriveFailure: Error, Equatable {
 /// Every path stays inside the folder: a request names a path relative to it,
 /// `.`, `..` and characters Windows never sends are refused, the parent of
 /// each entry is resolved with `realpath` and must be inside the folder, and a
-/// symbolic link is followed only to a target inside it. Only the device
-/// redirection session's I/O queue uses a device.
+/// symbolic link is followed only to a target inside it. A handle's paths are
+/// checked again before each use, so a rename that moves a link into their place
+/// cannot take them outside. Only regular files and directories are served. Only
+/// the device redirection session's I/O queue uses a device.
 final class RDPSharedDriveDevice: @unchecked Sendable {
     /// A larger read is answered with fewer bytes, which [MS-RDPEFS] 2.2.1.5.3 allows;
     /// the server sizes reads, and this bounds what one request makes the client hold.
     static let maximumReadByteCount = 16 * 1024 * 1024
     static let maximumOpenFileCount = 4096
+    /// No file name is longer ([MS-FSCC] 2.1.5.2), so neither is a search pattern that names one.
+    static let maximumSearchPatternLength = 255
 
     let deviceID: UInt32
     let drive: RDPSharedDrive
@@ -45,17 +49,19 @@ final class RDPSharedDriveDevice: @unchecked Sendable {
     private(set) var rootPath: String?
     private var openFiles: [UInt32: RDPSharedDriveOpenFile] = [:]
     private var nextFileID: UInt32 = 1
+    private let descriptorBudget: RDPSharedDriveDescriptorBudget
 
-    init(deviceID: UInt32, drive: RDPSharedDrive) {
+    init(deviceID: UInt32, drive: RDPSharedDrive, descriptorBudget: RDPSharedDriveDescriptorBudget = .shared) {
         self.deviceID = deviceID
         self.drive = drive
+        self.descriptorBudget = descriptorBudget
     }
 
+    /// The session's end closes the server's handles, deleting what they had pending, as
+    /// closing each would.
     deinit {
         for file in openFiles.values {
-            if let descriptor = file.descriptor {
-                Darwin.close(descriptor)
-            }
+            release(file)
         }
     }
 
@@ -153,6 +159,9 @@ final class RDPSharedDriveDevice: @unchecked Sendable {
         guard openFiles.count < Self.maximumOpenFileCount else {
             throw RDPDriveFailure(status: RDPNTStatus.tooManyOpenedFiles)
         }
+        guard disposition <= RDPDriveCreateDisposition.overwriteIf else {
+            throw RDPDriveFailure(status: RDPNTStatus.invalidParameter)
+        }
         let components = try Self.components(of: path)
         let entryPath = try entry(for: components)
         let deleteOnClose = options & RDPDriveCreateOptions.deleteOnClose != 0
@@ -182,7 +191,13 @@ final class RDPSharedDriveDevice: @unchecked Sendable {
             ].contains(disposition), isDirectory {
                 throw RDPDriveFailure(status: RDPNTStatus.fileIsADirectory)
             }
-            file = RDPSharedDriveOpenFile(path: entryPath, targetPath: existing.path, isDirectory: isDirectory)
+            file = RDPSharedDriveOpenFile(
+                path: entryPath,
+                entryIdentity: RDPFileIdentity(existing.entryInfo),
+                targetPath: existing.path,
+                targetIdentity: RDPFileIdentity(existing.info),
+                isDirectory: isDirectory
+            )
             switch disposition {
             case RDPDriveCreateDisposition.open, RDPDriveCreateDisposition.openIf:
                 information = RDPDriveCreateInformation.opened
@@ -212,17 +227,27 @@ final class RDPSharedDriveDevice: @unchecked Sendable {
             guard !components.isEmpty else {
                 throw RDPDriveFailure(status: RDPNTStatus.accessDenied)
             }
-            file = RDPSharedDriveOpenFile(path: entryPath, targetPath: entryPath, isDirectory: wantsDirectory)
+            var info = stat()
             if wantsDirectory {
-                guard mkdir(entryPath, 0o777) == 0 else {
+                guard mkdir(entryPath, 0o777) == 0, lstat(entryPath, &info) == 0 else {
                     throw RDPDriveFailure.posix()
                 }
+                file = RDPSharedDriveOpenFile(created: entryPath, identity: RDPFileIdentity(info), isDirectory: true)
             } else {
+                guard descriptorBudget.reserve() else {
+                    throw RDPDriveFailure(status: RDPNTStatus.tooManyOpenedFiles)
+                }
                 // O_EXCL: the name is created here, never followed somewhere else.
                 let descriptor = Darwin.open(entryPath, O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC, 0o666)
-                guard descriptor >= 0 else {
-                    throw RDPDriveFailure.posix()
+                guard descriptor >= 0, fstat(descriptor, &info) == 0 else {
+                    let failure = RDPDriveFailure.posix()
+                    if descriptor >= 0 {
+                        Darwin.close(descriptor)
+                    }
+                    descriptorBudget.release()
+                    throw failure
                 }
+                file = RDPSharedDriveOpenFile(created: entryPath, identity: RDPFileIdentity(info), isDirectory: false)
                 file.descriptor = descriptor
                 file.isWritable = true
             }
@@ -239,18 +264,26 @@ final class RDPSharedDriveDevice: @unchecked Sendable {
         return body
     }
 
+    /// Opens a regular file. O_NONBLOCK keeps a FIFO put in its place from blocking the open.
     private func open(_ file: inout RDPSharedDriveOpenFile, write: Bool, truncate: Bool, readOnlyFallback: Bool) throws {
-        var descriptor = Darwin.open(
-            file.targetPath,
-            (write ? O_RDWR : O_RDONLY) | (truncate ? O_TRUNC : 0) | O_CLOEXEC | O_NOFOLLOW
-        )
+        guard descriptorBudget.reserve() else {
+            throw RDPDriveFailure(status: RDPNTStatus.tooManyOpenedFiles)
+        }
+        let flags = O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK
+        var descriptor = Darwin.open(file.targetPath, (write ? O_RDWR : O_RDONLY) | (truncate ? O_TRUNC : 0) | flags)
         file.isWritable = write
         if descriptor < 0, write, readOnlyFallback, errno == EACCES {
-            descriptor = Darwin.open(file.targetPath, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+            descriptor = Darwin.open(file.targetPath, O_RDONLY | flags)
             file.isWritable = false
         }
-        guard descriptor >= 0 else {
-            throw RDPDriveFailure.posix()
+        var info = stat()
+        guard descriptor >= 0, fstat(descriptor, &info) == 0, info.isRegularFile else {
+            let failure = descriptor >= 0 ? RDPDriveFailure(status: RDPNTStatus.accessDenied) : RDPDriveFailure.posix()
+            if descriptor >= 0 {
+                Darwin.close(descriptor)
+            }
+            descriptorBudget.release()
+            throw failure
         }
         file.descriptor = descriptor
     }
@@ -259,16 +292,18 @@ final class RDPSharedDriveDevice: @unchecked Sendable {
         guard let file = openFiles.removeValue(forKey: fileID) else {
             throw RDPDriveFailure.invalidHandle
         }
+        release(file)
+    }
+
+    /// Closes a handle's descriptor and deletes its entry if a delete is pending.
+    private func release(_ file: RDPSharedDriveOpenFile) {
         if let descriptor = file.descriptor {
             Darwin.close(descriptor)
+            descriptorBudget.release()
         }
-        guard file.deletePending else {
-            return
-        }
-        // rmdir never removes a directory with anything in it, and a link is removed,
-        // not what it points to.
-        var info = stat()
-        guard lstat(file.path, &info) == 0 else {
+        // An entry that is no longer the one opened is left alone. rmdir never removes a
+        // directory with anything in it, and a link is removed, not what it points to.
+        guard file.deletePending, let info = try? verifiedEntry(of: file) else {
             return
         }
         _ = info.isDirectory ? rmdir(file.path) : unlink(file.path)
@@ -351,9 +386,12 @@ final class RDPSharedDriveDevice: @unchecked Sendable {
             throw RDPDriveFailure.invalidHandle
         }
         var info = stat()
-        let result = file.descriptor.map { fstat($0, &info) } ?? stat(file.targetPath, &info)
-        guard result == 0 else {
-            throw RDPDriveFailure.posix()
+        if let descriptor = file.descriptor {
+            guard fstat(descriptor, &info) == 0 else {
+                throw RDPDriveFailure.posix()
+            }
+        } else {
+            info = try verifiedTarget(of: file)
         }
         let information = Self.information(from: info, name: Self.lastComponent(of: file.path))
         switch informationClass {
@@ -380,6 +418,7 @@ final class RDPSharedDriveDevice: @unchecked Sendable {
             let lastWriteTime = try cursor.readLittleEndianUInt64()
             // ChangeTime and FileAttributes are not applied: the change time is the
             // system's, and the attributes have no exact match in POSIX permissions.
+            _ = try verifiedTarget(of: file)
             try setTimes(of: file.targetPath, creationTime: creationTime, lastWriteTime: lastWriteTime)
         case RDPDriveInformationClass.fileEndOfFile:
             try truncate(fileID, to: cursor.readLittleEndianUInt64(), onlyShrinking: false)
@@ -394,6 +433,7 @@ final class RDPSharedDriveDevice: @unchecked Sendable {
                 }
                 // Refused now, as NTFS does, so the remote never thinks a directory with
                 // contents was deleted.
+                _ = try verifiedTarget(of: file)
                 if file.isDirectory, try !isEmptyDirectory(file.targetPath) {
                     throw RDPDriveFailure(status: RDPNTStatus.directoryNotEmpty)
                 }
@@ -476,21 +516,21 @@ final class RDPSharedDriveDevice: @unchecked Sendable {
             throw RDPDriveFailure(status: RDPNTStatus.accessDenied)
         }
         let destination = try entry(for: components)
-        var sourceInfo = stat()
+        let sourceInfo = try verifiedEntry(of: file)
         var destinationInfo = stat()
-        guard lstat(file.path, &sourceInfo) == 0 else {
-            throw RDPDriveFailure.posix()
-        }
         if lstat(destination, &destinationInfo) == 0 {
             // On a case-insensitive volume "a.txt" and "A.txt" are one file: a case-only
             // rename finds itself, and rename(2) changes the case.
-            let isSameItem = sourceInfo.st_dev == destinationInfo.st_dev && sourceInfo.st_ino == destinationInfo.st_ino
-            if !isSameItem {
+            let destinationIdentity = RDPFileIdentity(destinationInfo)
+            if RDPFileIdentity(sourceInfo) != destinationIdentity {
                 guard replaceIfExists else {
                     throw RDPDriveFailure(status: RDPNTStatus.objectNameCollision)
                 }
-                // NTFS never replaces a directory with a rename ([MS-FSA] 2.1.5.15.12).
-                guard !destinationInfo.isDirectory else {
+                // NTFS never replaces a directory with a rename, nor a file that is open
+                // ([MS-FSA] 2.1.5.15.12): its handle would go on naming the replacement.
+                guard !destinationInfo.isDirectory, !openFiles.values.contains(where: {
+                    $0.entryIdentity == destinationIdentity || $0.targetIdentity == destinationIdentity
+                }) else {
                     throw RDPDriveFailure(status: RDPNTStatus.accessDenied)
                 }
             }
@@ -564,9 +604,13 @@ final class RDPSharedDriveDevice: @unchecked Sendable {
         guard file.isDirectory else {
             throw RDPDriveFailure(status: RDPNTStatus.invalidParameter)
         }
+        _ = try verifiedTarget(of: file)
         if initialQuery || file.listing == nil {
             // The path names the directory and ends in the search pattern.
             let pattern = path.split(separator: "\\").last.map(String.init) ?? "*"
+            guard pattern.utf16.count <= Self.maximumSearchPatternLength else {
+                throw RDPDriveFailure(status: RDPNTStatus.objectNameInvalid)
+            }
             let names = try (FileManager.default.contentsOfDirectory(atPath: file.targetPath))
                 .map(\.precomposedStringWithCanonicalMapping)
                 .filter(Self.isValidName)
@@ -659,22 +703,69 @@ final class RDPSharedDriveDevice: @unchecked Sendable {
     }
 
     /// The item an entry names and its status: the entry itself, or a link's target,
-    /// which must be inside the drive. Nil when no entry has that name.
-    private func target(of entryPath: String) throws -> (path: String, info: stat)? {
-        var info = stat()
-        guard lstat(entryPath, &info) == 0 else {
+    /// which must be inside the drive. Nil when no entry has that name. Only regular
+    /// files and directories are served: opening a FIFO or a device could block or do more.
+    private func target(of entryPath: String) throws -> (path: String, info: stat, entryInfo: stat)? {
+        var entryInfo = stat()
+        guard lstat(entryPath, &entryInfo) == 0 else {
             guard errno == ENOENT else {
                 throw RDPDriveFailure.posix()
             }
             return nil
         }
-        guard info.st_mode & S_IFMT == S_IFLNK else {
-            return (entryPath, info)
+        var path = entryPath
+        var info = entryInfo
+        if entryInfo.st_mode & S_IFMT == S_IFLNK {
+            guard let resolved = realPath(entryPath), isInsideDrive(resolved), stat(resolved, &info) == 0 else {
+                throw RDPDriveFailure(status: RDPNTStatus.accessDenied)
+            }
+            path = resolved
         }
-        guard let resolved = realPath(entryPath), isInsideDrive(resolved), stat(resolved, &info) == 0 else {
+        guard info.isDirectory || info.isRegularFile else {
             throw RDPDriveFailure(status: RDPNTStatus.accessDenied)
         }
-        return (resolved, info)
+        return (path, info, entryInfo)
+    }
+
+    /// The status of a handle's entry, after checking the path still names what the handle
+    /// opened through no link. A rename elsewhere can leave the path stale: on a
+    /// case-insensitive volume a directory renamed under another case than the handle's path
+    /// spells it, then a directory with a link to outside the drive moved into its place.
+    private func verifiedEntry(of file: RDPSharedDriveOpenFile) throws -> stat {
+        var info = stat()
+        guard isResolvedParent(of: file.path),
+              lstat(file.path, &info) == 0,
+              RDPFileIdentity(info) == file.entryIdentity
+        else {
+            throw RDPDriveFailure(status: RDPNTStatus.accessDenied)
+        }
+        return info
+    }
+
+    /// The status of what a handle's entry names, checked as `verifiedEntry` checks the entry.
+    private func verifiedTarget(of file: RDPSharedDriveOpenFile) throws -> stat {
+        let entryInfo = try verifiedEntry(of: file)
+        guard file.targetPath != file.path else {
+            return entryInfo
+        }
+        var info = stat()
+        guard realPath(file.targetPath) == file.targetPath,
+              isInsideDrive(file.targetPath),
+              stat(file.targetPath, &info) == 0,
+              RDPFileIdentity(info) == file.targetIdentity
+        else {
+            throw RDPDriveFailure(status: RDPNTStatus.accessDenied)
+        }
+        return info
+    }
+
+    /// Whether the directory holding `path` is inside the drive and reached through no link.
+    private func isResolvedParent(of path: String) -> Bool {
+        guard path != rootPath else {
+            return realPath(path) == path
+        }
+        let parent = (path as NSString).deletingLastPathComponent
+        return realPath(parent) == parent && isInsideDrive(parent)
     }
 
     private func isInsideDrive(_ path: String) -> Bool {
@@ -806,8 +897,11 @@ final class RDPSharedDriveDevice: @unchecked Sendable {
 struct RDPSharedDriveOpenFile {
     /// The directory entry, which rename and delete act on.
     var path: String
+    /// The entry when it was opened, so a path that names something else since is caught.
+    var entryIdentity: RDPFileIdentity
     /// What the entry names: itself, or a link's target inside the drive.
     var targetPath: String
+    var targetIdentity: RDPFileIdentity
     var isDirectory: Bool
     /// Files only.
     var descriptor: Int32?
@@ -817,15 +911,69 @@ struct RDPSharedDriveOpenFile {
     var listing: [String]?
     var listingIndex = 0
 
-    init(path: String, targetPath: String, isDirectory: Bool) {
+    init(path: String, entryIdentity: RDPFileIdentity, targetPath: String, targetIdentity: RDPFileIdentity, isDirectory: Bool) {
         self.path = path
+        self.entryIdentity = entryIdentity
         self.targetPath = targetPath
+        self.targetIdentity = targetIdentity
         self.isDirectory = isDirectory
+    }
+
+    /// An entry this client created, which is its own target.
+    init(created path: String, identity: RDPFileIdentity, isDirectory: Bool) {
+        self.init(path: path, entryIdentity: identity, targetPath: path, targetIdentity: identity, isDirectory: isDirectory)
+    }
+}
+
+/// The device and inode of a file system item, which a rename keeps.
+struct RDPFileIdentity: Equatable {
+    var device: dev_t
+    var inode: ino_t
+
+    init(_ info: stat) {
+        device = info.st_dev
+        inode = info.st_ino
+    }
+}
+
+/// The descriptors every shared drive holds together, kept well below the 256 an app may
+/// have open by default (launchd's soft limit), so a server cannot take the descriptors the
+/// session and the app need.
+final class RDPSharedDriveDescriptorBudget: @unchecked Sendable {
+    static let shared = RDPSharedDriveDescriptorBudget(maximumCount: 64)
+
+    private let maximumCount: Int
+    private let lock = NSLock()
+    private var count = 0
+
+    init(maximumCount: Int) {
+        self.maximumCount = maximumCount
+    }
+
+    /// Takes one descriptor from the budget, or returns false when none is left.
+    func reserve() -> Bool {
+        lock.withLock {
+            guard count < maximumCount else {
+                return false
+            }
+            count += 1
+            return true
+        }
+    }
+
+    func release() {
+        lock.withLock {
+            count -= 1
+        }
     }
 }
 
 private extension stat {
     var isDirectory: Bool {
         st_mode & S_IFMT == S_IFDIR
+    }
+
+    var isRegularFile: Bool {
+        st_mode & S_IFMT == S_IFREG
     }
 }

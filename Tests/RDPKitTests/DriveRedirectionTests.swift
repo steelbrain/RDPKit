@@ -396,6 +396,132 @@ import Testing
     #expect(drive.listing(root.fileID, pattern: "\\a*") == ["alias"])
 }
 
+/// A rename can leave a handle's path naming something else: on a case-insensitive volume, a
+/// directory renamed under another case than the handle's path spells it, then a directory
+/// with a link to outside the drive moved into its place. The handle's path is checked again
+/// before each use, so it never reaches through the link.
+@Test func driveChecksAHandlesPathAgainBeforeUsingIt() throws {
+    let drive = try TemporaryDrive()
+    let outside = drive.base.appendingPathComponent("outside", isDirectory: true)
+    try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: false)
+    try Data("secret".utf8).write(to: outside.appendingPathComponent("secret.txt"))
+    try Data("victim".utf8).write(to: outside.appendingPathComponent("victim.txt"))
+
+    #expect(drive.create("\\A", disposition: RDPDriveCreateDisposition.create, options: RDPDriveCreateOptions.directoryFile)
+        .status == RDPNTStatus.success)
+    #expect(drive.create("\\A\\L", disposition: RDPDriveCreateDisposition.create, options: RDPDriveCreateOptions.directoryFile)
+        .status == RDPNTStatus.success)
+    let directory = drive.create("\\A\\L", disposition: RDPDriveCreateDisposition.open)
+    let secret = drive.create("\\A\\L\\secret.txt", disposition: RDPDriveCreateDisposition.create)
+    let victim = drive.create(
+        "\\A\\L\\victim.txt",
+        disposition: RDPDriveCreateDisposition.create,
+        options: RDPDriveCreateOptions.deleteOnClose
+    )
+
+    // What the renames leave: the handles' paths now run through a link to outside the drive.
+    try FileManager.default.moveItem(at: drive.root.appendingPathComponent("A"), to: drive.root.appendingPathComponent("moved"))
+    try FileManager.default.createDirectory(at: drive.root.appendingPathComponent("A"), withIntermediateDirectories: false)
+    try FileManager.default.createSymbolicLink(at: drive.root.appendingPathComponent("A/L"), withDestinationURL: outside)
+
+    #expect(drive.queryDirectory(directory.fileID, initialQuery: true, path: "\\A\\L\\*").status == RDPNTStatus.accessDenied)
+    #expect(drive.queryInformation(directory.fileID, informationClass: RDPDriveInformationClass.fileBasic).status
+        == RDPNTStatus.accessDenied)
+    #expect(drive.rename(secret.fileID, to: "\\loot.txt", replace: false).status == RDPNTStatus.accessDenied)
+    #expect(drive.setInformation(secret.fileID, informationClass: RDPDriveInformationClass.fileBasic, Data(count: 36)).status
+        == RDPNTStatus.accessDenied)
+    _ = drive.close(victim.fileID)
+    #expect(try FileManager.default.contentsOfDirectory(atPath: outside.path).sorted() == ["secret.txt", "victim.txt"])
+    #expect(!FileManager.default.fileExists(atPath: drive.root.appendingPathComponent("loot.txt").path))
+    // The files the handles opened are still theirs.
+    #expect(drive.write(secret.fileID, offset: 0, Data("kept".utf8)).status == RDPNTStatus.success)
+    #expect(try String(contentsOf: drive.root.appendingPathComponent("moved/L/secret.txt"), encoding: .utf8) == "kept")
+}
+
+/// NTFS never replaces a file that is open: the handle would go on naming the replacement,
+/// and its pending delete would remove the file renamed over it.
+@Test func driveRefusesToRenameOverAnOpenFile() throws {
+    let drive = try TemporaryDrive()
+    try Data("a".utf8).write(to: drive.root.appendingPathComponent("a.txt"))
+    try Data("b".utf8).write(to: drive.root.appendingPathComponent("b.txt"))
+    let open = drive.create("\\a.txt", disposition: RDPDriveCreateDisposition.open)
+    let other = drive.create("\\b.txt", disposition: RDPDriveCreateDisposition.open)
+
+    #expect(drive.rename(other.fileID, to: "\\a.txt", replace: true).status == RDPNTStatus.accessDenied)
+    #expect(drive.setDisposition(open.fileID).status == RDPNTStatus.success)
+    _ = drive.close(open.fileID)
+    #expect(try FileManager.default.contentsOfDirectory(atPath: drive.root.path) == ["b.txt"])
+    #expect(drive.rename(other.fileID, to: "\\a.txt", replace: true).status == RDPNTStatus.success)
+    #expect(try String(contentsOf: drive.root.appendingPathComponent("a.txt"), encoding: .utf8) == "b")
+}
+
+/// Opening a FIFO would block the drive's I/O queue until something writes to it.
+@Test func driveServesOnlyRegularFilesAndDirectories() throws {
+    let drive = try TemporaryDrive()
+    try Data("a".utf8).write(to: drive.root.appendingPathComponent("a.txt"))
+    #expect(mkfifo(drive.root.appendingPathComponent("pipe").path, 0o600) == 0)
+
+    #expect(drive.create("\\pipe", disposition: RDPDriveCreateDisposition.open, access: 0x0012_0089).status
+        == RDPNTStatus.accessDenied)
+    let root = drive.create("", disposition: RDPDriveCreateDisposition.open)
+    #expect(drive.listing(root.fileID, pattern: "\\*") == [".", "..", "a.txt"])
+}
+
+@Test func driveRejectsCreateDispositionsMSRDPEFSDoesNotDefine() throws {
+    let drive = try TemporaryDrive()
+    try Data("keep".utf8).write(to: drive.root.appendingPathComponent("a.txt"))
+
+    #expect(drive.create("\\a.txt", disposition: 0x77, access: 0x0012_0089).status == RDPNTStatus.invalidParameter)
+    #expect(try String(contentsOf: drive.root.appendingPathComponent("a.txt"), encoding: .utf8) == "keep")
+}
+
+/// The session's end closes the server's handles, so a file it opened with delete-on-close
+/// does not stay behind in the shared folder.
+@Test func driveDeletesPendingEntriesWhenTheSessionEnds() throws {
+    let drive = try TemporaryDrive()
+    do {
+        let device = RDPSharedDriveDevice(
+            deviceID: 2,
+            drive: RDPSharedDrive(name: "Shared", url: drive.root),
+            descriptorBudget: RDPSharedDriveDescriptorBudget(maximumCount: 4)
+        )
+        device.resolveRoot()
+        let completion = device.completion(for: driveRequest(
+            deviceID: 2,
+            major: RDPDriveMajorFunction.create,
+            body: createBody(path: "\\temp.txt", disposition: RDPDriveCreateDisposition.create, options: RDPDriveCreateOptions.deleteOnClose)
+        ))
+        #expect(completion?.status == RDPNTStatus.success)
+        #expect(FileManager.default.fileExists(atPath: drive.root.appendingPathComponent("temp.txt").path))
+    }
+    #expect(try FileManager.default.contentsOfDirectory(atPath: drive.root.path).isEmpty)
+}
+
+/// Every drive shares one budget of descriptors, well below what the app may have open.
+@Test func driveKeepsItsOpenDescriptorsWithinTheBudget() throws {
+    let drive = try TemporaryDrive(descriptorBudget: RDPSharedDriveDescriptorBudget(maximumCount: 2))
+    try Data("a".utf8).write(to: drive.root.appendingPathComponent("a.txt"))
+
+    let first = drive.create("\\new.txt", disposition: RDPDriveCreateDisposition.create)
+    let second = drive.create("\\a.txt", disposition: RDPDriveCreateDisposition.open)
+    #expect(drive.create("\\b.txt", disposition: RDPDriveCreateDisposition.create).status == RDPNTStatus.tooManyOpenedFiles)
+    #expect(drive.create("\\a.txt", disposition: RDPDriveCreateDisposition.open).status == RDPNTStatus.tooManyOpenedFiles)
+    // Directories hold no descriptor.
+    #expect(drive.create("", disposition: RDPDriveCreateDisposition.open).status == RDPNTStatus.success)
+    _ = drive.close(first.fileID)
+    #expect(drive.create("\\a.txt", disposition: RDPDriveCreateDisposition.open).status == RDPNTStatus.success)
+    _ = drive.close(second.fileID)
+}
+
+@Test func driveRefusesASearchPatternLongerThanAFileName() throws {
+    let drive = try TemporaryDrive()
+    let root = drive.create("", disposition: RDPDriveCreateDisposition.open)
+    #expect(drive.queryDirectory(root.fileID, initialQuery: true, path: "\\" + String(repeating: "?", count: 256)).status
+        == RDPNTStatus.objectNameInvalid)
+    #expect(drive.queryDirectory(root.fileID, initialQuery: true, path: "\\" + String(repeating: "?", count: 255)).status
+        == RDPNTStatus.noSuchFile)
+}
+
 @Test func driveLeavesChangeNotificationsPendingAndAnswersOtherRequests() throws {
     let drive = try TemporaryDrive()
     let root = drive.create("", disposition: RDPDriveCreateDisposition.open)
@@ -504,11 +630,15 @@ private final class TemporaryDrive {
     let root: URL
     let device: RDPSharedDriveDevice
 
-    init() throws {
+    init(descriptorBudget: RDPSharedDriveDescriptorBudget = RDPSharedDriveDescriptorBudget(maximumCount: 64)) throws {
         base = FileManager.default.temporaryDirectory.appendingPathComponent("rdpkit-drive-\(UUID().uuidString)")
         root = base.appendingPathComponent("shared", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        device = RDPSharedDriveDevice(deviceID: 1, drive: RDPSharedDrive(name: "Shared", url: root))
+        device = RDPSharedDriveDevice(
+            deviceID: 1,
+            drive: RDPSharedDrive(name: "Shared", url: root),
+            descriptorBudget: descriptorBudget
+        )
         device.resolveRoot()
     }
 
