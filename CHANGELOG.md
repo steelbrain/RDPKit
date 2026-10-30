@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.6.0
+
 ### Breaking changes
 
 - `RDPConnectionFailure` has a new case, `rdSTLS(resultCode:)`: the server
