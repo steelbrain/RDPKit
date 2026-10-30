@@ -1668,6 +1668,40 @@ private final class ClipboardPublishRace: @unchecked Sendable {
     #expect(RDPClipboardBitmap.image(fromDeviceIndependentBitmap: Data([1, 2, 3])) == nil)
 }
 
+/// biSizeImage is 32 bits; a larger image trapped converting its size. The pixels are
+/// produced on demand and never read, as no bitmap is made.
+@Test func clipboardBitmapRefusesAnImageOf4GiBOrMore() throws {
+    let width = 65536
+    let height = 16384
+    var callbacks = CGDataProviderDirectCallbacks(
+        version: 0,
+        getBytePointer: nil,
+        releaseBytePointer: nil,
+        getBytesAtPosition: { _, buffer, _, count in
+            memset(buffer, 0, count)
+            return count
+        },
+        releaseInfo: nil
+    )
+    let provider = try #require(CGDataProvider(directInfo: nil, size: off_t(width * 4 * height), callbacks: &callbacks))
+    let colorSpace = try #require(CGColorSpace(name: CGColorSpace.sRGB))
+    let image = try #require(CGImage(
+        width: width,
+        height: height,
+        bitsPerComponent: 8,
+        bitsPerPixel: 32,
+        bytesPerRow: width * 4,
+        space: colorSpace,
+        bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+        provider: provider,
+        decode: nil,
+        shouldInterpolate: false,
+        intent: .defaultIntent
+    ))
+
+    #expect(RDPClipboardBitmap.deviceIndependentBitmap(from: image) == nil)
+}
+
 @Test func clipboardSessionSendsChunksOfTheNegotiatedSize() throws {
     let channel = EmbeddedChannel()
     try channel.connect(to: SocketAddress(ipAddress: "127.0.0.1", port: 3389)).wait()

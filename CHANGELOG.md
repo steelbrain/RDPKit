@@ -41,6 +41,9 @@
 
 ### Compatibility and fixes
 
+- `RDPClipboardBitmap.deviceIndependentBitmap(from:)` returns nil for an
+  image of 4 GiB or more, which a DIB's size field cannot hold, instead of
+  crashing.
 - NLA signs in to a server whose certificate has an RSASSA-PSS signature
   with SHA-384 or SHA-512: the NTLM channel binding took SHA-256 instead of
   the hash the signature's parameters name (RFC 5929 4.1, RFC 4055 3.1), so

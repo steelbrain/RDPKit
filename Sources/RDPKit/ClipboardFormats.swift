@@ -34,12 +34,15 @@ public enum RDPClipboardBitmap {
     private static let fileHeaderByteCount = 14
 
     /// A 32-bit BI_RGB DIB of the image, bottom-up, with premultiplied alpha in the
-    /// fourth byte; Windows apps that ignore alpha read the same pixels.
+    /// fourth byte; Windows apps that ignore alpha read the same pixels. Nil for an image
+    /// of 4 GiB or more, whose size biSizeImage cannot hold.
     public static func deviceIndependentBitmap(from image: CGImage) -> Data? {
         let width = image.width
         let height = image.height
         let bytesPerRow = width * 4
-        guard width > 0, height > 0, let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
+        guard width > 0, height > 0,
+              height <= Int(UInt32.max) / bytesPerRow,
+              let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
               let context = CGContext(
                   data: nil,
                   width: width,
