@@ -352,6 +352,9 @@ public final class RDPRenderMetricsStore: @unchecked Sendable {
 
 public final class RDPWireReceiveMetricsCoalescer: @unchecked Sendable {
     private let lock = NSLock()
+    // Timed flushes run here, so `cancel()` can wait for one in progress.
+    private let flushQueue = DispatchQueue(label: "RDPKit.WireReceiveMetricsFlush", qos: .utility)
+    private let flushQueueKey = DispatchSpecificKey<Void>()
     private let flushDelay: DispatchTimeInterval
     private let shouldCancel: () -> Bool
     private let onFlush: (RDPWireReceiveSample) -> Void
@@ -368,6 +371,7 @@ public final class RDPWireReceiveMetricsCoalescer: @unchecked Sendable {
         self.flushDelay = flushDelay
         self.shouldCancel = shouldCancel
         self.onFlush = onFlush
+        flushQueue.setSpecific(key: flushQueueKey, value: ())
     }
 
     public func record(_ sample: RDPWireReceiveSample) {
@@ -386,7 +390,7 @@ public final class RDPWireReceiveMetricsCoalescer: @unchecked Sendable {
         }
 
         if shouldScheduleFlush {
-            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + flushDelay) { [weak self] in
+            flushQueue.asyncAfter(deadline: .now() + flushDelay) { [weak self] in
                 self?.flush()
             }
         }
@@ -412,12 +416,16 @@ public final class RDPWireReceiveMetricsCoalescer: @unchecked Sendable {
         }
     }
 
+    /// Once this returns, `onFlush` does not run again: a timed flush in progress finishes first.
     public func cancel() {
         lock.withLock {
             isCancelled = true
             pendingByteCount = 0
             pendingReceivedAt = nil
             isFlushScheduled = false
+        }
+        if DispatchQueue.getSpecific(key: flushQueueKey) == nil {
+            flushQueue.sync {}
         }
     }
 }

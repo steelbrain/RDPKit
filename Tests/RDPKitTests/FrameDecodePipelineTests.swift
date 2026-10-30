@@ -791,6 +791,33 @@ import Testing
     queue.cancel()
 }
 
+/// `submitAndWait` gives up on a frame once `shouldContinue` says so, but the frame keeps
+/// decoding; `cancel()` waits for it, so no callback comes after the app has cancelled.
+@Test func frameDecodeQueueCallsNoCallbackOnceCancelReturns() {
+    let decodeStarted = DispatchSemaphore(value: 0)
+    let releaseDecode = DispatchSemaphore(value: 0)
+    let callbackCount = Locked(0)
+    let queue = RDPFrameDecodeQueue(
+        shouldCancel: {
+            decodeStarted.signal()
+            releaseDecode.wait()
+            return false
+        },
+        onDecoded: { _, _, _, _ in callbackCount.withLock { $0 += 1 } },
+        onDecodeFailed: { _, _ in callbackCount.withLock { $0 += 1 } }
+    )
+
+    let completion = queue.submitAndWait(queuedBitmapFrame(id: 1), receivedAt: Date(), shouldContinue: { false })
+    #expect(completion == .cancelled)
+    decodeStarted.wait()
+    DispatchQueue.global().asyncAfter(deadline: .now() + 0.1) {
+        releaseDecode.signal()
+    }
+    queue.cancel()
+
+    #expect(callbackCount.value == 1)
+}
+
 @Test func frameDecodeQueuePresentsUpdatesOfItsOwnPixelsWithoutDecoding() throws {
     let presented = Locked<[RDPGraphicsFrameSnapshot]>([])
     let queue = RDPFrameDecodeQueue(

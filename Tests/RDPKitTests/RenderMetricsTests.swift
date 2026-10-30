@@ -199,3 +199,29 @@ private func recordDecodedFrames(_ metrics: inout RDPRenderMetrics, at dates: [D
         metrics.recordDecodedFrame(frame, receivedAt: date, decodedAt: date, timing: timing)
     }
 }
+
+/// A timed flush runs on its own queue; `cancel()` waits for one in progress, so the app
+/// hears of no sample once it has cancelled.
+@Test func wireReceiveCoalescerCallsNoFlushOnceCancelReturns() {
+    let flushStarted = DispatchSemaphore(value: 0)
+    let releaseFlush = DispatchSemaphore(value: 0)
+    let finishedFlushCount = Locked(0)
+    let coalescer = RDPWireReceiveMetricsCoalescer(
+        flushDelay: .milliseconds(0),
+        shouldCancel: { false },
+        onFlush: { _ in
+            flushStarted.signal()
+            releaseFlush.wait()
+            finishedFlushCount.withLock { $0 += 1 }
+        }
+    )
+
+    coalescer.record(RDPWireReceiveSample(byteCount: 100, receivedAt: Date()))
+    flushStarted.wait()
+    DispatchQueue.global().asyncAfter(deadline: .now() + 0.1) {
+        releaseFlush.signal()
+    }
+    coalescer.cancel()
+
+    #expect(finishedFlushCount.value == 1)
+}

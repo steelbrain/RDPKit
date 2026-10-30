@@ -1112,6 +1112,7 @@ private func copy(
 /// frames (MS-RDPEGFX RDPGFX_FRAME_ACKNOWLEDGE_PDU) only after they were decoded.
 public final class RDPFrameDecodeQueue: @unchecked Sendable {
     private let queue = DispatchQueue(label: "RDPKit.FrameDecode", qos: .userInitiated)
+    private let queueKey = DispatchSpecificKey<Void>()
     // The decoder and compositor are only used on `queue`.
     private let decoder = RDPVideoToolboxFrameDecoder()
     private let videoCompositor = RDPDecodedVideoSurfaceCompositor()
@@ -1139,6 +1140,7 @@ public final class RDPFrameDecodeQueue: @unchecked Sendable {
         self.shouldCancel = shouldCancel
         self.onDecoded = onDecoded
         self.onDecodeFailed = onDecodeFailed
+        queue.setSpecific(key: queueKey, value: ())
     }
 
     public func submitAndWait(
@@ -1160,9 +1162,15 @@ public final class RDPFrameDecodeQueue: @unchecked Sendable {
         return waiter.load() ?? .cancelled
     }
 
+    /// Once this returns, neither callback runs again: a frame still decoding, which
+    /// `submitAndWait` may already have given up on, finishes first. Called from a
+    /// callback, it stops only the frames after this one.
     public func cancel() {
         lock.withLock {
             isCancelled = true
+        }
+        if DispatchQueue.getSpecific(key: queueKey) == nil {
+            queue.sync {}
         }
     }
 

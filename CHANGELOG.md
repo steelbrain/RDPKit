@@ -41,6 +41,11 @@
 
 ### Compatibility and fixes
 
+- Once `RDPFrameDecodeQueue.cancel()` or
+  `RDPWireReceiveMetricsCoalescer.cancel()` returns, no callback runs: a
+  frame `submitAndWait` had stopped waiting for, or a timed flush, could
+  still be presented after the app tore the session down. A frame still
+  decoding finishes first, so `cancel()` can wait for it.
 - `RDPAudioPlayer(maximumQueuedSeconds: .infinity)`, or any limit too large
   for a frame position, means an unbounded queue instead of a crash on the
   first sample.
