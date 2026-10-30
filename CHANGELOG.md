@@ -41,6 +41,9 @@
 
 ### Compatibility and fixes
 
+- Once `run` or `connect` returns, `onWireReceive` is not called and the
+  wire transcript gets no entries: messages the event loop was still reading
+  as the connection closed reached both afterwards.
 - Once `RDPFrameDecodeQueue.cancel()` or
   `RDPWireReceiveMetricsCoalescer.cancel()` returns, no callback runs: a
   frame `submitAndWait` had stopped waiting for, or a timed flush, could

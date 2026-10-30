@@ -141,8 +141,8 @@ final class RDPTransportReader: ChannelDuplexHandler, RemovableChannelHandler {
     var framing = RDPTransportFraming.rdp
     /// The transcript layer server messages are recorded under; nil records nothing.
     var recordedLayer: RDPWireLayer? = .x224
-    private let onWireReceive: RDPWireReceiveHandler?
-    private let transcript: RDPWireTranscript?
+    private var onWireReceive: RDPWireReceiveHandler?
+    private var transcript: RDPWireTranscript?
     private var context: ChannelHandlerContext?
     private var received: ByteBuffer?
     private var messages = CircularBuffer<Data>()
@@ -167,6 +167,13 @@ final class RDPTransportReader: ChannelDuplexHandler, RemovableChannelHandler {
     func handlerRemoved(context: ChannelHandlerContext) {
         fail(RDPTransportError.closed)
         self.context = nil
+    }
+
+    /// Messages that arrive from now on are neither counted nor recorded: the
+    /// connection is closing and its `run` may already have returned.
+    func stopReporting() {
+        onWireReceive = nil
+        transcript = nil
     }
 
     func setFraming(_ framing: RDPTransportFraming) {
@@ -445,8 +452,18 @@ final class RDPTransport {
         return RDPTransport(channel: channel, reader: reader, timeoutSeconds: timeoutSeconds, callbacks: callbacks)
     }
 
+    /// Closes the connection. Once this returns, messages still arriving reach
+    /// neither `onWireReceive` nor the wire transcript.
     func close() {
         channel.close(promise: nil)
+        let reader = reader
+        if channel.eventLoop.inEventLoop {
+            reader.value.stopReporting()
+        } else {
+            try? channel.eventLoop.submit {
+                reader.value.stopReporting()
+            }.wait()
+        }
     }
 
     /// The TLS 1.2 RSA key exchange suites BoringSSL offers, AEAD first.

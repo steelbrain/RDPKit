@@ -308,12 +308,76 @@ private let tpkt = Data([0x03, 0x00, 0x00, 0x07, 0x02, 0xF0, 0x80])
     }
 }
 
+/// `run` closes the transport as it returns; a message the event loop is still
+/// reading then must not reach `onWireReceive` after `close()` returned.
+@Test func closingStopsReportingTheMessagesStillArriving() throws {
+    let message = Data([0x03, 0x00, 0x00, 0x07, 0x02, 0xF0, 0x80])
+    let server = try ServerBootstrap(group: MultiThreadedEventLoopGroup.singleton)
+        .childChannelInitializer { channel in
+            channel.eventLoop.makeCompletedFuture {
+                try channel.pipeline.syncOperations.addHandler(AnsweringHandler(answer: message + message))
+            }
+        }
+        .bind(host: "127.0.0.1", port: 0)
+        .wait()
+    defer { server.close(promise: nil) }
+    let firstReceiveStarted = DispatchSemaphore(value: 0)
+    let releaseFirstReceive = DispatchSemaphore(value: 0)
+    let delivered = DispatchSemaphore(value: 0)
+    let isClosed = Locked(false)
+    let receivesAfterClose = Locked(0)
+    let receiveCount = Locked(0)
+    var callbacks = RDPSessionCallbacks()
+    callbacks.onWireReceive = { _ in
+        if isClosed.value {
+            receivesAfterClose.withLock { $0 += 1 }
+        }
+        if receiveCount.withLock({ $0 += 1; return $0 }) == 1 {
+            firstReceiveStarted.signal()
+            releaseFirstReceive.wait()
+        }
+        delivered.signal()
+    }
+    let transport = try RDPTransport.connect(
+        host: "127.0.0.1",
+        port: UInt16(try #require(server.localAddress?.port)),
+        timeoutSeconds: 10,
+        callbacks: callbacks
+    )
+    try transport.send(Data([0x00]))
+
+    firstReceiveStarted.wait()
+    DispatchQueue.global().asyncAfter(deadline: .now() + 0.1) {
+        releaseFirstReceive.signal()
+    }
+    transport.close()
+    isClosed.withLock { $0 = true }
+    _ = delivered.wait(timeout: .now() + 1)
+    _ = delivered.wait(timeout: .now() + 1)
+
+    #expect(receivesAfterClose.value == 0)
+}
+
 /// Closes the connection on the client's first bytes.
 private final class ClosingHandler: ChannelInboundHandler, Sendable {
     typealias InboundIn = ByteBuffer
 
     func channelRead(context: ChannelHandlerContext, data _: NIOAny) {
         context.close(promise: nil)
+    }
+}
+
+/// Answers the client's first bytes with `answer`.
+private final class AnsweringHandler: ChannelInboundHandler, Sendable {
+    typealias InboundIn = ByteBuffer
+    let answer: Data
+
+    init(answer: Data) {
+        self.answer = answer
+    }
+
+    func channelRead(context: ChannelHandlerContext, data _: NIOAny) {
+        context.writeAndFlush(NIOAny(context.channel.allocator.buffer(bytes: answer)), promise: nil)
     }
 }
 
