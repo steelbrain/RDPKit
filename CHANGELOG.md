@@ -6,120 +6,57 @@
 
 ### Breaking changes
 
-- `RDPConnectionFailure` has a new case, `rdSTLS(resultCode:)`: the server
-  rejected the credentials a Server Redirection gave, with an
-  `RDPRDSTLSResultCode` such as `.logonFailure`. `RDPConnectionStage` has a
-  new stage, `rdSTLS`.
-- The handlers `RDPFrameDecodeQueue` and `RDPWireReceiveMetricsCoalescer`
-  take are `@Sendable`: they run on threads of their own, where a handler
-  that captures non-Sendable state races with its caller.
+- `RDPConnectionFailure` has a new case, `rdSTLS(resultCode:)`, and
+  `RDPConnectionStage` a new stage, `rdSTLS`.
+- The handlers of `RDPFrameDecodeQueue` and `RDPWireReceiveMetricsCoalescer`
+  are `@Sendable`; they run on threads of their own.
 
 ### Additions
 
-- `run` and `connect` take `audioPlaybackDelay`: how long audio handed to
-  `onAudioSample` waits before it is heard. Each Wave Confirm then reports
-  when its sample is heard, as [MS-RDPEA] 2.2.3.8 asks and FreeRDP does with
-  its device's latency, instead of when it was handed on, so the server can
-  keep video in step with the sound. `RDPAudioPlayer.playbackDelay` reports
-  its queue and output latency from any thread; the macOS example passes it.
+- `run` and `connect` take `audioPlaybackDelay`, so each Wave Confirm says
+  when its sample is heard and the server can keep video in step with the
+  sound. `RDPAudioPlayer.playbackDelay` supplies it.
 
 ### Security
 
-- A shared drive's handles stay inside its folder. A handle's path is checked
-  again before each use, so a server can no longer reach outside the folder
-  by renaming a directory under another case than an open handle spells it
-  and moving a directory holding a link to outside into its place. A rename
-  over an open file is refused, as NTFS refuses it.
-- Once the server announces a copy of its own, the clipboard no longer offers
-  what the app last published: a server could ask for the user's earlier
-  copy, text or files, for the rest of the session, even with fetching off.
-- Wire transcripts and report hex no longer keep a redirection password when
-  the Server Redirection PDU has a flag RDPKit does not know or bytes it
-  cannot place: everything after its flags is zeroed, and everything after
-  the header of a Save Session Info PDU that does not parse.
-- A graphics frame's held updates are bounded by bytes as well as count, at
-  sixteen desktops of pixels: an Alpha update over video copies its whole
-  rectangle, so a server that never ended the frame could make a few bytes
-  each hold a surface. A SolidFill, copy or progressive update that would
-  write more than sixteen times its surface is refused, and marking a
-  rectangle that many dirty ones enter no longer takes seconds.
-- Shared drive reads and clipboard replies wait while 32 MiB of earlier ones
-  have not reached the socket, so a server that asks for file data and stops
-  reading can no longer make the client queue it until memory runs out. A
-  clipboard file range reply holds at most what a channel message can, which
-  also keeps a range of 4 GiB or more from crashing.
-- A server can no longer exhaust the app's file descriptors through a shared
-  drive: all drives together hold at most 64. FIFOs, sockets and devices in a
-  shared folder are neither opened nor listed, so opening one can't block the
-  drive, and search patterns longer than a file name are refused.
-- A remote file copied to this Mac is never saved under a hidden name: a
-  leading "." becomes "_", so a server can't leave ".zshrc" or ".ssh"
-  unseen wherever the user pastes.
+- A server can no longer reach outside a shared drive's folder by renaming
+  directories and links under open handles, or exhaust the app's file
+  descriptors: all drives hold at most 64, and FIFOs, sockets and devices
+  are neither opened nor listed.
+- Once the server announces a copy, the clipboard stops offering the app's
+  earlier one, which the server could otherwise read for the whole session.
+- Remote files are never saved under a hidden name: a leading "." becomes
+  "_".
+- Wire transcripts and report hex redact a redirection password even in a
+  Server Redirection or Save Session Info PDU that RDPKit cannot fully read.
+- A graphics frame is bounded in the memory its updates hold and the pixels
+  each one writes.
+- Drive and clipboard replies wait while 32 MiB is unsent, so a server that
+  stops reading cannot make the client queue data until memory runs out.
 
 ### Compatibility and fixes
 
-- A remote copy whose data is over the 64 MiB a channel message may hold,
-  such as a large image, no longer stops every later remote copy: the
-  dropped response fails its request, and the copy's other formats still
-  come.
-- Remote files whose names APFS takes for one, such as "σ" and "Σ" or "ß"
-  and "SS", are numbered apart; names were compared lowercased, so the
-  second was saved over the first.
-- A server that starts device redirection over, with a new Server Announce,
-  gets the shared drives again; they were announced once per connection, so
-  the drives vanished. The handles it forgot are closed, deleting what they
-  had pending, as at the session's end.
-- `RDPClipboardBitmap.deviceIndependentBitmap(from:)` returns nil for an
-  image of 4 GiB or more, which a DIB's size field cannot hold, instead of
-  crashing.
-- NLA signs in to a server whose certificate has an RSASSA-PSS signature
-  with SHA-384 or SHA-512: the NTLM channel binding took SHA-256 instead of
-  the hash the signature's parameters name (RFC 5929 4.1, RFC 4055 3.1), so
-  the server refused it.
-- A SurfaceToCache that RDPKit refuses, such as one over the cache's byte
-  budget, empties its slot: a later CacheToSurface painted what the slot
-  held before, which the server had already replaced.
-- Once `run` or `connect` returns, `onWireReceive` is not called and the
-  wire transcript gets no entries: messages the event loop was still reading
-  as the connection closed reached both afterwards.
-- Once `RDPFrameDecodeQueue.cancel()` or
-  `RDPWireReceiveMetricsCoalescer.cancel()` returns, no callback runs: a
-  frame `submitAndWait` had stopped waiting for, or a timed flush, could
-  still be presented after the app tore the session down. A frame still
-  decoding finishes first, so `cancel()` can wait for it.
-- `RDPAudioPlayer(maximumQueuedSeconds: .infinity)`, or any limit too large
-  for a frame position, means an unbounded queue instead of a crash on the
-  first sample.
-- A connect-time Bandwidth Measure Stop with no payload gets its results.
-  FreeRDP's server sends one when asked for fewer than 4 bytes; RDPKit
-  dropped it as malformed and left the server waiting for the reply.
-- Remote copies keep coming after a Format Data Response that does not parse,
-  or after the server's clipboard restarts (a new Monitor Ready): the request
-  it left outstanding held back every later one for the rest of the session.
-- Naming a remote file list with many files of one name takes linear time;
-  each "-2", "-3" and so on was found by trying every number from 1, so
-  thousands of "a.txt" took minutes on the thread that planned the transfer.
-- A receive whose deadline had passed by the time the event loop got to it,
-  behind other work such as input or clipboard sends, could wait for good:
-  its timeout fired before the wait existed. Phase timeouts, and the polling
-  of `shouldCancel`, now always end such a wait.
-- A shared drive deletes what the server's handles had pending when the
-  session ends, as closing them would, and refuses an undefined
-  CreateDisposition instead of truncating the file.
+- GNOME Remote Login gets past the system sign-in: after its redirection,
+  RDPKit authenticates with RDSTLS, as FreeRDP does.
 - A Windows 11 graphics confirmation with both AVC_DISABLED and
-  AVC_THINCLIENT set (0x62), which [MS-RDPEGFX] 2.2.3.6 forbids, no longer
-  ends the session; AVC_DISABLED wins, as for FreeRDP.
-- GNOME Remote Login gets past the system sign-in. After a Server
-  Redirection whose password is flagged PK-encrypted, the reconnect offers
-  RDSTLS beside TLS and CredSSP and, when the server selects it, sends the
-  redirection's user name and password as given, as FreeRDP does. It used
-  to run CredSSP with the redirection's user name and the configured
-  password, which gnome-remote-desktop's handover daemon rejects
-  (`STATUS_LOGON_FAILURE`); a target that does not take RDSTLS still gets
-  that. gnome-remote-desktop 50 flags its
-  one-time password this way for every client but iOS and Android ones.
-  Checked live on Ubuntu 26.04.1 from the system sign-in through the GDM
-  greeter to the user's desktop.
+  AVC_THINCLIENT set no longer ends the session.
+- NLA works with a certificate signed with RSASSA-PSS and SHA-384 or
+  SHA-512.
+- FreeRDP's Bandwidth Measure Stop without payload gets its results.
+- Remote copies keep coming after a response that is malformed or over
+  64 MiB, or after the server's clipboard restarts.
+- Remote file names are made unique as APFS compares them, so none is saved
+  over another, and quickly for many files of one name.
+- Shared drives are announced again when the server restarts device
+  redirection, pending deletes happen when the session ends, and an
+  undefined CreateDisposition no longer truncates a file.
+- A refused SurfaceToCache empties its cache slot instead of leaving the old
+  pixels for CacheToSurface.
+- A receive that the event loop reaches after its deadline still times out.
+- No callback or transcript entry comes after `run` returns or after
+  `cancel()` on the decode queue or metrics coalescer.
+- No crash for `RDPAudioPlayer(maximumQueuedSeconds: .infinity)` or for a
+  clipboard bitmap of 4 GiB or more.
 
 ## 0.5.0
 
