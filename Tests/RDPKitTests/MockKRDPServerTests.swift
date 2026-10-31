@@ -2201,7 +2201,8 @@ struct MockKRDPServerTests {
                     onClipboardReady: { session in session.publishLocalUnicodeText(localClipboardText) },
                     onClipboardText: { text in observed.withLock { $0.clipboardTexts.append(text) } },
                     onAudioSample: { sample in observed.withLock { $0.audioSamples.append(sample) } },
-                    audioPlaybackDelay: { .milliseconds(500) }
+                    // Asked before the sample is handed on, so it counts only the audio ahead.
+                    audioPlaybackDelay: { observed.value.audioSamples.isEmpty ? .milliseconds(500) : .zero }
                 )
             }
         )

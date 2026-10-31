@@ -912,8 +912,8 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                         }
                     }
                 },
-                // The sample reaches the player on the main actor after this, so the queue
-                // ahead of it is the one the player holds now.
+                // Read before each onAudioSample: the queue ahead of that sample is the one the
+                // player holds, once the samples before it have reached the main actor.
                 audioPlaybackDelay: {
                     remoteAudioPlayer.playbackDelay
                 },

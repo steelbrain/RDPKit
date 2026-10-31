@@ -436,6 +436,8 @@ import Testing
     #expect((0x1000 ..< 0x1000 + 50).contains(try confirmedTimestamp(timestamp: 0x1000, playbackDelay: .zero)))
     #expect((0x1000 + 300 ..< 0x1000 + 350).contains(try confirmedTimestamp(timestamp: 0x1000, playbackDelay: .milliseconds(300))))
     #expect((299 ..< 350).contains(try confirmedTimestamp(timestamp: 0xFFFF, playbackDelay: .milliseconds(300))))
+    // A delay past half the 16-bit range would read as a confirm sent before the sample.
+    #expect(try confirmedTimestamp(timestamp: 0x1000, playbackDelay: .seconds(100)) == 0x1000 + 0x7FFF)
     _ = try channel.finish()
 }
 
@@ -639,6 +641,16 @@ import Testing
     }
     let reportedDelay = await Task.detached { player.playbackDelay }.value
     #expect((Duration.milliseconds(200) ... .milliseconds(250)).contains(reportedDelay))
+
+    // Playing 100 ms takes the first two samples off the queue.
+    let rendered = try #require(AVAudioPCMBuffer(pcmFormat: player.engine.manualRenderingFormat, frameCapacity: 2_400))
+    for _ in 0..<2 {
+        #expect(try player.engine.renderOffline(2_400, to: rendered) == .success)
+    }
+    for _ in 0..<100 where player.playbackDelay > .milliseconds(150) {
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    #expect((Duration.milliseconds(100) ... .milliseconds(150)).contains(player.playbackDelay))
     player.reset()
     #expect(player.playbackDelay == .zero)
 }

@@ -695,12 +695,13 @@ public final class RDPAudioSession: @unchecked Sendable {
 
     /// The Wave Confirm's timestamp is the sample's plus the milliseconds from its receipt
     /// until it is heard ([MS-RDPEA] 2.2.3.8): the time it took to hand it on, and then
-    /// `playbackDelay`.
+    /// `playbackDelay`. At most half the 16-bit range is added, so the server, comparing
+    /// timestamps modulo 2^16, never reads a long delay as a confirm from before the sample.
     func confirmConsumed(_ sample: RDPAudioSample, playbackDelay: Duration = .zero) {
         let handedOnMilliseconds = max(0, Date().timeIntervalSince(sample.receivedAt) * 1000)
         let (seconds, attoseconds) = max(playbackDelay, .zero).components
         let delayMilliseconds = Double(seconds) * 1000 + Double(attoseconds) / 1e15
-        let elapsedMilliseconds = Int(min(handedOnMilliseconds + delayMilliseconds, Double(UInt16.max)))
+        let elapsedMilliseconds = Int(min(handedOnMilliseconds + delayMilliseconds, Double(Int16.max)))
         let timestamp = sample.timestamp &+ UInt16(elapsedMilliseconds)
         send(RDPAudioWaveConfirmPDU(timestamp: timestamp, blockNo: sample.blockNo).encoded())
     }

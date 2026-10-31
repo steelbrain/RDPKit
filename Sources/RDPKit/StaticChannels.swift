@@ -138,8 +138,10 @@ extension RDPClientConnection {
     }
 
     private func deliverAudio(_ sample: RDPAudioSample, session: RDPAudioSession) {
+        // Read before the sample is handed on, so it counts only the audio ahead of it.
+        let playbackDelay = callbacks.audioPlaybackDelay?() ?? .zero
         callbacks.onAudioSample?(sample)
-        session.confirmConsumed(sample, playbackDelay: callbacks.audioPlaybackDelay?() ?? .zero)
+        session.confirmConsumed(sample, playbackDelay: playbackDelay)
     }
 
     /// A broken rdpdr exchange stops device redirection only.
