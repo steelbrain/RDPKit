@@ -21,6 +21,47 @@ import Testing
     #expect(redirection.loadBalanceInfo == Data("Cookie: msts=3640205228.15629.0000\r\n".utf8))
 }
 
+/// A field the same as the password, length included, is zeroed with it: a server that sends
+/// the user name as the cleartext password must not leave the Password field in the clear.
+@Test func redactionZeroesEveryFieldEqualToTheRedirectionPassword() throws {
+    let password = utf16LittleEndian("test", nullTerminated: true)
+    let packet = KRdpCapture.ioPacket(KRdpCapture.redirection(
+        flags: RDPServerRedirectionPDU.Flags.loadBalanceInfo.rawValue,
+        username: password,
+        password: password
+    ))
+
+    let redacted = packet.redactingServerSecrets
+
+    #expect(redacted.count == packet.count)
+    #expect(redacted.range(of: password) == nil)
+    let indication = try MCSSendDataIndicationPDU.parse(fromTPKT: redacted)
+    let redirection = try #require(try RDPServerRedirectionPDU.parseIfPresent(from: indication))
+    #expect(redirection.passwordCookie == Data(count: password.count))
+    #expect(redirection.loadBalanceInfo == Data("Cookie: msts=3640205228.15629.0000\r\n".utf8))
+}
+
+/// A Password field whose bytes repeat its length overlaps an earlier match: after a user name
+/// that ends in the same four bytes, the first match runs into the password and the next one
+/// starts inside it.
+@Test func redactionZeroesARedirectionPasswordOverlappingAnEarlierMatch() throws {
+    let length = Data([8, 0, 0, 0])
+    let password = length + length
+    let packet = KRdpCapture.ioPacket(KRdpCapture.redirection(
+        flags: RDPServerRedirectionPDU.Flags.loadBalanceInfo.rawValue,
+        username: length,
+        password: password
+    ))
+
+    let redacted = packet.redactingServerSecrets
+
+    // Read in full: the load balance info before the user name is kept.
+    #expect(redacted.range(of: Data("Cookie: msts=".utf8)) != nil)
+    #expect(redacted.count == packet.count)
+    #expect(packet.suffix(password.count) == password)
+    #expect(redacted.suffix(password.count).allSatisfy { $0 == 0 })
+}
+
 /// A redirection this client does not read in full, for a flag it does not know or bytes it
 /// cannot place, may hold the password anywhere after RedirFlags, so all of that is zeroed.
 @Test func redactionZeroesARedirectionItCannotReadInFull() throws {

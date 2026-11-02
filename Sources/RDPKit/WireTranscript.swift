@@ -193,11 +193,19 @@ extension Data {
         } else {
             secret = nil
         }
-        guard let secret, !secret.bytes.isEmpty, let range = range(of: secret.prefix + secret.bytes) else {
+        guard let secret, !secret.bytes.isEmpty else {
             return self
         }
+        // A field the same as the secret, length included, is the secret: an earlier one,
+        // such as a user name equal to a cleartext password, matches first. The search goes on
+        // from the byte after each match, as the secret's match can overlap an earlier one.
+        let field = secret.prefix + secret.bytes
         var redacted = self
-        redacted.resetBytes(in: range.lowerBound + secret.prefix.count ..< range.upperBound)
+        var searchStart = startIndex
+        while let range = range(of: field, in: searchStart ..< endIndex) {
+            redacted.resetBytes(in: range.lowerBound + secret.prefix.count ..< range.upperBound)
+            searchStart = range.lowerBound + 1
+        }
         return redacted
     }
 

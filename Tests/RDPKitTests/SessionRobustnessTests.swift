@@ -948,14 +948,19 @@ enum KRdpCapture {
     }
 
     /// A Server Redirection PDU carrying a routing token ([MS-RDPBCGR] 2.2.13.3.1).
-    static func redirection(flags: UInt32, password: Data? = nil, trailingBytes: Data = Data()) -> Data {
+    static func redirection(
+        flags: UInt32,
+        username: Data? = nil,
+        password: Data? = nil,
+        trailingBytes: Data = Data()
+    ) -> Data {
         var fields = Data()
         let cookie = Data("Cookie: msts=3640205228.15629.0000\r\n".utf8)
         fields.appendLittleEndianUInt32(UInt32(cookie.count))
         fields.append(cookie)
-        if let password {
-            fields.appendLittleEndianUInt32(UInt32(password.count))
-            fields.append(password)
+        for field in [username, password].compactMap({ $0 }) {
+            fields.appendLittleEndianUInt32(UInt32(field.count))
+            fields.append(field)
         }
         fields.append(trailingBytes)
         var body = Data()
@@ -963,7 +968,9 @@ enum KRdpCapture {
         body.appendLittleEndianUInt16(0x0400)
         body.appendLittleEndianUInt16(UInt16(12 + fields.count))
         body.appendLittleEndianUInt32(7)
-        body.appendLittleEndianUInt32(flags | (password == nil ? 0 : RDPServerRedirectionPDU.Flags.password.rawValue))
+        body.appendLittleEndianUInt32(flags
+            | (username == nil ? 0 : RDPServerRedirectionPDU.Flags.username.rawValue)
+            | (password == nil ? 0 : RDPServerRedirectionPDU.Flags.password.rawValue))
         body.append(fields)
         return shareControl(type: 0xA, body: body)
     }
