@@ -109,6 +109,10 @@ final class RDPClientConnection {
     let pointerState = RDPRemotePointerState()
 
     init(configuration: RDPConnectionConfiguration, callbacks: RDPSessionCallbacks) {
+        var configuration = configuration
+        // Clamped as the configuration's initializer clamps it, since it can be set after it:
+        // with 0 or less every deadline has passed before the connection starts.
+        configuration.timeoutSeconds = max(1, configuration.timeoutSeconds)
         self.configuration = configuration
         self.callbacks = callbacks
         targetFrameCount = configuration.graphicsFrameCaptureLimit.map { max(1, $0) }

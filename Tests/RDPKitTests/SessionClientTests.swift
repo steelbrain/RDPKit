@@ -69,10 +69,17 @@ import Testing
 }
 
 @Test func connectionConfigurationNormalizesHostAndTimeout() {
-    let configuration = RDPConnectionConfiguration(host: " example.test ", timeoutSeconds: -1)
+    var configuration = RDPConnectionConfiguration(host: " example.test ", timeoutSeconds: -1)
 
     #expect(configuration.host == "example.test")
     #expect(configuration.timeoutSeconds == 1)
+
+    // A connection clamps a timeout set after the initializer the same way.
+    for timeoutSeconds in [0, -5] {
+        configuration.timeoutSeconds = timeoutSeconds
+        #expect(RDPClientConnection(configuration: configuration, callbacks: RDPSessionCallbacks())
+            .configuration.timeoutSeconds == 1)
+    }
 }
 
 @Test func connectionConfigurationClampsScaleFactorsAndDropsAnIgnoredPhysicalSize() throws {
