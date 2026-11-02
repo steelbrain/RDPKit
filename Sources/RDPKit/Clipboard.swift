@@ -976,6 +976,9 @@ public final class RDPClipboardSession: @unchecked Sendable {
     private var hasAnsweredMonitorReady = false
     /// Format Lists sent that the server has not answered with a Format List Response.
     private var unansweredFormatListCount = 0
+    /// Whether a publish has sent a Format List since the last Monitor Ready, beside the one
+    /// that answered it.
+    private var hasPublishedSinceMonitorReady = false
 
     init(
         userChannelID: UInt16,
@@ -1081,7 +1084,11 @@ public final class RDPClipboardSession: @unchecked Sendable {
 
     /// Offers every format `content` has; the server asks for the one it wants. What is
     /// published is offered until the next publish, or until the server announces a copy of
-    /// its own, which replaces it there.
+    /// its own, which replaces it there. A copy the server announced before it took this one,
+    /// crossing it on the way, is older: it is neither fetched nor reported, even when
+    /// `content` is empty. The one exception is a copy that crosses the empty clipboard that
+    /// joining cliprdr announces when nothing was published before `onClipboardReady`: that
+    /// is the server's copy at connect, which KRdp sends ahead of its answer, and is fetched.
     public func publishLocalContent(_ content: RDPClipboardContent) {
         publish(content.isEmpty ? .empty : .content(content))
     }
@@ -1123,6 +1130,7 @@ public final class RDPClipboardSession: @unchecked Sendable {
                 formatDataRequests = []
                 isAwaitingFormatData = false
                 unansweredFormatListCount = 0
+                hasPublishedSinceMonitorReady = false
             }
             respondToMonitorReady()
             return .ready
@@ -1140,13 +1148,24 @@ public final class RDPClipboardSession: @unchecked Sendable {
             // The list makes the server the clipboard owner (MS-RDPECLIP 1.3.2.2.1), so the local
             // copy is no longer offered: the server cannot read what the user has since copied
             // over. The server handles PDUs in order, so while a list of ours is unanswered, the
-            // server sent this one before it took ours, and ours is the one it keeps.
-            lock.withLock {
-                if unansweredFormatListCount == 0 {
+            // server sent this one before it took ours, and ours is the one it keeps. This copy
+            // is then older than the local one, and is neither fetched nor reported, so the
+            // application does not put it in place of what the user copied since, empty or not.
+            // Only the empty list that answered Monitor Ready does not count: it is no copy of
+            // the user's, just nothing published yet, and KRdp (its Clipboard.cpp) sends its
+            // copy when our Capabilities come, ahead of its answer to that list, so that copy
+            // is fetched. gnome-remote-desktop 51 was seen to keep its clipboard for that list.
+            let isOlderThanLocalCopy = lock.withLock {
+                let isOlder = unansweredFormatListCount > 0 && (localContent != .empty || hasPublishedSinceMonitorReady)
+                if !isOlder {
                     localContent = .empty
                 }
+                return isOlder
             }
             sendFormatListResponse(ok: true)
+            guard !isOlderThanLocalCopy else {
+                return nil
+            }
             let requests: [RDPClipboardRequestedFormatDataResponse] =
                 if requestsFileLists, let formatID = formatList.fileGroupDescriptorWFormatID {
                     [.fileGroupDescriptorW(formatID: formatID)]
@@ -1506,6 +1525,7 @@ public final class RDPClipboardSession: @unchecked Sendable {
         // A copy announced while fetching was off is no longer on the server to fetch.
         unfetchedRemoteCopy = nil
         if hasAnsweredMonitorReady {
+            hasPublishedSinceMonitorReady = true
             sendFormatList(for: content)
         }
     }

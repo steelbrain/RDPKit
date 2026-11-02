@@ -1166,6 +1166,130 @@ private final class ClipboardPublishRace: @unchecked Sendable {
     _ = try channel.finish()
 }
 
+/// A server copy whose Format List crossed one of the client's on the way is older than the
+/// local copy: the server took ours after it. It is acknowledged, but neither fetched nor
+/// reported, so the application never puts it in place of what the user copied since.
+@Test func clipboardSessionNeitherFetchesNorReportsAServerCopyThatCrossedALocalOne() throws {
+    let channel = EmbeddedChannel()
+    let sent = ClipboardSentMessages()
+    let session = RDPClipboardSession(
+        userChannelID: 1006,
+        staticChannelID: 1007,
+        channel: channel,
+        sentMessageHandler: sent.record
+    )
+    let textCopy = RDPClipboardFormatListPDU(entries: [
+        RDPClipboardFormatListEntry(formatID: RDPClipboardFormatID.unicodeText),
+    ]).encoded()
+    let emptyCopy = RDPClipboardFormatListPDU(entries: []).encoded()
+    func receive(_ data: Data) throws -> RDPClipboardEvent? {
+        try session.receive(RDPClipboardPDU.parse(from: data))
+    }
+
+    _ = try receive(RDPClipboardCapabilitiesPDU().encoded())
+    _ = try session.receive(RDPClipboardPDU(messageType: RDPClipboardMessageType.monitorReady))
+    _ = try session.receive(serverFormatListResponse)
+    _ = try receive(textCopy)
+    #expect(try receive(RDPClipboardFormatDataResponsePDU.unicodeText("remote").encoded()) == .text("remote"))
+
+    // The user copies on both sides at once.
+    session.publishLocalUnicodeText("local")
+    #expect(try receive(textCopy) == nil)
+    #expect(try receive(emptyCopy) == nil)
+    #expect(sent.summaries.suffix(2).map(\.typeName) == [
+        "clipboard-format-list-response",
+        "clipboard-format-list-response",
+    ])
+    #expect(!session.isAwaitingRemoteCopy)
+    #expect(session.hasPublished(since: session.deliveredRemoteCopyNumber))
+    _ = try receive(RDPClipboardFormatDataRequestPDU(formatID: RDPClipboardFormatID.unicodeText).encoded())
+    #expect(try RDPClipboardPDU.parse(from: clipboardPayload(fromPackets: #require(sent.packets.last))).header.messageFlags
+        == RDPClipboardMessageFlags.responseOK)
+
+    // Nor is one that crosses it while fetching is off kept to fetch once fetching is back on.
+    session.fetchesRemoteCopies = false
+    #expect(try receive(textCopy) == nil)
+    session.fetchesRemoteCopies = true
+    #expect(!session.isAwaitingRemoteCopy)
+    #expect(session.takePendingEvent() == nil)
+
+    // Once the server has answered ours, its next copy is newer: fetched and reported.
+    _ = try session.receive(serverFormatListResponse)
+    _ = try receive(textCopy)
+    #expect(try receive(RDPClipboardFormatDataResponsePDU.unicodeText("newer").encoded()) == .text("newer"))
+    #expect(!session.hasPublished(since: session.deliveredRemoteCopyNumber))
+
+    // An empty publish is a copy of the user's too, such as files still being read, for which
+    // RDPClient publishes nothing at once: a copy that crosses it, or the server's clipboard
+    // emptied, is no more fetched or reported.
+    session.publishLocalUnicodeText(nil)
+    #expect(try receive(textCopy) == nil)
+    #expect(try receive(emptyCopy) == nil)
+    #expect(!session.isAwaitingRemoteCopy)
+    #expect(session.hasPublished(since: session.deliveredRemoteCopyNumber))
+    _ = try session.receive(serverFormatListResponse)
+
+    // Nor is one that crosses an empty publish made after text the server has not taken yet.
+    session.publishLocalUnicodeText("text")
+    session.publishLocalUnicodeText(nil)
+    _ = try session.receive(serverFormatListResponse)
+    #expect(try receive(textCopy) == nil)
+    #expect(!session.isAwaitingRemoteCopy)
+    #expect(session.hasPublished(since: session.deliveredRemoteCopyNumber))
+    #expect(try sentFormatDataRequestIDs(sent) == [13, 13])
+    _ = try channel.finish()
+}
+
+/// Joining cliprdr announces the client's clipboard, empty when nothing was published, which
+/// is no copy of the user's; KRdp sends its copy at connect before it answers that list. A
+/// server copy that crosses only that list is still fetched; one that crosses a joining list
+/// carrying a copy is not, nor is one that crosses an empty publish made right after joining.
+@Test func clipboardSessionFetchesAServerCopyThatCrossedOnlyTheEmptyListSentOnJoining() throws {
+    let channel = EmbeddedChannel()
+    let sent = ClipboardSentMessages()
+    let session = RDPClipboardSession(
+        userChannelID: 1006,
+        staticChannelID: 1007,
+        channel: channel,
+        sentMessageHandler: sent.record
+    )
+    let textCopy = RDPClipboardFormatListPDU(entries: [
+        RDPClipboardFormatListEntry(formatID: RDPClipboardFormatID.unicodeText),
+    ]).encoded()
+    let monitorReady = RDPClipboardPDU(messageType: RDPClipboardMessageType.monitorReady)
+    func receive(_ data: Data) throws -> RDPClipboardEvent? {
+        try session.receive(RDPClipboardPDU.parse(from: data))
+    }
+
+    // KRdp's order: its copy, then its answer to the empty list sent on joining.
+    _ = try receive(RDPClipboardCapabilitiesPDU().encoded())
+    _ = try session.receive(monitorReady)
+    _ = try receive(textCopy)
+    _ = try session.receive(serverFormatListResponse)
+    #expect(try receive(RDPClipboardFormatDataResponsePDU.unicodeText("remote").encoded()) == .text("remote"))
+    #expect(try sentFormatDataRequestIDs(sent) == [13])
+
+    // The server's clipboard restarts with the local copy published: the list sent on joining
+    // it again carries that copy, which the server takes after its own.
+    session.publishLocalUnicodeText("local")
+    _ = try session.receive(serverFormatListResponse)
+    _ = try session.receive(monitorReady)
+    #expect(try receive(textCopy) == nil)
+    #expect(!session.isAwaitingRemoteCopy)
+    _ = try session.receive(serverFormatListResponse)
+
+    // The server takes the clipboard, which restarts again; the client publishes nothing right
+    // after joining, as RDPClient does for files it still has to read: a copy of the user's.
+    _ = try receive(textCopy)
+    #expect(try receive(RDPClipboardFormatDataResponsePDU.unicodeText("taken").encoded()) == .text("taken"))
+    _ = try session.receive(monitorReady)
+    session.publishLocalUnicodeText(nil)
+    #expect(try receive(textCopy) == nil)
+    #expect(!session.isAwaitingRemoteCopy)
+    #expect(try sentFormatDataRequestIDs(sent) == [13, 13])
+    _ = try channel.finish()
+}
+
 @Test func clipboardSessionRequestsAnnouncedTextAndDropsUnsolicitedResponses() throws {
     let channel = EmbeddedChannel()
     let sent = ClipboardSentMessages()
@@ -1340,20 +1464,25 @@ private final class ClipboardPublishRace: @unchecked Sendable {
         )
         _ = try session.receive(RDPClipboardPDU.parse(from: RDPClipboardCapabilitiesPDU().encoded()))
         _ = try session.receive(RDPClipboardPDU(messageType: RDPClipboardMessageType.monitorReady))
+        _ = try session.receive(serverFormatListResponse)
 
+        // Each server copy comes after the server answered the local copy before it.
         _ = try session.receive(RDPClipboardPDU.parse(from: textCopy))
         session.publishLocalUnicodeText("local")
         #expect(try session.receive(RDPClipboardPDU.parse(from: RDPClipboardFormatDataResponsePDU.unicodeText("old").encoded())) == nil)
+        _ = try session.receive(serverFormatListResponse)
 
         _ = try session.receive(RDPClipboardPDU.parse(from: fileCopy))
         session.publishLocalUnicodeText(nil)
         #expect(try session.receive(RDPClipboardPDU.parse(from: fileList)) == nil)
+        _ = try session.receive(serverFormatListResponse)
 
         _ = try session.receive(RDPClipboardPDU.parse(from: richCopy))
         session.publishLocalContent(RDPClipboardContent(text: "local"))
         #expect(session.outstandingFormatDataRequests == [.unicodeText])
         #expect(try session.receive(RDPClipboardPDU.parse(from: RDPClipboardFormatDataResponsePDU.unicodeText("old").encoded())) == nil)
         #expect(session.outstandingFormatDataRequests.isEmpty)
+        _ = try session.receive(serverFormatListResponse)
 
         // The server's next copy is fetched as usual.
         _ = try session.receive(RDPClipboardPDU.parse(from: textCopy))
@@ -1484,6 +1613,7 @@ private final class ClipboardPublishRace: @unchecked Sendable {
         }
         _ = try receive(RDPClipboardCapabilitiesPDU().encoded())
         _ = try session.receive(RDPClipboardPDU(messageType: RDPClipboardMessageType.monitorReady))
+        _ = try session.receive(serverFormatListResponse)
 
         for copy in [textCopy, fileCopy] {
             #expect(try receive(copy) == nil)
@@ -1498,6 +1628,7 @@ private final class ClipboardPublishRace: @unchecked Sendable {
         _ = try receive(textCopy)
         session.publishLocalUnicodeText("local")
         #expect(try receive(failure) == nil)
+        _ = try session.receive(serverFormatListResponse)
 
         guard requestsRichFormats else {
             _ = try channel.finish()
@@ -1667,6 +1798,7 @@ private final class ClipboardPublishRace: @unchecked Sendable {
 
     _ = try session.receive(RDPClipboardPDU.parse(from: RDPClipboardCapabilitiesPDU().encoded()))
     _ = try session.receive(RDPClipboardPDU(messageType: RDPClipboardMessageType.monitorReady))
+    _ = try session.receive(serverFormatListResponse)
     try announceWhileOff(emptyCopy)
     #expect(wakes.value == 1)
     #expect(session.takePendingEvent() == .remoteCopyUnavailable(isEmpty: true))
@@ -1677,6 +1809,7 @@ private final class ClipboardPublishRace: @unchecked Sendable {
     try announceWhileOff(emptyCopy)
     session.publishLocalUnicodeText("local")
     #expect(session.takePendingEvent() == nil)
+    _ = try session.receive(serverFormatListResponse)
     try announceWhileOff(emptyCopy)
     _ = try session.receive(RDPClipboardPDU.parse(from: textCopy))
     #expect(session.takePendingEvent() == nil)
@@ -1702,6 +1835,7 @@ private final class ClipboardPublishRace: @unchecked Sendable {
 
     _ = try session.receive(RDPClipboardPDU.parse(from: RDPClipboardCapabilitiesPDU().encoded()))
     _ = try session.receive(RDPClipboardPDU(messageType: RDPClipboardMessageType.monitorReady))
+    _ = try session.receive(serverFormatListResponse)
     _ = try session.receive(RDPClipboardPDU.parse(from: textCopy))
     #expect(try session.receive(RDPClipboardPDU.parse(from: RDPClipboardFormatDataResponsePDU.unicodeText("remote").encoded()))
         == .text("remote"))
@@ -1711,6 +1845,7 @@ private final class ClipboardPublishRace: @unchecked Sendable {
     session.publishLocalUnicodeText("local")
     #expect(session.deliveredRemoteCopyNumber == text)
     #expect(session.hasPublished(since: text))
+    _ = try session.receive(serverFormatListResponse)
 
     #expect(try session.receive(RDPClipboardPDU.parse(from: emptyCopy)) == .remoteCopyUnavailable(isEmpty: true))
     let emptied = session.deliveredRemoteCopyNumber
@@ -2157,6 +2292,13 @@ private final class ClipboardSentMessages: @unchecked Sendable {
         lock.withLock { sent.append((summary, packets)) }
     }
 }
+
+/// The server's answer to a Format List of the client's, which MS-RDPECLIP 3.1.5.2.2 has it
+/// send for each one.
+private let serverFormatListResponse = RDPClipboardPDU(
+    messageType: RDPClipboardMessageType.formatListResponse,
+    messageFlags: RDPClipboardMessageFlags.responseOK
+)
 
 private func sentFormatDataRequestIDs(_ sent: ClipboardSentMessages) throws -> [UInt32] {
     try sent.packets.compactMap {

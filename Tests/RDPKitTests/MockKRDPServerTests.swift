@@ -2344,6 +2344,7 @@ struct MockKRDPServerTests {
         let remoteClipboardText = String(repeating: "mock_remote_clip ", count: 120)
         let inputText = "mock_input"
         let observed = Locked(Observed())
+        let clipboard = Locked<RDPClipboardSession?>(nil)
         let run = try runMock(
             .init(remoteClipboardText: remoteClipboardText, audioEnabled: true, waitForCompatibilityTraffic: true),
             {
@@ -2371,8 +2372,14 @@ struct MockKRDPServerTests {
                             deviceScaleFactor: 140
                         )
                     },
-                    onClipboardReady: { session in session.publishLocalUnicodeText(localClipboardText) },
-                    onClipboardText: { text in observed.withLock { $0.clipboardTexts.append(text) } },
+                    onClipboardReady: { session in clipboard.withLock { $0 = session } },
+                    onClipboardText: { text in
+                        observed.withLock { $0.clipboardTexts.append(text) }
+                        // Published once the server's copy is here: the mock announces that copy
+                        // right after Monitor Ready, as KRdp does, so a copy published before the
+                        // server answered it would cross it, and the server would keep ours.
+                        clipboard.value?.publishLocalUnicodeText(localClipboardText)
+                    },
                     onAudioSample: { sample in observed.withLock { $0.audioSamples.append(sample) } },
                     // Asked before the sample is handed on, so it counts only the audio ahead.
                     audioPlaybackDelay: { observed.value.audioSamples.isEmpty ? .milliseconds(500) : .zero }

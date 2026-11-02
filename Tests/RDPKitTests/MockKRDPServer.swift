@@ -1444,11 +1444,13 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
             if request.formatID == MockKRDPConstants.remoteHTMLFormatID {
                 releaseGraphicsHandshake(context: context)
             }
-        } else if let formatList = try RDPClipboardFormatListPDU.parseIfPresent(from: clipboardPDU),
-                  formatList.formatIDs.contains(RDPClipboardFormatID.unicodeText)
-        {
+        } else if let formatList = try RDPClipboardFormatListPDU.parseIfPresent(from: clipboardPDU) {
+            // Every list is answered, an empty one too, as KRdp does: the answer to the one sent
+            // on joining comes after the copy announced at connect, which crossed it.
             write(MockKRDPFixtures.clipboardFormatListResponse(), context: context)
-            write(MockKRDPFixtures.clipboardUnicodeTextRequest(), context: context)
+            if formatList.formatIDs.contains(RDPClipboardFormatID.unicodeText) {
+                write(MockKRDPFixtures.clipboardUnicodeTextRequest(), context: context)
+            }
         } else if let request = try RDPClipboardFileContentsRequestPDU.parseIfPresent(from: clipboardPDU) {
             write(MockKRDPFixtures.clipboardPacket(clipboardFileContentsResponse(for: request).encoded()), context: context)
             if request.flags & RDPClipboardFileContentsFlags.range != 0 {
