@@ -103,6 +103,44 @@ import Testing
     ])
 }
 
+/// ERRINFO_NONE clears an earlier Set Error Info ([MS-RDPBCGR] 2.2.5.1.1): a Deactivate All
+/// after ERRINFO_IDLE_TIMEOUT and then ERRINFO_NONE starts a reactivation, not the end of a
+/// session whose graphics are open.
+@Test func errorInfoNoneClearsAnEarlierSetErrorInfo() throws {
+    let events = try KRdpCapture.events()
+    func setErrorInfo(_ code: UInt32) -> Data {
+        var payload = Data()
+        payload.appendLittleEndianUInt32(code)
+        return KRdpCapture.ioPacket(KRdpCapture.shareData(pduType2: 0x2F, payload: payload))
+    }
+    var deactivate = Data()
+    deactivate.appendLittleEndianUInt32(KRdpCapture.shareID)
+    deactivate.append(contentsOf: [0x01, 0x00, 0x00])
+    let finalization = try [21, 22, 27, 28].map { try #require(events[$0].bytes) }
+    let frame = KRdpCapture.fastPathSurfaceBits(left: 1, top: 1, pixel: Data([1, 2, 3, 0xFF]))
+
+    let run = try KRdpCapture.run(
+        appending: [
+            KRdpCapture.fastPathSurfaceBits(left: 0, top: 0, pixel: Data([1, 2, 3, 0xFF])),
+            setErrorInfo(0x0000_0003),
+            setErrorInfo(0),
+            KRdpCapture.ioPacket(KRdpCapture.shareControl(type: 0x6, body: deactivate)),
+            #require(events[19].bytes),
+        ] + finalization,
+        frameCaptureLimit: 2
+    ) { channel in
+        var buffer = channel.allocator.buffer(capacity: frame.count)
+        buffer.writeBytes(frame)
+        channel.writeAndFlush(buffer, promise: nil)
+    }
+
+    #expect(run.report.error == nil)
+    #expect(run.report.rdpRemoteTerminationErrorInfo == nil)
+    #expect(run.clientPackets.compactMap(KRdpCapture.confirmActiveDesktopSize).count == 2)
+    let primaryFrames = run.report.rdpGraphicsFrames?.filter { $0.codecName == "surface-bgra" } ?? []
+    #expect(primaryFrames.last?.regionRects == [RDPFrameRect(left: 1, top: 1, right: 2, bottom: 2)])
+}
+
 /// A reactivation can set a desktop wider than 8192 pixels: Windows 11 sends a Demand Active
 /// of 11520x2160 when a Display Control layout of three 3840x2160 monitors resizes a session
 /// without RDPGFX (observed live). The client confirms it and draws its far corner.

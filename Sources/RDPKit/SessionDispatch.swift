@@ -172,8 +172,13 @@ extension RDPClientConnection {
                 finishActivation(share)
             }
         }
-        // ERRINFO_NONE only clears the status ([MS-RDPBCGR] 2.2.5.1.1).
-        if let errorInfo = shareData.errorInfo, errorInfo != 0 {
+        // ERRINFO_NONE clears the status ([MS-RDPBCGR] 2.2.5.1.1), so a Deactivate All or close
+        // after it is not the earlier code's end. A termination with a disconnect reason has
+        // already ended the session.
+        if shareData.errorInfo == 0 {
+            termination = nil
+            isTerminating = false
+        } else if let errorInfo = shareData.errorInfo {
             var termination = termination ?? RDPRemoteTermination()
             termination.errorInfo = errorInfo
             self.termination = termination
