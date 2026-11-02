@@ -66,16 +66,14 @@ private func toastText(for event: RDPPasteboardClipboard.Event) -> String? {
         }
     case let .downloadFailed(failure):
         switch failure {
-        case .download(.timedOut):
+        case .timedOut:
             "Remote file transfer timed out"
-        case .download(.refused):
+        case .refused:
             "Remote file transfer failed"
-        case .download(.incomplete):
+        case .incomplete:
             "Remote file transfer was incomplete"
-        case .download(.totalByteLimitExceeded):
+        case .totalByteLimitExceeded:
             "Remote files exceed 32 MiB"
-        case .download(.replaced), .download(.sessionEnded):
-            "Never reported"
         case .folderNotCreated:
             "Remote files could not be prepared"
         case .notSaved:
@@ -1613,6 +1611,41 @@ final class PasteboardClipboardTests: XCTestCase {
         await settle(server)
         XCTAssertEqual(downloadRootContents(), [])
         XCTAssertNil(copiedFileURL())
+    }
+
+    /// A bridge freed mid-download, its window closed, leaves no folder behind, though a file
+    /// write under way lands after its folder went.
+    func testAFreedBridgesDownloadLeavesNoFolder() async throws {
+        @MainActor
+        final class Holder {
+            weak var clipboard: RDPPasteboardClipboard?
+        }
+        let holder = Holder()
+        let server = try await RDPClipboardTestServer(
+            fetchesRemoteCopies: false,
+            onClipboardFileGroupDescriptor: { list, copyNumber in
+                onMainThread {
+                    holder.clipboard?.receiveFileList(list, copyNumber: copyNumber)
+                }
+            }
+        )
+        servers.append(server)
+        var clipboard: RDPPasteboardClipboard? = makeClipboard()
+        holder.clipboard = clipboard
+        let writeGate = DispatchSemaphore(value: 0)
+        let session = PacedSession(server: server, writeGate: writeGate)
+        clipboard?.attach(session)
+
+        server.copyFiles([RDPClipboardLocalFile(fileName: "slow.bin", contents: Data(count: 10))])
+        try await waitUntil { session.writeStarted.value }
+        let download = try XCTUnwrap(clipboard?.fileDownloadTask)
+        clipboard?.detach()
+        clipboard = nil
+        XCTAssertNil(holder.clipboard)
+        XCTAssertEqual(downloadRootContents(), [])
+        writeGate.signal()
+        await download.value
+        XCTAssertEqual(downloadRootContents(), [])
     }
 
     /// Attaching a session again drops a download in flight at once, rather than when the

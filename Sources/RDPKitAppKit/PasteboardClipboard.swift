@@ -106,8 +106,15 @@ public final class RDPPasteboardClipboard {
     /// Why the server's files did not reach the pasteboard. A download a newer copy, the
     /// session's end or ``detach()`` ended has none: what replaced it says so itself.
     public enum DownloadFailure: Equatable, Sendable {
-        /// RDPKit's download failed.
-        case download(RDPClipboardDownloadError)
+        /// The server left a request unanswered for `downloadLimits.requestTimeout`.
+        case timedOut
+        /// The server refused a request.
+        case refused
+        /// The server's answers did not add up to the files it listed.
+        case incomplete
+        /// The sizes the server answered add up to more than
+        /// `downloadLimits.maximumTotalByteCount`.
+        case totalByteLimitExceeded
         /// No folder could be made under `downloadRoot` for the download.
         case folderNotCreated
         /// A file could not be written.
@@ -124,7 +131,9 @@ public final class RDPPasteboardClipboard {
     public var onEvent: @MainActor (Event) -> Void = { _ in }
     private let pasteboard: NSPasteboard
     private let downloadRoot: URL
-    private let downloadLimits: RDPClipboardDownloadLimits
+    /// What a copy of the server's files may hold, and how it is fetched, for the app to name
+    /// the limits a copy went over.
+    public let downloadLimits: RDPClipboardDownloadLimits
     private let quarantineAgentName: String
     private let temporarySharingDuration: TimeInterval
     private let now: @MainActor () -> Date
@@ -425,7 +434,13 @@ public final class RDPPasteboardClipboard {
             } catch {
                 outcome = .failure(error)
             }
-            self?.finishFileDownload(id, with: outcome, in: directory)
+            // A bridge freed meanwhile, its window closed, had dropped the download, but a
+            // file write under way then finished first.
+            guard let self else {
+                try? FileManager.default.removeItem(at: directory)
+                return
+            }
+            finishFileDownload(id, with: outcome, in: directory)
         }
         fileDownload = FileDownload(id: id, task: task, directory: directory)
     }
@@ -729,15 +744,22 @@ public final class RDPPasteboardClipboard {
         switch error {
         case RDPClipboardDownloadError.replaced, RDPClipboardDownloadError.sessionEnded, is CancellationError:
             nil
-        case let error as RDPClipboardDownloadError:
-            .download(error)
+        case RDPClipboardDownloadError.timedOut:
+            .timedOut
+        case RDPClipboardDownloadError.refused:
+            .refused
+        case RDPClipboardDownloadError.incomplete:
+            .incomplete
+        case RDPClipboardDownloadError.totalByteLimitExceeded:
+            .totalByteLimitExceeded
         default:
             .notSaved
         }
     }
 
     /// Cancels the download under way and removes its folder. A file write under way finishes
-    /// first, so the download's task removes the folder again once it ends.
+    /// first, so the download's task removes the folder again once it ends, also once the
+    /// bridge is gone.
     private func discardFileTransfer() {
         guard let fileDownload else {
             return
