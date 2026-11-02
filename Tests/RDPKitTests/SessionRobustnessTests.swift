@@ -1350,12 +1350,17 @@ func theLiveReportSaysWhenTheNextConnectAttemptStarts() throws {
     var configuration = RDPConnectionConfiguration(host: "192.0.2.1", port: 9, timeoutSeconds: 1)
     configuration.connectAttempts = 3
     configuration.connectRetryDelay = 60
+    let retryingConfiguration = configuration
     let liveReport = RDPLiveConnectionReport()
     let cancellation = RDPConnectionCancellation()
     let finished = DispatchSemaphore(value: 0)
     let final = Locked<RDPConnectionReport?>(nil)
     Thread.detachNewThread {
-        let report = RDPSessionClient().run(configuration: configuration, liveReport: liveReport, cancellation: cancellation)
+        let report = RDPSessionClient().run(
+            configuration: retryingConfiguration,
+            liveReport: liveReport,
+            cancellation: cancellation
+        )
         final.withLock { $0 = report }
         finished.signal()
     }
