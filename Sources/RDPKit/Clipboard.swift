@@ -975,6 +975,8 @@ public final class RDPClipboardSession: @unchecked Sendable {
     private var publishedCopyID = 0
     private var remoteContent = RDPClipboardContent()
     private var isFetchingRemoteCopies = true
+    /// What `fetchesRemoteCopies` starts as, and goes back to when the server's clipboard restarts.
+    private let initiallyFetchesRemoteCopies: Bool
     /// What to ask for of the last copy the server announced while fetching was off, kept while
     /// its clipboard holds that copy: until it announces another or this client publishes.
     private var unfetchedRemoteCopyRequests: [RDPClipboardRequestedFormatDataResponse]?
@@ -1019,6 +1021,7 @@ public final class RDPClipboardSession: @unchecked Sendable {
         self.requestsRichFormats = requestsRichFormats
         self.requestsFileLists = requestsFileLists
         isFetchingRemoteCopies = fetchesRemoteCopies
+        initiallyFetchesRemoteCopies = fetchesRemoteCopies
         self.connectionContext = connectionContext
         self.sentMessageHandler = sentMessageHandler
         self.pendingEventHandler = pendingEventHandler
@@ -1043,32 +1046,40 @@ public final class RDPClipboardSession: @unchecked Sendable {
     /// keep the server's clipboard as it was: joining cliprdr announces the client's clipboard,
     /// empty until something is published, and Windows then empties its own (see
     /// `RDPConnectionConfiguration.clipboardEnabled`).
+    ///
+    /// When the server's clipboard restarts, its Monitor Ready sets this back to what it started
+    /// as before `onClipboardReady` gets the session again, so a client deciding on another
+    /// thread fetches nothing the server announces before it has decided again, as on the first
+    /// start.
     public var fetchesRemoteCopies: Bool {
         get {
             lock.withLock { isFetchingRemoteCopies }
         }
         set {
-            let queuedEvent = lock.withLock {
-                var queuedEvent = false
-                if isFetchingRemoteCopies, !newValue {
-                    replaceRemoteCopy(with: [])
-                } else if !isFetchingRemoteCopies, newValue, let unfetchedRemoteCopyRequests {
-                    replaceRemoteCopy(with: unfetchedRemoteCopyRequests)
-                    // Nothing to fetch, so it is reported as it would have been on arrival.
-                    if unfetchedRemoteCopyRequests.isEmpty {
-                        pendingEvent = (event: .remoteCopyUnavailable(isEmpty: false), copyID: remoteCopyID)
-                        queuedEvent = true
-                    }
-                    self.unfetchedRemoteCopyRequests = nil
-                }
-                isFetchingRemoteCopies = newValue
-                return queuedEvent
-            }
+            let queuedEvent = lock.withLock { setFetchingLocked(newValue) }
             sendNextFormatDataRequest()
             if queuedEvent {
                 pendingEventHandler()
             }
         }
+    }
+
+    /// Sets `isFetchingRemoteCopies`, and says whether it queued an event to deliver.
+    private func setFetchingLocked(_ newValue: Bool) -> Bool {
+        var queuedEvent = false
+        if isFetchingRemoteCopies, !newValue {
+            replaceRemoteCopy(with: [])
+        } else if !isFetchingRemoteCopies, newValue, let unfetchedRemoteCopyRequests {
+            replaceRemoteCopy(with: unfetchedRemoteCopyRequests)
+            // Nothing to fetch, so it is reported as it would have been on arrival.
+            if unfetchedRemoteCopyRequests.isEmpty {
+                pendingEvent = (event: .remoteCopyUnavailable(isEmpty: false), copyID: remoteCopyID)
+                queuedEvent = true
+            }
+            self.unfetchedRemoteCopyRequests = nil
+        }
+        isFetchingRemoteCopies = newValue
+        return queuedEvent
     }
 
     /// The event turning fetching on found for a copy announced while it was off, once; nil
@@ -1205,12 +1216,18 @@ public final class RDPClipboardSession: @unchecked Sendable {
         if pdu.header.messageType == RDPClipboardMessageType.monitorReady {
             // A server whose clipboard restarted answers no request made before, and no Format
             // List: one left counted would keep every later server list from retiring the local copy.
-            lock.withLock {
+            let queuedEvent = lock.withLock {
                 formatDataRequests = []
                 isAwaitingFormatData = false
                 unansweredFormatListCount = 0
+                // `onClipboardReady` decides again, as on the first start.
+                return setFetchingLocked(initiallyFetchesRemoteCopies)
             }
             respondToMonitorReady()
+            sendNextFormatDataRequest()
+            if queuedEvent {
+                pendingEventHandler()
+            }
             return .ready
         }
         if pdu.header.messageType == RDPClipboardMessageType.formatListResponse {

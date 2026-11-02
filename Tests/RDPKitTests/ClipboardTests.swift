@@ -1268,6 +1268,75 @@ private final class ClipboardPublishRace: @unchecked Sendable {
     _ = try channel.finish()
 }
 
+/// A restart of the server's clipboard, a second Monitor Ready, sets fetching back to what the
+/// session started with before `onClipboardReady` gets it again: a client that decides on
+/// another thread fetches nothing the restarted server announces before it has.
+@Test func clipboardSessionRestartGoesBackToFetchingOff() throws {
+    let channel = EmbeddedChannel()
+    let sent = ClipboardSentMessages()
+    let session = RDPClipboardSession(
+        userChannelID: 1006,
+        staticChannelID: 1007,
+        channel: channel,
+        fetchesRemoteCopies: false,
+        sentMessageHandler: sent.record
+    )
+    let textCopy = RDPClipboardFormatListPDU(entries: [
+        RDPClipboardFormatListEntry(formatID: RDPClipboardFormatID.unicodeText),
+    ]).encoded()
+
+    _ = try session.receive(RDPClipboardPDU.parse(from: RDPClipboardCapabilitiesPDU().encoded()))
+    #expect(try session.receive(RDPClipboardPDU(messageType: RDPClipboardMessageType.monitorReady)) == .ready)
+    session.fetchesRemoteCopies = true
+    #expect(try session.receive(RDPClipboardPDU(messageType: RDPClipboardMessageType.monitorReady)) == .ready)
+    #expect(!session.fetchesRemoteCopies)
+    #expect(try session.receive(RDPClipboardPDU.parse(from: textCopy)) == nil)
+    #expect(try sentFormatDataRequestIDs(sent).isEmpty)
+
+    session.fetchesRemoteCopies = true
+    #expect(try sentFormatDataRequestIDs(sent) == [RDPClipboardFormatID.unicodeText])
+    _ = try channel.finish()
+}
+
+/// Set back on by a restart, fetching takes up the copy the server announced while it was off,
+/// as turning it on does: it asks for what it can fetch once it has answered the Monitor Ready,
+/// and reports one with nothing to fetch through the pending event.
+@Test(arguments: [RDPClipboardFormatID.unicodeText, RDPClipboardFormatID.dib])
+func clipboardSessionRestartGoesBackToFetchingOn(formatID: UInt32) throws {
+    let channel = EmbeddedChannel()
+    let sent = ClipboardSentMessages()
+    let wakes = Locked(0)
+    let session = RDPClipboardSession(
+        userChannelID: 1006,
+        staticChannelID: 1007,
+        channel: channel,
+        sentMessageHandler: sent.record,
+        pendingEventHandler: { wakes.withLock { $0 += 1 } }
+    )
+    let copy = RDPClipboardFormatListPDU(entries: [RDPClipboardFormatListEntry(formatID: formatID)]).encoded()
+
+    _ = try session.receive(RDPClipboardPDU.parse(from: RDPClipboardCapabilitiesPDU().encoded()))
+    #expect(try session.receive(RDPClipboardPDU(messageType: RDPClipboardMessageType.monitorReady)) == .ready)
+    session.fetchesRemoteCopies = false
+    #expect(try session.receive(RDPClipboardPDU.parse(from: copy)) == nil)
+    let sentBeforeRestart = sent.summaries.count
+    #expect(try session.receive(RDPClipboardPDU(messageType: RDPClipboardMessageType.monitorReady)) == .ready)
+    #expect(session.fetchesRemoteCopies)
+
+    let restartTypes = sent.summaries.dropFirst(sentBeforeRestart).map(\.typeName)
+    if formatID == RDPClipboardFormatID.unicodeText {
+        // The request goes out once the Monitor Ready is answered, its Format List last.
+        #expect(Array(restartTypes.suffix(2)) == ["clipboard-format-list", "clipboard-format-data-request"])
+        #expect(wakes.value == 0)
+        #expect(session.takePendingEvent() == nil)
+    } else {
+        #expect(!restartTypes.contains("clipboard-format-data-request"))
+        #expect(wakes.value == 1)
+        #expect(session.takePendingEvent() == .remoteCopyUnavailable(isEmpty: false))
+    }
+    _ = try channel.finish()
+}
+
 /// The server holds the client's copy from a publish that is not empty until an empty one, or
 /// a server copy of its own, fetched or not; one that crossed the publish is older and leaves
 /// it. Withdrawing publishes an empty copy only while the server holds the client's.

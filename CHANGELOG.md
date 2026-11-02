@@ -31,6 +31,12 @@
 - While `fetchesRemoteCopies` is off, `onClipboardRemoteCopyUnavailable` is
   called at once, with `isEmpty` true, when the server empties its
   clipboard; other copies still wait until fetching is back on.
+- When the server's clipboard restarts, its Monitor Ready sets
+  `RDPClipboardSession.fetchesRemoteCopies` back to
+  `clipboardFetchesRemoteCopies` before `onClipboardReady` gets the session
+  again, so a client that decides on another thread fetches nothing the
+  restarted server announces before it has decided again. A client that turned
+  fetching off sets it again in `onClipboardReady`, as on the first start.
 - The remote-copy handlers, `onClipboardText`, `onClipboardContent`,
   `onClipboardFileGroupDescriptor` and `onClipboardRemoteCopyUnavailable`, get
   the copy's number as a second argument, so a client no longer keeps the
