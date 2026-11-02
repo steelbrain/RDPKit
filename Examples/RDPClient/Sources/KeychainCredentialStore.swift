@@ -85,9 +85,19 @@ struct KeychainCredentialStore: Sendable {
     /// `key`'s earlier names, which their lookups do not try, moves to the account's name in one
     /// step, as a lookup moves it, or is deleted when that name has a password already. An
     /// earlier name one of `others` shares stays for its lookup. Nothing is read.
+    ///
+    /// First, a password saved under an earlier name of `others` that `key` does not share moves
+    /// to the account's name, as their lookup would move it, or stays when that name has one
+    /// already. The deleted profile's password then does not take the account's name, where
+    /// their lookup would read it in place of their own.
     func moveLegacyPasswords(for key: KeychainCredentialKey, keptBy others: [RDPConnectionIdentity]) throws {
-        let namesInUse = Set(others.flatMap(\.legacyCredentialAccountNames))
-        for legacyAccount in key.identity.legacyCredentialAccountNames where !namesInUse.contains(legacyAccount) {
+        let ownNames = key.identity.legacyCredentialAccountNames
+        let namesInUse = others.flatMap(\.legacyCredentialAccountNames)
+        for legacyAccount in namesInUse where !ownNames.contains(legacyAccount) {
+            // Not found, or the name taken: their lookup reads the account's name first.
+            _ = try passwords.rename(account: legacyAccount, to: key.account)
+        }
+        for legacyAccount in ownNames where !namesInUse.contains(legacyAccount) {
             if try passwords.rename(account: legacyAccount, to: key.account) == .newNameTaken {
                 try passwords.deletePassword(account: legacyAccount)
             }

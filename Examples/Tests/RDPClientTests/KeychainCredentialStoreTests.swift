@@ -143,6 +143,34 @@ private func typedKey() throws -> KeychainCredentialKey {
     }
 }
 
+/// Deleting a profile for "Desktop.Example" while one for "DESKTOP.example" keeps the account,
+/// each with a password saved under its own legacy name: the kept one's lookup finds the one it
+/// saved, not the deleted one's, which goes.
+@Test func aLegacyPasswordTheKeptProfileSavedStaysItsOwn() throws {
+    let key = try typedKey()
+    let kept = RDPConnectionIdentity(host: "DESKTOP.example", username: "anees")
+    let keptLegacyAccount = "anees@DESKTOP.example:3389"
+    let cases: [(saved: [String: String], left: [String: String])] = [
+        ([legacyAccount: "deleted's", keptLegacyAccount: "kept's"], [currentAccount: "kept's"]),
+        (
+            [legacyAccount: "deleted's", keptLegacyAccount: "older", currentAccount: "newer"],
+            [keptLegacyAccount: "older", currentAccount: "newer"]
+        ),
+        ([legacyAccount: "deleted's"], [currentAccount: "deleted's"]),
+    ]
+    for (saved, left) in cases {
+        let passwords = Passwords(saved)
+        let store = KeychainCredentialStore(passwords: passwords)
+
+        try store.moveLegacyPasswords(for: key, keptBy: [kept])
+
+        #expect(passwords.saved == left)
+        #expect(passwords.reads == 0)
+        let keptKey = try #require(KeychainCredentialKey(identity: kept))
+        #expect(try store.password(for: keptKey) == left[currentAccount])
+    }
+}
+
 private func profile(host: String) -> ConnectionProfile {
     ConnectionProfile(
         id: UUID(),
