@@ -31,6 +31,12 @@ public struct RDPGFXMessageSummary: Encodable, Equatable, Sendable {
     public var progressiveTileSimpleCount: Int?
     public var progressiveTileFirstCount: Int?
     public var progressiveTileUpgradeCount: Int?
+    /// How many entries the CAVIDEO and progressive lists above left out, each keeping its
+    /// first 1,024; nil when none. The counts above cover every block.
+    public var omittedListEntryCount: Int?
+
+    /// A stream can hold millions of blocks, which a summary kept for the session must not.
+    static let maximumListEntryCount = 1_024
 
     /// Throws when the message is malformed; codec payload details are best effort.
     static func summarize(
@@ -98,6 +104,7 @@ public struct RDPGFXMessageSummary: Encodable, Equatable, Sendable {
                 summary.progressiveTileSimpleCount = progressive.tileSimpleCount
                 summary.progressiveTileFirstCount = progressive.tileFirstCount
                 summary.progressiveTileUpgradeCount = progressive.tileUpgradeCount
+                summary.omittedListEntryCount = progressive.omittedEntryCount > 0 ? progressive.omittedEntryCount : nil
             }
         default:
             break
@@ -146,6 +153,7 @@ public struct RDPGFXMessageSummary: Encodable, Equatable, Sendable {
             cavideoBlockTypeNames = cavideo.blockTypeNames
             cavideoTileSetEntropyAlgorithms = cavideo.tileSetEntropyAlgorithms
             cavideoTileCount = cavideo.tileCount
+            omittedListEntryCount = cavideo.omittedEntryCount > 0 ? cavideo.omittedEntryCount : nil
         default:
             break
         }
@@ -165,6 +173,16 @@ private func readRemoteFXBlock(_ cursor: inout ByteCursor) throws -> (type: UInt
 
 private func remoteFXBlockName(_ blockType: UInt16, names: [UInt16: String]) -> String {
     names[blockType] ?? "block-0x\(String(format: "%04x", blockType))"
+}
+
+/// Appends to one of a summary's lists until it holds `RDPGFXMessageSummary.maximumListEntryCount`
+/// entries, counting the ones left out; `element` is only built when it is kept.
+private func appendListed<Element>(_ element: @autoclosure () -> Element, to list: inout [Element], omitted: inout Int) {
+    guard list.count < RDPGFXMessageSummary.maximumListEntryCount else {
+        omitted += 1
+        return
+    }
+    list.append(element())
 }
 
 /// Block-level walk of an RFX_PROGRESSIVE_BITMAP_STREAM (MS-RDPEGFX 2.2.4.2).
@@ -198,21 +216,26 @@ private struct RDPGFXProgressiveStreamSummary {
     var tileSimpleCount = 0
     var tileFirstCount = 0
     var tileUpgradeCount = 0
+    var omittedEntryCount = 0
 
     init(_ data: Data) throws {
         var cursor = ByteCursor(data)
         while cursor.remaining > 0 {
             let block = try readRemoteFXBlock(&cursor)
-            blockTypeNames.append(remoteFXBlockName(block.type, names: Self.blockNames))
+            appendListed(remoteFXBlockName(block.type, names: Self.blockNames), to: &blockTypeNames, omitted: &omittedEntryCount)
             var body = ByteCursor(block.body)
             switch block.type {
             case BlockType.frameBegin:
-                frameIndexes.append(try body.readLittleEndianUInt32())
-                frameRegionCounts.append(try body.readLittleEndianUInt16())
+                let frameIndex = try body.readLittleEndianUInt32()
+                let regionCount = try body.readLittleEndianUInt16()
+                appendListed(frameIndex, to: &frameIndexes, omitted: &omittedEntryCount)
+                appendListed(regionCount, to: &frameRegionCounts, omitted: &omittedEntryCount)
             case BlockType.context:
                 _ = try body.readUInt8()
-                contextTileSizes.append(try body.readLittleEndianUInt16())
-                contextFlags.append(try body.readUInt8())
+                let tileSize = try body.readLittleEndianUInt16()
+                let flags = try body.readUInt8()
+                appendListed(tileSize, to: &contextTileSizes, omitted: &omittedEntryCount)
+                appendListed(flags, to: &contextFlags, omitted: &omittedEntryCount)
             case BlockType.region:
                 try addRegion(&body)
             default:
@@ -237,7 +260,7 @@ private struct RDPGFXProgressiveStreamSummary {
             else {
                 throw RDPDecodeError.invalidRDPGFXPDU
             }
-            regionRects.append(RDPFrameRect(left: x, top: y, right: right, bottom: bottom))
+            appendListed(RDPFrameRect(left: x, top: y, right: right, bottom: bottom), to: &regionRects, omitted: &omittedEntryCount)
         }
         _ = try cursor.readData(count: Int(quantCount) * 5 + Int(progressiveQuantCount) * 16)
         while cursor.remaining > 0 {
@@ -274,6 +297,7 @@ private struct RDPGFXCAVideoStreamSummary {
     var blockTypeNames: [String] = []
     var tileSetEntropyAlgorithms: [String] = []
     var tileCount = 0
+    var omittedEntryCount = 0
 
     init(_ data: Data) throws {
         var cursor = ByteCursor(data)
@@ -287,7 +311,7 @@ private struct RDPGFXCAVideoStreamSummary {
     }
 
     private mutating func add(_ blockType: UInt16) {
-        blockTypeNames.append(remoteFXBlockName(blockType, names: Self.blockNames))
+        appendListed(remoteFXBlockName(blockType, names: Self.blockNames), to: &blockTypeNames, omitted: &omittedEntryCount)
         if blockType == Self.tileBlockType {
             tileCount += 1
         }
@@ -301,7 +325,11 @@ private struct RDPGFXCAVideoStreamSummary {
         var body = ByteCursor(tileSet)
         _ = try body.readData(count: 6)
         let properties = try body.readLittleEndianUInt16()
-        tileSetEntropyAlgorithms.append(Self.entropyAlgorithmName((properties >> 10) & 0x0F))
+        appendListed(
+            Self.entropyAlgorithmName((properties >> 10) & 0x0F),
+            to: &tileSetEntropyAlgorithms,
+            omitted: &omittedEntryCount
+        )
         let quantCount = try body.readUInt8()
         _ = try body.readData(count: 7 + Int(quantCount) * 5)
         while body.remaining > 0 {

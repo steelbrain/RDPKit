@@ -1087,6 +1087,60 @@ import Testing
     #expect(summary.cavideoTileCount == 0)
 }
 
+/// A stream can hold millions of blocks, and a summary is kept for the session: each list
+/// keeps its first 1,024 entries, the summary counts the rest, and the counts cover them all.
+@Test func summarizesStreamsOfManyBlocksIntoBoundedLists() throws {
+    var region = Data()
+    region.appendUInt8(64)
+    region.appendLittleEndianUInt16(2_000)
+    region.append(contentsOf: [0, 0, 0, 0, 0, 0, 0, 0, 0])
+    for index in 0 ..< UInt16(2_000) {
+        region.append(rectangleBytes(left: index, top: 0, right: 1, bottom: 1))
+    }
+    var progressive = Data()
+    progressive.appendProgressiveBlock(type: 0xCCC4, body: region)
+    for _ in 0 ..< 5_000 {
+        progressive.appendProgressiveBlock(type: 0x0000, body: Data())
+    }
+    var wireToSurface2 = Data()
+    wireToSurface2.appendLittleEndianUInt16(7)
+    wireToSurface2.appendLittleEndianUInt16(RDPGFXCodecID.caProgressive)
+    wireToSurface2.appendLittleEndianUInt32(12)
+    wireToSurface2.appendUInt8(0x20)
+    wireToSurface2.appendLittleEndianUInt32(UInt32(progressive.count))
+    wireToSurface2.append(progressive)
+
+    let progressiveSummary = try RDPGFXMessageSummary.summarize(
+        RDPGFXHeader.parse(from: graphicsMessage(commandID: RDPGFXCommandID.wireToSurface2, payload: wireToSurface2)),
+        includeVideoDetails: false
+    )
+
+    #expect(progressiveSummary.progressiveBlockTypeNames?.count == 1_024)
+    #expect(progressiveSummary.progressiveBlockTypeNames?.prefix(2) == ["region", "block-0x0000"])
+    #expect(progressiveSummary.progressiveRegionRects?.count == 1_024)
+    #expect(progressiveSummary.omittedListEntryCount == 5_001 - 1_024 + 2_000 - 1_024)
+
+    var cavideo = Data()
+    for _ in 0 ..< 5_000 {
+        cavideo.appendProgressiveBlock(type: 0xCAC3, body: Data())
+    }
+    var wireToSurface1 = Data()
+    wireToSurface1.appendLittleEndianUInt16(9)
+    wireToSurface1.appendLittleEndianUInt16(RDPGFXCodecID.cavideo)
+    wireToSurface1.appendUInt8(0x20)
+    wireToSurface1.append(rectangleBytes(left: 0, top: 0, right: 64, bottom: 64))
+    wireToSurface1.appendLittleEndianUInt32(UInt32(cavideo.count))
+    wireToSurface1.append(cavideo)
+
+    let cavideoSummary = try RDPGFXMessageSummary.summarize(
+        RDPGFXHeader.parse(from: graphicsMessage(commandID: RDPGFXCommandID.wireToSurface1, payload: wireToSurface1))
+    )
+
+    #expect(cavideoSummary.cavideoBlockTypeNames?.count == 1_024)
+    #expect(cavideoSummary.cavideoTileCount == 5_000)
+    #expect(cavideoSummary.omittedListEntryCount == 5_000 - 1_024)
+}
+
 @Test func summarizesCAVideoRemoteFXCompressedTilePayload() throws {
     let cavideoStream = cavideoRemoteFXGrayTileStream(
         frameIndex: 9,
