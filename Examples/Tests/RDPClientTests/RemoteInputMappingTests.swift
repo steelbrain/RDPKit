@@ -1041,15 +1041,21 @@ private func keyEvent(
     view.scrollWheel(with: scroll)
     view.flagsChanged(with: try keyEvent(.flagsChanged, keyCode: kVK_Command))
 
-    // Only the order matters here, not where on the desktop the wheel event lands.
-    let events = input.events.map { event in
-        guard case let .verticalWheel(rotation, _, _) = event else {
-            return event
+    // Only the order matters here, not where on the desktop the wheel event lands. The server
+    // had the pointer nowhere yet, so it moves there first.
+    let events = input.events.map { event -> RDPSlowPathInputEvent in
+        switch event {
+        case let .verticalWheel(rotation, _, _):
+            .verticalWheel(rotation: rotation, x: 0, y: 0)
+        case .pointerMove:
+            .pointerMove(x: 0, y: 0)
+        default:
+            event
         }
-        return .verticalWheel(rotation: rotation, x: 0, y: 0)
     }
     #expect(events == [
         .keyboard(scancode: leftWindows, isReleased: false),
+        .pointerMove(x: 0, y: 0),
         .verticalWheel(rotation: 120, x: 0, y: 0),
         .keyboard(scancode: leftWindows, isReleased: true),
     ])
@@ -1373,4 +1379,45 @@ private let rightOptionFlags = NSEvent.ModifierFlags(rawValue: NSEvent.ModifierF
     view.mouseDragged(with: try event(.leftMouseDragged, at: CGPoint(x: 180, y: 50)))
     view.mouseDragged(with: try event(.leftMouseDragged, at: CGPoint(x: 10, y: -20)))
     #expect(input.events == [.pointerMove(x: 99, y: 50), .pointerMove(x: 0, y: 99)])
+}
+
+/// Command or right Option pressed while Shift, Control, left Option or a mouse button is down
+/// on the server is a chord: released after it, it sends no Win or Alt tap, which would open the
+/// Start menu or the menu bar.
+@Test func aKeyHeldBackWhileAModifierOrButtonIsDownIsNoTap() {
+    let leftShift = RDPKeyboardScancode(code: 0x2A)
+    let leftWindows = RDPKeyboardScancode(code: 0x5B, isExtended: true)
+    let rightAlt = RDPKeyboardScancode(code: 0x38, isExtended: true)
+    var shiftDown = RDPInputStateTracker()
+    _ = shiftDown.keyboard(scancode: leftShift, isReleased: false)
+    var dragging = RDPInputStateTracker()
+    _ = dragging.pointerButton(.left, isDown: true, at: RDPRemotePoint(x: 1, y: 1))
+
+    for inputState in [shiftDown, dragging] {
+        for held in [leftWindows, rightAlt] {
+            var heldKeys = MacRDPDeferredModifierKeys()
+            heldKeys.press(held, inputState: inputState)
+            #expect(heldKeys.release(held).isEmpty)
+        }
+    }
+}
+
+/// The server gets the pointer where the wheel turns before the wheel events, unless it already
+/// has it there.
+@Test func theWheelMovesThePointerFirstWhenTheServerHasItElsewhere() {
+    var inputState = RDPInputStateTracker()
+    let point = RDPRemotePoint(x: 40, y: 30)
+
+    #expect(MacRDPScrollWheel.pointerMove(to: point, inputState: &inputState) == [.pointerMove(x: 40, y: 30)])
+    #expect(MacRDPScrollWheel.pointerMove(to: point, inputState: &inputState).isEmpty)
+    #expect(MacRDPScrollWheel.pointerMove(to: RDPRemotePoint(x: 41, y: 30), inputState: &inputState)
+        == [.pointerMove(x: 41, y: 30)])
+}
+
+/// The JIS keypad comma's scancode types nothing on most layouts, so the comma goes as Unicode
+/// unless a modifier makes it a shortcut.
+@Test func theJISKeypadCommaTypesAComma() {
+    #expect(MacRDPKeyboardMapping.scancode(forKeyCode: UInt16(kVK_JIS_KeypadComma)) == RDPKeyboardScancode(code: 0x7E))
+    #expect(sendsScancode(kVK_JIS_KeypadComma, [], characters: ",") == false)
+    #expect(sendsScancode(kVK_JIS_KeypadComma, .control, characters: ","))
 }

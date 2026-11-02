@@ -147,7 +147,6 @@ final class RemoteInputCaptureNSView: NSView {
         guard let point = remotePoint(from: event) else {
             return
         }
-        inputState.updatePointerLocation(point)
         let units = MacRDPScrollWheel.rotationUnits(
             deltaX: event.scrollingDeltaX,
             deltaY: event.scrollingDeltaY,
@@ -157,7 +156,8 @@ final class RemoteInputCaptureNSView: NSView {
         guard events.isEmpty == false else {
             return
         }
-        sendInput(deferredModifierKeys.flush(&inputState) + events)
+        let move = MacRDPScrollWheel.pointerMove(to: point, inputState: &inputState)
+        sendInput(deferredModifierKeys.flush(&inputState) + move + events)
     }
 
     override func keyDown(with event: NSEvent) {
@@ -272,6 +272,14 @@ final class RemoteInputCaptureNSView: NSView {
             name: NSWindow.didBecomeKeyNotification,
             object: window
         )
+        // A menu tracking the mouse or keyboard takes the key-ups of keys held meanwhile, which
+        // would stay down on the server.
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(menuDidBeginTracking(_:)),
+            name: NSMenu.didBeginTrackingNotification,
+            object: nil
+        )
         // AppKit never dispatches keyUp to the window while Command is held, which would leave
         // keys pressed during a Command chord stuck down on the server.
         commandKeyUpMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyUp) { [weak self] event in
@@ -287,6 +295,7 @@ final class RemoteInputCaptureNSView: NSView {
             NotificationCenter.default.removeObserver(self, name: NSWindow.didResignKeyNotification, object: window)
             NotificationCenter.default.removeObserver(self, name: NSWindow.didBecomeKeyNotification, object: window)
         }
+        NotificationCenter.default.removeObserver(self, name: NSMenu.didBeginTrackingNotification, object: nil)
         if let commandKeyUpMonitor {
             NSEvent.removeMonitor(commandKeyUpMonitor)
             self.commandKeyUpMonitor = nil
@@ -294,6 +303,10 @@ final class RemoteInputCaptureNSView: NSView {
     }
 
     @objc private func windowDidResignKey(_: Notification) {
+        releasePressedInputs()
+    }
+
+    @objc private func menuDidBeginTracking(_: Notification) {
         releasePressedInputs()
     }
 
@@ -421,6 +434,14 @@ enum MacRDPScrollWheel {
         let scale = hasPreciseScrollingDeltas ? unitsPerPoint : RDPScrollWheelAccumulator.unitsPerNotch
         return (Double(deltaY) * scale, -Double(deltaX) * scale)
     }
+
+    /// A move to `point`, ahead of wheel events there, when the server last got the pointer
+    /// elsewhere: a server may scroll what is under its own pointer, which follows the Mac's
+    /// only while the window is key, as the tracking area reports moves only then. The wheel
+    /// still reaches a window in the background.
+    static func pointerMove(to point: RDPRemotePoint, inputState: inout RDPInputStateTracker) -> [RDPSlowPathInputEvent] {
+        inputState.lastPointerPoint == point ? [] : [inputState.pointerMove(to: point)]
+    }
 }
 
 /// Command is sent as the Windows key, and a Windows key pressed and released with nothing in
@@ -458,14 +479,18 @@ struct MacRDPDeferredModifierKeys {
         heldScancodes.contains(scancode)
     }
 
-    /// Keys held back together are a chord, and so is a key pressed while another one already
-    /// went to the server, as Command-click sends Win: releasing it sends nothing, rather than a
-    /// Win or Alt tap with that key still down.
+    /// Keys held back together are a chord, and so is a key pressed while a modifier or a mouse
+    /// button is down on the server, as Command-click sends Win, Shift goes at once and a drag
+    /// holds the button: releasing it sends nothing, rather than a Win or Alt tap with that key
+    /// still down, or after it, such as Shift-Command with Shift let go first.
     mutating func press(_ scancode: RDPKeyboardScancode, inputState: RDPInputStateTracker) {
         guard heldScancodes.contains(scancode) == false else {
             return
         }
-        if heldScancodes.isEmpty == false || Self.deferredScancodes.contains(where: inputState.isScancodePressed) {
+        if heldScancodes.isEmpty == false
+            || MacRDPModifierKey.all.contains(where: { inputState.isScancodePressed($0.scancode) })
+            || RDPPointerButton.allCases.contains(where: inputState.isPointerButtonPressed)
+        {
             isChordedElsewhere = true
         }
         heldScancodes.append(scancode)
@@ -780,6 +805,9 @@ enum MacRDPKeyboardMapping {
         // macOS reports the ISO key left of "1" as kVK_ISO_Section; it occupies the grave key's position.
         kVK_ISO_Section: 0x29,
         kVK_JIS_Yen: 0x7D, kVK_JIS_Underscore: 0x73,
+        // 0x7E is the ABNT2 keypad's extra key, which types nothing on most layouts: the layout
+        // check sends the comma as Unicode unless the server's layout types it there.
+        kVK_JIS_KeypadComma: 0x7E,
         // PC keypads have no "="; the main "=" key's scancode types it only on some layouts
         // (German has a dead key there), so the layout check decides.
         kVK_ANSI_KeypadEquals: 0x0D,
@@ -809,7 +837,6 @@ enum MacRDPKeyboardMapping {
         kVK_ANSI_KeypadPlus: RDPKeyboardScancode(code: 0x4E),
         kVK_ANSI_KeypadEnter: RDPKeyboardScancode(code: 0x1C, isExtended: true),
         kVK_ANSI_KeypadDecimal: RDPKeyboardScancode(code: 0x53),
-        kVK_JIS_KeypadComma: RDPKeyboardScancode(code: 0x7E),
         // Apple's JIS keyboards send Eisu and Kana as HID LANG2 and LANG1, which a PC reads as
         // 0x71 and 0x72 (set 1's F1 and F2, which have no break code), and FreeRDP's SDL
         // client sends them so. Windows' Japanese layout turns them into VK_IME_OFF and
