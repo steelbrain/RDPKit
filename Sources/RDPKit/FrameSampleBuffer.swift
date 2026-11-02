@@ -30,7 +30,9 @@ public final class RDPFrameSampleBufferFactory {
 
         // The clean aperture crops the coded picture to the frame's display size, or to the
         // source rect, and must be attached before the format description is derived from the
-        // buffer.
+        // buffer. The decode queue may read a directly presented picture meanwhile, for a later
+        // frame: CoreVideo takes a lock around attachment changes and reads, and Core Image,
+        // which reads the picture there, ignores the clean aperture (checked on macOS 27.0.1).
         if let cleanAperture {
             CVBufferSetAttachment(presentation.imageBuffer, kCVImageBufferCleanApertureKey, cleanAperture, .shouldPropagate)
         } else {
