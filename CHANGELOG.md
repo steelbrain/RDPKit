@@ -9,7 +9,9 @@
   `RDPConnectionConfiguration.recoversVideoWithLayoutResend` off or drops its
   own, so the server is not asked twice.
 - `RDPDisplayControlSession.send(_:)` for an `RDPMonitorLayout` returns a
-  discardable `Bool`.
+  discardable `Bool`. `@discardableResult` does not cover `try?`, so
+  `try? session.send(layout)` now warns that its result is unused, an error
+  under warnings-as-errors: write `_ = try? session.send(layout)`.
 - `onDisplayControlReady` runs before `onGraphicsFrame` gets the first frame,
   still only once that frame has arrived, so a handler whose first frame fails
   to decode can ask for a keyframe. A client that chose its first layout from
