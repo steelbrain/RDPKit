@@ -1058,41 +1058,46 @@ import Testing
 }
 
 /// Rectangles already dirty that enter a new one from two sides would cut it into a number
-/// of pieces quadratic in theirs; the cut gives up early, so one fill stays cheap.
+/// of pieces quadratic in theirs; the cut gives up early, so one fill stays cheap. The bound
+/// is on the CPU time of the fill's thread, which other work on a loaded machine does not
+/// stretch as it does wall time: in a debug build the fill takes about 0.05 s of it, and the
+/// full cut took about 4 s.
 @Test func compositorMarksARectangleManyDirtyOnesEnterQuickly() throws {
     let compositor = RDPGFXSurfaceCompositor()
     let clearCodec = RDPClearCodecDecoder()
-    try compositor.process(try createSurfaceMessage(surfaceID: 1, width: 2048, height: 2048), clearCodec: clearCodec)
+    try compositor.process(try createSurfaceMessage(surfaceID: 1, width: 1_280, height: 720), clearCodec: clearCodec)
     try compositor.process(try mapSurfaceToOutputMessage(surfaceID: 1, x: 0, y: 0), clearCodec: clearCodec)
-    // One-pixel teeth entering the fill below from its left and from its top.
+    // One-pixel teeth entering the fill below: from its left on each of 512 rows, and 100 rows
+    // deep from its top on every other column, so a full cut leaves over 50,000 pieces. The
+    // fill covers few pixels besides, so writing them takes a small part of the bound.
     var teeth: [RDPGFXRect16] = []
     for index in 0 ..< 512 {
-        let top = UInt16(500 + 2 * index)
-        teeth.append(RDPGFXRect16(left: 400, top: top, right: 510, bottom: top + 1))
+        let top = UInt16(100 + index)
+        teeth.append(RDPGFXRect16(left: 0, top: top, right: 110, bottom: top + 1))
     }
     for index in 0 ..< 511 {
-        let left = UInt16(520 + 2 * index)
-        teeth.append(RDPGFXRect16(left: left, top: 400, right: left + 1, bottom: 510))
+        let left = UInt16(120 + 2 * index)
+        teeth.append(RDPGFXRect16(left: left, top: 0, right: left + 1, bottom: 200))
     }
     try compositor.process(try solidFillMessage(surfaceID: 1, color: [1, 2, 3, 0xFF], rects: teeth), clearCodec: clearCodec)
 
-    let started = Date()
+    let started = threadCPUTime()
     try compositor.process(
         try solidFillMessage(
             surfaceID: 1,
             color: [4, 5, 6, 0xFF],
-            rects: [RDPGFXRect16(left: 500, top: 500, right: 1900, bottom: 1900)]
+            rects: [RDPGFXRect16(left: 100, top: 100, right: 1_150, bottom: 620)]
         ),
         clearCodec: clearCodec
     )
-    #expect(Date().timeIntervalSince(started) < 0.5)
+    #expect(threadCPUTime() - started < .milliseconds(500))
     // The dirty area is the fill and the parts of the teeth outside it, each pixel once.
     let frame = try #require(compositor.makeFrame(frameID: 1))
     var dirtyArea = 0
     for rect in frame.regionRects {
         dirtyArea += Int(rect.width) * Int(rect.height)
     }
-    #expect(dirtyArea == 1_400 * 1_400 + 512 * 100 + 511 * 100)
+    #expect(dirtyArea == 1_050 * 520 + 512 * 100 + 511 * 100)
 }
 
 @Test func compositorBlitsPlanarBitmapIntoMappedSurface() throws {
@@ -2508,6 +2513,13 @@ import Testing
             clearCodec: clearCodec
         )
     }
+}
+
+/// The CPU time the calling thread has used.
+private func threadCPUTime() -> Duration {
+    var time = timespec()
+    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &time)
+    return .seconds(time.tv_sec) + .nanoseconds(time.tv_nsec)
 }
 
 private func fullSurfaceVideo(surfaceID: UInt16, width: UInt16, height: UInt16) -> RDPGraphicsFrameSnapshot {
