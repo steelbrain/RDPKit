@@ -421,7 +421,7 @@ func avc420FixtureFramesPresentAsFullRangeBT709(fixture: String, x: Int, y: Int,
         frames: [(luma: 60, chroma: 128), (luma: 70, chroma: 128), (luma: 80, chroma: 128)],
         usingSoftwareEncoder: true
     )
-    try #require(!RDPVideoToolboxSequenceDecoder.holdsRandomAccessPicture(accessUnits[1], codec: .h264))
+    try #require(!RDPVideoCodec.h264.holdsRandomAccessPicture(RDPH264AnnexB.nalUnitTypes(from: accessUnits[1])))
     let decoder = RDPVideoToolboxFrameDecoder()
     func update(_ index: Int) -> RDPGraphicsFrameSnapshot {
         videoFrame(surfaceID: 1, videoCodec: .h264, encodedVideoData: accessUnits[index])
@@ -443,19 +443,34 @@ func avc420FixtureFramesPresentAsFullRangeBT709(fixture: String, x: Int, y: Int,
 }
 
 @Test func randomAccessPicturesAreIDROrIRAPPictures() {
-    func accessUnit(_ headers: [UInt8]...) -> Data {
-        Data(headers.flatMap { [0, 0, 0, 1] + $0 + [0x80] })
-    }
     // SPS, PPS, and an IDR or a non-IDR slice.
-    #expect(RDPVideoToolboxSequenceDecoder.holdsRandomAccessPicture(accessUnit([0x67], [0x68], [0x65]), codec: .h264))
-    #expect(!RDPVideoToolboxSequenceDecoder.holdsRandomAccessPicture(accessUnit([0x67], [0x68], [0x41]), codec: .h264))
-    // BLA_W_LP, IDR_W_RADL, CRA_NUT, and RSV_IRAP_VCL23 are IRAP pictures; TRAIL_R and RASL_R are not.
+    #expect(RDPVideoCodec.h264.holdsRandomAccessPicture([7, 8, 5]))
+    #expect(!RDPVideoCodec.h264.holdsRandomAccessPicture([7, 8, 1]))
+    // BLA_W_LP, IDR_W_RADL, CRA_NUT, and RSV_IRAP_VCL23 are IRAP pictures; TRAIL_R, RASL_R and the
+    // reserved RSV_VCL24 are not.
     for type: UInt8 in [16, 19, 21, 23] {
-        #expect(RDPVideoToolboxSequenceDecoder.holdsRandomAccessPicture(accessUnit([type << 1, 1]), codec: .hevc))
+        #expect(RDPVideoCodec.hevc.holdsRandomAccessPicture([type]))
     }
     for type: UInt8 in [1, 9, 24] {
-        #expect(!RDPVideoToolboxSequenceDecoder.holdsRandomAccessPicture(accessUnit([type << 1, 1]), codec: .hevc))
+        #expect(!RDPVideoCodec.hevc.holdsRandomAccessPicture([type]))
     }
+}
+
+/// An HEVC update with its VPS, SPS, and PPS starts its stream afresh at any IRAP picture: a BLA
+/// picture, like an IDR or CRA picture, decodes without the pictures before it (ITU-T H.265
+/// clause 3, intra random access point picture).
+@Test func hevcIRAPPicturesWithTheirParameterSetsStartTheStreamAfresh() {
+    func update(_ types: UInt8...) -> RDPGraphicsFrameSnapshot {
+        let units: [UInt8] = types.flatMap { [0, 0, 0, 1, $0 << 1, 1, 0x80] }
+        return videoFrame(surfaceID: 1, videoCodec: .hevc, encodedVideoData: Data(units))
+    }
+    // BLA_W_LP, BLA_W_RADL, BLA_N_LP, IDR_W_RADL, IDR_N_LP, and CRA_NUT.
+    for type: UInt8 in 16 ... 21 {
+        #expect(update(32, 33, 34, type).isVideoResyncFrame)
+    }
+    // A TRAIL_R picture, and a CRA picture without its parameter sets.
+    #expect(!update(32, 33, 34, 1).isVideoResyncFrame)
+    #expect(!update(21).isVideoResyncFrame)
 }
 
 private func bitmapFrame(pixels: [UInt8]) -> RDPGraphicsFrameSnapshot {

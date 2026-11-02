@@ -21,6 +21,18 @@ public enum RDPVideoCodec: String, Encodable, Equatable, Sendable {
             RDPHEVCAnnexB.nalUnitTypes(from: data)
         }
     }
+
+    /// Whether NAL units of these types hold a random-access picture, which decodes without the
+    /// pictures before it: an H.264 IDR picture (ITU-T H.264 Table 7-1, type 5) or an HEVC IRAP
+    /// picture (ITU-T H.265 Table 7-1, types 16-23: BLA, IDR, CRA, and two reserved types).
+    func holdsRandomAccessPicture(_ nalUnitTypes: [UInt8]) -> Bool {
+        switch self {
+        case .h264:
+            nalUnitTypes.contains(5)
+        case .hevc:
+            nalUnitTypes.contains { (16 ... 23).contains($0) }
+        }
+    }
 }
 
 public enum RDPGraphicsFrameContentKind: String, Encodable, Equatable, Sendable {
@@ -382,16 +394,14 @@ extension RDPGraphicsFrameSnapshot {
         }
 
         let types = videoNalUnitTypes
+        guard videoCodec.holdsRandomAccessPicture(types) else {
+            return false
+        }
         switch videoCodec {
         case .h264:
-            return types.contains(5)
-                && types.contains(7)
-                && types.contains(8)
+            return types.contains(7) && types.contains(8)
         case .hevc:
-            return (types.contains(19) || types.contains(20) || types.contains(21))
-                && types.contains(32)
-                && types.contains(33)
-                && types.contains(34)
+            return types.contains(32) && types.contains(33) && types.contains(34)
         }
     }
 
