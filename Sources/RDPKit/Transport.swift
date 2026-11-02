@@ -129,7 +129,8 @@ func connectionErrorDescription(_ error: Error) -> String {
 
 /// The one inbound handler of a connection. It splits the stream according to
 /// the current framing, queues complete messages for the connection thread, and
-/// stops reading from the socket while that queue is full.
+/// stops reading from the socket while that queue is full, or while more of the
+/// client's bytes wait for the socket than its write buffer water mark allows.
 final class RDPTransportReader: ChannelDuplexHandler, RemovableChannelHandler {
     typealias InboundIn = ByteBuffer
     typealias OutboundIn = ByteBuffer
@@ -137,6 +138,18 @@ final class RDPTransportReader: ChannelDuplexHandler, RemovableChannelHandler {
 
     static let pauseReadingMessageCount = 64
     static let resumeReadingMessageCount = 16
+    /// The water mark of a connection's write buffer: past `high` bytes the socket has not
+    /// taken the channel is not writable, and the reader stops reading until fewer than `low`
+    /// are left. Channel sessions answer the server without waiting for the socket, as cliprdr
+    /// does a Format List, rdpdr a request for a device it does not have, and rdpsnd a Wave,
+    /// so a server that sends and stops reading would otherwise make the client queue their
+    /// replies without bound; TCP now holds the server back. `high` leaves 16 MiB above both
+    /// channel reply budgets, which wait at 32 MiB each, so replies within them do not stop
+    /// the graphics coming in.
+    static let outboundWaterMark = NIOCore.ChannelOptions.Types.WriteBufferWaterMark(
+        low: 2 * RDPPendingByteBudget.defaultLimit,
+        high: 2 * RDPPendingByteBudget.defaultLimit + 16 * 1_024 * 1_024
+    )
 
     var framing = RDPTransportFraming.rdp
     /// The transcript layer server messages are recorded under; nil records nothing.
@@ -231,11 +244,16 @@ final class RDPTransportReader: ChannelDuplexHandler, RemovableChannelHandler {
     }
 
     func read(context: ChannelHandlerContext) {
-        if messages.count >= Self.pauseReadingMessageCount {
+        if messages.count >= Self.pauseReadingMessageCount || !context.channel.isWritable {
             readPending = true
         } else {
             context.read()
         }
+    }
+
+    func channelWritabilityChanged(context: ChannelHandlerContext) {
+        resumeReadingIfNeeded()
+        context.fireChannelWritabilityChanged()
     }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
@@ -330,7 +348,7 @@ final class RDPTransportReader: ChannelDuplexHandler, RemovableChannelHandler {
     }
 
     private func resumeReadingIfNeeded() {
-        guard readPending, messages.count <= Self.resumeReadingMessageCount, let context else {
+        guard readPending, messages.count <= Self.resumeReadingMessageCount, let context, context.channel.isWritable else {
             return
         }
         readPending = false
@@ -405,6 +423,7 @@ final class RDPTransport {
             .channelOption(.tcpOption(.init(rawValue: TCP_KEEPALIVE)), value: 30)
             .channelOption(.tcpOption(.init(rawValue: TCP_KEEPINTVL)), value: 10)
             .channelOption(.tcpOption(.init(rawValue: TCP_KEEPCNT)), value: 3)
+            .channelOption(.writeBufferWaterMark, value: RDPTransportReader.outboundWaterMark)
             .channelInitializer { channel in
                 channel.eventLoop.makeCompletedFuture {
                     try channel.pipeline.syncOperations.addHandler(

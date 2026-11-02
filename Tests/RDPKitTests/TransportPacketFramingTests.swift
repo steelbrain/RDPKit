@@ -105,6 +105,57 @@ private let tpkt = Data([0x03, 0x00, 0x00, 0x07, 0x02, 0xF0, 0x80])
     #expect(reads.count == readsBefore + 1)
 }
 
+/// While more of the client's bytes wait for the socket than the water mark allows, the reader
+/// takes nothing more from it, so a server that sends and stops reading cannot make the client
+/// queue its replies without bound; it reads again once they drain, unless its queue is full.
+@Test func readerHoldsSocketReadsWhileTheChannelIsNotWritable() throws {
+    let (channel, reader, reads) = try readerChannel()
+    channel.isWritable = false
+    channel.pipeline.fireChannelWritabilityChanged()
+
+    let readsBefore = reads.count
+    channel.read()
+    #expect(reads.count == readsBefore)
+
+    let queued = RDPTransportReader.pauseReadingMessageCount
+    try channel.writeInbound(buffer(Data((0 ..< queued).flatMap { _ in tpkt })))
+    channel.isWritable = true
+    channel.pipeline.fireChannelWritabilityChanged()
+    #expect(reads.count == readsBefore)
+    for _ in 0 ..< queued - RDPTransportReader.resumeReadingMessageCount {
+        _ = try nextMessage(reader, channel)
+    }
+    #expect(reads.count == readsBefore + 1)
+
+    channel.isWritable = false
+    channel.pipeline.fireChannelWritabilityChanged()
+    channel.read()
+    channel.isWritable = true
+    channel.pipeline.fireChannelWritabilityChanged()
+    #expect(reads.count == readsBefore + 2)
+}
+
+/// A connection's write buffer stops being writable only above both channel reply budgets.
+@Test func transportSetsTheWriteBufferWaterMarkItsReaderWaitsOn() throws {
+    let server = try ServerBootstrap(group: MultiThreadedEventLoopGroup.singleton)
+        .childChannelInitializer { $0.eventLoop.makeSucceededVoidFuture() }
+        .bind(host: "127.0.0.1", port: 0)
+        .wait()
+    defer { server.close(promise: nil) }
+    let transport = try RDPTransport.connect(
+        host: "127.0.0.1",
+        port: UInt16(try #require(server.localAddress?.port)),
+        timeoutSeconds: 10,
+        callbacks: RDPSessionCallbacks()
+    )
+    defer { transport.close() }
+
+    let waterMark = try transport.channel.getOption(.writeBufferWaterMark).wait()
+    #expect(waterMark.low == RDPTransportReader.outboundWaterMark.low)
+    #expect(waterMark.high == RDPTransportReader.outboundWaterMark.high)
+    #expect(waterMark.low >= 2 * RDPPendingByteBudget.defaultLimit)
+}
+
 @Test func readerDeliversQueuedMessagesBeforeItsFailure() throws {
     let (channel, reader, _) = try readerChannel()
     try channel.writeInbound(buffer(tpkt + tpkt))

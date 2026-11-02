@@ -99,6 +99,11 @@
   queue, and directory listings hold at most 64 MiB of names together, so a
   server can no longer make the client hold its requests or listings until
   memory runs out.
+- The connection stops reading from a server that stops reading once 80 MiB
+  of the client's bytes wait for its socket, and reads again under 64 MiB, so
+  the replies cliprdr, rdpdr and rdpsnd send without waiting, such as Format
+  List Responses, failed device requests and Wave Confirms, can no longer
+  pile up without bound; TCP holds the server back instead.
 - RDPClient deletes the saved password of an account a profile is saved off,
   as Delete Profile does, unless another profile uses that account.
 - Remote files are numbered in linear time, so a server's file list of long
