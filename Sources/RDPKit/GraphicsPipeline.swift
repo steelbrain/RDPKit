@@ -13,7 +13,9 @@ extension RDPClientConnection {
     /// The same for copies, which servers send one per rectangle.
     static let maximumPendingGraphicsUpdateCount = 4_096
     /// The bytes they may hold, in desktops of 32-bit pixels: an Alpha update over video
-    /// copies its whole rectangle, so a few bytes on the wire can hold a surface each.
+    /// copies its whole rectangle, so a few bytes on the wire can hold a surface each. A
+    /// Demand Active can set a desktop of 1 GiB (`acceptsDesktopSize`), so they also hold no
+    /// more than all RDPGFX surfaces may.
     static let maximumPendingGraphicsDesktopCount = 16
 
     func openGraphicsPipeline(channelID: UInt32) throws {
@@ -163,7 +165,7 @@ extension RDPClientConnection {
         return nil
     }
 
-    private func appendPendingGraphicsUpdate(_ update: RDPPendingGraphicsUpdate) throws {
+    func appendPendingGraphicsUpdate(_ update: RDPPendingGraphicsUpdate) throws {
         if update.video != nil {
             guard pendingGraphicsUpdates.count(where: { $0.video != nil }) < Self.maximumPendingVideoFrameCount else {
                 throw RDPConnectionError.protocolViolation(
@@ -177,10 +179,13 @@ extension RDPClientConnection {
             )
         }
         let byteCount = pendingGraphicsUpdates.reduce(update.byteCount) { $0 + $1.byteCount }
-        guard byteCount <= Self.maximumPendingGraphicsDesktopCount * Int(desktopWidth) * Int(desktopHeight) * 4 else {
-            throw RDPConnectionError.protocolViolation(
-                "server sent more than \(Self.maximumPendingGraphicsDesktopCount) desktops of updates without ending the frame"
-            )
+        let desktopsByteCount = Self.maximumPendingGraphicsDesktopCount * Int(desktopWidth) * Int(desktopHeight) * 4
+        let maximumByteCount = min(desktopsByteCount, RDPGFXSurfaceCompositor.maximumSurfaceByteCount)
+        guard byteCount <= maximumByteCount else {
+            let bound = maximumByteCount < desktopsByteCount
+                ? "\(maximumByteCount) bytes"
+                : "\(Self.maximumPendingGraphicsDesktopCount) desktops"
+            throw RDPConnectionError.protocolViolation("server sent more than \(bound) of updates without ending the frame")
         }
         pendingGraphicsUpdates.append(update)
     }
@@ -549,13 +554,18 @@ enum RDPPendingGraphicsUpdate {
         }
     }
 
-    /// The decoded pixels and encoded video this holds.
+    /// The decoded pixels, encoded video and rectangles this holds: a copy holds a rectangle
+    /// and a block for each of up to 65,535 destination points.
     var byteCount: Int {
         switch self {
         case let .frame(frame), let .resolved(frame):
             (frame.decodedBitmapData?.count ?? 0) + frame.encodedVideoData.count
                 + (frame.auxiliaryEncodedVideoData?.count ?? 0)
-        case .stagedVideoCopy, .deletedSurface, .evictedCacheSlot:
+                + (frame.regionRects.count + frame.auxiliaryRegionRects.count) * MemoryLayout<RDPFrameRect>.stride
+                + (frame.surfaceCopy?.blocks.count ?? 0) * MemoryLayout<RDPGraphicsSurfaceCopy.Block>.stride
+        case let .stagedVideoCopy(copy):
+            copy.destinationPoints.count * MemoryLayout<RDPGFXPoint16>.stride
+        case .deletedSurface, .evictedCacheSlot:
             0
         }
     }

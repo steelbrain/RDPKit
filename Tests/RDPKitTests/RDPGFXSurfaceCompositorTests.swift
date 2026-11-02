@@ -2367,6 +2367,61 @@ import Testing
     #expect(copy?.destinationRect == RDPFrameRect(left: 8, top: 8, right: 48, bottom: 32))
 }
 
+/// A decoder copy holds a rectangle and a block for each destination point, and waits for
+/// the frame's end with the bytes it holds counted, so a server that lists thousands of
+/// points and never ends its frame cannot grow them without bound.
+@Test func pendingCopiesCountTheRectanglesTheyHold() throws {
+    let compositor = RDPGFXSurfaceCompositor(outputWidth: 64, outputHeight: 32)
+    let clearCodec = RDPClearCodecDecoder()
+    try compositor.process(try createSurfaceMessage(surfaceID: 0, width: 64, height: 32), clearCodec: clearCodec)
+    try compositor.process(try mapSurfaceToOutputMessage(surfaceID: 0, x: 0, y: 0), clearCodec: clearCodec)
+    compositor.noteVideo(fullSurfaceVideo(surfaceID: 0, width: 64, height: 32))
+    let copy = try surfaceToSurfaceMessage(
+        sourceSurfaceID: 0,
+        destinationSurfaceID: 0,
+        sourceRect: RDPGFXRect16(left: 0, top: 0, right: 1, bottom: 1),
+        destinationPoints: Array(repeating: RDPGFXPoint16(x: 0, y: 0), count: 4_096)
+    )
+
+    let decoderCopy = try #require(try compositor.process(copy, clearCodec: clearCodec))
+    #expect(RDPPendingGraphicsUpdate.frame(decoderCopy).byteCount == 4_096 * (8 + 16))
+    #expect(RDPPendingGraphicsUpdate.stagedVideoCopy(try RDPGFXSurfaceToSurfacePDU.parse(from: copy)).byteCount == 4_096 * 4)
+}
+
+/// A Demand Active can set a desktop of 16384x16384, 1 GiB, and 16 of those would let a frame
+/// hold 16 GiB of copies of 65,535 points each before its count bound: the copies it holds
+/// stop at the 1 GiB all RDPGFX surfaces may hold.
+@Test func pendingCopiesOnALargeDesktopStopAtTheSurfaceMemoryBound() throws {
+    let compositor = RDPGFXSurfaceCompositor(outputWidth: 64, outputHeight: 32)
+    let clearCodec = RDPClearCodecDecoder()
+    try compositor.process(try createSurfaceMessage(surfaceID: 0, width: 64, height: 32), clearCodec: clearCodec)
+    try compositor.process(try mapSurfaceToOutputMessage(surfaceID: 0, x: 0, y: 0), clearCodec: clearCodec)
+    compositor.noteVideo(fullSurfaceVideo(surfaceID: 0, width: 64, height: 32))
+    let decoderCopy = try #require(try compositor.process(
+        try surfaceToSurfaceMessage(
+            sourceSurfaceID: 0,
+            destinationSurfaceID: 0,
+            sourceRect: RDPGFXRect16(left: 0, top: 0, right: 1, bottom: 1),
+            destinationPoints: Array(repeating: RDPGFXPoint16(x: 0, y: 0), count: 65_535)
+        ),
+        clearCodec: clearCodec
+    ))
+    let copy = RDPPendingGraphicsUpdate.frame(decoderCopy)
+    let connection = RDPClientConnection(configuration: RDPConnectionConfiguration(host: "example.test"), callbacks: RDPSessionCallbacks())
+    #expect(RDPClientConnection.acceptsDesktopSize(width: 16_384, height: 16_384))
+    connection.resizeDesktop(width: 16_384, height: 16_384)
+
+    var heldCount = 0
+    let error = #expect(throws: RDPConnectionError.self) {
+        while true {
+            try connection.appendPendingGraphicsUpdate(copy)
+            heldCount += 1
+        }
+    }
+    #expect(error?.description == "server sent more than 1073741824 bytes of updates without ending the frame")
+    #expect(heldCount == RDPGFXSurfaceCompositor.maximumSurfaceByteCount / copy.byteCount)
+}
+
 /// A copy with a destination point outside the surface is rejected whole, so the copies to
 /// its other points are not recorded as ones the decoder made.
 @Test func compositorRejectsCopiesWithAnyDestinationOutsideTheSurface() throws {
