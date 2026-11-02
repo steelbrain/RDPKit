@@ -478,7 +478,9 @@ public enum RDPConnectionFailure: Encodable, Equatable, Sendable {
     /// The server answered Network Level Authentication with this CredSSP version, below
     /// 5, whose proof of the TLS key is the encryption oracle of CVE-2018-0886, and RDPKit
     /// refused it as Windows clients do. No credential was sent yet; connecting again with
-    /// `RDPConnectionConfiguration.legacyCredSSP` set can succeed.
+    /// `RDPConnectionConfiguration.legacyCredSSP` set can succeed, when the report's
+    /// `redirectionDepth` is 0. Above 0 the server was a Server Redirection's target, which
+    /// that setting does not cover.
     case legacyCredSSPVersion(version: Int)
     /// The server requires Network Level Authentication (CredSSP), and the
     /// configuration has no credentials.

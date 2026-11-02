@@ -247,6 +247,24 @@ struct MockKRDPServerTests {
         #expect(!run.transcript.credSSPGates.contains("nonce-bound-pubkeyauth"))
     }
 
+    /// Agreeing to CredSSP below version 5 covers the server connected to, not a Server
+    /// Redirection's target, which is refused before any credential goes to it.
+    @Test func clientRefusesLegacyCredSSPFromARedirectionTarget() throws {
+        let run = try runMock(.init(
+            securityProtocol: .credSSP(credentials: mockCredentials),
+            redirectionBehavior: .redirectFirstConnection,
+            credSSPVersion: 3
+        )) {
+            $0.legacyCredSSP = true
+        }
+
+        #expect(run.connectionCount == 2)
+        #expect(run.report.redirectionDepth == 1)
+        #expect(run.report.failure == .legacyCredSSPVersion(version: 3))
+        // The configured server's three messages, and the target's NEGOTIATE alone.
+        #expect(run.transcript.credSSPMessages == ["ntlm-negotiate", "ntlm-authenticate", "credentials", "ntlm-negotiate"])
+    }
+
     /// A server that closes or resets during Network Level Authentication once the client
     /// proved its credentials, with no status, leaves them in doubt, also while the Early User
     /// Authorization Result is awaited; one that does so before the AUTHENTICATE does not.

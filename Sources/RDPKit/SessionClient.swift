@@ -232,6 +232,9 @@ extension RDPConnectionConfiguration {
             )
         }
         redirected.redirectionDepth += 1
+        // The user agreed to CredSSP below version 5 for the server they connected to, not for
+        // one it passes them on to, which never answered the client before.
+        redirected.legacyCredSSP = false
         return redirected
     }
 }

@@ -24,8 +24,9 @@
   raw public key, the encryption oracle of CVE-2018-0886.
   `RDPConnectionConfiguration.legacyCredSSP` accepts them for a server without
   the 2018 CredSSP update: connect with it off, and on that failure ask the
-  user before connecting again with it on. RDPClient offers Connect Anyway
-  for that one connection.
+  user before connecting again with it on. It covers only that server: a
+  Server Redirection's target answering below version 5 is refused the same
+  way. RDPClient offers Connect Anyway for that one connection.
 - `RDPVideoToolboxFrameDecoder` throws the new
   `RDPVideoDecodeError.needsCompositor(_:)` for `.surfaceCopy` and `.alpha`
   snapshots, which it took for empty video samples that stalled the surface's

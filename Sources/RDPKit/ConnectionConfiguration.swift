@@ -112,6 +112,9 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
     /// answer with them. Connect with this off. When a run fails with
     /// ``RDPConnectionFailure/legacyCredSSPVersion(version:)``, which happens before any
     /// credential is sent, ask the user, and connect again with it on only if they agree.
+    /// It covers only the server connected to: a Server Redirection's target that answers
+    /// below version 5 is refused with that failure, the report's
+    /// ``RDPConnectionReport/redirectionDepth`` above 0, as the user never agreed to it.
     public var legacyCredSSP: Bool
     /// Local folders the server sees as drives. Sharing one joins the rdpsnd channel too.
     public var sharedDrives: [RDPSharedDrive]
