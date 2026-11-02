@@ -1,457 +1,10 @@
+#if os(macOS)
 import AppKit
 import Carbon.HIToolbox
 import RDPKit
 
-/// Where the capture view sends input: the session's `RDPInputSession`.
-protocol RDPInputEventSending: AnyObject {
-    /// Whether `send` delivers `.unicode` events; without them, text goes as the keys pressed.
-    var supportsUnicodeInput: Bool { get }
-    func send(_ events: [RDPSlowPathInputEvent])
-}
-
-extension RDPInputSession: RDPInputEventSending {}
-
-final class RemoteInputCaptureNSView: NSView {
-    var rdpFrame: RDPFrameMetadata?
-    /// The keyboard the session announced; it decides which keys can go as scancodes.
-    var keyboard = RDPKeyboard.unitedStates
-    /// Whether the Mac's layout makes a key a dead key with these modifiers; tests replace it.
-    var isDeadKey: @MainActor (UInt16, NSEvent.ModifierFlags) -> Bool = MacRDPDeadKeys.isDeadKey(keyCode:modifierFlags:)
-    /// What the Mac's layout types for a key with no dead key pending; tests replace it.
-    var uncomposedOutput: @MainActor (UInt16, NSEvent.ModifierFlags) -> String? = MacRDPDeadKeys.output(keyCode:modifierFlags:)
-    /// What the Mac's layout types for a key (the first two arguments) right after a dead key
-    /// (the last two) with nothing else pending; tests replace it.
-    var composedOutput: @MainActor (UInt16, NSEvent.ModifierFlags, UInt16, NSEvent.ModifierFlags) -> String? =
-        MacRDPDeadKeys.output(keyCode:modifierFlags:afterDeadKey:deadKeyModifierFlags:)
-    var inputSession: (any RDPInputEventSending)? {
-        willSet {
-            if inputSession != nil, inputSession !== newValue {
-                releasePressedInputs()
-            }
-        }
-        didSet {
-            if inputSession != nil, inputSession !== oldValue, window?.firstResponder === self {
-                synchronizeToggleKeys(NSEvent.modifierFlags)
-            }
-        }
-    }
-
-    private var trackingArea: NSTrackingArea?
-    private var inputState = RDPInputStateTracker()
-    private var deferredModifierKeys = MacRDPDeferredModifierKeys()
-    private var wheelAccumulator = RDPScrollWheelAccumulator()
-    /// A dead key went to the server as an Alt chord, so macOS composes the next key with its accent.
-    private var followsChordedDeadKey = false
-    /// A dead key typed right after one that went as a chord. macOS may spend it on that one's
-    /// accent, which the server never asked for, so the next key is composed with it here.
-    private var deadKeyAfterChordedDeadKey: (keyCode: UInt16, modifierFlags: NSEvent.ModifierFlags)?
-    /// The toggle-key state the server was last synchronized with.
-    private var synchronizedToggleFlags: RDPToggleKeyFlags?
-    private var commandKeyUpMonitor: Any?
-
-    /// A server that takes no Unicode input gets every key as its scancode, so its own layout
-    /// types the text, including what its dead keys compose; the Mac's text never goes.
-    private var isUnicodeInputSupported: Bool {
-        inputSession?.supportsUnicodeInput ?? true
-    }
-
-    override var acceptsFirstResponder: Bool {
-        true
-    }
-
-    override func acceptsFirstMouse(for _: NSEvent?) -> Bool {
-        true
-    }
-
-    override func updateTrackingAreas() {
-        if let trackingArea {
-            removeTrackingArea(trackingArea)
-        }
-        let trackingArea = NSTrackingArea(
-            rect: bounds,
-            options: [.activeInKeyWindow, .inVisibleRect, .mouseMoved],
-            owner: self,
-            userInfo: nil
-        )
-        addTrackingArea(trackingArea)
-        self.trackingArea = trackingArea
-        super.updateTrackingAreas()
-    }
-
-    override func viewWillMove(toWindow newWindow: NSWindow?) {
-        releasePressedInputs()
-        stopObservingWindow()
-        super.viewWillMove(toWindow: newWindow)
-    }
-
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        startObservingWindow()
-    }
-
-    override func becomeFirstResponder() -> Bool {
-        let didBecomeFirstResponder = super.becomeFirstResponder()
-        if didBecomeFirstResponder {
-            synchronizeToggleKeys(NSEvent.modifierFlags)
-        }
-        return didBecomeFirstResponder
-    }
-
-    override func resignFirstResponder() -> Bool {
-        releasePressedInputs()
-        return super.resignFirstResponder()
-    }
-
-    override func mouseMoved(with event: NSEvent) {
-        sendPointerMove(event)
-    }
-
-    override func mouseDragged(with event: NSEvent) {
-        sendPointerMove(event, isDragging: true)
-    }
-
-    override func rightMouseDragged(with event: NSEvent) {
-        sendPointerMove(event, isDragging: true)
-    }
-
-    override func otherMouseDragged(with event: NSEvent) {
-        sendPointerMove(event, isDragging: true)
-    }
-
-    override func mouseDown(with event: NSEvent) {
-        window?.makeFirstResponder(self)
-        sendPointerButton(.left, isDown: true, event: event)
-    }
-
-    override func mouseUp(with event: NSEvent) {
-        sendPointerButton(.left, isDown: false, event: event)
-    }
-
-    override func rightMouseDown(with event: NSEvent) {
-        window?.makeFirstResponder(self)
-        sendPointerButton(.right, isDown: true, event: event)
-    }
-
-    override func rightMouseUp(with event: NSEvent) {
-        sendPointerButton(.right, isDown: false, event: event)
-    }
-
-    override func otherMouseDown(with event: NSEvent) {
-        window?.makeFirstResponder(self)
-        guard let button = pointerButton(for: event) else {
-            return
-        }
-        sendPointerButton(button, isDown: true, event: event)
-    }
-
-    override func otherMouseUp(with event: NSEvent) {
-        guard let button = pointerButton(for: event) else {
-            return
-        }
-        sendPointerButton(button, isDown: false, event: event)
-    }
-
-    override func scrollWheel(with event: NSEvent) {
-        releaseModifiers(missingFrom: event.modifierFlags)
-        guard let point = remotePoint(from: event) else {
-            return
-        }
-        let events = wheelAccumulator.events(
-            deltaX: event.scrollingDeltaX,
-            deltaY: event.scrollingDeltaY,
-            isPrecise: event.hasPreciseScrollingDeltas,
-            at: point
-        )
-        guard events.isEmpty == false else {
-            return
-        }
-        let move = MacRDPScrollWheel.pointerMove(to: point, inputState: &inputState)
-        sendInput(deferredModifierKeys.flush(&inputState) + move + events)
-    }
-
-    override func keyDown(with event: NSEvent) {
-        releaseModifiers(missingFrom: event.modifierFlags)
-        synchronizeToggleKeysIfChanged(event.modifierFlags)
-        let isComposedByChordedDeadKey = followsChordedDeadKey && event.isARepeat == false
-        followsChordedDeadKey = false
-        let deadKey = event.isARepeat ? nil : deadKeyAfterChordedDeadKey
-        if event.isARepeat == false {
-            deadKeyAfterChordedDeadKey = nil
-        }
-        let characters = if isComposedByChordedDeadKey {
-            MacRDPKeyboardMapping.characters(
-                afterChordedDeadKey: event.characters,
-                uncomposed: uncomposedOutput(event.keyCode, event.modifierFlags)
-            )
-        } else if let deadKey {
-            composedOutput(event.keyCode, event.modifierFlags, deadKey.keyCode, deadKey.modifierFlags) ?? event.characters
-        } else {
-            event.characters
-        }
-        if let scancode = MacRDPKeyboardMapping.scancode(forKeyCode: event.keyCode),
-           MacRDPKeyboardMapping.shouldSendScancode(
-               forKeyCode: event.keyCode,
-               characters: characters,
-               charactersIgnoringModifiers: event.charactersIgnoringModifiers,
-               modifierFlags: event.modifierFlags,
-               isHeldAsScancode: inputState.isScancodePressed(scancode),
-               isAltPressed: MacRDPModifierKey.altScancodes.contains(where: inputState.isScancodePressed),
-               isDeadKey: { isDeadKey(event.keyCode, event.modifierFlags) }
-           ) || MacRDPKeyboardMapping.windowsTypes(
-               characters,
-               charactersIgnoringModifiers: event.charactersIgnoringModifiers,
-               for: scancode,
-               modifierFlags: event.modifierFlags,
-               keyboard: keyboard
-           ) || isUnicodeInputSupported == false
-        {
-            // A dead key's accent ahead of Return or Tab, unless that dead key went as a chord;
-            // text never goes with Command or Control.
-            if isUnicodeInputSupported, event.isARepeat == false, isComposedByChordedDeadKey == false,
-               event.modifierFlags.isDisjoint(with: [.command, .control]),
-               let text = MacRDPKeyboardMapping.deadKeyText(aheadOf: characters)
-            {
-                sendInput(MacRDPKeyboardMapping.unicodeEvents(for: text))
-            }
-            sendKeyboardScancode(scancode, isReleased: false)
-            // A dead key that went as a chord, as left Option-E goes as Alt-E.
-            if characters?.isEmpty == true, isDeadKey(event.keyCode, event.modifierFlags) {
-                followsChordedDeadKey = true
-            }
-            return
-        }
-        guard event.modifierFlags.isDisjoint(with: [.command, .control]), isUnicodeInputSupported else {
-            return
-        }
-        // Right Option, if held back, typed this or started a dead key, so it is no Alt tap.
-        deferredModifierKeys.noteChordedElsewhere()
-        if isComposedByChordedDeadKey, characters?.isEmpty == true, isDeadKey(event.keyCode, event.modifierFlags) {
-            deadKeyAfterChordedDeadKey = (event.keyCode, event.modifierFlags)
-        }
-        let events = MacRDPKeyboardMapping.unicodeEvents(for: characters ?? "")
-        guard events.isEmpty == false else {
-            return
-        }
-        sendInput(events)
-    }
-
-    override func keyUp(with event: NSEvent) {
-        releaseModifiers(missingFrom: event.modifierFlags)
-        guard let scancode = MacRDPKeyboardMapping.scancode(forKeyCode: event.keyCode),
-              inputState.isScancodePressed(scancode)
-        else {
-            return
-        }
-        sendKeyboardScancode(scancode, isReleased: true)
-    }
-
-    override func flagsChanged(with event: NSEvent) {
-        if Int(event.keyCode) == kVK_CapsLock {
-            synchronizeToggleKeys(event.modifierFlags)
-        } else if let modifier = MacRDPModifierKey(keyCode: event.keyCode) {
-            sendChanges(of: modifier, in: event.modifierFlags)
-        }
-        // After the change itself, so that Command released alone still sends its deferred tap.
-        releaseModifiers(missingFrom: event.modifierFlags)
-    }
-
-    private func sendChanges(of modifier: MacRDPModifierKey, in modifierFlags: NSEvent.ModifierFlags) {
-        let changes = modifier.changes(in: modifierFlags) {
-            inputState.isScancodePressed($0) || deferredModifierKeys.isHeld($0)
-        }
-        for change in changes {
-            if MacRDPDeferredModifierKeys.isDeferred(change.scancode, holdsBackAlt: isUnicodeInputSupported),
-               inputState.isScancodePressed(change.scancode) == false
-            {
-                if change.isDown {
-                    deferredModifierKeys.press(change.scancode, inputState: inputState)
-                } else {
-                    sendInput(deferredModifierKeys.release(change.scancode))
-                }
-            } else if change.isDown {
-                sendInput(
-                    deferredModifierKeys.flushWindowsKeys(&inputState)
-                        + [inputState.keyboard(scancode: change.scancode, isReleased: false)]
-                )
-            } else {
-                sendKeyboardScancode(change.scancode, isReleased: true)
-            }
-        }
-    }
-
-    private func startObservingWindow() {
-        guard let window else {
-            return
-        }
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(windowDidResignKey(_:)),
-            name: NSWindow.didResignKeyNotification,
-            object: window
-        )
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(windowDidBecomeKey(_:)),
-            name: NSWindow.didBecomeKeyNotification,
-            object: window
-        )
-        // A menu tracking the mouse or keyboard takes the key-ups of keys held meanwhile, which
-        // would stay down on the server.
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(menuDidBeginTracking(_:)),
-            name: NSMenu.didBeginTrackingNotification,
-            object: nil
-        )
-        // AppKit never dispatches keyUp to the window while Command is held, which would leave
-        // keys pressed during a Command chord stuck down on the server.
-        commandKeyUpMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyUp) { [weak self] event in
-            MainActor.assumeIsolated {
-                self?.forwardCommandKeyUp(event)
-            }
-            return event
-        }
-    }
-
-    private func stopObservingWindow() {
-        if let window {
-            NotificationCenter.default.removeObserver(self, name: NSWindow.didResignKeyNotification, object: window)
-            NotificationCenter.default.removeObserver(self, name: NSWindow.didBecomeKeyNotification, object: window)
-        }
-        NotificationCenter.default.removeObserver(self, name: NSMenu.didBeginTrackingNotification, object: nil)
-        if let commandKeyUpMonitor {
-            NSEvent.removeMonitor(commandKeyUpMonitor)
-            self.commandKeyUpMonitor = nil
-        }
-    }
-
-    @objc private func windowDidResignKey(_: Notification) {
-        releasePressedInputs()
-    }
-
-    @objc private func menuDidBeginTracking(_: Notification) {
-        releasePressedInputs()
-    }
-
-    @objc private func windowDidBecomeKey(_: Notification) {
-        if window?.firstResponder === self {
-            synchronizeToggleKeys(NSEvent.modifierFlags)
-        }
-    }
-
-    /// MS-RDPBCGR 2.2.8.1.1.3.1.1.5: on focus gain, send the toggle-key state followed by the
-    /// keys still held, since the server's state may have changed while focus was elsewhere.
-    private func synchronizeToggleKeys(_ modifierFlags: NSEvent.ModifierFlags) {
-        let toggleFlags = MacRDPKeyboardMapping.toggleFlags(for: modifierFlags)
-        synchronizedToggleFlags = toggleFlags
-        sendInput(inputState.synchronizationEvents(toggleFlags: toggleFlags))
-    }
-
-    /// A Caps Lock toggle the view never saw, such as one made while a menu was open, leaves the
-    /// server's Caps Lock stale, and the letters it shifts go as scancodes, so a key or click
-    /// whose flags show another toggle-key state synchronizes it first.
-    private func synchronizeToggleKeysIfChanged(_ modifierFlags: NSEvent.ModifierFlags) {
-        if let synchronizedToggleFlags,
-           synchronizedToggleFlags != MacRDPKeyboardMapping.toggleFlags(for: modifierFlags)
-        {
-            synchronizeToggleKeys(modifierFlags)
-        }
-    }
-
-    private func forwardCommandKeyUp(_ event: NSEvent) {
-        guard event.modifierFlags.contains(.command),
-              event.window === window,
-              window?.firstResponder === self
-        else {
-            return
-        }
-        deferredModifierKeys.noteChordedElsewhere()
-        keyUp(with: event)
-    }
-
-    /// AppKit does not deliver every modifier release to the view, for example one made while a menu
-    /// is open, so a modifier the server still holds is released by the next event that shows it up.
-    private func releaseModifiers(missingFrom modifierFlags: NSEvent.ModifierFlags) {
-        var events: [RDPSlowPathInputEvent] = []
-        for modifier in MacRDPModifierKey.all where modifier.isDown(in: modifierFlags) == false {
-            if inputState.isScancodePressed(modifier.scancode) {
-                events.append(inputState.keyboard(scancode: modifier.scancode, isReleased: true))
-            }
-            // A held-back key whose release went elsewhere never reached the server.
-            deferredModifierKeys.discard(modifier.scancode)
-        }
-        if events.isEmpty == false {
-            sendInput(events)
-        }
-    }
-
-    private func sendPointerMove(_ event: NSEvent, isDragging: Bool = false) {
-        releaseModifiers(missingFrom: event.modifierFlags)
-        guard let point = remotePoint(from: event, clampingToDesktop: isDragging) else {
-            return
-        }
-        sendInput([inputState.pointerMove(to: point)])
-    }
-
-    private func sendPointerButton(_ button: RDPPointerButton, isDown: Bool, event: NSEvent) {
-        releaseModifiers(missingFrom: event.modifierFlags)
-        if isDown {
-            synchronizeToggleKeysIfChanged(event.modifierFlags)
-        }
-        guard let inputEvent = inputState.pointerButton(button, isDown: isDown, at: remotePoint(from: event)) else {
-            return
-        }
-        let heldKeyEvents = isDown ? deferredModifierKeys.flush(&inputState) : []
-        sendInput(heldKeyEvents + [inputEvent])
-    }
-
-    private func pointerButton(for event: NSEvent) -> RDPPointerButton? {
-        switch event.buttonNumber {
-        case 2:
-            .middle
-        case 3:
-            .extended1
-        case 4:
-            .extended2
-        default:
-            nil
-        }
-    }
-
-    private func sendKeyboardScancode(_ scancode: RDPKeyboardScancode, isReleased: Bool) {
-        let heldKeyEvents = isReleased ? [] : deferredModifierKeys.flush(&inputState)
-        sendInput(heldKeyEvents + [inputState.keyboard(scancode: scancode, isReleased: isReleased)])
-    }
-
-    /// Every send goes through here, not `inputSession?.send(...)`, so that its events are built,
-    /// and the key and button state updated, with no session too: the optional chain skips both,
-    /// which left a key released with no session pressed for the next session.
-    private func sendInput(_ events: [RDPSlowPathInputEvent]) {
-        inputSession?.send(events)
-    }
-
-    /// A key still held back never reached the server, so nothing is sent for it.
-    private func releasePressedInputs() {
-        deferredModifierKeys.reset()
-        followsChordedDeadKey = false
-        deadKeyAfterChordedDeadKey = nil
-        sendInput(inputState.releasePressedInputs())
-    }
-
-    /// `clampingToDesktop` moves a point outside the desktop, such as a drag's past the
-    /// letterbox, onto the desktop's nearest edge.
-    private func remotePoint(from event: NSEvent, clampingToDesktop: Bool = false) -> RDPRemotePoint? {
-        guard let rdpFrame else {
-            return nil
-        }
-        let viewport = desktopViewport(showing: rdpFrame)
-        let localPoint = convert(event.locationInWindow, from: nil)
-        return clampingToDesktop ? viewport.nearestRemotePoint(from: localPoint) : viewport.remotePoint(from: localPoint)
-    }
-}
-
 /// What goes ahead of a scroll's wheel events, which `RDPScrollWheelAccumulator` makes.
-enum MacRDPScrollWheel {
+enum RDPMacScrollWheel {
     /// A move to `point`, ahead of wheel events there, when the server last got the pointer
     /// elsewhere: a server may scroll what is under its own pointer, which follows the Mac's
     /// only while the window is key, as the tracking area reports moves only then. The wheel
@@ -471,7 +24,9 @@ enum MacRDPScrollWheel {
 /// on Option ("@" is Option-L on German) as Unicode, without Alt; releasing it after that sends
 /// nothing. Another modifier pressed meanwhile sends the Windows keys but not Alt, since
 /// Option-Shift types characters too. Left Option goes as Alt at once, for shortcuts.
-struct MacRDPDeferredModifierKeys {
+public struct RDPMacDeferredModifierKeys: Sendable {
+    public init() {}
+
     /// Both Windows keys and right Alt.
     private static let deferredScancodes = [
         RDPKeyboardScancode(code: 0x5B, isExtended: true),
@@ -484,7 +39,7 @@ struct MacRDPDeferredModifierKeys {
 
     /// Right Alt is held back only while Option's characters can go as Unicode; a server that
     /// takes none gets it at once, as left Option goes, so its layout types them (AltGr).
-    static func isDeferred(_ scancode: RDPKeyboardScancode, holdsBackAlt: Bool) -> Bool {
+    public static func isDeferred(_ scancode: RDPKeyboardScancode, holdsBackAlt: Bool) -> Bool {
         isWindowsKey(scancode) || (holdsBackAlt && deferredScancodes.contains(scancode))
     }
 
@@ -492,7 +47,7 @@ struct MacRDPDeferredModifierKeys {
         scancode.isExtended && (scancode.code == 0x5B || scancode.code == 0x5C)
     }
 
-    func isHeld(_ scancode: RDPKeyboardScancode) -> Bool {
+    public func isHeld(_ scancode: RDPKeyboardScancode) -> Bool {
         heldScancodes.contains(scancode)
     }
 
@@ -500,12 +55,12 @@ struct MacRDPDeferredModifierKeys {
     /// button is down on the server, as Command-click sends Win, Shift goes at once and a drag
     /// holds the button: releasing it sends nothing, rather than a Win or Alt tap with that key
     /// still down, or after it, such as Shift-Command with Shift let go first.
-    mutating func press(_ scancode: RDPKeyboardScancode, inputState: RDPInputStateTracker) {
+    public mutating func press(_ scancode: RDPKeyboardScancode, inputState: RDPInputStateTracker) {
         guard heldScancodes.contains(scancode) == false else {
             return
         }
         if heldScancodes.isEmpty == false
-            || MacRDPModifierKey.all.contains(where: { inputState.isScancodePressed($0.scancode) })
+            || RDPMacModifierKey.all.contains(where: { inputState.isScancodePressed($0.scancode) })
             || RDPPointerButton.allCases.contains(where: inputState.isPointerButtonPressed)
         {
             isChordedElsewhere = true
@@ -514,7 +69,7 @@ struct MacRDPDeferredModifierKeys {
     }
 
     /// Sends the held keys down, ahead of another key, button or wheel event.
-    mutating func flush(_ inputState: inout RDPInputStateTracker) -> [RDPSlowPathInputEvent] {
+    public mutating func flush(_ inputState: inout RDPInputStateTracker) -> [RDPSlowPathInputEvent] {
         defer {
             reset()
         }
@@ -523,7 +78,7 @@ struct MacRDPDeferredModifierKeys {
 
     /// Sends the held Windows keys down, ahead of another modifier. Alt stays held back, but
     /// releasing it is no longer a tap.
-    mutating func flushWindowsKeys(_ inputState: inout RDPInputStateTracker) -> [RDPSlowPathInputEvent] {
+    public mutating func flushWindowsKeys(_ inputState: inout RDPInputStateTracker) -> [RDPSlowPathInputEvent] {
         let windowsKeys = heldScancodes.filter(Self.isWindowsKey)
         heldScancodes.removeAll(where: Self.isWindowsKey)
         noteChordedElsewhere()
@@ -533,11 +88,11 @@ struct MacRDPDeferredModifierKeys {
     /// Another key was used with the held keys but never reached the server as a scancode: it
     /// was seen only as its key-up, for example a menu shortcut, or it went as the character
     /// Option typed. Releasing them then sends nothing.
-    mutating func noteChordedElsewhere() {
+    public mutating func noteChordedElsewhere() {
         isChordedElsewhere = heldScancodes.isEmpty == false
     }
 
-    mutating func release(_ scancode: RDPKeyboardScancode) -> [RDPSlowPathInputEvent] {
+    public mutating func release(_ scancode: RDPKeyboardScancode) -> [RDPSlowPathInputEvent] {
         guard let index = heldScancodes.firstIndex(of: scancode) else {
             return []
         }
@@ -549,20 +104,22 @@ struct MacRDPDeferredModifierKeys {
         return isTap ? [.keyboard(scancode: scancode, isReleased: false), .keyboard(scancode: scancode, isReleased: true)] : []
     }
 
-    mutating func discard(_ scancode: RDPKeyboardScancode) {
+    public mutating func discard(_ scancode: RDPKeyboardScancode) {
         heldScancodes.removeAll { $0 == scancode }
         if heldScancodes.isEmpty {
             isChordedElsewhere = false
         }
     }
 
-    mutating func reset() {
+    public mutating func reset() {
         heldScancodes.removeAll()
         isChordedElsewhere = false
     }
 }
 
-struct MacRDPModifierKey {
+/// A Mac modifier key: the scancode it goes as (Command as the Windows key, Option as Alt),
+/// and its state read from an event's modifier flags.
+public struct RDPMacModifierKey: Sendable {
     // Device-dependent modifier bits from IOKit's IOLLEvent.h (NX_DEVICE*KEYMASK).
     private static let leftControl: UInt = 0x0000_0001
     private static let leftShift: UInt = 0x0000_0002
@@ -582,21 +139,21 @@ struct MacRDPModifierKey {
     private static let leftCommandScancode = RDPKeyboardScancode(code: 0x5B, isExtended: true)
     private static let rightCommandScancode = RDPKeyboardScancode(code: 0x5C, isExtended: true)
 
-    static let all = [
+    public static let all = [
         kVK_Shift, kVK_RightShift, kVK_Control, kVK_RightControl,
         kVK_Option, kVK_RightOption, kVK_Command, kVK_RightCommand,
-    ].compactMap { MacRDPModifierKey(keyCode: UInt16($0)) }
+    ].compactMap { RDPMacModifierKey(keyCode: UInt16($0)) }
 
-    static let altScancodes = [leftOptionScancode, rightOptionScancode]
+    public static let altScancodes = [leftOptionScancode, rightOptionScancode]
 
-    let scancode: RDPKeyboardScancode
+    public let scancode: RDPKeyboardScancode
     /// The other side's key, which shares `flag`.
     private let pairScancode: RDPKeyboardScancode
     private let flag: NSEvent.ModifierFlags
     private let deviceMask: UInt
     private let pairDeviceMask: UInt
 
-    init?(keyCode: UInt16) {
+    public init?(keyCode: UInt16) {
         switch Int(keyCode) {
         case kVK_Shift:
             self.init(Self.leftShiftScancode, Self.rightShiftScancode, .shift, Self.leftShift, Self.rightShift)
@@ -635,7 +192,7 @@ struct MacRDPModifierKey {
 
     /// The key changes that bring the server in line with `modifierFlags`. Keyboards without side
     /// bits clear `flag` only once both sides are up, so both sides are released then.
-    func changes(
+    public func changes(
         in modifierFlags: NSEvent.ModifierFlags,
         isPressed: (RDPKeyboardScancode) -> Bool
     ) -> [(scancode: RDPKeyboardScancode, isDown: Bool)] {
@@ -648,7 +205,7 @@ struct MacRDPModifierKey {
 
     /// Reads this key's own side bit so left and right modifiers track independently, falling
     /// back to the side-independent flag for keyboards that report no side bits.
-    func isDown(in modifierFlags: NSEvent.ModifierFlags) -> Bool {
+    public func isDown(in modifierFlags: NSEvent.ModifierFlags) -> Bool {
         let rawValue = modifierFlags.rawValue
         if rawValue & pairDeviceMask != 0 {
             return rawValue & deviceMask != 0
@@ -657,14 +214,15 @@ struct MacRDPModifierKey {
     }
 }
 
-enum MacRDPKeyboardMapping {
+/// How a Mac key goes to the server: as a scancode, or as the Unicode text it typed.
+public enum RDPMacKeyboardMapping {
     /// Mac keypads always type digits, so the server's Num Lock is kept on for the keypad scancodes.
-    static func toggleFlags(for modifierFlags: NSEvent.ModifierFlags) -> RDPToggleKeyFlags {
+    public static func toggleFlags(for modifierFlags: NSEvent.ModifierFlags) -> RDPToggleKeyFlags {
         modifierFlags.contains(.capsLock) ? [.numLock, .capsLock] : [.numLock]
     }
 
     /// `isISOKeyboard` defaults to the type of the keyboard in use.
-    static func scancode(
+    public static func scancode(
         forKeyCode keyCode: UInt16,
         isISOKeyboard: Bool = KBGetLayoutType(Int16(LMGetKbdType())) == kKeyboardISO
     ) -> RDPKeyboardScancode? {
@@ -678,10 +236,10 @@ enum MacRDPKeyboardMapping {
 
     /// A key the server holds keeps auto-repeating as its scancode after the modifier that sent it
     /// there is released; repeating it as text would type on top of the held key. With Option down
-    /// but no Alt on the server, which is right Option held back (see MacRDPDeferredModifierKeys),
+    /// but no Alt on the server, which is right Option held back (see RDPMacDeferredModifierKeys),
     /// a key Option types a character with goes as that character instead. `isDeadKey` (see
     /// `optionTypes`) is asked only then, and only when Option typed nothing.
-    static func shouldSendScancode(
+    public static func shouldSendScancode(
         forKeyCode keyCode: UInt16,
         characters: String?,
         charactersIgnoringModifiers: String?,
@@ -707,7 +265,7 @@ enum MacRDPKeyboardMapping {
     /// the key's own, or nothing, for a dead key such as Option-E on US, whose accent the next key
     /// types. A key a custom layout gives no Option output without making it a dead key, as
     /// `isDeadKey` tells, typed nothing.
-    static func optionTypes(
+    public static func optionTypes(
         _ characters: String?,
         charactersIgnoringModifiers: String?,
         isDeadKey: () -> Bool
@@ -724,7 +282,7 @@ enum MacRDPKeyboardMapping {
     /// scancodes, so the text has to go ahead of them. Nil unless `characters` is printable text
     /// followed by exactly one control character; AppKit gives Delete, the arrows and the other
     /// function keys characters of its own, with no text ahead.
-    static func deadKeyText(aheadOf characters: String?) -> String? {
+    public static func deadKeyText(aheadOf characters: String?) -> String? {
         guard let scalars = characters?.unicodeScalars, let last = scalars.last, isControl(last) else {
             return nil
         }
@@ -736,7 +294,7 @@ enum MacRDPKeyboardMapping {
     /// server as part of an Alt chord (Option-E as Alt-E on US): macOS still composes the next
     /// key with its accent ("a" as "á"), which the server never asked for. `uncomposed` is what
     /// the key types with no dead key pending; a control or function key keeps its own.
-    static func characters(afterChordedDeadKey characters: String?, uncomposed: String?) -> String? {
+    public static func characters(afterChordedDeadKey characters: String?, uncomposed: String?) -> String? {
         guard let uncomposed, uncomposed.isEmpty || isPrintable(uncomposed) else {
             return characters
         }
@@ -763,7 +321,7 @@ enum MacRDPKeyboardMapping {
     /// with it, as "^" then Space types "^". With Caps Lock on, `charactersIgnoringModifiers`
     /// may leave Caps Lock out, as synthesized events do ("A" and "a"), so the uppercase of it
     /// counts as the key's own too.
-    static func windowsTypes(
+    public static func windowsTypes(
         _ characters: String?,
         charactersIgnoringModifiers: String?,
         for scancode: RDPKeyboardScancode,
@@ -792,7 +350,7 @@ enum MacRDPKeyboardMapping {
 
     private static let spaceScancode = RDPKeyboardScancode(code: 0x39)
 
-    static func unicodeEvents(for characters: String) -> [RDPSlowPathInputEvent] {
+    public static func unicodeEvents(for characters: String) -> [RDPSlowPathInputEvent] {
         characters.utf16
             .filter { functionKeyCharacters.contains($0) == false }
             .flatMap { codeUnit in
@@ -888,3 +446,4 @@ enum MacRDPKeyboardMapping {
         characterScancodes.mapValues { RDPKeyboardScancode(code: $0) }
     ) { scancodeOnly, _ in scancodeOnly }
 }
+#endif

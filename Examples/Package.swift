@@ -33,6 +33,7 @@ let package = Package(
             name: "RDPClient",
             dependencies: [
                 .product(name: "RDPKit", package: "RDPKit"),
+                .product(name: "RDPKitAppKit", package: "RDPKit"),
             ],
             path: "RDPClient/Sources"
         ),

@@ -1,9 +1,10 @@
 import AppKit
 import RDPKit
+import RDPKitAppKit
 
 final class RemoteDesktopCanvasNSView: NSView {
     let displayView = RemoteDesktopSampleBufferNSView()
-    private let inputView = RemoteInputCaptureNSView()
+    private let inputView = RDPRemoteInputView()
     private let progressIndicator = NSProgressIndicator()
     private let emptyStack = NSStackView()
     private let emptyImageView = NSImageView()
@@ -88,7 +89,7 @@ final class RemoteDesktopCanvasNSView: NSView {
         guard let frame = inputView.rdpFrame else {
             return bounds
         }
-        return desktopViewport(showing: frame).contentRect
+        return RDPRemoteDisplayViewport(frame: frame, view: self).contentRect
     }
 
     private func configure() {
@@ -143,20 +144,5 @@ final class RemoteDesktopCanvasNSView: NSView {
             }
             self?.onSurfaceSizeChange?(nextSize)
         }
-    }
-}
-
-extension NSView {
-    /// Where this view, which fills its window, shows `frame`: on whole screen pixels, as
-    /// Display Control makes desktop widths even and a desktop sized to a view of odd width
-    /// would otherwise sit half a pixel off and blur. The canvas draws and the input view maps
-    /// with the same viewport, so the pointer lands where the desktop is drawn.
-    func desktopViewport(showing frame: RDPFrameMetadata) -> RDPRemoteDisplayViewport {
-        RDPRemoteDisplayViewport(
-            frame: frame,
-            bounds: bounds,
-            coordinateOrigin: .bottomLeft,
-            backingScaleFactor: window?.backingScaleFactor
-        )
     }
 }

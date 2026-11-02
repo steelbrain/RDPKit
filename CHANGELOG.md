@@ -210,6 +210,17 @@
   among them, so a client sends a character as its scancode only where the
   server types the same one. `Scripts/generate-windows-keyboard-layout-tables.py`
   and `Scripts/capture-windows-keyboard-layouts.ps1` capture them again.
+- The `RDPKitAppKit` library, for macOS, holds RDPClient's input view as
+  `RDPRemoteInputView`, which sends the Mac's keyboard, mouse and scroll input
+  to an `RDPInputSession`, and the keyboard handling behind it, public:
+  `RDPMacKeyboardLayout` maps the Mac's input source to the `RDPKeyboard` to
+  announce (`current()`), Japanese keyboards included;
+  `RDPMacKeyboardMapping` turns key codes into scancodes or Unicode;
+  `RDPMacModifierKey` reads each side of a modifier from an event's flags;
+  `RDPMacDeferredModifierKeys` holds back the Windows keys and right Alt; and
+  `RDPMacDeadKeys` reads dead keys from the Mac's layout.
+  `RDPRemoteDisplayViewport(frame:view:)` maps a view's points onto the
+  desktop it shows on whole screen pixels.
 - `RDPScrollWheelAccumulator.events(deltaX:deltaY:isPrecise:at:)` takes a
   scroll as AppKit reports it, a line a notch of 120 rotation units and a
   precise scroll's point 10, with the horizontal axis negated for RDP.

@@ -1,12 +1,13 @@
+#if os(macOS)
 import AppKit
 import Carbon.HIToolbox
-@testable import RDPClient
+@testable import RDPKitAppKit
 import RDPKit
 import Testing
 
 @Test func modifierKeysTrackEachSideFromDeviceFlags() throws {
-    let leftShift = try #require(MacRDPModifierKey(keyCode: UInt16(kVK_Shift)))
-    let rightShift = try #require(MacRDPModifierKey(keyCode: UInt16(kVK_RightShift)))
+    let leftShift = try #require(RDPMacModifierKey(keyCode: UInt16(kVK_Shift)))
+    let rightShift = try #require(RDPMacModifierKey(keyCode: UInt16(kVK_RightShift)))
     let bothDown = NSEvent.ModifierFlags(rawValue: NSEvent.ModifierFlags.shift.rawValue | 0x2 | 0x4)
     let onlyRightDown = NSEvent.ModifierFlags(rawValue: NSEvent.ModifierFlags.shift.rawValue | 0x4)
 
@@ -18,15 +19,15 @@ import Testing
 }
 
 @Test func modifierKeysFallBackToSideIndependentFlags() throws {
-    let control = try #require(MacRDPModifierKey(keyCode: UInt16(kVK_Control)))
+    let control = try #require(RDPMacModifierKey(keyCode: UInt16(kVK_Control)))
 
     #expect(control.isDown(in: .control))
     #expect(control.isDown(in: []) == false)
 }
 
 @Test func releasingTheLastSideOfAModifierWithoutSideBitsReleasesBothSides() throws {
-    let leftShift = try #require(MacRDPModifierKey(keyCode: UInt16(kVK_Shift)))
-    let rightShift = try #require(MacRDPModifierKey(keyCode: UInt16(kVK_RightShift)))
+    let leftShift = try #require(RDPMacModifierKey(keyCode: UInt16(kVK_Shift)))
+    let rightShift = try #require(RDPMacModifierKey(keyCode: UInt16(kVK_RightShift)))
     let bothPressed: (RDPKeyboardScancode) -> Bool = { _ in true }
 
     // With no side bits, releasing one Shift leaves .shift set, so nothing tells which side it was.
@@ -41,7 +42,7 @@ import Testing
     let leftWindows = RDPKeyboardScancode(code: 0x5B, isExtended: true)
     let nothingDown = RDPInputStateTracker()
     var inputState = RDPInputStateTracker()
-    var windowsKey = MacRDPDeferredModifierKeys()
+    var windowsKey = RDPMacDeferredModifierKeys()
 
     // Command released alone: a Win tap.
     windowsKey.press(leftWindows, inputState: nothingDown)
@@ -72,12 +73,12 @@ import Testing
     let rightAlt = RDPKeyboardScancode(code: 0x38, isExtended: true)
     let nothingDown = RDPInputStateTracker()
     var inputState = RDPInputStateTracker()
-    var heldKeys = MacRDPDeferredModifierKeys()
-    #expect(MacRDPDeferredModifierKeys.isDeferred(rightAlt, holdsBackAlt: true))
-    #expect(MacRDPDeferredModifierKeys.isDeferred(RDPKeyboardScancode(code: 0x38), holdsBackAlt: true) == false)
+    var heldKeys = RDPMacDeferredModifierKeys()
+    #expect(RDPMacDeferredModifierKeys.isDeferred(rightAlt, holdsBackAlt: true))
+    #expect(RDPMacDeferredModifierKeys.isDeferred(RDPKeyboardScancode(code: 0x38), holdsBackAlt: true) == false)
     // A server without Unicode input gets right Alt at once, but the Windows keys still wait.
-    #expect(MacRDPDeferredModifierKeys.isDeferred(rightAlt, holdsBackAlt: false) == false)
-    #expect(MacRDPDeferredModifierKeys.isDeferred(leftWindows, holdsBackAlt: false))
+    #expect(RDPMacDeferredModifierKeys.isDeferred(rightAlt, holdsBackAlt: false) == false)
+    #expect(RDPMacDeferredModifierKeys.isDeferred(leftWindows, holdsBackAlt: false))
 
     // Released alone: an Alt tap; ahead of another key: Alt down.
     heldKeys.press(rightAlt, inputState: nothingDown)
@@ -115,7 +116,7 @@ import Testing
     let rightAlt = RDPKeyboardScancode(code: 0x38, isExtended: true)
     for (first, second) in [(leftWindows, rightWindows), (leftWindows, rightAlt), (rightAlt, leftWindows)] {
         var inputState = RDPInputStateTracker()
-        var heldKeys = MacRDPDeferredModifierKeys()
+        var heldKeys = RDPMacDeferredModifierKeys()
         heldKeys.press(first, inputState: inputState)
         #expect(heldKeys.flush(&inputState) == [.keyboard(scancode: first, isReleased: false)])
 
@@ -129,14 +130,14 @@ import Testing
 /// The key ANSI keyboards have left of "1" sits between left Shift and Z on ISO keyboards.
 @Test func graveKeyCodeFollowsTheKeyboardType() {
     let graveKey = UInt16(kVK_ANSI_Grave)
-    #expect(MacRDPKeyboardMapping.scancode(forKeyCode: graveKey, isISOKeyboard: false) == RDPKeyboardScancode(code: 0x29))
-    #expect(MacRDPKeyboardMapping.scancode(forKeyCode: graveKey, isISOKeyboard: true) == RDPKeyboardScancode(code: 0x56))
+    #expect(RDPMacKeyboardMapping.scancode(forKeyCode: graveKey, isISOKeyboard: false) == RDPKeyboardScancode(code: 0x29))
+    #expect(RDPMacKeyboardMapping.scancode(forKeyCode: graveKey, isISOKeyboard: true) == RDPKeyboardScancode(code: 0x56))
     let sectionKey = UInt16(kVK_ISO_Section)
-    #expect(MacRDPKeyboardMapping.scancode(forKeyCode: sectionKey, isISOKeyboard: true) == RDPKeyboardScancode(code: 0x29))
+    #expect(RDPMacKeyboardMapping.scancode(forKeyCode: sectionKey, isISOKeyboard: true) == RDPKeyboardScancode(code: 0x29))
 }
 
 @Test func keypadClearDoesNotSendNumLock() {
-    #expect(MacRDPKeyboardMapping.scancode(forKeyCode: UInt16(kVK_ANSI_KeypadClear)) == nil)
+    #expect(RDPMacKeyboardMapping.scancode(forKeyCode: UInt16(kVK_ANSI_KeypadClear)) == nil)
 }
 
 @Test func rightSideAndCommandModifiersUseExtendedScancodes() throws {
@@ -148,7 +149,7 @@ import Testing
         kVK_RightShift: RDPKeyboardScancode(code: 0x36),
     ]
     for (keyCode, scancode) in expected {
-        #expect(try #require(MacRDPModifierKey(keyCode: UInt16(keyCode))).scancode == scancode)
+        #expect(try #require(RDPMacModifierKey(keyCode: UInt16(keyCode))).scancode == scancode)
     }
 }
 
@@ -165,7 +166,7 @@ import Testing
         kVK_F13: RDPKeyboardScancode(code: 0x64),
     ]
     for (keyCode, scancode) in expected {
-        #expect(MacRDPKeyboardMapping.scancode(forKeyCode: UInt16(keyCode)) == scancode)
+        #expect(RDPMacKeyboardMapping.scancode(forKeyCode: UInt16(keyCode)) == scancode)
     }
 }
 
@@ -179,7 +180,7 @@ import Testing
         kVK_JIS_Underscore: RDPKeyboardScancode(code: 0x73),
     ]
     for (keyCode, scancode) in expected {
-        #expect(MacRDPKeyboardMapping.scancode(forKeyCode: UInt16(keyCode)) == scancode)
+        #expect(RDPMacKeyboardMapping.scancode(forKeyCode: UInt16(keyCode)) == scancode)
     }
     #expect(sendsScancode(kVK_JIS_Eisu, [], characters: " "))
     #expect(sendsScancode(kVK_JIS_Kana, [], characters: " "))
@@ -196,7 +197,7 @@ private func sendsScancode(
     isAltPressed: Bool = false,
     isDeadKey: Bool = true
 ) -> Bool {
-    MacRDPKeyboardMapping.shouldSendScancode(
+    RDPMacKeyboardMapping.shouldSendScancode(
         forKeyCode: UInt16(keyCode),
         characters: characters,
         charactersIgnoringModifiers: ignoringModifiers ?? characters,
@@ -229,8 +230,8 @@ private func sendsScancode(
     #expect(sendsScancode(kVK_ANSI_L, [.option, .command], characters: "@", ignoringModifiers: "l"))
     #expect(sendsScancode(kVK_ANSI_L, .option, characters: "@", ignoringModifiers: "l", isHeldAsScancode: true))
     #expect(sendsScancode(kVK_LeftArrow, .option, characters: "\u{F702}"))
-    #expect(MacRDPKeyboardMapping.optionTypes("\u{F702}", charactersIgnoringModifiers: "\u{F703}") { true } == false)
-    #expect(MacRDPKeyboardMapping.optionTypes("\u{1B}", charactersIgnoringModifiers: "a") { true } == false)
+    #expect(RDPMacKeyboardMapping.optionTypes("\u{F702}", charactersIgnoringModifiers: "\u{F703}") { true } == false)
+    #expect(RDPMacKeyboardMapping.optionTypes("\u{1B}", charactersIgnoringModifiers: "a") { true } == false)
 }
 
 /// A custom layout can give a key no output with Option without making it a dead key: that key
@@ -239,7 +240,7 @@ private func sendsScancode(
     #expect(sendsScancode(kVK_ANSI_E, .option, characters: "", ignoringModifiers: "e", isDeadKey: false))
     var questions = 0
     func optionTypes(_ characters: String, _ ignoringModifiers: String) -> Bool {
-        MacRDPKeyboardMapping.optionTypes(characters, charactersIgnoringModifiers: ignoringModifiers) {
+        RDPMacKeyboardMapping.optionTypes(characters, charactersIgnoringModifiers: ignoringModifiers) {
             questions += 1
             return true
         }
@@ -249,7 +250,7 @@ private func sendsScancode(
     #expect(optionTypes("@", "l"))
     #expect(optionTypes("l", "l") == false)
     #expect(questions == 1)
-    #expect(MacRDPKeyboardMapping.shouldSendScancode(
+    #expect(RDPMacKeyboardMapping.shouldSendScancode(
         forKeyCode: UInt16(kVK_ANSI_E),
         characters: "",
         charactersIgnoringModifiers: "e",
@@ -270,7 +271,7 @@ private func sendsScancode(
     let sources = try #require(TISCreateInputSourceList(filter, true)?.takeRetainedValue() as? [TISInputSource])
     let us = try #require(sources.first)
     func isDeadKey(_ keyCode: Int, _ modifierFlags: NSEvent.ModifierFlags) -> Bool? {
-        MacRDPDeadKeys.isDeadKey(keyCode: UInt16(keyCode), modifierFlags: modifierFlags, in: us)
+        RDPMacDeadKeys.isDeadKey(keyCode: UInt16(keyCode), modifierFlags: modifierFlags, in: us)
     }
     #expect(isDeadKey(kVK_ANSI_E, .option) == true)
     #expect(isDeadKey(kVK_ANSI_L, .option) == false)
@@ -279,9 +280,9 @@ private func sendsScancode(
 
     // The remembered answer for the Mac's own layout, asked twice, is that layout's.
     let current = try #require(TISCopyCurrentKeyboardLayoutInputSource()?.takeRetainedValue())
-    let currentAnswer = MacRDPDeadKeys.isDeadKey(keyCode: UInt16(kVK_ANSI_E), modifierFlags: .option, in: current) ?? true
-    #expect(MacRDPDeadKeys.isDeadKey(keyCode: UInt16(kVK_ANSI_E), modifierFlags: .option) == currentAnswer)
-    #expect(MacRDPDeadKeys.isDeadKey(keyCode: UInt16(kVK_ANSI_E), modifierFlags: .option) == currentAnswer)
+    let currentAnswer = RDPMacDeadKeys.isDeadKey(keyCode: UInt16(kVK_ANSI_E), modifierFlags: .option, in: current) ?? true
+    #expect(RDPMacDeadKeys.isDeadKey(keyCode: UInt16(kVK_ANSI_E), modifierFlags: .option) == currentAnswer)
+    #expect(RDPMacDeadKeys.isDeadKey(keyCode: UInt16(kVK_ANSI_E), modifierFlags: .option) == currentAnswer)
 }
 
 /// What US keys type with no dead key pending: nothing for the dead key Option-E itself.
@@ -291,7 +292,7 @@ private func sendsScancode(
     let sources = try #require(TISCreateInputSourceList(filter, true)?.takeRetainedValue() as? [TISInputSource])
     let us = try #require(sources.first)
     func output(_ keyCode: Int, _ modifierFlags: NSEvent.ModifierFlags) -> String? {
-        MacRDPDeadKeys.output(keyCode: UInt16(keyCode), modifierFlags: modifierFlags, in: us)
+        RDPMacDeadKeys.output(keyCode: UInt16(keyCode), modifierFlags: modifierFlags, in: us)
     }
     #expect(output(kVK_ANSI_A, []) == "a")
     #expect(output(kVK_ANSI_A, .shift) == "A")
@@ -302,7 +303,7 @@ private func sendsScancode(
     // Right after Option-E, E types "é", Shift-A "Á", Return "´\r" and Option-E "´"; after a
     // key that starts no dead key, nothing is composed.
     func output(_ keyCode: Int, _ modifierFlags: NSEvent.ModifierFlags, after deadKey: (Int, NSEvent.ModifierFlags)) -> String? {
-        MacRDPDeadKeys.output(
+        RDPMacDeadKeys.output(
             keyCode: UInt16(keyCode),
             modifierFlags: modifierFlags,
             afterDeadKey: UInt16(deadKey.0),
@@ -321,7 +322,7 @@ private func sendsScancode(
 /// except a control or function key, whose characters stay AppKit's.
 @Test func theKeyAfterAChordedDeadKeyIsDecidedByItsUncomposedOutput() {
     func characters(_ composed: String?, _ uncomposed: String?) -> String? {
-        MacRDPKeyboardMapping.characters(afterChordedDeadKey: composed, uncomposed: uncomposed)
+        RDPMacKeyboardMapping.characters(afterChordedDeadKey: composed, uncomposed: uncomposed)
     }
     #expect(characters("á", "a") == "a")
     #expect(characters("´¬", "¬") == "¬")
@@ -333,7 +334,7 @@ private func sendsScancode(
 
 /// PC keypads have no "=", and German has a dead key where the main "=" key is.
 @Test func keypadEqualsSendsTheEqualsKeyScancodeOnlyWhereTheLayoutTypesIt() {
-    #expect(MacRDPKeyboardMapping.scancode(forKeyCode: UInt16(kVK_ANSI_KeypadEquals)) == RDPKeyboardScancode(code: 0x0D))
+    #expect(RDPMacKeyboardMapping.scancode(forKeyCode: UInt16(kVK_ANSI_KeypadEquals)) == RDPKeyboardScancode(code: 0x0D))
     #expect(sendsScancode(kVK_ANSI_KeypadEquals, [], characters: "=") == false)
     #expect(windowsTypes("=", scancode: 0x0D))
     #expect(windowsTypes("=", scancode: 0x0D, layout: 0x0000_0407) == false)
@@ -343,7 +344,7 @@ private func sendsScancode(
 /// A remote IME commits its candidate with Space, so it goes as its scancode on every layout,
 /// and as Unicode only when a dead key composed with it.
 @Test func spaceSendsItsScancodeUnlessADeadKeyComposedWithIt() {
-    #expect(MacRDPKeyboardMapping.scancode(forKeyCode: UInt16(kVK_Space)) == RDPKeyboardScancode(code: 0x39))
+    #expect(RDPMacKeyboardMapping.scancode(forKeyCode: UInt16(kVK_Space)) == RDPKeyboardScancode(code: 0x39))
     for layout: UInt32 in [0x0000_0409, 0x0000_0407, 0x0000_0419, 0x1234_5678] {
         #expect(windowsTypes(" ", scancode: 0x39, layout: layout))
         #expect(windowsTypes(" ", scancode: 0x39, .shift, layout: layout))
@@ -369,7 +370,7 @@ private func windowsTypes(
     layout: UInt32 = 0x0000_0409,
     keyboard: RDPKeyboard? = nil
 ) -> Bool {
-    MacRDPKeyboardMapping.windowsTypes(
+    RDPMacKeyboardMapping.windowsTypes(
         characters,
         charactersIgnoringModifiers: ignoringModifiers ?? characters,
         for: RDPKeyboardScancode(code: scancode),
@@ -468,7 +469,7 @@ private func windowsTypes(
 
 @Test func macInputSourcesMapToWindowsLayoutsWithCapturedTables() {
     func layout(_ name: String) -> UInt32 {
-        MacRDPKeyboardLayout.windowsLayout(forInputSourceID: "com.apple.keylayout." + name).rawValue
+        RDPMacKeyboardLayout.windowsLayout(forInputSourceID: "com.apple.keylayout." + name).rawValue
     }
     #expect(layout("US") == 0x0000_0409)
     #expect(layout("German") == 0x0000_0407)
@@ -477,9 +478,9 @@ private func windowsTypes(
     #expect(layout("Dvorak") == 0x0001_0409)
     #expect(layout("Australian") == 0x0000_0409)
     #expect(layout("ABC") == 0x0000_0409)
-    #expect(MacRDPKeyboardLayout.windowsLayout(forInputSourceID: "com.apple.inputmethod.Kotoeri.Japanese") == .unitedStates)
+    #expect(RDPMacKeyboardLayout.windowsLayout(forInputSourceID: "com.apple.inputmethod.Kotoeri.Japanese") == .unitedStates)
     // Every keyboard that can be announced has a table, so the scancode check covers it.
-    for klid in Set(MacRDPKeyboardLayout.windowsLayouts.values) {
+    for klid in Set(RDPMacKeyboardLayout.windowsLayouts.values) {
         #expect(RDPKeyboard(layout: RDPKeyboardLayout(rawValue: klid)).hasCharacterTable)
     }
 }
@@ -518,7 +519,7 @@ private func windowsTypes(
     for name in names {
         let identifier = "com.apple.keylayout." + name
         let data = try #require(layoutData[identifier], "\(name) is not installed")
-        let windows = RDPKeyboard(layout: MacRDPKeyboardLayout.windowsLayout(forInputSourceID: identifier))
+        let windows = RDPKeyboard(layout: RDPMacKeyboardLayout.windowsLayout(forInputSourceID: identifier))
         #expect(windows.hasCharacterTable, "\(name)")
         for key in letterKeys {
             let macCharacter = data.withUnsafeBytes { bytes -> String? in
@@ -550,7 +551,7 @@ private func windowsTypes(
     let dvorak = RDPKeyboardLayout(rawValue: 0x0001_0409)
     let korean = RDPKeyboardLayout(rawValue: 0x0000_0412)
     func keyboard(_ inputSourceLayout: RDPKeyboardLayout, isJapanese: Bool, isJIS: Bool) -> RDPKeyboard {
-        MacRDPKeyboardLayout.windowsKeyboard(inputSourceLayout, isJapaneseInputSource: isJapanese, isJISKeyboard: isJIS)
+        RDPMacKeyboardLayout.windowsKeyboard(inputSourceLayout, isJapaneseInputSource: isJapanese, isJISKeyboard: isJIS)
     }
     #expect(keyboard(.unitedStates, isJapanese: true, isJIS: true) == .japanese106)
     #expect(keyboard(.unitedStates, isJapanese: true, isJIS: false) == .japanese101)
@@ -582,7 +583,7 @@ private func windowsTypes(
 /// English; other sources count when their first language is Japanese.
 @Test func japaneseInputSourcesAreRecognized() {
     func isJapanese(_ identifier: String, _ languages: [String]) -> Bool {
-        MacRDPKeyboardLayout.isJapanese(inputSourceID: identifier, languages: languages)
+        RDPMacKeyboardLayout.isJapanese(inputSourceID: identifier, languages: languages)
     }
     #expect(isJapanese("com.apple.inputmethod.Kotoeri.RomajiTyping.Japanese", ["ja"]))
     #expect(isJapanese("com.apple.inputmethod.Kotoeri.RomajiTyping.Roman", ["en"]))
@@ -596,7 +597,7 @@ private func windowsTypes(
 @MainActor
 @Test func theViewSendsMatchingCharactersAsScancodesAndSpaceAlways() throws {
     let input = RecordedInput()
-    let view = RemoteInputCaptureNSView()
+    let view = RDPRemoteInputView()
     view.inputSession = input
 
     view.keyDown(with: try keyEvent(.keyDown, keyCode: kVK_ANSI_Q, characters: "q"))
@@ -627,7 +628,7 @@ private func windowsTypes(
 @MainActor
 @Test func theViewSendsJISKeysAsTheJapaneseLayoutTypesThem() throws {
     let input = RecordedInput()
-    let view = RemoteInputCaptureNSView()
+    let view = RDPRemoteInputView()
     view.inputSession = input
     view.keyboard = .japanese106
 
@@ -655,7 +656,7 @@ private func windowsTypes(
 @MainActor
 @Test func theViewSendsShiftEisuAsLANG2WithTheJapanese106KeyLayout() throws {
     let input = RecordedInput()
-    let view = RemoteInputCaptureNSView()
+    let view = RDPRemoteInputView()
     view.inputSession = input
     view.keyboard = .japanese106
 
@@ -674,7 +675,7 @@ private func windowsTypes(
 @MainActor
 @Test func theViewSendsUSKeysAsScancodesWithTheJapanese101KeyLayout() throws {
     let input = RecordedInput()
-    let view = RemoteInputCaptureNSView()
+    let view = RDPRemoteInputView()
     view.inputSession = input
     view.keyboard = .japanese101
 
@@ -701,7 +702,7 @@ private func windowsTypes(
     let leftAlt = RDPKeyboardScancode(code: 0x38)
     let grave = RDPKeyboardScancode(code: 0x29)
     let input = RecordedInput()
-    let view = RemoteInputCaptureNSView()
+    let view = RDPRemoteInputView()
     view.inputSession = input
     view.keyboard = .japanese101
 
@@ -716,7 +717,7 @@ private func windowsTypes(
         .keyboard(scancode: grave, isReleased: true),
         .keyboard(scancode: leftAlt, isReleased: true),
     ])
-    #expect(MacRDPKeyboardMapping.scancode(forKeyCode: UInt16(kVK_ANSI_Grave), isISOKeyboard: false) == grave)
+    #expect(RDPMacKeyboardMapping.scancode(forKeyCode: UInt16(kVK_ANSI_Grave), isISOKeyboard: false) == grave)
 }
 
 /// On an ISO keyboard the key between left Shift and Z goes as 0x56, where Windows' Japanese
@@ -724,7 +725,7 @@ private func windowsTypes(
 /// does what the key left of 1 types.
 @Test func theISOKeysGoAsUnicodeWithTheJapanese101KeyLayout() {
     let keyboard = RDPKeyboard.japanese101
-    #expect(MacRDPKeyboardMapping.scancode(forKeyCode: UInt16(kVK_ANSI_Grave), isISOKeyboard: true) == RDPKeyboardScancode(code: 0x56))
+    #expect(RDPMacKeyboardMapping.scancode(forKeyCode: UInt16(kVK_ANSI_Grave), isISOKeyboard: true) == RDPKeyboardScancode(code: 0x56))
     #expect(windowsTypes("`", scancode: 0x56, keyboard: keyboard) == false)
     #expect(windowsTypes("~", scancode: 0x56, .shift, keyboard: keyboard) == false)
     #expect(windowsTypes("§", scancode: 0x29, keyboard: keyboard) == false)
@@ -738,16 +739,16 @@ private func windowsTypes(
 @Test func unicodeEventsSkipAppKitFunctionKeyCharacters() {
     let functionKey = String(utf16CodeUnits: [0xF705], count: 1)
 
-    #expect(MacRDPKeyboardMapping.unicodeEvents(for: functionKey).isEmpty)
-    #expect(MacRDPKeyboardMapping.unicodeEvents(for: "a") == [
+    #expect(RDPMacKeyboardMapping.unicodeEvents(for: functionKey).isEmpty)
+    #expect(RDPMacKeyboardMapping.unicodeEvents(for: "a") == [
         .unicode(codeUnit: 0x61, isReleased: false),
         .unicode(codeUnit: 0x61, isReleased: true),
     ])
 }
 
 @Test func focusSynchronizationKeepsNumLockOnAndMirrorsCapsLock() {
-    #expect(MacRDPKeyboardMapping.toggleFlags(for: []) == [.numLock])
-    #expect(MacRDPKeyboardMapping.toggleFlags(for: [.capsLock, .shift]) == [.numLock, .capsLock])
+    #expect(RDPMacKeyboardMapping.toggleFlags(for: []) == [.numLock])
+    #expect(RDPMacKeyboardMapping.toggleFlags(for: [.capsLock, .shift]) == [.numLock, .capsLock])
 }
 
 private final class RecordedInput: RDPInputEventSending {
@@ -785,12 +786,12 @@ private func keyEvent(
 /// After a dead key, macOS puts its accent ahead of the control character Return, Tab, Esc and
 /// keypad Enter type; those keys go as scancodes, so the accent goes as Unicode first.
 @Test func deadKeyTextAheadOfAControlCharacterIsFound() {
-    #expect(MacRDPKeyboardMapping.deadKeyText(aheadOf: "´\r") == "´")
-    #expect(MacRDPKeyboardMapping.deadKeyText(aheadOf: "´\t") == "´")
-    #expect(MacRDPKeyboardMapping.deadKeyText(aheadOf: "´\u{1B}") == "´")
-    #expect(MacRDPKeyboardMapping.deadKeyText(aheadOf: "^\u{03}") == "^")
+    #expect(RDPMacKeyboardMapping.deadKeyText(aheadOf: "´\r") == "´")
+    #expect(RDPMacKeyboardMapping.deadKeyText(aheadOf: "´\t") == "´")
+    #expect(RDPMacKeyboardMapping.deadKeyText(aheadOf: "´\u{1B}") == "´")
+    #expect(RDPMacKeyboardMapping.deadKeyText(aheadOf: "^\u{03}") == "^")
     for characters: String? in [nil, "", "\r", "a", "´", "´a", "´\r\r", "\r´", "\u{F702}", "\u{F702}\r", "\u{F728}"] {
-        #expect(MacRDPKeyboardMapping.deadKeyText(aheadOf: characters) == nil)
+        #expect(RDPMacKeyboardMapping.deadKeyText(aheadOf: characters) == nil)
     }
 }
 
@@ -800,7 +801,7 @@ private func keyEvent(
     let accent = RDPSlowPathInputEvent.unicode(codeUnit: 0xB4, isReleased: false)
     let accentUp = RDPSlowPathInputEvent.unicode(codeUnit: 0xB4, isReleased: true)
     let input = RecordedInput()
-    let view = RemoteInputCaptureNSView()
+    let view = RDPRemoteInputView()
     view.inputSession = input
 
     // US Option-E, then Return; its repeat and key-up send the key alone.
@@ -832,7 +833,7 @@ private func keyEvent(
 @MainActor
 @Test func keysHeldWhenTheViewLosesFocusAreReleased() throws {
     let input = RecordedInput()
-    let view = RemoteInputCaptureNSView()
+    let view = RDPRemoteInputView()
     view.inputSession = input
     view.flagsChanged(with: try keyEvent(.flagsChanged, keyCode: kVK_Shift, modifierFlags: .shift))
     view.keyDown(with: try keyEvent(.keyDown, keyCode: kVK_DownArrow, modifierFlags: .shift))
@@ -852,7 +853,7 @@ private func keyEvent(
 @MainActor
 @Test func inputMadeWithNoSessionLeavesNothingStaleForTheNextOne() throws {
     let keyA = RDPKeyboardScancode(code: 0x1E)
-    let view = RemoteInputCaptureNSView()
+    let view = RDPRemoteInputView()
     view.flagsChanged(with: try keyEvent(.flagsChanged, keyCode: kVK_Command, modifierFlags: .command))
     view.keyDown(with: try keyEvent(.keyDown, keyCode: kVK_ANSI_A, characters: "a", modifierFlags: .command))
     _ = view.resignFirstResponder()
@@ -878,7 +879,7 @@ private func keyEvent(
 @Test func aModifierReleaseTheViewMissedIsSentBeforeTheNextEvent() throws {
     let leftControl = RDPKeyboardScancode(code: 0x1D)
     let input = RecordedInput()
-    let view = RemoteInputCaptureNSView()
+    let view = RDPRemoteInputView()
     view.inputSession = input
     view.frame = CGRect(x: 0, y: 0, width: 100, height: 100)
     view.rdpFrame = RDPFrameMetadata(RDPGraphicsFrameSnapshot(
@@ -924,7 +925,7 @@ private func keyEvent(
 @MainActor
 @Test func aCommandReleaseTheViewMissedDropsTheDeferredWindowsKey() throws {
     let input = RecordedInput()
-    let view = RemoteInputCaptureNSView()
+    let view = RDPRemoteInputView()
     view.inputSession = input
     view.flagsChanged(with: try keyEvent(.flagsChanged, keyCode: kVK_Command, modifierFlags: .command))
 
@@ -937,7 +938,7 @@ private func keyEvent(
 @Test func commandReleasedAloneStillTapsTheWindowsKey() throws {
     let leftWindows = RDPKeyboardScancode(code: 0x5B, isExtended: true)
     let input = RecordedInput()
-    let view = RemoteInputCaptureNSView()
+    let view = RDPRemoteInputView()
     view.inputSession = input
 
     view.flagsChanged(with: try keyEvent(.flagsChanged, keyCode: kVK_Command, modifierFlags: .command))
@@ -962,7 +963,7 @@ private func keyEvent(
     let bothCommands = NSEvent.ModifierFlags(rawValue: NSEvent.ModifierFlags.command.rawValue | 0x18)
     let rightOption = NSEvent.ModifierFlags(rawValue: NSEvent.ModifierFlags.option.rawValue | 0x40)
     let input = RecordedInput()
-    let view = RemoteInputCaptureNSView()
+    let view = RDPRemoteInputView()
     view.inputSession = input
     view.frame = CGRect(x: 0, y: 0, width: 100, height: 100)
     view.rdpFrame = RDPFrameMetadata(RDPGraphicsFrameSnapshot(
@@ -1057,7 +1058,7 @@ private func keyEvent(
 @Test func commandAndScrollSendsTheWindowsKeyWithTheWheel() throws {
     let leftWindows = RDPKeyboardScancode(code: 0x5B, isExtended: true)
     let input = RecordedInput()
-    let view = RemoteInputCaptureNSView()
+    let view = RDPRemoteInputView()
     view.inputSession = input
     let wheelLine = try #require(CGEvent(
         scrollWheelEvent2Source: nil,
@@ -1116,7 +1117,7 @@ private let rightOptionFlags = NSEvent.ModifierFlags(rawValue: NSEvent.ModifierF
     let leftShift = RDPKeyboardScancode(code: 0x2A)
     let rightOptionShift = rightOptionFlags.union(NSEvent.ModifierFlags(rawValue: NSEvent.ModifierFlags.shift.rawValue | 0x2))
     let input = RecordedInput()
-    let view = RemoteInputCaptureNSView()
+    let view = RDPRemoteInputView()
     view.inputSession = input
     view.keyboard = RDPKeyboard(layout: RDPKeyboardLayout(rawValue: 0x0000_0407))
     var deadKeyQuestions: [Int] = []
@@ -1172,7 +1173,7 @@ private let rightOptionFlags = NSEvent.ModifierFlags(rawValue: NSEvent.ModifierF
     let rightAlt = RDPKeyboardScancode(code: 0x38, isExtended: true)
     let keyE = RDPKeyboardScancode(code: 0x12)
     let input = RecordedInput()
-    let view = RemoteInputCaptureNSView()
+    let view = RDPRemoteInputView()
     view.inputSession = input
     view.isDeadKey = { _, _ in false }
 
@@ -1201,7 +1202,7 @@ private let rightOptionFlags = NSEvent.ModifierFlags(rawValue: NSEvent.ModifierF
     let returnKey = RDPKeyboardScancode(code: 0x1C)
     let leftArrow = RDPKeyboardScancode(code: 0x4B, isExtended: true)
     let input = RecordedInput()
-    let view = RemoteInputCaptureNSView()
+    let view = RDPRemoteInputView()
     view.inputSession = input
     view.isDeadKey = { keyCode, flags in Int(keyCode) == kVK_ANSI_E && flags.contains(.option) }
     view.uncomposedOutput = { keyCode, flags in
@@ -1274,7 +1275,7 @@ private let rightOptionFlags = NSEvent.ModifierFlags(rawValue: NSEvent.ModifierF
     let leftAlt = RDPKeyboardScancode(code: 0x38)
     let keyE = RDPKeyboardScancode(code: 0x12)
     let input = RecordedInput()
-    let view = RemoteInputCaptureNSView()
+    let view = RDPRemoteInputView()
     view.inputSession = input
     view.isDeadKey = { keyCode, flags in Int(keyCode) == kVK_ANSI_E && flags.contains(.option) }
     view.uncomposedOutput = { keyCode, flags in Int(keyCode) == kVK_ANSI_E && flags.contains(.option) ? "" : nil }
@@ -1320,7 +1321,7 @@ private let rightOptionFlags = NSEvent.ModifierFlags(rawValue: NSEvent.ModifierF
     let leftControl = RDPKeyboardScancode(code: 0x1D)
     let keyA = RDPKeyboardScancode(code: 0x1E)
     let input = RecordedInput()
-    let view = RemoteInputCaptureNSView()
+    let view = RDPRemoteInputView()
     view.inputSession = input
     view.frame = CGRect(x: 0, y: 0, width: 100, height: 100)
     view.rdpFrame = RDPFrameMetadata(RDPGraphicsFrameSnapshot(
@@ -1381,7 +1382,7 @@ private let rightOptionFlags = NSEvent.ModifierFlags(rawValue: NSEvent.ModifierF
     let leftShift = RDPKeyboardScancode(code: 0x2A)
     let input = RecordedInput()
     input.supportsUnicodeInput = false
-    let view = RemoteInputCaptureNSView()
+    let view = RDPRemoteInputView()
     view.inputSession = input
     view.keyboard = RDPKeyboard(layout: RDPKeyboardLayout(rawValue: 0x0000_0407))
     view.isDeadKey = { keyCode, _ in Int(keyCode) == kVK_ANSI_Equal }
@@ -1436,7 +1437,7 @@ private let rightOptionFlags = NSEvent.ModifierFlags(rawValue: NSEvent.ModifierF
     let leftArrow = RDPKeyboardScancode(code: 0x4B, isExtended: true)
     let keyL = RDPKeyboardScancode(code: 0x26)
     let input = RecordedInput()
-    let view = RemoteInputCaptureNSView()
+    let view = RDPRemoteInputView()
     view.inputSession = input
 
     view.flagsChanged(with: try keyEvent(.flagsChanged, keyCode: kVK_RightOption, modifierFlags: rightOptionFlags))
@@ -1477,7 +1478,7 @@ private let rightOptionFlags = NSEvent.ModifierFlags(rawValue: NSEvent.ModifierF
 @Test func keypadEqualsGoesAsUnicodeWhereTheLayoutHasNoEqualsKey() throws {
     let equalsKey = RDPKeyboardScancode(code: 0x0D)
     let input = RecordedInput()
-    let view = RemoteInputCaptureNSView()
+    let view = RDPRemoteInputView()
     view.inputSession = input
 
     view.keyDown(with: try keyEvent(.keyDown, keyCode: kVK_ANSI_KeypadEquals, characters: "="))
@@ -1499,7 +1500,7 @@ private let rightOptionFlags = NSEvent.ModifierFlags(rawValue: NSEvent.ModifierF
 @MainActor
 @Test func aDragPastTheDesktopStopsOnItsEdge() throws {
     let input = RecordedInput()
-    let view = RemoteInputCaptureNSView()
+    let view = RDPRemoteInputView()
     view.inputSession = input
     view.frame = CGRect(x: 0, y: 0, width: 200, height: 100)
     view.rdpFrame = RDPFrameMetadata(RDPGraphicsFrameSnapshot(
@@ -1547,7 +1548,7 @@ private let rightOptionFlags = NSEvent.ModifierFlags(rawValue: NSEvent.ModifierF
 
     for inputState in [shiftDown, dragging] {
         for held in [leftWindows, rightAlt] {
-            var heldKeys = MacRDPDeferredModifierKeys()
+            var heldKeys = RDPMacDeferredModifierKeys()
             heldKeys.press(held, inputState: inputState)
             #expect(heldKeys.release(held).isEmpty)
         }
@@ -1560,16 +1561,17 @@ private let rightOptionFlags = NSEvent.ModifierFlags(rawValue: NSEvent.ModifierF
     var inputState = RDPInputStateTracker()
     let point = RDPRemotePoint(x: 40, y: 30)
 
-    #expect(MacRDPScrollWheel.pointerMove(to: point, inputState: &inputState) == [.pointerMove(x: 40, y: 30)])
-    #expect(MacRDPScrollWheel.pointerMove(to: point, inputState: &inputState).isEmpty)
-    #expect(MacRDPScrollWheel.pointerMove(to: RDPRemotePoint(x: 41, y: 30), inputState: &inputState)
+    #expect(RDPMacScrollWheel.pointerMove(to: point, inputState: &inputState) == [.pointerMove(x: 40, y: 30)])
+    #expect(RDPMacScrollWheel.pointerMove(to: point, inputState: &inputState).isEmpty)
+    #expect(RDPMacScrollWheel.pointerMove(to: RDPRemotePoint(x: 41, y: 30), inputState: &inputState)
         == [.pointerMove(x: 41, y: 30)])
 }
 
 /// The JIS keypad comma's scancode types nothing on most layouts, so the comma goes as Unicode
 /// unless a modifier makes it a shortcut.
 @Test func theJISKeypadCommaTypesAComma() {
-    #expect(MacRDPKeyboardMapping.scancode(forKeyCode: UInt16(kVK_JIS_KeypadComma)) == RDPKeyboardScancode(code: 0x7E))
+    #expect(RDPMacKeyboardMapping.scancode(forKeyCode: UInt16(kVK_JIS_KeypadComma)) == RDPKeyboardScancode(code: 0x7E))
     #expect(sendsScancode(kVK_JIS_KeypadComma, [], characters: ",") == false)
     #expect(sendsScancode(kVK_JIS_KeypadComma, .control, characters: ","))
 }
+#endif

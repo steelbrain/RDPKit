@@ -2,6 +2,7 @@ import AppKit
 import os
 import QuartzCore
 import RDPKit
+import RDPKitAppKit
 import SystemConfiguration
 
 @MainActor
@@ -724,7 +725,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
             hasCredentials: credentials != nil
         )
 
-        keyboard = MacRDPKeyboardLayout.current()
+        keyboard = RDPMacKeyboardLayout.current()
         let connectDesktop = RDPConnectDesktop(
             fieldSize: requestedDesktopSize,
             followsViewSize: autoApplyViewerSize,

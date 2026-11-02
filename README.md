@@ -53,6 +53,18 @@ Then add it to your target:
 )
 ```
 
+A macOS client can add `RDPKitAppKit`, whose `RDPRemoteInputView` sends the
+Mac's keyboard, mouse and scroll input to the server, with the keyboard mapping
+behind it (`RDPMacKeyboardLayout.current()` picks the Windows keyboard to
+announce):
+
+```swift
+.target(
+    name: "YourMacApp",
+    dependencies: ["RDPKit", .product(name: "RDPKitAppKit", package: "RDPKit")]
+)
+```
+
 `RDPKitTesting` holds in-memory stand-ins for a server, for your own tests:
 
 ```swift
@@ -232,6 +244,14 @@ let report = client.run(
   scancode with each layout a Mac input source announces, so a client can send
   a character as its scancode only where the server types the same one.
 - Pointer motion, buttons, extended buttons, vertical wheel, and horizontal wheel
+- `RDPKitAppKit`'s `RDPRemoteInputView` for macOS: keys go as scancodes where
+  the server's layout types what the Mac's does and as Unicode otherwise, with
+  dead keys, Option's characters and Japanese input; Command goes as the
+  Windows key without tapping it for Mac shortcuts; modifiers, held keys and
+  toggle keys stay in step with the Mac across focus changes and menus.
+  `RDPMacKeyboardLayout` maps Mac input sources to Windows layouts, and
+  `RDPMacKeyboardMapping`, `RDPMacModifierKey`, `RDPMacDeferredModifierKeys` and
+  `RDPMacDeadKeys` are the pieces the view is built from
 - Remote pointer shapes, system pointers, and pointer-cache updates, with
   `RDPRemotePointerBitmap` to turn a shape into premultiplied RGBA or a
   `CGImage` and a hot spot for a native cursor
@@ -383,7 +403,11 @@ starting point.
 Package.swift                         SwiftPM library manifest
 Sources/RDPKit/                       Reusable RDP protocol, transport, media,
                                       input, clipboard, audio, and metrics code
+Sources/RDPKitAppKit/                 macOS input view and keyboard mapping
+Sources/RDPKitTesting/                In-memory server stand-ins for app tests
 Tests/RDPKitTests/                    Unit and mock-server integration tests
+Tests/RDPKitAppKitTests/              Input view and keyboard mapping tests
+Scripts/                              CI checks and keyboard table capture
 Examples/Package.swift                SwiftPM example app and tool manifest
 Examples/RDPClient/                   Native macOS viewer shell
 Examples/RDPPreflight/                Connection and protocol inspection tool
@@ -392,8 +416,9 @@ Examples/RDPFrameBenchmark/           Live capture and decode benchmark tool
 Examples/RDPCommandLineSupport/       Argument parsing shared by the tools
 ```
 
-Keep reusable behavior in `Sources/RDPKit`. Keep AppKit, SwiftUI, Keychain,
-menus, windows, and macOS preferences in the example app.
+Keep reusable behavior in `Sources/RDPKit`, and reusable AppKit views and Mac
+keyboard handling in `Sources/RDPKitAppKit`. Keep SwiftUI, Keychain, menus,
+windows, and macOS preferences in the example app.
 
 ## Testing
 

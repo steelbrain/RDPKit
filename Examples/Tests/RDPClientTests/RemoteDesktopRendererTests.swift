@@ -2,6 +2,7 @@ import AppKit
 import AVFoundation
 @testable import RDPClient
 import RDPKit
+import RDPKitAppKit
 import Testing
 
 /// On macOS 15 and later frames go to the display layer's `sampleBufferRenderer`, before and
@@ -85,7 +86,7 @@ func displayResetConditionsFlushBeforeEnqueue(
     #expect(window.firstResponder === window)
     canvas.update(frame: frame, hasPresentedFrame: true, emptyMessage: "", inputSession: nil, keyboard: .unitedStates, isConnecting: true)
 
-    #expect(window.firstResponder is RemoteInputCaptureNSView)
+    #expect(window.firstResponder is RDPRemoteInputView)
 }
 
 @Test func aFailedLayerShowsTheLastFrameAgainOnce() {
@@ -217,7 +218,7 @@ private func placeOnePixelWiderThanTheDesktop(_ view: NSView) -> (window: NSWind
     #expect(desktop.size == CGSize(width: 1000 / scale, height: 700 / scale))
     #expect(desktopPixels.minX == desktopPixels.minX.rounded())
     #expect(desktopPixels.minY == desktopPixels.minY.rounded())
-    #expect(desktop == canvas.desktopViewport(showing: frame).contentRect)
+    #expect(desktop == RDPRemoteDisplayViewport(frame: frame, view: canvas).contentRect)
     #expect(canvas.displayView.layer?.sublayers?.first?.frame == canvas.displayView.bounds)
     #expect(canvas.window === window)
 }
@@ -233,13 +234,13 @@ private final class RecordedPointerInput: RDPInputEventSending {
 
 @MainActor
 @Test func pointerInputMapsToTheDesktopWhereItIsDrawn() throws {
-    let view = RemoteInputCaptureNSView()
+    let view = RDPRemoteInputView()
     let (window, scale) = placeOnePixelWiderThanTheDesktop(view)
     let input = RecordedPointerInput()
     view.inputSession = input
     let frame = frameMetadata(width: 1000, height: 700)
     view.rdpFrame = frame
-    let desktop = view.desktopViewport(showing: frame).contentRect
+    let desktop = RDPRemoteDisplayViewport(frame: frame, view: view).contentRect
     let quarterPixel = 0.25 / scale
     func move(to location: CGPoint) throws {
         view.mouseMoved(with: try #require(NSEvent.mouseEvent(
@@ -268,13 +269,13 @@ private final class RecordedPointerInput: RDPInputEventSending {
 /// A drag past the letterbox goes to the desktop's nearest edge, its bottom row included.
 @MainActor
 @Test func pointerDragPastTheDesktopClampsToItsEdge() throws {
-    let view = RemoteInputCaptureNSView()
+    let view = RDPRemoteInputView()
     let (window, _) = placeOnePixelWiderThanTheDesktop(view)
     let input = RecordedPointerInput()
     view.inputSession = input
     let frame = frameMetadata(width: 1000, height: 700)
     view.rdpFrame = frame
-    let desktop = view.desktopViewport(showing: frame).contentRect
+    let desktop = RDPRemoteDisplayViewport(frame: frame, view: view).contentRect
     func drag(to location: CGPoint) throws {
         view.mouseDragged(with: try #require(NSEvent.mouseEvent(
             with: .leftMouseDragged,

@@ -1,10 +1,11 @@
+#if os(macOS)
 import AppKit
 import Carbon.HIToolbox
 import RDPKit
 
 /// The Windows keyboard layout to announce for the Mac's current one, so the server turns
 /// scancodes into the characters the keys are labelled with.
-enum MacRDPKeyboardLayout {
+public enum RDPMacKeyboardLayout {
     /// The layout of the current input source; an input method such as a CJK IME
     /// reports the layout it types with. Unknown layouts fall back to US English. A Japanese
     /// input source typing with US English gets Windows' Japanese layout instead; see
@@ -16,11 +17,11 @@ enum MacRDPKeyboardLayout {
     /// (live, Windows 11, 2026-10-29: announcing 0x411 left 0x409 active, with type 7
     /// reported). Nothing a client sends in a desktop session changes it: the one layout sync
     /// is RemoteApp's ([MS-RDPERP] 2.2.2.10.1). Nor does any PDU tell the client which layout
-    /// the session kept, so RDPClient cannot detect it; keys sent as scancodes then type that
+    /// the session kept, so a client cannot detect it; keys sent as scancodes then type that
     /// layout's characters until the user switches the session's layout on the server, or
     /// signs out there so that the next connection creates the session.
     @MainActor
-    static func current() -> RDPKeyboard {
+    public static func current() -> RDPKeyboard {
         let layoutSourceID: String? = TISCopyCurrentKeyboardLayoutInputSource().flatMap {
             property(kTISPropertyInputSourceID, of: $0.takeRetainedValue())
         }
@@ -63,8 +64,8 @@ enum MacRDPKeyboardLayout {
     /// documented shortcut), which kbd101 sends as VK_KANJI: from the Mac, left Option, which
     /// goes as Alt at once, and the key left of 1, which goes as 0x29 on ANSI and ISO keyboards
     /// alike. A JIS keyboard's Eisu and Kana go as LANG2 and LANG1, which kbd106 and kbd101
-    /// alike turn into IME Off and On (see MacRDPKeyboardMapping.scancodes).
-    static func windowsKeyboard(
+    /// alike turn into IME Off and On (see RDPMacKeyboardMapping.scancodes).
+    public static func windowsKeyboard(
         _ inputSourceLayout: RDPKeyboardLayout,
         isJapaneseInputSource: Bool,
         isJISKeyboard: Bool
@@ -79,11 +80,11 @@ enum MacRDPKeyboardLayout {
     /// report, or any mode of Apple's Japanese input method: its Latin mode (英字) reports
     /// English, but the Eisu and Kana keys switch modes mid-session, while the layout is
     /// announced only at connection. FreeRDP's keyboard_apple.c maps that mode to Japanese too.
-    static func isJapanese(inputSourceID: String, languages: [String]) -> Bool {
+    public static func isJapanese(inputSourceID: String, languages: [String]) -> Bool {
         languages.first == "ja" || inputSourceID.hasPrefix("com.apple.inputmethod.Kotoeri.")
     }
 
-    static func windowsLayout(forInputSourceID identifier: String) -> RDPKeyboardLayout {
+    public static func windowsLayout(forInputSourceID identifier: String) -> RDPKeyboardLayout {
         let prefix = "com.apple.keylayout."
         guard identifier.hasPrefix(prefix), let klid = windowsLayouts[String(identifier.dropFirst(prefix.count))] else {
             return .unitedStates
@@ -101,7 +102,7 @@ enum MacRDPKeyboardLayout {
     /// QWERTY, Latvian, Lithuanian, Lithuanian LST 1582, Romanian, and the ABC, Albanian,
     /// German DIN 2137, Slovenian QWERTZ and Turkish F layouts.
     /// A layout added here needs its table: rerun Scripts/generate-windows-keyboard-layout-tables.py.
-    static let windowsLayouts: [String: UInt32] = [
+    public static let windowsLayouts: [String: UInt32] = [
         "2SetHangul": 0x0000_0412,
         "390Hangul": 0x0000_0412,
         "3SetHangul": 0x0000_0412,
@@ -251,7 +252,7 @@ enum MacRDPKeyboardLayout {
 /// Also what a key types with no dead key pending, for the key after a dead key that went to
 /// the server as an Alt chord, and what it types right after one dead key alone.
 @MainActor
-enum MacRDPDeadKeys {
+public enum RDPMacDeadKeys {
     private struct Keystroke: Hashable {
         let inputSourceID: String
         let keyCode: UInt16
@@ -262,9 +263,9 @@ enum MacRDPDeadKeys {
 
     /// With the current layout, remembered per input source. A layout whose data cannot be read
     /// counts the key as dead, as Apple's layouts make every Option key that types nothing.
-    static func isDeadKey(keyCode: UInt16, modifierFlags: NSEvent.ModifierFlags) -> Bool {
+    public static func isDeadKey(keyCode: UInt16, modifierFlags: NSEvent.ModifierFlags) -> Bool {
         guard let source = TISCopyCurrentKeyboardLayoutInputSource()?.takeRetainedValue(),
-              let inputSourceID: String = MacRDPKeyboardLayout.property(kTISPropertyInputSourceID, of: source)
+              let inputSourceID: String = RDPMacKeyboardLayout.property(kTISPropertyInputSourceID, of: source)
         else {
             return true
         }
@@ -283,26 +284,26 @@ enum MacRDPDeadKeys {
 
     /// UCKeyTranslate with dead keys on leaves a dead-key state for a key that starts one. Nil
     /// when `source` has no Unicode layout data.
-    static func isDeadKey(keyCode: UInt16, modifierFlags: NSEvent.ModifierFlags, in source: TISInputSource) -> Bool? {
+    public static func isDeadKey(keyCode: UInt16, modifierFlags: NSEvent.ModifierFlags, in source: TISInputSource) -> Bool? {
         translate(keyCode: keyCode, modifierFlags: modifierFlags, in: source).map { $0.deadKeyState != 0 }
     }
 
     /// What the key types with the current layout and no dead key pending: nothing for a key
     /// that starts one. Nil when the layout data cannot be read.
-    static func output(keyCode: UInt16, modifierFlags: NSEvent.ModifierFlags) -> String? {
+    public static func output(keyCode: UInt16, modifierFlags: NSEvent.ModifierFlags) -> String? {
         TISCopyCurrentKeyboardLayoutInputSource().flatMap {
             output(keyCode: keyCode, modifierFlags: modifierFlags, in: $0.takeRetainedValue())
         }
     }
 
-    static func output(keyCode: UInt16, modifierFlags: NSEvent.ModifierFlags, in source: TISInputSource) -> String? {
+    public static func output(keyCode: UInt16, modifierFlags: NSEvent.ModifierFlags, in source: TISInputSource) -> String? {
         translate(keyCode: keyCode, modifierFlags: modifierFlags, in: source)?.output
     }
 
     /// What the key types with the current layout right after the dead key `deadKeyCode`
     /// starts, with nothing else pending. Nil when that key starts no dead key or the layout
     /// data cannot be read.
-    static func output(
+    public static func output(
         keyCode: UInt16,
         modifierFlags: NSEvent.ModifierFlags,
         afterDeadKey deadKeyCode: UInt16,
@@ -319,7 +320,7 @@ enum MacRDPDeadKeys {
         }
     }
 
-    static func output(
+    public static func output(
         keyCode: UInt16,
         modifierFlags: NSEvent.ModifierFlags,
         afterDeadKey deadKeyCode: UInt16,
@@ -382,3 +383,4 @@ enum MacRDPDeadKeys {
         return UInt32(modifiers >> 8) & 0xFF
     }
 }
+#endif

@@ -16,6 +16,11 @@ let package = Package(
             name: "RDPKit",
             targets: ["RDPKit"]
         ),
+        // AppKit views and keyboard mapping for a macOS client; empty on other platforms.
+        .library(
+            name: "RDPKitAppKit",
+            targets: ["RDPKitAppKit"]
+        ),
         // In-memory stand-ins for a server, for an application's own tests.
         .library(
             name: "RDPKitTesting",
@@ -35,6 +40,10 @@ let package = Package(
                 .product(name: "NIOTLS", package: "swift-nio"),
                 .product(name: "NIOSSL", package: "swift-nio-ssl"),
             ]
+        ),
+        .target(
+            name: "RDPKitAppKit",
+            dependencies: ["RDPKit"]
         ),
         .target(
             name: "RDPKitTesting",
@@ -57,6 +66,10 @@ let package = Package(
             resources: [
                 .copy("Fixtures"),
             ]
+        ),
+        .testTarget(
+            name: "RDPKitAppKitTests",
+            dependencies: ["RDPKit", "RDPKitAppKit"]
         ),
     ]
 )

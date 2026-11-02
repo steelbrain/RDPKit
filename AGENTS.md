@@ -11,7 +11,11 @@ Use this boundary when making changes:
 
 - Code needed by macOS, iOS, tvOS, Mac Catalyst, visionOS, and third-party
   clients belongs in `Sources/RDPKit`.
-- macOS-only UI, Keychain wiring, AppKit windowing, and app preferences belong in
+- AppKit views and Mac keyboard handling that any macOS client reuses, such as
+  the input view, belong in `Sources/RDPKitAppKit`, guarded by `#if os(macOS)`.
+- In-memory server stand-ins for applications' tests belong in
+  `Sources/RDPKitTesting`.
+- macOS app UI, Keychain wiring, AppKit windowing, and app preferences belong in
   `Examples/RDPClient`.
 - Command-line probes and demos belong in `Examples/RDPPreflight`,
   `Examples/RDPFirstFrameCapture` or `Examples/RDPFrameBenchmark`; argument
