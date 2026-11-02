@@ -40,6 +40,8 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
     private var keyboard = MacRDPWindowsKeyboard.unitedStates
     private var displayControlSession: RDPDisplayControlSession?
     private var displayControlMessage: String?
+    /// A keyframe asked for before Display Control was ready, asked for once it is.
+    private var isKeyframeRequestPending = false
     private var autoApplyViewerSize = true
     /// The desktop the last connection asked for.
     private var requestedDesktop: RDPConnectDesktop?
@@ -825,7 +827,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                     )
                     try keyframeRequests.finishGraphicsFrame(frame, decoded: completion, at: Date()) {
                         sink.apply { controller in
-                            controller.requestKeyframe(connectLayout: connectDesktop.displayRequest)
+                            controller.requestKeyframe()
                         }
                     }
                 },
@@ -852,6 +854,9 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                         // A server redirection's target has not been sent the layout the first server got.
                         controller.cancelPendingDisplayResize(resetLastRequestedSize: true)
                         controller.scheduleAutoDisplaySizeUpdate()
+                        if controller.isKeyframeRequestPending {
+                            controller.requestKeyframe()
+                        }
                         controller.render()
                     }
                 },
@@ -1220,6 +1225,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         inputSession = nil
         displayControlSession = nil
         displayControlMessage = nil
+        isKeyframeRequestPending = false
         clipboard.detach()
         remoteAudioPlayer.reset()
         audioMessage = nil
@@ -1282,13 +1288,15 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
     }
 
     /// Windows and gnome-remote-desktop send no keyframe by themselves, but answer the monitor
-    /// layout sent again with one: the one last sent, or the one the session started with.
-    private func requestKeyframe(connectLayout: RDPDisplayRequest) {
-        guard let displayControlSession else {
+    /// layout sent again with one: the one last sent, or the one the session started with. A
+    /// request with no Display Control session to send it, such as for a first frame that fails
+    /// to decode, waits for the next session.
+    private func requestKeyframe() {
+        guard let displayControlSession, (try? displayControlSession.resendLayout()) == true else {
+            isKeyframeRequestPending = true
             return
         }
-        let request = displayResize.lastSent ?? connectLayout
-        displayControlSession.send(request)
+        isKeyframeRequestPending = false
         displayControlMessage = "Video failed to decode; asked the server for a fresh picture."
         render()
     }

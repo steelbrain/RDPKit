@@ -344,6 +344,8 @@ struct MockKRDPServerTranscript: Equatable, Sendable {
     var dynamicCreateStatuses: [UInt32: Int32] = [:]
     var deviceRedirectionClientMessages: [String] = []
     var displayControlLayouts: [MockDisplayControlLayoutSummary] = []
+    /// Layouts that arrived before the mock sent its first graphics frame.
+    var displayControlLayoutsBeforeGraphicsFrame = 0
     var dynamicCreateResponseStaticFlags: [UInt32] = []
     var displayControlStaticFlags: [UInt32] = []
     var audioDynamicStaticFlags: [UInt32] = []
@@ -1339,9 +1341,13 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
             guard let layout = try MockKRDPFixtures.displayControlLayoutSummary(from: dataPDU.payload) else {
                 return false
             }
+            let didReleaseGraphicsFrame = didReleaseGraphicsFrame
             transcript.withLock {
                 $0.displayControlLayouts.append(layout)
                 $0.displayControlStaticFlags.append(staticPDU.flags)
+                if !didReleaseGraphicsFrame {
+                    $0.displayControlLayoutsBeforeGraphicsFrame += 1
+                }
             }
         default:
             return false

@@ -218,7 +218,9 @@ let report = client.run(
   `RDPRemotePointerBitmap` to turn a shape into premultiplied RGBA or a
   `CGImage` and a hot spot for a native cursor
 - Display control channel support for resize and multi-monitor layouts
-  (`RDPMonitorLayout`), checked against the server's capabilities
+  (`RDPMonitorLayout`), checked against the server's capabilities, and
+  `resendLayout()`, which Windows and gnome-remote-desktop answer with a
+  keyframe after video fails to decode
 - Connect-time multi-monitor layouts in Client Monitor Data and Client Monitor
   Extended Data, up to 32,766 x 32,766 pixels, and the server's Monitor Layout
   PDU in the report, live through `RDPLiveConnectionReport`

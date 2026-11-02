@@ -31,8 +31,10 @@ public typealias RDPRemotePointerHandler = @Sendable (RDPRemotePointerUpdate) ->
 /// once the server deactivates it, so resynchronize held keys on the new one.
 public typealias RDPInputSessionHandler = @Sendable (RDPInputSession) -> Void
 /// Called once the server's DisplayControl capabilities have arrived ([MS-RDPEDISP] 2.2.2.1)
-/// and the first graphics frame has been delivered, so the first layout sent finds an output
-/// to resize: KRdp 6.8 ignores a layout that arrives before its video stream starts.
+/// and so has the first graphics frame, so the first layout sent finds an output to resize:
+/// KRdp 6.8 ignores a layout that arrives before its video stream starts. It runs before
+/// `onGraphicsFrame` gets that frame, so a handler whose first frame fails to decode can ask
+/// for a keyframe (`RDPDisplayControlSession.resendLayout()`).
 public typealias RDPDisplayControlSessionHandler = @Sendable (RDPDisplayControlSession) -> Void
 public typealias RDPClipboardSessionHandler = @Sendable (RDPClipboardSession) -> Void
 public typealias RDPClipboardTextHandler = @Sendable (String) -> Void

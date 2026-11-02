@@ -79,7 +79,8 @@ public struct RDPDisplayRequest: Equatable, Sendable {
         )
     }
 
-    var monitorLayout: RDPMonitorLayout {
+    /// The request's one monitor: the layout ``RDPDisplayControlSession`` sends for it.
+    public var monitorLayout: RDPMonitorLayout {
         .singlePrimary(
             width: width,
             height: height,

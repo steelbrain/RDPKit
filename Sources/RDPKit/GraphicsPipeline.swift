@@ -384,6 +384,12 @@ extension RDPClientConnection {
             }
             report.rdpGraphicsFrames.appendCapped(frame, limit: recordedGraphicsFrameLimit(targetFrameCount: targetFrameCount))
         }
+        // The server's video has started, whether or not the handler can show it: a layout
+        // sent now gets a keyframe from Windows and gnome-remote-desktop, so the session goes
+        // out before the handler, which may ask for one when the first frame fails to decode.
+        if !frames.isEmpty {
+            announceDisplayControl()
+        }
         var presented = false
         for frame in frames {
             do {
@@ -396,11 +402,6 @@ extension RDPClientConnection {
             }
         }
         hasPresentedFrame = hasPresentedFrame || presented
-        // The server's video has started, whether or not the handler could show it: a
-        // layout sent now gets a keyframe from Windows and gnome-remote-desktop.
-        if !frames.isEmpty {
-            announceDisplayControl()
-        }
         return presented
     }
 

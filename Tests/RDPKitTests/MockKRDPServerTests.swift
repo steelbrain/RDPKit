@@ -2288,8 +2288,10 @@ struct MockKRDPServerTests {
             if case .unicode = $0 { true } else { false }
         }.count == inputText.utf16.count * 2)
 
-        // KRdp ignores a layout sent before its video stream starts.
-        #expect(observed.withLock(\.framesBeforeDisplayControl) == 1)
+        // KRdp ignores a layout sent before its video stream starts. The session goes out once
+        // the first frame has arrived, before the handler gets it.
+        #expect(transcript.displayControlLayoutsBeforeGraphicsFrame == 0)
+        #expect(observed.withLock(\.framesBeforeDisplayControl) == 0)
         #expect(transcript.displayControlLayouts == [
             MockDisplayControlLayoutSummary(
                 monitorCount: 1,

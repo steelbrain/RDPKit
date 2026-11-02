@@ -32,6 +32,7 @@ extension RDPClientConnection {
         )
         // The desktop is the one asked for until a Demand Active sets one.
         resizeDesktop(width: mcsConfiguration.desktopWidth, height: mcsConfiguration.desktopHeight)
+        displayLayouts = RDPDisplayLayoutRecord(connectLayout: mcsConfiguration.displayControlLayout)
         let connectInitial = MCSConnectInitialPDU(configuration: mcsConfiguration).encodedTPKT()
         report.mcsConnectInitialHex = connectInitial.rdpHexString
         try send(connectInitial)

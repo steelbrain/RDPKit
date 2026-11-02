@@ -343,7 +343,7 @@ public struct RDPMonitorLayout: Equatable, Sendable {
         self.monitors = monitors
     }
 
-    private init(validated monitors: [RDPDisplayControlMonitorLayout]) {
+    init(validated monitors: [RDPDisplayControlMonitorLayout]) {
         self.monitors = monitors
     }
 
@@ -541,12 +541,30 @@ private func cappedAreaProduct(_ lhs: UInt32, _ rhs: UInt32, _ other: UInt32) ->
     return second.overflow ? UInt64.max : second.partialValue
 }
 
+/// The layouts one connection asked its server for, shared by the display control sessions it
+/// hands out; read and written from any thread.
+final class RDPDisplayLayoutRecord: @unchecked Sendable {
+    let connectLayout: RDPMonitorLayout
+    private let lock = NSLock()
+    private var sentLayout: RDPMonitorLayout?
+
+    init(connectLayout: RDPMonitorLayout) {
+        self.connectLayout = connectLayout
+    }
+
+    var lastSentLayout: RDPMonitorLayout? {
+        get { lock.withLock { sentLayout } }
+        set { lock.withLock { sentLayout = newValue } }
+    }
+}
+
 public final class RDPDisplayControlSession: Sendable {
     public let dynamicChannelID: UInt32
     public let capabilities: RDPDisplayControlCapabilities
     private let userChannelID: UInt16
     private let staticChannelID: UInt16
     private let channel: Channel
+    private let layouts: RDPDisplayLayoutRecord
     private let cutoff = RDPSendCutoff()
 
     init(
@@ -554,17 +572,40 @@ public final class RDPDisplayControlSession: Sendable {
         capabilities: RDPDisplayControlCapabilities,
         userChannelID: UInt16,
         staticChannelID: UInt16,
-        channel: Channel
+        channel: Channel,
+        layouts: RDPDisplayLayoutRecord
     ) {
         self.dynamicChannelID = dynamicChannelID
         self.capabilities = capabilities
         self.userChannelID = userChannelID
         self.staticChannelID = staticChannelID
         self.channel = channel
+        self.layouts = layouts
+    }
+
+    /// The layout the connection started with: its ``RDPConnectionConfiguration/monitorLayout``
+    /// when the server took one, otherwise one primary monitor of its desktop size, scale
+    /// factors and physical size, the width made even as Display Control needs.
+    public var connectLayout: RDPMonitorLayout {
+        layouts.connectLayout
+    }
+
+    /// The layout this connection last sent through Display Control, by this session or an
+    /// earlier one; nil until one is sent. A server may have refused or changed it.
+    public var lastSentLayout: RDPMonitorLayout? {
+        layouts.lastSentLayout
+    }
+
+    /// Whether this session sends nothing more: the server closed its channel or opened
+    /// another DisplayControl channel, whose session `onDisplayControlReady` hands out, or the
+    /// connection has closed. Read from any thread.
+    public var isEnded: Bool {
+        cutoff.isCutOff || !channel.isActive
     }
 
     /// Sends ``RDPMonitorLayout/singlePrimary(width:height:desktopScaleFactor:deviceScaleFactor:)``,
-    /// or nothing when the server's ``capabilities`` do not allow it.
+    /// or nothing when the server's ``capabilities`` do not allow it; `send(_:)` with that
+    /// layout says which.
     public func sendSingleMonitorLayout(
         width: UInt32,
         height: UInt32,
@@ -580,20 +621,22 @@ public final class RDPDisplayControlSession: Sendable {
     }
 
     /// Sends the request's one monitor, or nothing when the server's ``capabilities`` do not
-    /// allow it.
+    /// allow it; `send(_:)` with its ``RDPDisplayRequest/monitorLayout`` says which.
     public func send(_ request: RDPDisplayRequest) {
         try? send(request.monitorLayout)
     }
 
     /// Asks the server for `layout` ([MS-RDPEDISP] 2.2.2.2). Throws ``RDPMonitorLayoutError``
-    /// when the server's ``capabilities`` do not allow it. Sends nothing once the server has
-    /// closed this session's channel or opened another DisplayControl channel, whose session
-    /// `onDisplayControlReady` hands out.
-    public func send(_ layout: RDPMonitorLayout) throws {
+    /// when the server's ``capabilities`` do not allow it. Returns whether the layout went to
+    /// the connection: once the session ``isEnded`` it sends nothing and returns false, and the
+    /// layout is for the session `onDisplayControlReady` hands out next.
+    @discardableResult
+    public func send(_ layout: RDPMonitorLayout) throws -> Bool {
         try layout.validate(for: capabilities)
-        guard !cutoff.isCutOff else {
-            return
+        guard !isEnded else {
+            return false
         }
+        layouts.lastSentLayout = layout
 
         let dynamicPayload = RDPDynamicVirtualChannelDataPDU(
             channelID: dynamicChannelID,
@@ -612,6 +655,22 @@ public final class RDPDisplayControlSession: Sendable {
             buffer.writeBytes(packet)
             self.channel.writeAndFlush(buffer, promise: nil)
         }
+        return true
+    }
+
+    /// Sends ``lastSentLayout`` again, or ``connectLayout`` before one, the way `send(_:)`
+    /// sends a layout; for a fresh picture from the server, such as a keyframe after video
+    /// fails to decode (``RDPVideoDecodeError/awaitingKeyframe(surfaceID:)``).
+    ///
+    /// Windows 11 and gnome-remote-desktop 51 send no keyframe of their own after a decoder
+    /// loses its pictures, but answer a single monitor's layout sent again, even unchanged, by
+    /// resetting graphics and sending one within about 0.3 s; a Refresh Rect or Suppress
+    /// Output does not get one from Windows 11, which repaints into the same stream (observed
+    /// live). KRdp 6.8's H.264 has a keyframe every 100 frames and forces none, and FreeRDP
+    /// 3.32's shadow server has no Display Control but sends a keyframe about every 17 s.
+    @discardableResult
+    public func resendLayout() throws -> Bool {
+        try send(lastSentLayout ?? connectLayout)
     }
 
     func end() {

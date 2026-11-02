@@ -279,7 +279,8 @@ extension RDPClientConnection {
                 capabilities: caps.capabilities,
                 userChannelID: userChannelID,
                 staticChannelID: staticChannelID,
-                channel: channel
+                channel: channel,
+                layouts: displayLayouts
             )
             if report.rdpGraphicsFirstFrame != nil {
                 announceDisplayControl()

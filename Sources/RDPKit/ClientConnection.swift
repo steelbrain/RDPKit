@@ -30,6 +30,9 @@ final class RDPClientConnection {
     var pendingDisplayControlSession: RDPDisplayControlSession?
     /// The display control session onDisplayControlReady last handed out.
     var displayControlSession: RDPDisplayControlSession?
+    /// What the display control sessions have asked for; set again once the connect-time
+    /// layout is known.
+    var displayLayouts: RDPDisplayLayoutRecord
     var serverCertificatePublicKey: RDPRSAPublicKey?
     /// The configuration's client name, made valid again in case it was set after init, so
     /// the NTLM workstation, the Client Core Data, licensing and the rdpdr Client Name
@@ -111,6 +114,10 @@ final class RDPClientConnection {
         targetFrameCount = configuration.graphicsFrameCaptureLimit.map { max(1, $0) }
         desktopWidth = configuration.desktopWidth
         desktopHeight = configuration.desktopHeight
+        displayLayouts = RDPDisplayLayoutRecord(connectLayout: .singlePrimary(
+            width: UInt32(configuration.desktopWidth),
+            height: UInt32(configuration.desktopHeight)
+        ))
         clientName = RDPConnectionConfiguration.validClientName(configuration.clientName)
         let request = configuration.connectionRequest
         reportStorage = RDPConnectionReportStorage(RDPConnectionReport(

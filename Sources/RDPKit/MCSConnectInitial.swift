@@ -94,6 +94,27 @@ private enum ClientConnectionType {
     static let autodetect: UInt8 = 0x07
 }
 
+extension MCSConnectInitialConfiguration {
+    /// The layout this asks for, as Display Control would ask for it: ``monitorLayout``, or one
+    /// primary monitor of the desktop, its width made even.
+    var displayControlLayout: RDPMonitorLayout {
+        if let monitorLayout {
+            return monitorLayout
+        }
+        var monitor = RDPDisplayControlMonitorLayout.singlePrimary(
+            width: UInt32(desktopWidth),
+            height: UInt32(desktopHeight),
+            desktopScaleFactor: scaleFactors.desktopScaleFactor,
+            deviceScaleFactor: scaleFactors.deviceScaleFactor
+        )
+        if let physicalSize {
+            monitor.physicalWidth = physicalSize.widthMillimeters
+            monitor.physicalHeight = physicalSize.heightMillimeters
+        }
+        return RDPMonitorLayout(validated: [monitor])
+    }
+}
+
 struct MCSConnectInitialConfiguration: Equatable, Sendable {
     var desktopWidth: UInt16
     var desktopHeight: UInt16

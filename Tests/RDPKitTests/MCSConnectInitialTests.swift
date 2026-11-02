@@ -398,3 +398,31 @@ private func blockTypes(in data: Data) -> [UInt16] {
     }
     return types
 }
+
+/// What a display control session's connectLayout holds: the Client Core Data's desktop as one
+/// primary monitor, or the Client Monitor Data's layout.
+@Test func connectInitialConfigurationGivesTheLayoutItAsksFor() throws {
+    let single = MCSConnectInitialConfiguration(
+        desktopWidth: 1001,
+        desktopHeight: 700,
+        scaleFactors: RDPDisplayScaleFactors(desktopScaleFactor: 200, deviceScaleFactor: 180),
+        physicalSize: RDPDisplayPhysicalSize(widthMillimeters: 600, heightMillimeters: 340)
+    )
+    let layout = try RDPMonitorLayout(monitors: [
+        .singlePrimary(width: 1920, height: 1080),
+        RDPDisplayControlMonitorLayout(left: 1920, width: 1280, height: 1024),
+    ])
+
+    #expect(single.displayControlLayout.monitors == [
+        RDPDisplayControlMonitorLayout(
+            flags: RDPDisplayControlMonitorFlags.primary,
+            width: 1000,
+            height: 700,
+            physicalWidth: 600,
+            physicalHeight: 340,
+            desktopScaleFactor: 200,
+            deviceScaleFactor: 180
+        ),
+    ])
+    #expect(MCSConnectInitialConfiguration(monitorLayout: layout).displayControlLayout == layout)
+}

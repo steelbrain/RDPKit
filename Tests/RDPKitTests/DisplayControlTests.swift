@@ -292,7 +292,8 @@ import Testing
         ),
         userChannelID: 1001,
         staticChannelID: 1004,
-        channel: channel
+        channel: channel,
+        layouts: RDPDisplayLayoutRecord(connectLayout: .singlePrimary(width: 1280, height: 720))
     )
 
     session.sendSingleMonitorLayout(width: 1440, height: 900)
@@ -320,7 +321,8 @@ import Testing
         capabilities: RDPDisplayControlCapabilities(maxNumMonitors: 1, maxMonitorAreaFactorA: 3840, maxMonitorAreaFactorB: 2160),
         userChannelID: 1007,
         staticChannelID: 1004,
-        channel: channel
+        channel: channel,
+        layouts: RDPDisplayLayoutRecord(connectLayout: .singlePrimary(width: 1280, height: 720))
     )
 
     session.sendSingleMonitorLayout(width: 1280, height: 720)
@@ -535,7 +537,8 @@ private func outboundDisplayControlPayloads(_ channel: EmbeddedChannel) throws -
         ),
         userChannelID: 1001,
         staticChannelID: 1004,
-        channel: channel
+        channel: channel,
+        layouts: RDPDisplayLayoutRecord(connectLayout: .singlePrimary(width: 1280, height: 720))
     )
     let layout = try RDPMonitorLayout(monitors: [
         .singlePrimary(width: 1920, height: 1080),
@@ -569,7 +572,8 @@ private func outboundDisplayControlPayloads(_ channel: EmbeddedChannel) throws -
         ),
         userChannelID: 1001,
         staticChannelID: 1004,
-        channel: channel
+        channel: channel,
+        layouts: RDPDisplayLayoutRecord(connectLayout: .singlePrimary(width: 1280, height: 720))
     )
 
     session.sendSingleMonitorLayout(width: 1441, height: 900, desktopScaleFactor: 150, deviceScaleFactor: 159)
@@ -642,4 +646,81 @@ private func outboundDisplayControlPayloads(_ channel: EmbeddedChannel) throws -
 
     #expect(sendErrors.value.isEmpty)
     #expect(run.clientPackets.contains { $0.range(of: layoutData) != nil })
+}
+
+@Test func displayControlSessionSaysWhetherItSentALayout() throws {
+    let channel = EmbeddedChannel()
+    try channel.connect(to: SocketAddress(ipAddress: "127.0.0.1", port: 3389)).wait()
+    let layouts = RDPDisplayLayoutRecord(connectLayout: .singlePrimary(width: 1280, height: 720))
+    let makeSession = {
+        RDPDisplayControlSession(
+            dynamicChannelID: 2,
+            capabilities: RDPDisplayControlCapabilities(maxNumMonitors: 1, maxMonitorAreaFactorA: 3840, maxMonitorAreaFactorB: 2160),
+            userChannelID: 1007,
+            staticChannelID: 1004,
+            channel: channel,
+            layouts: layouts
+        )
+    }
+    let session = makeSession()
+    let request = RDPDisplayRequest(width: 1440, height: 900, scaleFactors: RDPDisplayScaleFactors(backingScaleFactor: 2))
+
+    #expect(session.isEnded == false)
+    #expect(try session.send(request.monitorLayout))
+    #expect(try outboundDisplayControlPayloads(channel).count == 1)
+    #expect(throws: RDPMonitorLayoutError.self) {
+        try session.send(.singlePrimary(width: 4096, height: 2160))
+    }
+
+    session.end()
+    #expect(session.isEnded)
+    #expect(try session.send(request.monitorLayout) == false)
+    #expect(try outboundDisplayControlPayloads(channel).isEmpty)
+
+    // A session the server has not ended stops sending once the connection closes.
+    let nextSession = makeSession()
+    #expect(nextSession.isEnded == false)
+    try channel.close().wait()
+    #expect(nextSession.isEnded)
+    #expect(try nextSession.send(request.monitorLayout) == false)
+}
+
+/// Sessions of one connection share what it asked for, so a session the server opens later
+/// resends the layout an earlier one sent.
+@Test func displayControlSessionResendsTheLastLayoutOrTheConnectLayout() throws {
+    let channel = EmbeddedChannel()
+    try channel.connect(to: SocketAddress(ipAddress: "127.0.0.1", port: 3389)).wait()
+    let connectLayout = RDPMonitorLayout.singlePrimary(width: 1280, height: 720, desktopScaleFactor: 200)
+    let layouts = RDPDisplayLayoutRecord(connectLayout: connectLayout)
+    let makeSession = {
+        RDPDisplayControlSession(
+            dynamicChannelID: 2,
+            capabilities: RDPDisplayControlCapabilities(maxNumMonitors: 2, maxMonitorAreaFactorA: 8192, maxMonitorAreaFactorB: 8192),
+            userChannelID: 1007,
+            staticChannelID: 1004,
+            channel: channel,
+            layouts: layouts
+        )
+    }
+    let session = makeSession()
+    let sentLayout = try RDPMonitorLayout(monitors: [
+        .singlePrimary(width: 1920, height: 1080),
+        RDPDisplayControlMonitorLayout(left: 1920, width: 1280, height: 1024),
+    ])
+
+    #expect(session.connectLayout == connectLayout)
+    #expect(session.lastSentLayout == nil)
+    #expect(try session.resendLayout())
+    try session.send(sentLayout)
+    session.end()
+    #expect(try session.resendLayout() == false)
+
+    let nextSession = makeSession()
+    #expect(nextSession.lastSentLayout == sentLayout)
+    #expect(try nextSession.resendLayout())
+    let sentMonitors = try outboundDisplayControlPayloads(channel).map {
+        try #require(try RDPDisplayControlMonitorLayoutPDU.parseIfPresent(from: $0)).monitors
+    }
+    #expect(sentMonitors == [connectLayout.monitors, sentLayout.monitors, sentLayout.monitors])
+    _ = try channel.finish()
 }
