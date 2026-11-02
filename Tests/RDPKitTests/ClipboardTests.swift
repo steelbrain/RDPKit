@@ -2016,6 +2016,79 @@ func clipboardSessionRestartGoesBackToFetchingOn(formatID: UInt32) throws {
     _ = try channel.finish()
 }
 
+/// Turning fetching on says whether a copy the server announced is being fetched, decided as
+/// it turns on: true when the server answers before the call returns, as an in-memory server
+/// does, and false when nothing is left to fetch.
+@Test func startingToFetchSaysWhetherTheServersCopyIsBeingFetched() throws {
+    let channel = EmbeddedChannel()
+    let answersAtOnce = Locked(false)
+    let relay = Locked<RDPClipboardSession?>(nil)
+    let delivered = Locked<[RDPClipboardEvent?]>([])
+    let session = RDPClipboardSession(
+        userChannelID: 1006,
+        staticChannelID: 1007,
+        channel: channel,
+        sentPayloadHandler: { payload in
+            guard answersAtOnce.value,
+                  let pdu = try? RDPClipboardPDU.parse(from: payload),
+                  (try? RDPClipboardFormatDataRequestPDU.parseIfPresent(from: pdu)) != nil,
+                  let session = relay.value
+            else {
+                return
+            }
+            let event = try? session.receive(RDPClipboardPDU.parse(
+                from: RDPClipboardFormatDataResponsePDU.unicodeText("remote").encoded()
+            ))
+            delivered.withLock { $0.append(event) }
+        }
+    )
+    relay.withLock { $0 = session }
+    let textCopy = RDPClipboardFormatListPDU(entries: [
+        RDPClipboardFormatListEntry(formatID: RDPClipboardFormatID.unicodeText),
+    ]).encoded()
+    let bitmapCopy = RDPClipboardFormatListPDU(entries: [
+        RDPClipboardFormatListEntry(formatID: RDPClipboardFormatID.dib),
+    ]).encoded()
+
+    _ = try session.receive(RDPClipboardPDU.parse(from: RDPClipboardCapabilitiesPDU().encoded()))
+    _ = try session.receive(RDPClipboardPDU(messageType: RDPClipboardMessageType.monitorReady))
+    _ = try session.receive(serverFormatListResponse)
+
+    // Nothing announced while off.
+    session.fetchesRemoteCopies = false
+    #expect(!session.startFetchingRemoteCopies())
+    #expect(session.fetchesRemoteCopies)
+
+    // The copy comes and is handed over before the call returns.
+    session.fetchesRemoteCopies = false
+    _ = try session.receive(RDPClipboardPDU.parse(from: textCopy))
+    answersAtOnce.withLock { $0 = true }
+    #expect(session.startFetchingRemoteCopies())
+    #expect(!session.isAwaitingRemoteCopy)
+    #expect(delivered.value == [.text("remote")])
+    answersAtOnce.withLock { $0 = false }
+
+    // A publish since replaced it on the server.
+    session.fetchesRemoteCopies = false
+    _ = try session.receive(RDPClipboardPDU.parse(from: textCopy))
+    session.publishLocalUnicodeText("local")
+    #expect(!session.startFetchingRemoteCopies())
+    _ = try session.receive(serverFormatListResponse)
+
+    // A copy of nothing the session fetches is reported, not fetched.
+    session.fetchesRemoteCopies = false
+    _ = try session.receive(RDPClipboardPDU.parse(from: bitmapCopy))
+    #expect(!session.startFetchingRemoteCopies())
+    #expect(session.takePendingEvent() == .remoteCopyUnavailable(isEmpty: false))
+
+    // Already on: whether a copy is being fetched.
+    _ = try session.receive(RDPClipboardPDU.parse(from: textCopy))
+    #expect(session.startFetchingRemoteCopies())
+    _ = try session.receive(RDPClipboardPDU.parse(from: RDPClipboardFormatDataResponsePDU.unicodeText("later").encoded()))
+    #expect(!session.startFetchingRemoteCopies())
+    _ = try channel.finish()
+}
+
 /// A copy of only formats the session does not fetch, announced while fetching was off, is
 /// reported once fetching is turned back on, as on arrival, unless a newer copy, local or
 /// remote, replaced it first.

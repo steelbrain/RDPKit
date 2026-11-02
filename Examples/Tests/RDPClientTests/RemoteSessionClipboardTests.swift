@@ -81,6 +81,18 @@ private final class RecordedClipboard: RDPClipboardSending, @unchecked Sendable 
     /// Whether the server announced a copy while fetching was off that no publish has replaced.
     var unfetchedRemoteCopy = false
     var isAwaitingRemoteCopy = false
+    /// Whether a copy turning fetching on fetches comes before the call returns, as an
+    /// in-memory server's does.
+    var fetchedCopyComesAtOnce = false
+
+    func startFetchingRemoteCopies() -> Bool {
+        fetchesRemoteCopies = true
+        let isFetching = isAwaitingRemoteCopy
+        if fetchedCopyComesAtOnce {
+            isAwaitingRemoteCopy = false
+        }
+        return isFetching
+    }
     var publishedTexts: [String?] = []
     var publishedFiles: [[RDPClipboardLocalFile]] = []
     /// Copies, remote and published, are numbered in the order they come, as RDPClipboardSession
@@ -404,6 +416,26 @@ private func copyFile(_ contents: Data, in directory: URL, to pasteboard: NSPast
     #expect(pasteboard.string(forType: .string)?.utf16.count == largeText.utf16.count)
     #expect(session.publishedTexts == [nil, nil])
     #expect(clipboard.statusMessage == "Local text is too large to sync; remote clipboard cleared.")
+}
+
+/// A first copy the server answers at once, before turning fetching on returns, is not
+/// replaced by the pasteboard either.
+@MainActor
+@Test func theServersFirstCopyWinsWhenItComesBeforeFetchingIsOn() {
+    let pasteboard = makePasteboard()
+    defer { pasteboard.releaseGlobally() }
+    pasteboard.clearContents()
+    pasteboard.setString("local", forType: .string)
+    let session = RecordedClipboard()
+    session.fetchesRemoteCopies = false
+    session.unfetchedRemoteCopy = true
+    session.fetchedCopyComesAtOnce = true
+    let clipboard = RDPRemoteSessionClipboard(isSharingEnabled: true, pasteboard: pasteboard)
+
+    clipboard.attach(session)
+    #expect(session.fetchesRemoteCopies)
+    #expect(session.isAwaitingRemoteCopy == false)
+    #expect(session.publishedTexts.isEmpty)
 }
 
 /// Turning sharing on sends copied files as it sends text, though they take a while to read:

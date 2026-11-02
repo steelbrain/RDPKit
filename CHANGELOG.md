@@ -162,6 +162,12 @@
   sharing off fetches nothing of the server's clipboard, without turning it off
   in `onClipboardReady`. RDPClient starts with it off until its clipboard
   bridge attaches.
+- `RDPClipboardSession.startFetchingRemoteCopies()` turns fetching on and
+  says whether a copy the server announced is being fetched then, decided
+  under the same lock. Reading `isAwaitingRemoteCopy` after turning fetching
+  on said false when the copy came first, and a client that then published
+  replaced the server's copy with its own. RDPClient's bridge attaches
+  through it.
 - `RDPClipboardSession.serverHoldsLocalCopy` says whether the server's
   clipboard holds the client's last publish, which was not empty, and
   `withdrawLocalCopy()` takes it back with an empty publish only then, so a

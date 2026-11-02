@@ -1061,12 +1061,32 @@ public final class RDPClipboardSession: @unchecked Sendable {
             lock.withLock { isFetchingRemoteCopies }
         }
         set {
-            let queuedEvent = lock.withLock { setFetchingLocked(newValue) }
-            sendNextFormatDataRequest()
-            if queuedEvent {
-                pendingEventHandler()
-            }
+            setFetching(newValue)
         }
+    }
+
+    /// Turns ``fetchesRemoteCopies`` on, and returns whether a copy the server announced is
+    /// being fetched then, such as one announced while fetching was off, which publishing now
+    /// would replace. It is decided under the lock that turns fetching on, so it stays true when
+    /// that copy comes and is handed over before this returns, where ``isAwaitingRemoteCopy``
+    /// read afterwards says false. A client that publishes its own clipboard when it attaches,
+    /// unless the server's copy is on its way, publishes only when this returns false.
+    @discardableResult
+    public func startFetchingRemoteCopies() -> Bool {
+        setFetching(true)
+    }
+
+    /// Returns whether a copy the server announced is being fetched once fetching is set.
+    @discardableResult
+    private func setFetching(_ newValue: Bool) -> Bool {
+        let (queuedEvent, isAwaitingCopy) = lock.withLock {
+            (setFetchingLocked(newValue), isAwaitingRemoteCopyLocked)
+        }
+        sendNextFormatDataRequest()
+        if queuedEvent {
+            pendingEventHandler()
+        }
+        return isAwaitingCopy
     }
 
     /// Sets `isFetchingRemoteCopies`, and says whether it queued an event to deliver.
@@ -1112,10 +1132,15 @@ public final class RDPClipboardSession: @unchecked Sendable {
     }
 
     /// Whether a copy the server announced is being fetched: a format of it was asked for
-    /// and has not been answered. Read right after turning `fetchesRemoteCopies` on, it tells
-    /// whether that fetched a copy announced while it was off, which publishing would replace.
+    /// and has not been answered. To learn whether turning fetching on fetches a copy announced
+    /// while it was off, which publishing would replace, use ``startFetchingRemoteCopies()``:
+    /// that copy can come and be handed over before this is read.
     public var isAwaitingRemoteCopy: Bool {
-        lock.withLock { formatDataRequests.contains { $0.copyID == remoteCopyID } }
+        lock.withLock { isAwaitingRemoteCopyLocked }
+    }
+
+    private var isAwaitingRemoteCopyLocked: Bool {
+        formatDataRequests.contains { $0.copyID == remoteCopyID }
     }
 
     /// Whether the server's clipboard holds this client's last publish, which was not empty:

@@ -12,7 +12,10 @@ protocol RDPClipboardSending: AnyObject, Sendable {
     /// Off while sharing is off, so the server's copies are not even fetched. Turned on, it
     /// fetches a copy the server announced while it was off, unless a publish replaced it.
     var fetchesRemoteCopies: Bool { get set }
-    var isAwaitingRemoteCopy: Bool { get }
+    /// Turns fetching on, and says whether a copy the server announced is being fetched then,
+    /// even one already handed over by the time it returns.
+    @discardableResult
+    func startFetchingRemoteCopies() -> Bool
     /// Whether a publish since replaced, on the server, the remote copy numbered
     /// `remoteCopyNumber`: the `copyNumber` its handler got.
     func hasPublished(since remoteCopyNumber: Int) -> Bool
@@ -92,17 +95,18 @@ final class RDPRemoteSessionClipboard {
 
     func attach(_ session: any RDPClipboardSending) {
         self.session = session
-        session.fetchesRemoteCopies = isSharingEnabled
         guard isSharingEnabled else {
+            session.fetchesRemoteCopies = false
             session.publishLocalUnicodeText(nil)
             message = "Disabled."
             return
         }
         message = "Ready."
-        // The session is fetching a copy the server announced before the bridge attached. It is
+        // The session fetches a copy the server announced before the bridge attached. It is
         // newer than the pasteboard, which publishing now would put in its place on the server;
-        // should it never arrive, Sync Now sends the pasteboard.
-        guard session.isAwaitingRemoteCopy == false else {
+        // should it never arrive, Sync Now sends the pasteboard. Asked as fetching turns on,
+        // since the copy can come before a later look.
+        guard session.startFetchingRemoteCopies() == false else {
             pasteboardChangeCount = pasteboard.changeCount
             localCopyIsUnsent = true
             return
