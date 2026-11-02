@@ -1589,18 +1589,26 @@ struct MockKRDPServerTests {
     }
 
     /// The mock sends the first fragment and stops; the client gives up at its
-    /// receive timeout.
-    @Test func clientReportsIncompleteFragmentedGraphicsCapsConfirm() throws {
+    /// receive timeout. A live session that times out there has shown no frame; a capture run
+    /// simply timed out.
+    @Test(arguments: [1, nil] as [Int?])
+    func clientReportsIncompleteFragmentedGraphicsCapsConfirm(frameCaptureLimit: Int?) throws {
         let report = try runMock(.init(
             graphicsBehavior: .stallAfterFragmentedCapsConfirm,
             dynamicChannelVersion: 3
-        )) { $0.timeoutSeconds = 1 }.report
+        )) {
+            $0.timeoutSeconds = 1
+            $0.graphicsFrameCaptureLimit = frameCaptureLimit
+        }.report
 
         #expect(report.status == "failure")
         #expect(report.stage == "rdp-graphics-dynamic-channel")
         #expect(report.rdpDynamicChannelRequestTypes?.contains("dynvc-data-first-compressed") == true)
         #expect(report.rdpGraphicsResponseType == nil)
         #expect(report.error == "server did not complete fragmented RDPGFX capabilities data")
+        #expect(report.failure == (frameCaptureLimit == nil
+            ? .noFramePresented(framesReceived: 0, lastNotPresentedReason: nil)
+            : .timedOut))
     }
 
     // MARK: Graphics updates
@@ -2152,6 +2160,8 @@ struct MockKRDPServerTests {
         #expect(report.rdpGraphicsFrames == [])
         #expect(report.rdpGraphicsFrameAcknowledgeHexes?.isEmpty == false)
         #expect(report.error == "receive failed: RDP Graphics Update timed out after 1 seconds")
+        #expect(report.failure == .noFramePresented(framesReceived: 0, lastNotPresentedReason: nil))
+        #expect(report.presentedFrameCount == nil)
     }
 
     /// A fast-path frame marker End needs its acknowledgement even when the frame changed

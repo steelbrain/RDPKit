@@ -12,7 +12,8 @@ public typealias RDPGraphicsFrameHandler = (RDPGraphicsFrameSnapshot) throws -> 
 /// so the server keeps sending, but the frame does not count as shown. A live session waits
 /// for its first frame only within `RDPConnectionConfiguration.timeoutSeconds`, and that is
 /// the first frame the handler returns from; when none is shown in time, the session ends
-/// with `RDPConnectionFailure.graphicsFrameHandler` and the last `reason`.
+/// with `RDPConnectionFailure.noFramePresented(framesReceived:lastNotPresentedReason:)` and the
+/// last `reason`.
 public struct RDPGraphicsFrameNotPresented: Error, CustomStringConvertible, Sendable {
     public var reason: String
 

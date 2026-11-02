@@ -450,9 +450,11 @@ extension RDPClientConnection {
         }
         var presented = false
         for frame in frames {
+            framesHandedOver += 1
             do {
                 try callbacks.onGraphicsFrame?(frame)
                 presented = true
+                report.presentedFrameCount = (report.presentedFrameCount ?? 0) + 1
                 if frame.contentKind == .video {
                     videoFrameWasPresented()
                 }

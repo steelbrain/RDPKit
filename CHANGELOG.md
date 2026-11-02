@@ -46,6 +46,14 @@
   exchange, before any credential is sent; a Server Redirection's target that
   refuses it still ends the run with `tlsKeyUsageIncorrect`. RDPClient falls
   back this way in place of its own retry.
+- A live session that activates but shows no frame within the timeout ends
+  with the new `RDPConnectionFailure.noFramePresented(framesReceived:lastNotPresentedReason:)`,
+  which an exhaustive `switch` handles: in place of `graphicsFrameHandler`
+  when frames came that the handler could not show, and of `timedOut` when
+  none came or the server did not set up its graphics. A capture run still
+  times out with `timedOut`, and `graphicsFrameHandler` is now only a handler
+  that threw another error. A client can retry such a session, as one with no
+  desktop, without reading the stage and the first frame.
 - The remote-copy handlers, `onClipboardText`, `onClipboardContent`,
   `onClipboardFileGroupDescriptor` and `onClipboardRemoteCopyUnavailable`, get
   the copy's number as a second argument, so a client no longer keeps the
@@ -187,6 +195,9 @@
   says so; a license the server issues then reaches `onClientLicenseIssued`.
 - `RDPConnectionReport.usedLegacyRSAKeyExchange` says whether the TLS
   handshake offered only RSA key exchange, which has no forward secrecy.
+- `RDPConnectionReport.presentedFrameCount` counts the frames the
+  `onGraphicsFrame` handler showed, where `rdpGraphicsFirstFrame` is the first
+  that came, shown or not.
 
 ### Security
 

@@ -609,7 +609,7 @@ func deactivatedSessionThatNeverReactivatesFails(closes: Bool, failure: RDPConne
 /// Each connection milestone must arrive within the timeout however much
 /// other traffic the server sends; here a pointer update every 200 ms, which
 /// used to reset the wait forever. A live session's first frame is such a
-/// milestone too.
+/// milestone too, and a live session that misses it has shown no frame.
 @Test(arguments: [
     // Demand Active answered (event 20), no Synchronize/Control/Font Map.
     (21, 1, "server did not grant control during connection finalization"),
@@ -633,7 +633,9 @@ func chattyServerStillMissesTheMilestoneDeadline(prefix: Int, frameCaptureLimit:
     )
 
     #expect(run.report.error == error)
-    #expect(run.report.failure == .timedOut)
+    #expect(run.report.failure == (frameCaptureLimit == nil
+        ? .noFramePresented(framesReceived: 0, lastNotPresentedReason: nil)
+        : .timedOut))
 }
 
 /// An empty frame gives a live session nothing to show, so it does not put
@@ -695,8 +697,40 @@ func liveSessionEndsWhenTheHandlerShowsNoFrameInTime(prefix: Int?, frame: Data) 
     if prefix == nil {
         #expect((run.report.rdpGraphicsFrameAcknowledgeCount ?? 0) > 2)
     }
-    #expect(run.report.failure == .graphicsFrameHandler)
+    #expect(run.report.failure == .noFramePresented(framesReceived: handled.value, lastNotPresentedReason: "awaiting a keyframe"))
     #expect(run.report.error == "graphics frame handler showed no frame within 1 seconds: awaiting a keyframe")
+    #expect(run.report.presentedFrameCount == nil)
+}
+
+/// A live session that has shown a frame times out as any other once a new RDPGFX channel
+/// never confirms its capabilities: it is no session without a desktop. The report counts the
+/// frames the handler showed, not those it could not.
+@Test func liveSessionThatShowedAFrameTimesOutOnANewGraphicsChannel() throws {
+    let create = Data([0x10, 0x02]) + Data("Microsoft::Windows::RDS::Graphics".utf8) + Data([0])
+    let handled = Locked(0)
+    let run = try KRdpCapture.run(
+        appending: [
+            KRdpCapture.graphicsPacket(KRdpCapture.startFrame(id: 2) + KRdpCapture.avc420Update() + KRdpCapture.endFrame(id: 2)),
+            mcsSendDataIndication(
+                channelID: KRdpCapture.drdynvcChannelID,
+                userData: RDPStaticVirtualChannelPDU(payload: create).encodedUserData()
+            ),
+        ],
+        frameCaptureLimit: nil,
+        timeoutSeconds: 1,
+        guardSeconds: 8,
+        onGraphicsFrame: { _ in
+            let count = handled.withLock { $0 += 1; return $0 }
+            if count == 2 {
+                throw RDPGraphicsFrameNotPresented(reason: "awaiting a keyframe")
+            }
+        }
+    )
+
+    #expect(handled.value == 2)
+    #expect(run.report.presentedFrameCount == 1)
+    #expect(run.report.failure == .timedOut)
+    #expect(run.report.error == "server did not confirm RDPGFX capabilities")
 }
 
 /// The first frame the handler shows ends the wait, as any frame does for a handler that never

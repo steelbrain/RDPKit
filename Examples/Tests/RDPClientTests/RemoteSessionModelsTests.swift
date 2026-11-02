@@ -206,6 +206,25 @@ private let bitmapFrame = RDPGraphicsFrameSnapshot(
     #expect(movedScreen.updatingDisplayLinkDuration(1.0 / 96.0).displayLinkFramesPerSecond == 96)
 }
 
+/// A session that showed no frame in time says whether the server sent none or RDPClient could
+/// not show those it sent.
+@Test func aSessionThatShowedNoFrameInTimeSaysWhetherAnyCame() {
+    let none = RDPSessionEndReason(
+        report: sessionReport(error: "timed out", failure: .noFramePresented(framesReceived: 0, lastNotPresentedReason: nil)),
+        showedDesktop: false
+    )
+    #expect(none.message == "The server sent no remote desktop in time.")
+    let undecoded = RDPSessionEndReason(
+        report: sessionReport(
+            error: "no frame shown",
+            failure: .noFramePresented(framesReceived: 3, lastNotPresentedReason: "awaiting a keyframe")
+        ),
+        showedDesktop: false
+    )
+    #expect(undecoded.message == "RDPClient could not show the remote desktop in time.")
+    #expect(undecoded.detail == "no frame shown")
+}
+
 /// Connect without the old CredSSP; refused for it, ask; agreed to, connect once with it.
 @Test func legacyCredSSPIsAllowedOnlyForTheConnectionTheUserAgreedTo() throws {
     let serverA = try RDPConnectionTarget(host: "a.example", port: 3389)

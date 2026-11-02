@@ -169,6 +169,10 @@ public struct RDPConnectionReport: Encodable, Equatable, Sendable {
     public var rdpKeyframeRequestCount: Int?
     public var rdpGraphicsFrames: [RDPGraphicsFrameSnapshot]?
     public var rdpGraphicsFirstFrame: RDPGraphicsFrameSnapshot?
+    /// The frames the `onGraphicsFrame` handler showed: it returned without throwing
+    /// `RDPGraphicsFrameNotPresented`. Nil until it shows one; `rdpGraphicsFirstFrame` is the
+    /// first that came, shown or not.
+    public var presentedFrameCount: Int?
     public var rdpRemoteTerminationErrorInfo: UInt32?
     public var rdpRemoteTerminationErrorInfoName: String?
     public var rdpRemoteTerminationDisconnectReason: UInt8?
@@ -283,6 +287,7 @@ public struct RDPConnectionReport: Encodable, Equatable, Sendable {
         rdpKeyframeRequestCount: Int? = nil,
         rdpGraphicsFrames: [RDPGraphicsFrameSnapshot]? = nil,
         rdpGraphicsFirstFrame: RDPGraphicsFrameSnapshot? = nil,
+        presentedFrameCount: Int? = nil,
         rdpRemoteTerminationErrorInfo: UInt32? = nil,
         rdpRemoteTerminationErrorInfoName: String? = nil,
         rdpRemoteTerminationDisconnectReason: UInt8? = nil,
@@ -394,6 +399,7 @@ public struct RDPConnectionReport: Encodable, Equatable, Sendable {
         self.rdpKeyframeRequestCount = rdpKeyframeRequestCount
         self.rdpGraphicsFrames = rdpGraphicsFrames
         self.rdpGraphicsFirstFrame = rdpGraphicsFirstFrame ?? rdpGraphicsFrames?.first
+        self.presentedFrameCount = presentedFrameCount
         self.rdpRemoteTerminationErrorInfo = rdpRemoteTerminationErrorInfo
         self.rdpRemoteTerminationErrorInfoName = rdpRemoteTerminationErrorInfoName
         self.rdpRemoteTerminationDisconnectReason = rdpRemoteTerminationDisconnectReason
@@ -493,10 +499,16 @@ public enum RDPConnectionFailure: Encodable, Equatable, Sendable {
     /// RDPKit failed on this device: the system could not generate random
     /// bytes, or RDPKit broke its own sequence. The server was not at fault.
     case clientFailure
-    /// The `onGraphicsFrame` handler threw, or a live session's handler showed none of the
-    /// frames that came within `RDPConnectionConfiguration.timeoutSeconds`, throwing
-    /// `RDPGraphicsFrameNotPresented` for each.
+    /// The `onGraphicsFrame` handler threw an error other than `RDPGraphicsFrameNotPresented`.
     case graphicsFrameHandler
+    /// A live session activated, but showed no frame within
+    /// `RDPConnectionConfiguration.timeoutSeconds`: the `onGraphicsFrame` handler got
+    /// `framesReceived` frames and threw `RDPGraphicsFrameNotPresented` for each, the last
+    /// with `lastNotPresentedReason`; with none, the server sent no frame, or did not set up its
+    /// graphics. Connecting again can bring the desktop; a session that showed a frame never
+    /// ends this way. A run that captures frames
+    /// (`RDPConnectionConfiguration.graphicsFrameCaptureLimit`) times out with `timedOut`.
+    case noFramePresented(framesReceived: Int, lastNotPresentedReason: String?)
 }
 
 /// A failed TCP connect: its errno and the kind of failure that is.

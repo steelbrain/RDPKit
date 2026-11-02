@@ -123,6 +123,10 @@ struct RDPSessionEndReason: Equatable {
             ("RDPClient failed on this Mac; the server was not at fault.", false)
         case .graphicsFrameHandler:
             ("RDPClient could not show the remote desktop.", false)
+        case let .noFramePresented(framesReceived, _):
+            framesReceived == 0
+                ? ("The server sent no remote desktop in time.", false)
+                : ("RDPClient could not show the remote desktop in time.", false)
         }
         return RDPSessionEndReason(
             kind: failure == .cancelled ? .cancelled : .failed,

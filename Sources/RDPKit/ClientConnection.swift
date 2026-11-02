@@ -106,6 +106,8 @@ final class RDPClientConnection {
     var hasPresentedFrame = false
     /// Why the handler last could not show a frame, for the error when none is shown in time.
     var frameNotPresentedReason: String?
+    /// The frames handed to the `onGraphicsFrame` handler.
+    var framesHandedOver = 0
     var keyframeRequests = RDPKeyframeRequestThrottle()
     /// A keyframe request is due and waits for a Display Control session that sends.
     var isKeyframeRequestHeld = false

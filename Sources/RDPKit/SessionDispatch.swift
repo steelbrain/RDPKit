@@ -542,19 +542,27 @@ extension RDPClientConnection {
                 disconnect()
                 return
             }
+            // A live session that has shown nothing yet: it activated, but there is no desktop to see.
+            let failure: RDPConnectionFailure = targetFrameCount == nil && !hasPresentedFrame
+                ? .noFramePresented(framesReceived: framesHandedOver, lastNotPresentedReason: frameNotPresentedReason)
+                : .timedOut
             if graphicsChannelID != nil, graphicsCompositor == nil {
-                throw RDPConnectionError(.timedOut, description: graphicsChannelID.flatMap { dynamicChannelFragments[$0] } != nil
+                throw RDPConnectionError(failure, description: graphicsChannelID.flatMap { dynamicChannelFragments[$0] } != nil
                     ? "server did not complete fragmented RDPGFX capabilities data"
                     : "server did not confirm RDPGFX capabilities")
             }
             // Frames came, but the handler could show none of them.
             if targetFrameCount == nil, !hasPresentedFrame, let frameNotPresentedReason {
                 throw RDPConnectionError(
-                    .graphicsFrameHandler,
+                    failure,
                     description: "graphics frame handler showed no frame within \(configuration.timeoutSeconds) seconds: "
                         + frameNotPresentedReason
                 )
             }
+            throw RDPConnectionError.receive(
+                "\(awaitedMessage) timed out after \(configuration.timeoutSeconds) seconds",
+                failure: failure
+            )
         default:
             break
         }
