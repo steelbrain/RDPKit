@@ -152,9 +152,11 @@ extension RDPClipboardSession {
     /// answer does not, so the application checks, once the download returns, that the copy is
     /// still the one to paste, as it would for any copy it handles on another thread. The
     /// connection closing ends it with ``RDPClipboardDownloadError/sessionEnded``, and
-    /// cancelling the task with `CancellationError`, also before a file is written: a cancelled
-    /// download writes nothing more. The answers to its requests do not reach
-    /// `onClipboardFileContents`.
+    /// cancelling the task with `CancellationError`, also before a file is written. A
+    /// `writeFile` call under way when the task is cancelled still finishes, but the download
+    /// returns only after it has and starts no other: an application that removes what a
+    /// cancelled download wrote does so once the download has returned, not as it cancels.
+    /// The answers to its requests do not reach `onClipboardFileContents`.
     /// An error `writeFile` throws ends the download too. Files written before a failure stay
     /// in `directory`.
     public func downloadRemoteFiles(
