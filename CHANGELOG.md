@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Additions
+
+- `RDPRemoteDisplayViewport.sourceRect` and
+  `RDPFrameSampleBufferFactory.sourceRect` show part of the remote desktop,
+  such as one of its monitors: `init(frame:monitor:bounds:coordinateOrigin:)`
+  maps input within an `RDPRemoteMonitor`, and the factory crops the picture to
+  it.
+
 ### Compatibility and fixes
 
 - `RDPRemoteDisplayViewport` maps an AppKit view's top pixel row: with

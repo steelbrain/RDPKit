@@ -80,6 +80,40 @@ import Testing
     #expect(CMSampleBufferGetImageBuffer(sampleBuffer) === composedPresentation.imageBuffer)
 }
 
+// The right one of two 30x30 monitors in a 60x30 frame, coded as 64x32.
+@Test func frameSampleBufferFactoryCropsToTheSourceRect() throws {
+    let factory = RDPFrameSampleBufferFactory()
+    let imageBuffer = try makePixelBuffer(width: 64, height: 32)
+    let presentation = RDPDecodedFramePresentation(
+        frame: graphicsFrame(width: 60, height: 30),
+        imageBuffer: imageBuffer
+    )
+    _ = try factory.makeSampleBuffer(for: presentation)
+
+    factory.sourceRect = RDPFrameRect(left: 30, top: 0, right: 60, bottom: 30)
+    #expect(factory.willChangeDisplayFormat(for: presentation))
+    _ = try factory.makeSampleBuffer(for: presentation)
+
+    let cleanAperture = try #require(cleanApertureAttachment(from: imageBuffer))
+    #expect(cleanAperture.doubleValue(for: kCVImageBufferCleanApertureWidthKey) == 30)
+    #expect(cleanAperture.doubleValue(for: kCVImageBufferCleanApertureHeightKey) == 30)
+    #expect(cleanAperture.doubleValue(for: kCVImageBufferCleanApertureHorizontalOffsetKey) == 13)
+    #expect(cleanAperture.doubleValue(for: kCVImageBufferCleanApertureVerticalOffsetKey) == -1)
+    // CoreVideo's clean rect counts y from the bottom: these are the top 30 rows.
+    #expect(CVImageBufferGetCleanRect(imageBuffer) == CGRect(x: 30, y: 2, width: 30, height: 30))
+
+    // Only the part inside the frame is shown.
+    factory.sourceRect = RDPFrameRect(left: 30, top: 0, right: 100, bottom: 100)
+    #expect(factory.willChangeDisplayFormat(for: presentation) == false)
+
+    // A rect with none of the frame in it shows the whole frame.
+    factory.sourceRect = RDPFrameRect(left: 70, top: 0, right: 100, bottom: 30)
+    _ = try factory.makeSampleBuffer(for: presentation)
+    let wholeFrame = try #require(cleanApertureAttachment(from: imageBuffer))
+    #expect(wholeFrame.doubleValue(for: kCVImageBufferCleanApertureWidthKey) == 60)
+    #expect(wholeFrame.doubleValue(for: kCVImageBufferCleanApertureHorizontalOffsetKey) == -2)
+}
+
 private func graphicsFrame(width: UInt16, height: UInt16) -> RDPGraphicsFrameSnapshot {
     RDPGraphicsFrameSnapshot(
         frameID: 1,

@@ -8,22 +8,29 @@ public final class RDPFrameSampleBufferFactory {
     private var cleanAperture: CFDictionary?
     private var nextPresentationTimeValue: CMTimeValue = 0
 
+    /// The part of each frame to show, such as one of its ``RDPGraphicsFrameSnapshot/monitors``;
+    /// nil shows the whole frame. Only the part inside the frame is shown, and a rect with none
+    /// of it shows the whole frame. A change takes effect with the next sample buffer, whose
+    /// format it changes.
+    public var sourceRect: RDPFrameRect?
+
     public init() {}
 
     public func willChangeDisplayFormat(for presentation: RDPDecodedFramePresentation) -> Bool {
-        format != RDPFrameSampleBufferFormat(presentation: presentation)
+        format != RDPFrameSampleBufferFormat(presentation: presentation, sourceRect: sourceRect)
     }
 
     public func makeSampleBuffer(for presentation: RDPDecodedFramePresentation) throws -> CMSampleBuffer {
-        let nextFormat = RDPFrameSampleBufferFormat(presentation: presentation)
+        let nextFormat = RDPFrameSampleBufferFormat(presentation: presentation, sourceRect: sourceRect)
         if format != nextFormat {
             format = nextFormat
             formatDescription = nil
             cleanAperture = nextFormat.cleanAperture
         }
 
-        // The clean aperture crops the coded picture to the frame's display size and
-        // must be attached before the format description is derived from the buffer.
+        // The clean aperture crops the coded picture to the frame's display size, or to the
+        // source rect, and must be attached before the format description is derived from the
+        // buffer.
         if let cleanAperture {
             CVBufferSetAttachment(presentation.imageBuffer, kCVImageBufferCleanApertureKey, cleanAperture, .shouldPropagate)
         } else {
@@ -133,13 +140,25 @@ private struct RDPFrameSampleBufferFormat: Equatable {
     // Direct VideoToolbox output (YUV) and composed BGRA frames can share dimensions,
     // and a format description only matches buffers of its own pixel format.
     var pixelFormat: OSType
+    /// The part of the frame shown, within its display size.
+    var shownRect: RDPFrameRect
 
-    init(presentation: RDPDecodedFramePresentation) {
+    init(presentation: RDPDecodedFramePresentation, sourceRect: RDPFrameRect?) {
         displayWidth = Int(presentation.frame.width)
         displayHeight = Int(presentation.frame.height)
         decodedWidth = CVPixelBufferGetWidth(presentation.imageBuffer)
         decodedHeight = CVPixelBufferGetHeight(presentation.imageBuffer)
         pixelFormat = CVPixelBufferGetPixelFormatType(presentation.imageBuffer)
+        let frameRect = RDPFrameRect(left: 0, top: 0, right: presentation.frame.width, bottom: presentation.frame.height)
+        let clippedSourceRect = sourceRect.map {
+            RDPFrameRect(
+                left: $0.left,
+                top: $0.top,
+                right: min($0.right, frameRect.right),
+                bottom: min($0.bottom, frameRect.bottom)
+            )
+        }
+        shownRect = clippedSourceRect.flatMap { $0.width > 0 && $0.height > 0 ? $0 : nil } ?? frameRect
     }
 
     var cleanAperture: CFDictionary? {
@@ -147,15 +166,20 @@ private struct RDPFrameSampleBufferFormat: Equatable {
               displayHeight > 0,
               displayWidth <= decodedWidth,
               displayHeight <= decodedHeight,
-              displayWidth != decodedWidth || displayHeight != decodedHeight
+              Int(shownRect.width) != decodedWidth || Int(shownRect.height) != decodedHeight
         else {
             return nil
         }
+        // The offsets move the aperture's centre from the decoded picture's.
+        let left = Int(shownRect.left)
+        let top = Int(shownRect.top)
+        let width = Int(shownRect.width)
+        let height = Int(shownRect.height)
         return [
-            kCVImageBufferCleanApertureWidthKey: Double(displayWidth),
-            kCVImageBufferCleanApertureHeightKey: Double(displayHeight),
-            kCVImageBufferCleanApertureHorizontalOffsetKey: Double(displayWidth - decodedWidth) / 2,
-            kCVImageBufferCleanApertureVerticalOffsetKey: Double(displayHeight - decodedHeight) / 2,
+            kCVImageBufferCleanApertureWidthKey: Double(width),
+            kCVImageBufferCleanApertureHeightKey: Double(height),
+            kCVImageBufferCleanApertureHorizontalOffsetKey: Double(2 * left + width - decodedWidth) / 2,
+            kCVImageBufferCleanApertureVerticalOffsetKey: Double(2 * top + height - decodedHeight) / 2,
         ] as CFDictionary
     }
 }

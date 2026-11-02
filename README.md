@@ -225,6 +225,9 @@ let report = client.run(
 - Connect-time desktop and device scale factors and physical size, for servers
   without display control
 - HiDPI-aware display scale models for Apple clients
+- Showing one monitor of a multi-monitor desktop: `RDPRemoteDisplayViewport`
+  maps input within a `sourceRect` such as an `RDPRemoteMonitor`'s, and
+  `RDPFrameSampleBufferFactory.sourceRect` crops the picture to it
 
 ### Clipboard And Files
 

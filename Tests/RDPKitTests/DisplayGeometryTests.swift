@@ -1,4 +1,5 @@
 import CoreGraphics
+import Foundation
 @testable import RDPKit
 import Testing
 
@@ -109,4 +110,63 @@ import Testing
     #expect(viewport.contentRect == .zero)
     #expect(viewport.remotePoint(from: CGPoint(x: 0, y: 0)) == nil)
     #expect(validViewport.remotePoint(from: CGPoint(x: CGFloat.nan, y: 0)) == nil)
+}
+
+// The right one of two 100x50 monitors side by side.
+@Test func remoteDisplayViewportShowsOnlyItsSourceRect() {
+    let viewport = RDPRemoteDisplayViewport(
+        remotePixelSize: CGSize(width: 200, height: 50),
+        sourceRect: CGRect(x: 100, y: 0, width: 100, height: 50),
+        bounds: CGRect(x: 0, y: 0, width: 200, height: 200),
+        coordinateOrigin: .bottomLeft
+    )
+
+    #expect(viewport.contentRect == CGRect(x: 0, y: 50, width: 200, height: 100))
+    #expect(viewport.remotePoint(from: CGPoint(x: 0, y: 150)) == RDPRemotePoint(x: 100, y: 0))
+    #expect(viewport.remotePoint(from: CGPoint(x: 100, y: 100)) == RDPRemotePoint(x: 150, y: 25))
+    #expect(viewport.remotePoint(from: CGPoint(x: 199.9, y: 50.1)) == RDPRemotePoint(x: 199, y: 49))
+    #expect(viewport.remotePoint(from: CGPoint(x: 200, y: 100)) == nil)
+}
+
+@Test func remoteDisplayViewportShowsOneMonitorOfAFrame() {
+    let primary = RDPRemoteMonitor(rect: RDPFrameRect(left: 0, top: 0, right: 100, bottom: 50), isPrimary: true)
+    let secondary = RDPRemoteMonitor(rect: RDPFrameRect(left: 100, top: 10, right: 160, bottom: 50), isPrimary: false)
+    let frame = RDPFrameMetadata(RDPGraphicsFrameSnapshot(
+        frameID: 1,
+        surfaceID: 0,
+        codecID: RDPGFXCodecID.uncompressed,
+        codecName: "graphics-output-bgra",
+        pixelFormat: 0x20,
+        monitors: [primary, secondary],
+        destinationRect: RDPFrameRect(left: 0, top: 0, right: 160, bottom: 50),
+        regionRects: [],
+        encodedVideoData: Data()
+    ))
+    let viewport = RDPRemoteDisplayViewport(
+        frame: frame,
+        monitor: secondary,
+        bounds: CGRect(x: 0, y: 0, width: 60, height: 40),
+        coordinateOrigin: .topLeft
+    )
+
+    #expect(viewport.sourceRect == CGRect(x: 100, y: 10, width: 60, height: 40))
+    #expect(viewport.contentRect == CGRect(x: 0, y: 0, width: 60, height: 40))
+    #expect(viewport.remotePoint(from: CGPoint(x: 0, y: 0)) == RDPRemotePoint(x: 100, y: 10))
+    #expect(viewport.remotePoint(from: CGPoint(x: 59.5, y: 39.5)) == RDPRemotePoint(x: 159, y: 49))
+}
+
+@Test func remoteDisplayViewportShowsOnlyTheSourceRectWithinTheDesktop() {
+    var viewport = RDPRemoteDisplayViewport(
+        remotePixelSize: CGSize(width: 100, height: 50),
+        sourceRect: CGRect(x: 50, y: 0, width: 100, height: 50),
+        bounds: CGRect(x: 0, y: 0, width: 50, height: 50),
+        coordinateOrigin: .topLeft
+    )
+
+    #expect(viewport.contentRect == CGRect(x: 0, y: 0, width: 50, height: 50))
+    #expect(viewport.remotePoint(from: CGPoint(x: 49.9, y: 0)) == RDPRemotePoint(x: 99, y: 0))
+
+    viewport.sourceRect = CGRect(x: 100, y: 0, width: 100, height: 50)
+    #expect(viewport.contentRect == .zero)
+    #expect(viewport.remotePoint(from: CGPoint(x: 0, y: 0), contentRect: viewport.bounds) == nil)
 }
