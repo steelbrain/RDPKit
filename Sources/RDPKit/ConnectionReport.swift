@@ -116,7 +116,8 @@ public struct RDPConnectionReport: Encodable, Equatable, Sendable {
     /// ([MS-RDPBCGR] 2.2.8.2.1.1); an ``RDPLiveConnectionReport``'s snapshot holds them as soon
     /// as they arrive. They can drift from the client's keyboard, such as when another client of
     /// the session or a server setting changes them, and Caps Lock then types the other case;
-    /// ``RDPInputSession/synchronizationEvents(toggleFlags:)`` sets them again.
+    /// ``RDPInputStateTracker/synchronizationEvents(toggleFlags:)`` sets them again. The input
+    /// session has them too, as ``RDPInputSession/serverToggleKeys``.
     public var rdpKeyboardIndicators: RDPToggleKeyFlags?
     public var rdpDemandActiveShareID: UInt32?
     public var rdpDemandActiveCapabilitySets: [RDPCapabilitySetSummary]?

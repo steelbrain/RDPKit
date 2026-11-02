@@ -7,7 +7,16 @@ import RDPKit
 public protocol RDPInputEventSending: AnyObject {
     /// Whether `send` delivers `.unicode` events; without them, text goes as the keys pressed.
     var supportsUnicodeInput: Bool { get }
+    /// The toggle keys the server last said are on, nil when it has not said; the view
+    /// synchronizes them again when the server's Caps Lock changes away from the Mac's.
+    var serverToggleKeys: RDPToggleKeyFlags? { get }
     func send(_ events: [RDPSlowPathInputEvent])
+}
+
+extension RDPInputEventSending {
+    public var serverToggleKeys: RDPToggleKeyFlags? {
+        nil
+    }
 }
 
 extension RDPInputSession: RDPInputEventSending {}
@@ -25,7 +34,8 @@ extension RDPInputSession: RDPInputEventSending {}
 /// - a button goes up only if the server saw it go down, and a drag past the shown desktop
 ///   stops on its edge;
 /// - the toggle keys are synchronized when the view gains focus ([MS-RDPBCGR] 2.2.8.1.1.3.1.1.5),
-///   and again when an event shows a Caps Lock change the view missed.
+///   and again when an event shows a Caps Lock change the view missed, or after the server
+///   says its Caps Lock changed away from the Mac's (`serverToggleKeys`).
 ///
 /// Set `rdpFrame` to the latest frame, so points map onto the desktop as the view, filling its
 /// window, shows it, or `pointMapping` for a view that shows part of it; `keyboard` to what the
@@ -82,6 +92,8 @@ public final class RDPRemoteInputView: NSView {
     private var deadKeyAfterChordedDeadKey: (keyCode: UInt16, modifierFlags: NSEvent.ModifierFlags)?
     /// The toggle-key state the server was last synchronized with.
     private var synchronizedToggleFlags: RDPToggleKeyFlags?
+    /// The toggle keys the server said were on when the view last looked.
+    private var lastServerToggleKeys: RDPToggleKeyFlags?
     private var commandKeyUpMonitor: Any?
 
     /// A server that takes no Unicode input gets every key as its scancode, so its own layout
@@ -513,10 +525,19 @@ public final class RDPRemoteInputView: NSView {
         syncModifierKeys(with: event)
     }
 
+    /// The toggle keys are stale when the Mac's changed since the last synchronization, or when
+    /// the server newly says its Caps Lock is not the Mac's, as another client of the session or
+    /// a server setting can change it. A server that keeps saying the same gets one
+    /// synchronization for it, not one per key.
     private func staleToggleKeyEvents(_ modifierFlags: NSEvent.ModifierFlags) -> [RDPSlowPathInputEvent] {
-        guard let synchronizedToggleFlags,
-              synchronizedToggleFlags != RDPMacKeyboardMapping.toggleFlags(for: modifierFlags)
-        else {
+        let toggleFlags = RDPMacKeyboardMapping.toggleFlags(for: modifierFlags)
+        let isStaleOnTheMac = synchronizedToggleFlags.map { $0 != toggleFlags } ?? false
+        let serverToggleKeys = inputSession?.serverToggleKeys
+        let isStaleOnTheServer = serverToggleKeys.map {
+            $0 != lastServerToggleKeys && $0.contains(.capsLock) != toggleFlags.contains(.capsLock)
+        } ?? false
+        lastServerToggleKeys = serverToggleKeys
+        guard isStaleOnTheMac || isStaleOnTheServer else {
             return []
         }
         return toggleKeySynchronizationEvents(modifierFlags)
@@ -531,6 +552,7 @@ public final class RDPRemoteInputView: NSView {
     private func toggleKeySynchronizationEvents(_ modifierFlags: NSEvent.ModifierFlags) -> [RDPSlowPathInputEvent] {
         let toggleFlags = RDPMacKeyboardMapping.toggleFlags(for: modifierFlags)
         synchronizedToggleFlags = toggleFlags
+        lastServerToggleKeys = inputSession?.serverToggleKeys
         return inputState.synchronizationEvents(toggleFlags: toggleFlags)
     }
 

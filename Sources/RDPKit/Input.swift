@@ -497,6 +497,17 @@ struct RDPFastPathInputPDU: Equatable, Sendable {
     }
 }
 
+/// The toggle keys a connection's server last said are on, which its input sessions read.
+final class RDPKeyboardIndicatorRecord: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: RDPToggleKeyFlags?
+
+    var flags: RDPToggleKeyFlags? {
+        get { lock.withLock { storage } }
+        set { lock.withLock { storage = newValue } }
+    }
+}
+
 public final class RDPInputSession: Sendable {
     public let shareID: UInt32
     /// The connection this session belongs to.
@@ -506,6 +517,7 @@ public final class RDPInputSession: Sendable {
     private let channel: Channel
     private let serverInputFlags: UInt16
     private let deactivation = RDPSendCutoff()
+    private let keyboardIndicators: RDPKeyboardIndicatorRecord
 
     init(
         shareID: UInt32,
@@ -513,7 +525,8 @@ public final class RDPInputSession: Sendable {
         ioChannelID: UInt16,
         channel: Channel,
         serverInputFlags: UInt16? = nil,
-        connectionContext: RDPConnectionContext = RDPConnectionContext()
+        connectionContext: RDPConnectionContext = RDPConnectionContext(),
+        keyboardIndicators: RDPKeyboardIndicatorRecord = RDPKeyboardIndicatorRecord()
     ) {
         self.shareID = shareID
         self.connectionContext = connectionContext
@@ -521,6 +534,17 @@ public final class RDPInputSession: Sendable {
         self.ioChannelID = ioChannelID
         self.channel = channel
         self.serverInputFlags = serverInputFlags ?? 0
+        self.keyboardIndicators = keyboardIndicators
+    }
+
+    /// The toggle keys the server last said are on, in a Set Keyboard Indicators PDU
+    /// ([MS-RDPBCGR] 2.2.8.2.1.1), on this connection; nil before one. They can drift from the
+    /// client's keyboard, such as when another client of the session or a server setting
+    /// changes them, and Caps Lock then types the other case;
+    /// ``RDPInputStateTracker/synchronizationEvents(toggleFlags:)`` sets them again. Read from
+    /// any thread.
+    public var serverToggleKeys: RDPToggleKeyFlags? {
+        keyboardIndicators.flags
     }
 
     /// Whether the server takes Unicode keyboard events (INPUT_FLAG_UNICODE, [MS-RDPBCGR]

@@ -197,6 +197,7 @@ extension RDPClientConnection {
         }
         if let indicators = shareData.keyboardIndicatorFlags {
             report.rdpKeyboardIndicators = indicators
+            keyboardIndicators.flags = indicators
         }
         if let monitors = shareData.monitorLayout {
             let layout = monitors.boundingBoxLayout
@@ -459,7 +460,8 @@ extension RDPClientConnection {
             ioChannelID: ioChannelID,
             channel: channel,
             serverInputFlags: share.serverInputFlags,
-            connectionContext: connectionContext
+            connectionContext: connectionContext,
+            keyboardIndicators: keyboardIndicators
         )
         inputSession = session
         callbacks.onInputReady?(session)

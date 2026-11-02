@@ -152,7 +152,11 @@
   notified too.
 - The report's `rdpKeyboardIndicators` holds the toggle keys the server last
   said are on, so a client can set Caps Lock again when it drifts.
-  `RDPToggleKeyFlags` is `Encodable` and `Hashable`.
+  `RDPToggleKeyFlags` is `Encodable` and `Hashable`. `RDPInputSession` has them
+  too, as `serverToggleKeys`, readable from any thread, and
+  `RDPRemoteInputView` synchronizes the toggle keys before the next key once
+  the server says its Caps Lock changed away from the Mac's, as another client
+  of the session can make it.
 - The report's `rdpGraphicsFailureUpdateFirstMessageIndex` and
   `rdpGraphicsFailureUpdateMessageCount` say where a failing graphics update's
   summaries start and how many PDUs it held, which RDPPreflight and

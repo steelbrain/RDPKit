@@ -495,6 +495,27 @@ final class RemoteInputViewBehaviourTests: XCTestCase {
         XCTAssertEqual(harness.recorder.events, [.synchronize(toggleFlags: currentToggleFlags)])
     }
 
+    func testTheServersToggleKeysAtFocusGainAreNotSynchronizedAgain() {
+        // The server said its Caps Lock was not the Mac's before the view gained focus, which
+        // synchronizes the toggle keys; the next key does not synchronize them again.
+        let harness = makeHarness(isFirstResponder: false)
+        let macToggleFlags = currentToggleFlags
+        harness.recorder.serverToggleKeys = macToggleFlags.symmetricDifference(.capsLock)
+        harness.window.makeFirstResponder(harness.view)
+        XCTAssertEqual(harness.recorder.events, [.synchronize(toggleFlags: macToggleFlags)])
+
+        harness.recorder.events.removeAll()
+        let isCapsLockOn = macToggleFlags.contains(.capsLock)
+        harness.view.keyDown(with: keyEvent(
+            .keyDown,
+            keyCode: UInt16(kVK_ANSI_A),
+            characters: isCapsLockOn ? "A" : "a",
+            charactersIgnoringModifiers: "a",
+            flags: isCapsLockOn ? .capsLock : []
+        ))
+        XCTAssertEqual(harness.recorder.events, [.keyboard(scancode: RDPKeyboardScancode(code: 0x1E), isReleased: false)])
+    }
+
     func testWindowBecomingKeySynchronizesToggleKeysForTheFocusedView() {
         let harness = makeHarness()
         NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: harness.window)
@@ -1959,6 +1980,7 @@ final class RemoteInputViewBehaviourTests: XCTestCase {
 @MainActor
 private final class InputEventRecorder: RDPInputEventSending {
     nonisolated let supportsUnicodeInput: Bool
+    nonisolated(unsafe) var serverToggleKeys: RDPToggleKeyFlags?
     var events: [RDPSlowPathInputEvent] = []
 
     init(supportsUnicodeInput: Bool = true) {

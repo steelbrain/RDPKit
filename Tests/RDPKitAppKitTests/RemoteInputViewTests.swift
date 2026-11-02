@@ -795,6 +795,7 @@ private let layoutsWhoseLettersNoTableMatches: Set<String> = [
 
 private final class RecordedInput: RDPInputEventSending {
     var supportsUnicodeInput = true
+    var serverToggleKeys: RDPToggleKeyFlags?
     var events: [RDPSlowPathInputEvent] = []
 
     func send(_ events: [RDPSlowPathInputEvent]) {
@@ -1416,6 +1417,37 @@ private let rightOptionFlags = NSEvent.ModifierFlags(rawValue: NSEvent.ModifierF
         .synchronize(toggleFlags: [.numLock]),
         .pointerButton(button: .left, isDown: true, x: 10, y: 10),
     ])
+}
+
+/// The server's Caps Lock can change away from the Mac's, as another client of the session can
+/// change it: once the server says so, the next key synchronizes the toggle keys first. A
+/// server that goes on saying the same after that gets no more synchronizations.
+@MainActor
+@Test func aCapsLockTheServerSaysChangedIsSynchronizedBeforeTheNextKey() throws {
+    let keyA = RDPKeyboardScancode(code: 0x1E)
+    let input = RecordedInput()
+    let view = RDPRemoteInputView()
+    view.inputSession = input
+    func pressA() throws -> [RDPSlowPathInputEvent] {
+        input.events.removeAll()
+        view.keyDown(with: try keyEvent(.keyDown, keyCode: kVK_ANSI_A, characters: "a", charactersIgnoringModifiers: "a"))
+        view.keyUp(with: try keyEvent(.keyUp, keyCode: kVK_ANSI_A, characters: "a", charactersIgnoringModifiers: "a"))
+        return input.events
+    }
+    let keys: [RDPSlowPathInputEvent] = [.keyboard(scancode: keyA, isReleased: false), .keyboard(scancode: keyA, isReleased: true)]
+
+    #expect(try pressA() == keys)
+    input.serverToggleKeys = [.numLock, .capsLock]
+    #expect(try pressA() == [.synchronize(toggleFlags: [.numLock])] + keys)
+    // The server did not take it, and says so again.
+    #expect(try pressA() == keys)
+    input.serverToggleKeys = [.numLock]
+    #expect(try pressA() == keys)
+    input.serverToggleKeys = [.numLock, .capsLock]
+    #expect(try pressA() == [.synchronize(toggleFlags: [.numLock])] + keys)
+    // Another toggle key the server changed leaves Caps Lock as the Mac's.
+    input.serverToggleKeys = [.scrollLock]
+    #expect(try pressA() == keys)
 }
 
 /// A server that takes no Unicode input gets the keys pressed, so its own layout types the

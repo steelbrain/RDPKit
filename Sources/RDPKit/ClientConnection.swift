@@ -56,6 +56,8 @@ final class RDPClientConnection {
     var isDeactivated = false
     /// The input session `onInputReady` last handed out.
     var inputSession: RDPInputSession?
+    /// The server's toggle keys, which every input session of the connection reads.
+    let keyboardIndicators = RDPKeyboardIndicatorRecord()
     var termination: RDPRemoteTermination? {
         didSet {
             report.rdpRemoteTerminationErrorInfo = termination?.errorInfo
