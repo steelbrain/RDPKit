@@ -107,6 +107,30 @@ import Testing
     #expect(slowPacket.first == 0x03)
 }
 
+/// After Deactivate All the client MUST stop sending input ([MS-RDPBCGR] 3.2.5.5.1): input
+/// that passed the cutoff before it but had not gone out yet is dropped, not written after
+/// the reactivation's Confirm Active.
+@Test func inputSessionDropsInputQueuedBeforeDeactivation() throws {
+    let channel = EmbeddedChannel()
+    try channel.connect(to: SocketAddress(ipAddress: "127.0.0.1", port: 3389)).wait()
+    for serverInputFlags: UInt16 in [0x0020, 0x0001] {
+        let session = RDPInputSession(
+            shareID: 1,
+            userChannelID: 1001,
+            ioChannelID: 1003,
+            channel: channel,
+            serverInputFlags: serverInputFlags
+        )
+
+        session.send(.pointerMove(x: 3, y: 4))
+        session.deactivate()
+        channel.embeddedEventLoop.run()
+
+        #expect(try channel.readOutbound(as: ByteBuffer.self) == nil)
+    }
+    _ = try channel.finish()
+}
+
 @Test func inputPDUChunksOversizedEventBatches() {
     let maximumEventsPerPDU = RDPClientInputPDU.maximumEventsPerPDU
     let events = Array(

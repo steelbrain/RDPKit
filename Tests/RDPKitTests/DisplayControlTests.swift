@@ -336,6 +336,28 @@ import Testing
     _ = try channel.finish()
 }
 
+/// A layout handed to the connection before the session ended, but not yet written, is dropped:
+/// the session's channel is closed or replaced by then. `send` said true for it, best-effort.
+@Test func displayControlSessionDropsALayoutQueuedBeforeItEnded() throws {
+    let channel = EmbeddedChannel()
+    try channel.connect(to: SocketAddress(ipAddress: "127.0.0.1", port: 3389)).wait()
+    let session = RDPDisplayControlSession(
+        dynamicChannelID: 2,
+        capabilities: RDPDisplayControlCapabilities(maxNumMonitors: 1, maxMonitorAreaFactorA: 3840, maxMonitorAreaFactorB: 2160),
+        userChannelID: 1007,
+        staticChannelID: 1004,
+        channel: channel,
+        layouts: RDPDisplayLayoutRecord(connectLayout: .singlePrimary(width: 1280, height: 720))
+    )
+
+    #expect(try session.send(.singlePrimary(width: 1280, height: 720)))
+    session.end()
+    channel.embeddedEventLoop.run()
+
+    #expect(try channel.readOutbound(as: ByteBuffer.self) == nil)
+    _ = try channel.finish()
+}
+
 /// [MS-RDPEDISP] 2.2.2.2: a 40-byte DISPLAYCONTROL_MONITOR_LAYOUT for each monitor, in the
 /// layout's order, with a signed left and top.
 @Test func encodesMultiMonitorDisplayControlMonitorLayoutPDU() throws {
@@ -724,6 +746,8 @@ private func outboundDisplayControlPayloads(_ channel: EmbeddedChannel) throws -
     #expect(session.lastSentLayout == nil)
     #expect(try session.resendLayout())
     try session.send(sentLayout)
+    // Written before the session ends, which drops what is still queued.
+    channel.embeddedEventLoop.run()
     session.end()
     #expect(try session.resendLayout() == false)
 

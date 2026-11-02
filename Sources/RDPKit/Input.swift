@@ -573,9 +573,12 @@ public final class RDPInputSession: Sendable {
         }
     }
 
+    /// Checks the cutoff again on the event loop: a send that passed it as Deactivate All
+    /// arrived would otherwise go out after the reactivation's Confirm Active, which the
+    /// session's thread queues on the same loop once the cutoff is set.
     private func sendPacket(_ packet: Data) {
         channel.eventLoop.execute {
-            guard self.channel.isActive else {
+            guard self.channel.isActive, !self.deactivation.isCutOff else {
                 return
             }
             var buffer = self.channel.allocator.buffer(capacity: packet.count)

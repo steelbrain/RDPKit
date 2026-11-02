@@ -687,7 +687,8 @@ public final class RDPDisplayControlSession: Sendable {
     /// Asks the server for `layout` ([MS-RDPEDISP] 2.2.2.2). Throws ``RDPMonitorLayoutError``
     /// when the server's ``capabilities`` do not allow it. Returns whether the layout went to
     /// the connection: once the session ``isEnded`` it sends nothing and returns false, and the
-    /// layout is for the session `onDisplayControlReady` hands out next.
+    /// layout is for the session `onDisplayControlReady` hands out next. True is best-effort:
+    /// a session that ends before the connection's event loop writes the layout drops it.
     @discardableResult
     public func send(_ layout: RDPMonitorLayout) throws -> Bool {
         try layout.validate(for: capabilities)
@@ -706,7 +707,7 @@ public final class RDPDisplayControlSession: Sendable {
         )
             .encodedTPKT(initiator: userChannelID, channelID: staticChannelID)
         channel.eventLoop.execute {
-            guard self.channel.isActive else {
+            guard !self.isEnded else {
                 return
             }
             var buffer = self.channel.allocator.buffer(capacity: packet.count)
