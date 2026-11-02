@@ -325,6 +325,23 @@ struct RDPLegacyKeyExchangeFallback: Equatable {
     }
 }
 
+/// The Keychain change to make once the session is ready. A server that selected neither Network
+/// Level Authentication (CredSSP) nor RDSTLS activates the session whatever the password, and asks
+/// for one on its own logon screen when it is wrong, so `request` saves no password it did not
+/// check; removing a saved one, as the user asked, still happens. Its logon notification
+/// (`rdpLogonNotification`) would not do instead: the user may have logged on at that screen with
+/// another password. Returns whether a save was dropped.
+func rdpCredentialPersistenceOnceReady(
+    _ request: CredentialPersistenceRequest?,
+    selectedProtocols: [String]?
+) -> (request: CredentialPersistenceRequest?, droppedUncheckedSave: Bool) {
+    let checked = selectedProtocols?.contains { ["credssp", "credssp-early-user-auth", "rdstls"].contains($0) } == true
+    guard case .save = request, !checked else {
+        return (request, false)
+    }
+    return (nil, true)
+}
+
 /// CredSSP below version 5, which RDPKit refuses unless `legacyCredSSP` is set: offered to the
 /// user after a server answered with it, and allowed only for the one connection their agreement
 /// starts. Any other connection, a later one to the same server included, refuses it again.

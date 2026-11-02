@@ -874,13 +874,20 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                     }
                 },
                 onInputReady: { session in
-                    let persistenceResult = persistCredentialsIfNeeded(
+                    let persistence = rdpCredentialPersistenceOnceReady(
                         credentialPersistenceRequest,
-                        store: credentialStore
+                        selectedProtocols: liveReport.snapshot?.selectedProtocols
                     )
+                    let persistenceResult = persistCredentialsIfNeeded(persistence.request, store: credentialStore)
                     if let persistenceResult {
                         sink.apply { controller in
                             controller.applyCredentialPersistenceResult(persistenceResult)
+                            controller.render()
+                        }
+                    } else if persistence.droppedUncheckedSave {
+                        sink.apply { controller in
+                            controller.keychainMessage = "Password not saved: the server did not check it before "
+                                + "the session, as it does not use Network Level Authentication."
                             controller.render()
                         }
                     }
