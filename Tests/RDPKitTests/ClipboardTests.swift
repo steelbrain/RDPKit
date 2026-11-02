@@ -1422,6 +1422,37 @@ private final class ClipboardPublishRace: @unchecked Sendable {
     }
 }
 
+/// Without a handler for file lists, a copy of files is fetched as any other: as the text it
+/// offers beside the files, or, with none, reported as a copy the session fetches nothing of.
+@Test func clipboardSessionFetchesNoFileListTheApplicationDoesNotTake() throws {
+    let fileCopy = RDPClipboardFormatListPDU(entries: [
+        RDPClipboardFormatListEntry(formatID: 0xC0A3, formatName: "FileGroupDescriptorW"),
+        RDPClipboardFormatListEntry(formatID: 0xC0A4, formatName: "FileContents"),
+    ]).encoded()
+    let fileAndTextCopy = RDPClipboardFormatListPDU(entries: [
+        RDPClipboardFormatListEntry(formatID: 0xC0A3, formatName: "FileGroupDescriptorW"),
+        RDPClipboardFormatListEntry(formatID: RDPClipboardFormatID.unicodeText),
+    ]).encoded()
+    let channel = EmbeddedChannel()
+    let sent = ClipboardSentMessages()
+    let session = RDPClipboardSession(
+        userChannelID: 1006,
+        staticChannelID: 1007,
+        channel: channel,
+        requestsFileLists: false,
+        sentMessageHandler: sent.record
+    )
+    _ = try session.receive(RDPClipboardPDU.parse(from: RDPClipboardCapabilitiesPDU().encoded()))
+    _ = try session.receive(RDPClipboardPDU(messageType: RDPClipboardMessageType.monitorReady))
+
+    #expect(try session.receive(RDPClipboardPDU.parse(from: fileCopy)) == .remoteCopyUnavailable(isEmpty: false))
+    #expect(try session.receive(RDPClipboardPDU.parse(from: fileAndTextCopy)) == nil)
+    #expect(try session.receive(RDPClipboardPDU.parse(from: RDPClipboardFormatDataResponsePDU.unicodeText("beside").encoded()))
+        == .text("beside"))
+    #expect(try sentFormatDataRequestIDs(sent) == [RDPClipboardFormatID.unicodeText])
+    _ = try channel.finish()
+}
+
 /// A copy every format asked for of which fails brings nothing, so it is reported like one of
 /// no format the session fetches, unless a newer copy, local or remote, came first. A rich
 /// copy some formats of which arrive still arrives without the rest.

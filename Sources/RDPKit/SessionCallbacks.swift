@@ -42,11 +42,15 @@ public typealias RDPClipboardTextHandler = @Sendable (String) -> Void
 /// Receives every format fetched of a remote copy. Setting it makes the session fetch
 /// HTML, RTF and bitmaps as well as text; `onClipboardText` still receives the text.
 public typealias RDPClipboardContentHandler = @Sendable (RDPClipboardContent) -> Void
+/// Receives the file list of a remote copy of files. Without it, such a copy is fetched as
+/// any other, for the text or other formats it may offer beside the files; one that offers
+/// none goes to `onClipboardRemoteCopyUnavailable`.
 public typealias RDPClipboardFileGroupDescriptorHandler = @Sendable (RDPClipboardFileGroupDescriptorW) -> Void
 /// Called for a remote copy none of which is fetched, so the copy delivered before is no
 /// longer the server's: `isEmpty` when the server's clipboard was emptied (an empty Format
 /// List), and otherwise it holds only formats the session does not fetch, such as a bitmap
-/// without `onClipboardContent`, or every format asked for of it failed or came back empty.
+/// without `onClipboardContent` or files without `onClipboardFileGroupDescriptor`, or every
+/// format asked for of it failed or came back empty.
 /// A rich copy some formats of which arrive goes to `onClipboardContent` without the rest.
 /// Not called while `fetchesRemoteCopies` is off; a copy that came then is reported once it
 /// is turned back on, unless a newer copy, local or remote, replaced it first. Windows 11

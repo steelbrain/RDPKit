@@ -2215,6 +2215,34 @@ struct MockKRDPServerTests {
         )])
     }
 
+    /// A client with no handler for file lists is never sent one it would drop: a remote copy
+    /// of files is fetched as any other, here as the text and HTML offered beside the files.
+    @Test func clientWithoutAFileListHandlerFetchesTheRestOfARemoteCopyOfFiles() throws {
+        let observed = Locked(Observed())
+        let run = try runMock(
+            .init(
+                clipboardFiles: [RDPClipboardLocalFile(fileName: "notes.txt", contents: Data("hello".utf8))],
+                remoteClipboardText: "remote",
+                remoteClipboardHTML: "<b>remote</b>"
+            ),
+            { $0.clipboardEnabled = true },
+            client: {
+                RDPSessionClient().run(
+                    configuration: $0,
+                    onClipboardText: { text in observed.withLock { $0.clipboardTexts.append(text) } },
+                    onClipboardContent: { content in observed.withLock { $0.clipboardContents.append(content) } }
+                )
+            }
+        )
+
+        #expect(run.report.status == "success")
+        #expect(observed.value.clipboardTexts == ["remote"])
+        #expect(observed.value.clipboardContents == [RDPClipboardContent(
+            text: "remote",
+            html: "<html><body><!--StartFragment--><b>remote</b><!--EndFragment--></body></html>"
+        )])
+    }
+
     /// A server whose clipboard is emptied sends a Format List with no formats; the
     /// application hears of it, as nothing would be fetched.
     @Test func clientReportsAnEmptiedRemoteClipboard() throws {

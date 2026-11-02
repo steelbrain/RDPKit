@@ -326,8 +326,8 @@ struct RDPClipboardFormatListPDU: Equatable, Sendable {
         entries.first { $0.formatName?.caseInsensitiveCompare(name) == .orderedSame }?.formatID
     }
 
-    /// The formats of a copy that is not files, in the order they are requested:
-    /// text always, the others when the application takes them.
+    /// The formats of a copy, or of a copy of files when its file list is not fetched, in
+    /// the order they are requested: text always, the others when the application takes them.
     func contentRequests(includingRichFormats: Bool) -> [RDPClipboardRequestedFormatDataResponse] {
         var requests: [RDPClipboardRequestedFormatDataResponse] = []
         if formatIDs.contains(RDPClipboardFormatID.unicodeText) {
@@ -939,6 +939,10 @@ public final class RDPClipboardSession: @unchecked Sendable {
     private let chunkSize: RDPStaticVirtualChannelChunkSize
     /// Whether a remote copy is fetched in HTML, RTF and bitmap form as well as text.
     private let requestsRichFormats: Bool
+    /// Whether a remote copy of files is fetched as its file list. If not, it is fetched as
+    /// any other copy, so an application with no handler for file lists gets the other formats
+    /// a copy may offer beside them, or hears of a copy it gets nothing of.
+    private let requestsFileLists: Bool
     private let lock = NSLock()
     /// Replies to the server's requests wait on it, so a server that asks and stops reading
     /// cannot make the client queue copies of the local content without bound.
@@ -979,6 +983,7 @@ public final class RDPClipboardSession: @unchecked Sendable {
         channel: Channel,
         chunkSize: RDPStaticVirtualChannelChunkSize = RDPStaticVirtualChannelChunkSize(),
         requestsRichFormats: Bool = false,
+        requestsFileLists: Bool = true,
         sentMessageHandler: RDPClipboardSentMessageHandler? = nil,
         pendingEventHandler: @escaping @Sendable () -> Void = {},
         isCancelled: @escaping @Sendable () -> Bool = { false }
@@ -988,6 +993,7 @@ public final class RDPClipboardSession: @unchecked Sendable {
         self.channel = channel
         self.chunkSize = chunkSize
         self.requestsRichFormats = requestsRichFormats
+        self.requestsFileLists = requestsFileLists
         self.sentMessageHandler = sentMessageHandler
         self.pendingEventHandler = pendingEventHandler
         self.isCancelled = isCancelled
@@ -1141,11 +1147,12 @@ public final class RDPClipboardSession: @unchecked Sendable {
                 }
             }
             sendFormatListResponse(ok: true)
-            let requests: [RDPClipboardRequestedFormatDataResponse] = if let formatID = formatList.fileGroupDescriptorWFormatID {
-                [.fileGroupDescriptorW(formatID: formatID)]
-            } else {
-                formatList.contentRequests(includingRichFormats: requestsRichFormats)
-            }
+            let requests: [RDPClipboardRequestedFormatDataResponse] =
+                if requestsFileLists, let formatID = formatList.fileGroupDescriptorWFormatID {
+                    [.fileGroupDescriptorW(formatID: formatID)]
+                } else {
+                    formatList.contentRequests(includingRichFormats: requestsRichFormats)
+                }
             // The list replaces the server's clipboard (MS-RDPECLIP 3.1.5.2.2), so a copy with
             // no formats, or none this session fetches, still retires the one the application
             // has: an empty list is the server's clipboard emptied.
