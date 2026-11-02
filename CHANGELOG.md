@@ -104,7 +104,9 @@
   main thread: it decodes off it and delivers frames, failures, wire samples
   and the server's layout (`onServerLayout`, `RDPServerLayout`) on the main
   queue, with `deliver(_:)` and `recipient(_:)` for the app's own work,
-  `cancel()`, and `waitUntilEnded(timeout:)` for quitting.
+  `cancel()`, and `waitUntilEnded(timeout:)` for quitting. The main queue has
+  to run on the main thread, as an app's run loop runs it: under
+  `dispatchMain()` it and `RDPAudioPlayer` stop with a message saying so.
 - `RDPTrustedServerCertificates` trusts a server's certificate on first use,
   per host and port. `RDPConnectionIdentity.legacyCredentialMoves(keptBy:)`
   plans moving saved passwords to an account's current name.

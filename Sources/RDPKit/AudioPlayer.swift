@@ -32,7 +32,7 @@ public final class RDPAudioPlayer {
             object: engine,
             queue: .main
         ) { [weak self] _ in
-            MainActor.assumeIsolated {
+            runOnMainQueueAsMainActor("RDPAudioPlayer") {
                 self?.reset()
             }
         }

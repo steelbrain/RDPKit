@@ -402,3 +402,21 @@ func aLiveSessionDeliversTheServersLayoutOncePerConnection() async throws {
         "layout 1 1", "decoded 3", "decoded 4",
     ])
 }
+
+/// Main-actor work that the main queue runs off the main thread, as under `dispatchMain()`,
+/// stops the process saying what has to run the main queue, rather than with Swift's
+/// "Incorrect actor executor assumption" and no cause.
+@Test(.timeLimit(.minutes(1)))
+func mainQueueWorkOffTheMainThreadStopsSayingWhy() async {
+    let result = await #expect(processExitsWith: .failure, observing: [\.standardErrorContent]) {
+        let finished = DispatchSemaphore(value: 0)
+        Thread.detachNewThread {
+            runOnMainQueueAsMainActor("RDPLiveSession") {}
+            finished.signal()
+        }
+        finished.wait()
+    }
+    let message = String(decoding: result?.standardErrorContent ?? [], as: UTF8.self)
+    #expect(message.contains("RDPLiveSession needs the main queue to run on the main thread"))
+    #expect(message.contains("dispatchMain()"))
+}

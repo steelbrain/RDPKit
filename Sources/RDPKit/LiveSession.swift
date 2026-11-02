@@ -15,6 +15,10 @@ import Foundation
 /// queue in the order it was handed over, after the frames and samples before it, and none of
 /// it once `cancel()` has returned, so a session the application left can no longer change
 /// what it shows. Make one per attempt.
+///
+/// The main queue has to run on the main thread, as it does under an app's run loop,
+/// `RunLoop.main.run()` or an `async` `@main`. Under `dispatchMain()` it runs on another
+/// thread, and the first delivery stops the process with a message saying so.
 public final class RDPLiveSession: @unchecked Sendable {
     /// What the session reports to the application.
     public struct Events: Sendable {
@@ -99,14 +103,17 @@ public final class RDPLiveSession: @unchecked Sendable {
     /// Runs `work` on the main queue after what was delivered before it, unless `cancel()` has
     /// returned by then.
     public func deliver(_ work: @escaping @MainActor @Sendable () -> Void) {
-        DispatchQueue.main.async { [self] in
-            MainActor.assumeIsolated {
+        // Not written in the call: Swift checks a closure written there as main-actor code on
+        // entry, which would warn of a data race ahead of the message below.
+        let delivery: @Sendable () -> Void = { [self] in
+            runOnMainQueueAsMainActor("RDPLiveSession") {
                 guard lock.withLock({ isDelivering }) else {
                     return
                 }
                 work()
             }
         }
+        DispatchQueue.main.async(execute: delivery)
     }
 
     /// Hands main-thread work to `object` through ``deliver(_:)`` while holding it weakly. Make
@@ -277,4 +284,19 @@ public final class RDPLiveSession: @unchecked Sendable {
             waiter.resume(returning: true)
         }
     }
+}
+
+/// Runs `body` as main-actor code from a block that the main queue runs, or stops the process
+/// with a message naming `owner` when the main queue runs off the main thread, as it does
+/// under `dispatchMain()`. Swift's older isolation check, which an executable linked against
+/// an older SDK gets, takes only the main thread for the main actor, so `MainActor.assumeIsolated`
+/// would stop it there with "Incorrect actor executor assumption" and no cause.
+func runOnMainQueueAsMainActor(_ owner: String, _ body: @MainActor () -> Void) {
+    guard Thread.isMainThread else {
+        fatalError(
+            "\(owner) needs the main queue to run on the main thread, as it does under an app's run "
+                + "loop, RunLoop.main.run() or an async @main; under dispatchMain() it runs on another thread"
+        )
+    }
+    MainActor.assumeIsolated(body)
 }
