@@ -1152,6 +1152,35 @@ public final class RDPClipboardSession: @unchecked Sendable {
         publish(files.isEmpty ? .empty : .files(RDPClipboardLocalFile.withWindowsFileNames(files)))
     }
 
+    /// Starts a copy of the user's whose content comes later, such as files still to be read:
+    /// publishes an empty copy now, which replaces the server's on its clipboard, so an older
+    /// server copy is neither fetched in its place nor reported, and returns the copy's number
+    /// for ``publishLocalFiles(_:forCopy:)``.
+    public func beginLocalCopy() -> Int {
+        lock.withLock {
+            publishLocked(.empty)
+            return publishedCopyID
+        }
+    }
+
+    /// Offers `files`, as ``publishLocalFiles(_:)`` does, for the copy ``beginLocalCopy()``
+    /// numbered `copyNumber`, unless a newer copy has replaced it: a later publish, or a copy
+    /// the server announced since, fetched or not. A server copy that crossed it on the way is
+    /// older and does not. Returns whether `files` are offered; empty, they leave the empty copy.
+    @discardableResult
+    public func publishLocalFiles(_ files: [RDPClipboardLocalFile], forCopy copyNumber: Int) -> Bool {
+        let content: RDPClipboardLocalContent = files.isEmpty ? .empty : .files(RDPClipboardLocalFile.withWindowsFileNames(files))
+        return lock.withLock {
+            guard publishedCopyID == copyNumber, isOfferingPublishedCopy else {
+                return false
+            }
+            if content != .empty {
+                publishLocked(content)
+            }
+            return true
+        }
+    }
+
     /// Handles one complete cliprdr PDU from the server, sends the replies the protocol
     /// requires, and returns what the application should be told about.
     func receive(_ pdu: RDPClipboardPDU) throws -> RDPClipboardEvent? {

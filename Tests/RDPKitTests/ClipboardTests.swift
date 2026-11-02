@@ -2467,7 +2467,7 @@ private func fileNamesTheServerSees(publishing files: [RDPClipboardLocalFile]) t
     return try response.decodedFileGroupDescriptorW().descriptors.map(\.fileName)
 }
 
-private final class ClipboardSentMessages: @unchecked Sendable {
+final class ClipboardSentMessages: @unchecked Sendable {
     private let lock = NSLock()
     private var sent: [(summary: RDPClipboardMessageSummary, packets: Data)] = []
 
@@ -2486,7 +2486,7 @@ private final class ClipboardSentMessages: @unchecked Sendable {
 
 /// The server's answer to a Format List of the client's, which MS-RDPECLIP 3.1.5.2.2 has it
 /// send for each one.
-private let serverFormatListResponse = RDPClipboardPDU(
+let serverFormatListResponse = RDPClipboardPDU(
     messageType: RDPClipboardMessageType.formatListResponse,
     messageFlags: RDPClipboardMessageFlags.responseOK
 )

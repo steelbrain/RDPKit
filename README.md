@@ -266,6 +266,10 @@ let report = client.run(
   have no timeout, so to give one up, ignore answers for its stream ID and use
   a new one, below `RDPClipboardSession.firstDownloadStreamID`, for the next
   request.
+- Local file copies: `RDPClipboardLocalFile.read(contentsOf:)` reads files
+  within a byte limit, and `beginLocalCopy()` with
+  `publishLocalFiles(_:forCopy:)` replaces the server's copy at once while they
+  are read, then offers them unless a newer copy came in between.
 - Local-to-remote and remote-to-local clipboard file transfer plumbing. Local
   file names are relative paths (`\` or `/` separates folders) made valid on
   Windows before they are offered: forbidden characters, device names such as

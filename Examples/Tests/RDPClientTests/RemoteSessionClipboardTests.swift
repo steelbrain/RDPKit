@@ -99,6 +99,20 @@ private final class RecordedClipboard: RDPClipboardSending, @unchecked Sendable 
         return lastCopyNumber
     }
 
+    func beginLocalCopy() -> Int {
+        publishLocalUnicodeText(nil)
+        return lastCopyNumber
+    }
+
+    /// Offers `files` while nothing, local or remote, came after copy `copyNumber`.
+    func publishLocalFiles(_ files: [RDPClipboardLocalFile], forCopy copyNumber: Int) -> Bool {
+        guard lastCopyNumber == copyNumber else {
+            return false
+        }
+        publishLocalFiles(files)
+        return true
+    }
+
     func withdrawLocalCopy() -> Bool {
         guard serverHoldsLocalCopy else {
             return false
@@ -470,6 +484,47 @@ private func copyFile(_ contents: Data, in directory: URL, to pasteboard: NSPast
     try await Task.sleep(nanoseconds: 200_000_000)
     #expect(session.publishedFiles.count == 1)
     #expect(session.publishedTexts.last == "newer")
+}
+
+/// Files whose read a server copy outran, before it reached the main thread, are not offered,
+/// nor said to be.
+@MainActor
+@Test func copiedFilesANewerServerCopyReplacedDuringTheirReadAreNotSynced() async throws {
+    let pasteboard = makePasteboard()
+    defer { pasteboard.releaseGlobally() }
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    try copyFile(Data("local".utf8), in: directory, to: pasteboard)
+    let session = RecordedClipboard()
+    let clipboard = RDPRemoteSessionClipboard(isSharingEnabled: true, pasteboard: pasteboard)
+
+    clipboard.attach(session)
+    _ = session.announceRemoteCopy()
+    try await Task.sleep(nanoseconds: 200_000_000)
+    #expect(session.publishedFiles.isEmpty)
+    #expect(clipboard.statusMessage == "Ready.")
+}
+
+/// A copied folder is not shared; the server's copy is replaced by an empty one all the same.
+@MainActor
+@Test func aCopiedFolderIsNotShared() async throws {
+    let pasteboard = makePasteboard()
+    defer { pasteboard.releaseGlobally() }
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    pasteboard.clearContents()
+    pasteboard.writeObjects([directory as NSURL])
+
+    let session = RecordedClipboard()
+    let clipboard = RDPRemoteSessionClipboard(isSharingEnabled: true, pasteboard: pasteboard)
+    clipboard.attach(session)
+    #expect(session.publishedTexts == [nil])
+    let failure = "Local clipboard has non-file items; remote clipboard cleared."
+    try await waitUntil { clipboard.statusMessage == failure }
+    #expect(clipboard.statusMessage == failure)
+    #expect(session.publishedFiles.isEmpty)
+    #expect(session.publishedTexts == [nil])
 }
 
 /// RDPKit sends "\" as a folder separator, so "a\b.txt" would paste on Windows as "b.txt"

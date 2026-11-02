@@ -121,6 +121,17 @@
   client that stops sharing leaves a copy the server's user made since alone:
   Windows empties its clipboard for an empty publish. RDPClient withdraws
   through it.
+- `RDPClipboardSession.beginLocalCopy()` publishes an empty copy at once for
+  content still to come, such as files being read, so an older server copy is
+  neither fetched nor reported in its place, and `publishLocalFiles(_:forCopy:)`
+  offers the files unless a newer copy replaced it: a later publish, or a copy
+  the server announced since.
+- `RDPClipboardLocalFile.read(contentsOf:maximumTotalByteCount:)` reads files
+  to publish, at most 32 MiB by default and checked before each file is read,
+  stopping once its task is cancelled. Each keeps its own name in no folder: a
+  `\`, which `publishLocalFiles` takes for a folder separator, becomes `_`.
+  It throws an `RDPClipboardLocalFileReadError`. RDPClient reads and publishes
+  copied files through these.
 
 ### Security
 
