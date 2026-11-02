@@ -364,6 +364,51 @@ func avc420FixtureFramesPresentAsFullRangeBT709(fixture: String, x: Int, y: Int,
     #expect(CVPixelBufferGetWidth(result.imageBuffer) == 64)
 }
 
+/// The session recreated after VideoToolbox invalidated one holds no reference pictures, so a
+/// P-frame fails on it instead of showing what VideoToolbox makes of it, and the updates after
+/// it wait for a keyframe.
+@Test func videoToolboxFrameDecoderAwaitsAKeyframeAfterItsSessionIsInvalidated() throws {
+    let accessUnits = try encodeH264AnnexB(
+        frames: [(luma: 60, chroma: 128), (luma: 70, chroma: 128), (luma: 80, chroma: 128)],
+        usingSoftwareEncoder: true
+    )
+    try #require(!RDPVideoToolboxSequenceDecoder.holdsRandomAccessPicture(accessUnits[1], codec: .h264))
+    let decoder = RDPVideoToolboxFrameDecoder()
+    func update(_ index: Int) -> RDPGraphicsFrameSnapshot {
+        videoFrame(surfaceID: 1, videoCodec: .h264, encodedVideoData: accessUnits[index])
+    }
+    _ = try decoder.decodeDetailed(update(0))
+
+    for session in decoder.sequenceDecoderSessions {
+        VTDecompressionSessionInvalidate(session)
+    }
+
+    #expect(throws: RDPVideoDecodeError.videoToolbox(operation: "decode H.264 frame", status: kVTInvalidSessionErr)) {
+        try decoder.decodeDetailed(update(1))
+    }
+    #expect(throws: RDPVideoDecodeError.awaitingKeyframe(surfaceID: 1)) {
+        try decoder.decodeDetailed(update(2))
+    }
+    _ = try decoder.decodeDetailed(update(0))
+    #expect(try CVPixelBufferGetWidth(decoder.decodeDetailed(update(1)).imageBuffer) == 64)
+}
+
+@Test func randomAccessPicturesAreIDROrIRAPPictures() {
+    func accessUnit(_ headers: [UInt8]...) -> Data {
+        Data(headers.flatMap { [0, 0, 0, 1] + $0 + [0x80] })
+    }
+    // SPS, PPS, and an IDR or a non-IDR slice.
+    #expect(RDPVideoToolboxSequenceDecoder.holdsRandomAccessPicture(accessUnit([0x67], [0x68], [0x65]), codec: .h264))
+    #expect(!RDPVideoToolboxSequenceDecoder.holdsRandomAccessPicture(accessUnit([0x67], [0x68], [0x41]), codec: .h264))
+    // BLA_W_LP, IDR_W_RADL, CRA_NUT, and RSV_IRAP_VCL23 are IRAP pictures; TRAIL_R and RASL_R are not.
+    for type: UInt8 in [16, 19, 21, 23] {
+        #expect(RDPVideoToolboxSequenceDecoder.holdsRandomAccessPicture(accessUnit([type << 1, 1]), codec: .hevc))
+    }
+    for type: UInt8 in [1, 9, 24] {
+        #expect(!RDPVideoToolboxSequenceDecoder.holdsRandomAccessPicture(accessUnit([type << 1, 1]), codec: .hevc))
+    }
+}
+
 private func bitmapFrame(pixels: [UInt8]) -> RDPGraphicsFrameSnapshot {
     RDPGraphicsFrameSnapshot(
         frameID: 1,
@@ -488,15 +533,26 @@ private enum PixelReadError: Error {
 }
 
 /// Encodes flat video-range NV12 frames as one VideoToolbox H.264 stream and returns each
-/// access unit in Annex B form, with the SPS and PPS ahead of the first.
-func encodeH264AnnexB(frames: [(luma: UInt8, chroma: UInt8)], width: Int = 64, height: Int = 64) throws -> [Data] {
+/// access unit in Annex B form, with the SPS and PPS ahead of the first. With
+/// `usingSoftwareEncoder`, only the first access unit is an IDR picture even while other tests
+/// encode: on an M3 Max the hardware encoder made the second one an IDR picture too in 40 of 64
+/// sessions run at once, and in none of 16 run one at a time.
+func encodeH264AnnexB(
+    frames: [(luma: UInt8, chroma: UInt8)],
+    width: Int = 64,
+    height: Int = 64,
+    usingSoftwareEncoder: Bool = false
+) throws -> [Data] {
+    let encoderSpecification = usingSoftwareEncoder
+        ? [kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder: false] as CFDictionary
+        : nil
     var session: VTCompressionSession?
     let status = VTCompressionSessionCreate(
         allocator: kCFAllocatorDefault,
         width: Int32(width),
         height: Int32(height),
         codecType: kCMVideoCodecType_H264,
-        encoderSpecification: nil,
+        encoderSpecification: encoderSpecification,
         imageBufferAttributes: nil,
         compressedDataAllocator: nil,
         outputCallback: nil,

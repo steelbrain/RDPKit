@@ -83,6 +83,11 @@ public final class RDPVideoToolboxFrameDecoder {
         sequenceDecoders.count + avc444Decoders.count
     }
 
+    /// The VideoToolbox sessions of the surfaces' H.264 and HEVC streams.
+    var sequenceDecoderSessions: [VTDecompressionSession] {
+        sequenceDecoders.values.compactMap(\.session)
+    }
+
     func discardSurfaces(_ surfaceIDs: [UInt16]) {
         guard !surfaceIDs.isEmpty else {
             return
@@ -340,9 +345,14 @@ final class RDPVideoToolboxSequenceDecoder {
         let imageBuffer: CVImageBuffer
         do {
             imageBuffer = try decode(sample.lengthPrefixedData)
-        } catch let RDPVideoDecodeError.videoToolbox(_, status) where status == kVTInvalidSessionErr {
-            // iOS invalidates decompression sessions while the app is in the background.
+        } catch let RDPVideoDecodeError.videoToolbox(operation, status) where status == kVTInvalidSessionErr {
+            // iOS invalidates decompression sessions while the app is in the background. The new
+            // session holds no reference pictures, so only a random-access picture decodes on it;
+            // any other sample fails, and its stream waits for a keyframe.
             try rebuildSession()
+            guard Self.holdsRandomAccessPicture(annexBData, codec: codec) else {
+                throw RDPVideoDecodeError.videoToolbox(operation: operation, status: status)
+            }
             imageBuffer = try decode(sample.lengthPrefixedData)
         }
         let videoToolboxFinishedAt = Date()
@@ -385,6 +395,19 @@ final class RDPVideoToolboxSequenceDecoder {
             throw RDPVideoDecodeError.missingImageBuffer
         }
         return imageBuffer
+    }
+
+    /// Whether the access unit holds a random-access picture, which decodes without the pictures
+    /// before it: an H.264 IDR picture (ITU-T H.264 Table 7-1, type 5) or an HEVC IRAP picture
+    /// (ITU-T H.265 Table 7-1, types 16-23).
+    static func holdsRandomAccessPicture(_ annexBData: Data, codec: RDPVideoCodec) -> Bool {
+        let types = codec.nalUnitTypes(from: annexBData)
+        switch codec {
+        case .h264:
+            return types.contains(5)
+        case .hevc:
+            return types.contains { (16 ... 23).contains($0) }
+        }
     }
 
     private func prepareSample(_ annexBData: Data) -> (lengthPrefixedData: Data, parameterSets: [Data?]) {
