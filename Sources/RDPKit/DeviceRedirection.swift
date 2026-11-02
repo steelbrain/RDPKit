@@ -298,9 +298,9 @@ enum RDPDeviceRedirectionEvent: Equatable, Sendable {
 /// The channel also exists for audio: Windows sends nothing on RDPSND unless the
 /// client advertises rdpdr ([MS-RDPEA] Appendix A, note on section 2.1).
 ///
-/// Drive I/O runs on a serial queue of its own, so file access does not hold up the
-/// connection thread that receives graphics; that thread waits only while the requests
-/// queued for the drives fill `requestBudget`.
+/// Drive I/O, and resolving the shared folders to announce, runs on a serial queue of its
+/// own, so file access does not hold up the connection thread that receives graphics; that
+/// thread waits only while the requests queued for the drives fill `requestBudget`.
 final class RDPDeviceRedirectionSession: @unchecked Sendable {
     /// What a queued request counts in `requestBudget` besides its body: the parsed request and
     /// the queued work hold memory too, so requests with little or no body are bounded as well.
@@ -321,11 +321,19 @@ final class RDPDeviceRedirectionSession: @unchecked Sendable {
     private let requestBudget = RDPPendingByteBudget()
     /// Polled about once a second while a request waits for room; true drops the request.
     private let isCancelled: @Sendable () -> Bool
+    /// Called, on the I/O queue, once `takePendingEvents` has events.
+    private let pendingEventHandler: @Sendable () -> Void
     private let lock = NSLock()
     private var minorVersion = RDPDeviceRedirectionVersion.minorRDP6
     private var announcedClientID: UInt32?
-    /// Only the connection thread reads and writes these.
+    /// The I/O queue adds the drives it announces; the connection thread serves them and
+    /// removes those the server refuses or forgets.
     private var announcedDriveIDs: Set<UInt32> = []
+    /// Server Announces so far, so a drive announce one of them overtook is dropped.
+    private var serverAnnounceCount = 0
+    /// What the I/O queue found to report, for the connection thread.
+    private var pendingEvents: [RDPDeviceRedirectionEvent] = []
+    /// Only the connection thread reads and writes this.
     private var hasAnnouncedDrives = false
 
     init(
@@ -335,6 +343,7 @@ final class RDPDeviceRedirectionSession: @unchecked Sendable {
         computerName: String,
         drives: [RDPSharedDrive] = [],
         chunkSize: RDPStaticVirtualChannelChunkSize = RDPStaticVirtualChannelChunkSize(),
+        pendingEventHandler: @escaping @Sendable () -> Void = {},
         isCancelled: @escaping @Sendable () -> Bool = { false }
     ) {
         self.userChannelID = userChannelID
@@ -343,6 +352,7 @@ final class RDPDeviceRedirectionSession: @unchecked Sendable {
         self.computerName = computerName
         self.chunkSize = chunkSize
         self.drives = drives.enumerated().map { RDPSharedDriveDevice(deviceID: UInt32($0.offset + 1), drive: $0.element) }
+        self.pendingEventHandler = pendingEventHandler
         self.isCancelled = isCancelled
     }
 
@@ -360,15 +370,16 @@ final class RDPDeviceRedirectionSession: @unchecked Sendable {
             let clientID = announce.clientIDForReply {
                 UInt32.random(in: UInt32.min ... UInt32.max)
             }
-            lock.withLock {
-                minorVersion = min(RDPDeviceRedirectionVersion.minorRDP6, announce.minor)
-                announcedClientID = clientID
-            }
             // A server starting over has forgotten the devices and their handles. FreeRDP
             // 3.32 re-initializes its devices and announces them again on each Server
             // Announce, which Windows servers send with I/O still pending (rdpdr_main.c,
             // rdpdr_process_init).
-            announcedDriveIDs = []
+            lock.withLock {
+                minorVersion = min(RDPDeviceRedirectionVersion.minorRDP6, announce.minor)
+                announcedClientID = clientID
+                announcedDriveIDs = []
+                serverAnnounceCount += 1
+            }
             hasAnnouncedDrives = false
             let drives = drives
             ioQueue.async {
@@ -394,13 +405,13 @@ final class RDPDeviceRedirectionSession: @unchecked Sendable {
             }
             // Drives wait for User Logged On, as in FreeRDP, from servers that send it.
             let announcesDrives = lock.withLock { minorVersion } <= RDPDeviceRedirectionVersion.minorRDP51
-            return announceDevices(includingDrives: announcesDrives)
+            announceDevices(includingDrives: announcesDrives)
 
         case RDPDeviceRedirectionPacketID.userLoggedOn:
             guard pdu.payload.isEmpty else {
                 throw RDPDecodeError.invalidStaticVirtualChannelPDU
             }
-            return announceDevices(includingDrives: true)
+            announceDevices(includingDrives: true)
 
         case RDPDeviceRedirectionPacketID.deviceReply:
             var cursor = ByteCursor(pdu.payload)
@@ -409,7 +420,7 @@ final class RDPDeviceRedirectionSession: @unchecked Sendable {
             guard status != RDPNTStatus.success, let drive = drives.first(where: { $0.deviceID == deviceID }) else {
                 return []
             }
-            announcedDriveIDs.remove(deviceID)
+            _ = lock.withLock { announcedDriveIDs.remove(deviceID) }
             return [.driveRejected(name: drive.drive.name, status: status)]
 
         case RDPDeviceRedirectionPacketID.deviceIORequest:
@@ -422,28 +433,51 @@ final class RDPDeviceRedirectionSession: @unchecked Sendable {
     }
 
     /// The device list: empty until drives are due, then each drive whose folder exists,
-    /// once per Server Announce.
-    private func announceDevices(includingDrives: Bool) -> [RDPDeviceRedirectionEvent] {
-        var devices: [RDPDeviceAnnounce] = []
-        var events: [RDPDeviceRedirectionEvent] = []
-        if includingDrives, !hasAnnouncedDrives {
-            hasAnnouncedDrives = true
-            let available = ioQueue.sync { drives.filter { $0.resolveRoot() } }
-            for drive in drives {
-                if available.contains(where: { $0 === drive }) {
-                    announcedDriveIDs.insert(drive.deviceID)
-                    devices.append(.drive(deviceID: drive.deviceID, name: drive.drive.name))
-                } else {
-                    events.append(.driveUnavailable(name: drive.drive.name))
+    /// once per Server Announce. Resolving a folder can block, as on a network volume that
+    /// stopped answering, so that list goes out from the I/O queue, after the I/O queued
+    /// before it, and the drives it leaves out reach `takePendingEvents`.
+    private func announceDevices(includingDrives: Bool) {
+        guard includingDrives, !hasAnnouncedDrives, !drives.isEmpty else {
+            send(RDPDeviceRedirectionDeviceListAnnounce(devices: []).encoded())
+            return
+        }
+        hasAnnouncedDrives = true
+        let serverAnnounceCount = lock.withLock { self.serverAnnounceCount }
+        let drives = drives
+        ioQueue.async {
+            let available = drives.filter { $0.resolveRoot() }
+            let unavailable = drives.filter { drive in !available.contains { $0 === drive } }
+            let hasEvents = self.lock.withLock {
+                // The server has started over since; its next User Logged On announces the drives.
+                guard self.serverAnnounceCount == serverAnnounceCount else {
+                    return false
                 }
+                self.announcedDriveIDs.formUnion(available.map(\.deviceID))
+                self.pendingEvents += unavailable.map { .driveUnavailable(name: $0.drive.name) }
+                // Under the lock, so it reaches the event loop before the replies to a later
+                // Server Announce.
+                self.send(RDPDeviceRedirectionDeviceListAnnounce(devices: available.map {
+                    .drive(deviceID: $0.deviceID, name: $0.drive.name)
+                }).encoded())
+                return !unavailable.isEmpty
+            }
+            if hasEvents {
+                self.pendingEventHandler()
             }
         }
-        send(RDPDeviceRedirectionDeviceListAnnounce(devices: devices).encoded())
-        return events
+    }
+
+    /// The events the I/O queue left for the connection thread: shared folders a drive announce
+    /// found missing.
+    func takePendingEvents() -> [RDPDeviceRedirectionEvent] {
+        lock.withLock {
+            defer { pendingEvents = [] }
+            return pendingEvents
+        }
     }
 
     private func serve(_ request: RDPDeviceIORequest) {
-        guard announcedDriveIDs.contains(request.deviceID),
+        guard lock.withLock({ announcedDriveIDs.contains(request.deviceID) }),
               let drive = drives.first(where: { $0.deviceID == request.deviceID })
         else {
             send(RDPDeviceIOCompletion(

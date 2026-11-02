@@ -2273,6 +2273,37 @@ struct MockKRDPServerTests {
         #expect(reportedOnSessionThread.value == true)
     }
 
+    /// A shared folder missing at User Logged On is left out of the drive announce, which goes
+    /// out from the drive I/O queue; that queue wakes the session thread, which reports the
+    /// folder while the session runs, with no more traffic from the server.
+    @Test func clientWarnsOfASharedFolderMissingAtLogon() throws {
+        let missing = FileManager.default.temporaryDirectory.appendingPathComponent("rdpkit-missing-\(UUID().uuidString)")
+        let liveReport = RDPLiveConnectionReport()
+        let cancellation = RDPConnectionCancellation()
+        let run = try runMock(.init(audioEnabled: true), {
+            $0.sharedDrives = [RDPSharedDrive(name: "Gone", url: missing)]
+            $0.graphicsFrameCaptureLimit = nil
+        }, client: { configuration in
+            // The live session runs until the warning shows, or for 10 seconds.
+            Thread.detachNewThread {
+                let deadline = Date() + 10
+                while Date() < deadline,
+                      liveReport.snapshot?.warnings.contains(where: { $0.code == "shared-drive-unavailable" }) != true
+                {
+                    Thread.sleep(forTimeInterval: 0.01)
+                }
+                cancellation.cancel()
+            }
+            return RDPSessionClient().run(configuration: configuration, liveReport: liveReport, cancellation: cancellation)
+        })
+
+        #expect(run.report.warnings.filter { $0.code == "shared-drive-unavailable" }.map(\.message) == [
+            "Gone: the shared folder does not exist",
+        ])
+        #expect(run.report.error == "cancelled")
+        #expect(run.transcript.deviceRedirectionClientMessages.last == "rdpdr-device-list-announce")
+    }
+
     /// The traffic a Windows server sees once a session is up: input, clipboard
     /// both ways, display control, device redirection and audio. The mock
     /// sends the first frame only after all of it arrived.

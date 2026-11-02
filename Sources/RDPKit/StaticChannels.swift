@@ -150,20 +150,31 @@ extension RDPClientConnection {
             return
         }
         do {
-            for event in try deviceRedirection.receive(RDPDeviceRedirectionPDU.parse(from: payload)) {
-                switch event {
-                case let .driveUnavailable(name):
-                    appendWarning(code: "shared-drive-unavailable", message: "\(name): the shared folder does not exist")
-                case let .driveRejected(name, status):
-                    appendWarning(
-                        code: "shared-drive-rejected",
-                        message: "\(name): the server refused the drive with 0x\(String(format: "%08x", status))"
-                    )
-                }
-            }
+            try recordDeviceRedirectionEvents(deviceRedirection.receive(RDPDeviceRedirectionPDU.parse(from: payload)))
         } catch {
             recordChannelError(RDPStaticVirtualChannel.rdpdr.name, error)
             self.deviceRedirection = nil
+        }
+    }
+
+    /// Records the events device redirection's I/O queue left for the session thread.
+    func deliverPendingDeviceRedirectionEvents() {
+        if let deviceRedirection {
+            recordDeviceRedirectionEvents(deviceRedirection.takePendingEvents())
+        }
+    }
+
+    private func recordDeviceRedirectionEvents(_ events: [RDPDeviceRedirectionEvent]) {
+        for event in events {
+            switch event {
+            case let .driveUnavailable(name):
+                appendWarning(code: "shared-drive-unavailable", message: "\(name): the shared folder does not exist")
+            case let .driveRejected(name, status):
+                appendWarning(
+                    code: "shared-drive-rejected",
+                    message: "\(name): the server refused the drive with 0x\(String(format: "%08x", status))"
+                )
+            }
         }
     }
 }

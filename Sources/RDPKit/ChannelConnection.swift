@@ -194,6 +194,8 @@ extension RDPClientConnection {
                     computerName: clientName,
                     drives: configuration.sharedDrives,
                     chunkSize: staticChannelChunkSize,
+                    // Its events go out from the session loop, which the wake runs.
+                    pendingEventHandler: transport.wake,
                     isCancelled: transport.pollCancellation
                 )
             default:

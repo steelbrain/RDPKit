@@ -553,25 +553,35 @@ import Testing
 
 @Test func deviceRedirectionSessionAnnouncesDrivesAfterLogonAndServesThem() throws {
     let drive = try TemporaryDrive()
-    let channel = EmbeddedChannel()
-    try channel.connect(to: SocketAddress(ipAddress: "127.0.0.1", port: 3389)).wait()
-    let session = RDPDeviceRedirectionSession(
-        userChannelID: 1006,
-        staticChannelID: 1004,
-        channel: channel,
-        computerName: "RDPKIT",
-        drives: [RDPSharedDrive(name: "Docs", url: drive.root), RDPSharedDrive(name: "Gone", url: drive.base.appendingPathComponent("gone"))]
+    let pendingEventCount = Locked(0)
+    // The handler runs on the I/O queue, which it holds until `resume`, so the requests below
+    // queue behind it whatever the scheduling.
+    let held = DispatchSemaphore(value: 0)
+    let resume = DispatchSemaphore(value: 0)
+    defer { resume.signal() }
+    let loopback = try LoopbackDriveSession(
+        drives: [RDPSharedDrive(name: "Docs", url: drive.root), RDPSharedDrive(name: "Gone", url: drive.base.appendingPathComponent("gone"))],
+        pendingEventHandler: {
+            pendingEventCount.withLock { $0 += 1 }
+            held.signal()
+            resume.wait()
+        }
     )
+    defer { loopback.close() }
+    let session = loopback.session
 
     for packet: [UInt8] in [
         [0x72, 0x44, 0x6E, 0x49, 0x01, 0x00, 0x0C, 0x00, 0x78, 0x56, 0x34, 0x12],
         [0x72, 0x44, 0x50, 0x53],
         [0x72, 0x44, 0x43, 0x43, 0x01, 0x00, 0x0C, 0x00, 0x78, 0x56, 0x34, 0x12],
+        [0x72, 0x44, 0x4C, 0x55],
     ] {
         #expect(try session.receive(RDPDeviceRedirectionPDU.parse(from: Data(packet))).isEmpty)
     }
-    let events = try session.receive(RDPDeviceRedirectionPDU.parse(from: Data([0x72, 0x44, 0x4C, 0x55])))
-    #expect(events == [.driveUnavailable(name: "Gone")])
+    // The drives are announced from the I/O queue, which reports the missing folder.
+    #expect(held.wait(timeout: .now() + 10) == .success)
+    #expect(session.takePendingEvents() == [.driveUnavailable(name: "Gone")])
+    #expect(session.takePendingEvents().isEmpty)
 
     var create = Data([0x72, 0x44, 0x52, 0x49])
     create.append(driveRequest(major: RDPDriveMajorFunction.create, body: createBody(
@@ -582,9 +592,10 @@ import Testing
     var unknownDevice = Data([0x72, 0x44, 0x52, 0x49])
     unknownDevice.append(driveRequest(deviceID: 2, major: RDPDriveMajorFunction.read, body: Data(count: 32)).encodedHeaderAndBody)
     try session.receive(RDPDeviceRedirectionPDU.parse(from: unknownDevice))
-    session.waitForDriveIO()
+    resume.signal()
 
-    let sent = try sentDeviceRedirectionPDUs(channel)
+    let sent = try loopback.sentPDUs()
+    #expect(pendingEventCount.value == 1)
     #expect(sent.map(\.typeName) == [
         "rdpdr-client-id-confirm",
         "rdpdr-client-name",
@@ -598,7 +609,8 @@ import Testing
     #expect(sent[4] == RDPDeviceRedirectionPDU.parse(fromEncoded: RDPDeviceRedirectionDeviceListAnnounce(devices: [
         .drive(deviceID: 1, name: "Docs"),
     ]).encoded()))
-    // The unknown device is answered on the connection thread, before the queued create.
+    // The unknown device is answered on the connection thread, while the create waits in the
+    // I/O queue.
     #expect(sent[5].payload.littleEndianUInt32(at: 8) == RDPNTStatus.unsuccessful)
     #expect(sent[6].payload.littleEndianUInt32(at: 8) == RDPNTStatus.success)
     #expect(FileManager.default.fileExists(atPath: drive.root.appendingPathComponent("hello.txt").path))
@@ -608,15 +620,9 @@ import Testing
 /// forgot are closed, as the session's end would close them.
 @Test func deviceRedirectionSessionAnnouncesDrivesAgainWhenTheServerStartsOver() throws {
     let drive = try TemporaryDrive()
-    let channel = EmbeddedChannel()
-    try channel.connect(to: SocketAddress(ipAddress: "127.0.0.1", port: 3389)).wait()
-    let session = RDPDeviceRedirectionSession(
-        userChannelID: 1006,
-        staticChannelID: 1004,
-        channel: channel,
-        computerName: "RDPKIT",
-        drives: [RDPSharedDrive(name: "Docs", url: drive.root)]
-    )
+    let loopback = try LoopbackDriveSession(drives: [RDPSharedDrive(name: "Docs", url: drive.root)])
+    defer { loopback.close() }
+    let session = loopback.session
     func setUp() throws {
         for packet: [UInt8] in [
             [0x72, 0x44, 0x6E, 0x49, 0x01, 0x00, 0x0C, 0x00, 0x78, 0x56, 0x34, 0x12],
@@ -626,6 +632,7 @@ import Testing
         ] {
             try session.receive(RDPDeviceRedirectionPDU.parse(from: Data(packet)))
         }
+        session.waitForDriveIO()
     }
 
     try setUp()
@@ -639,9 +646,8 @@ import Testing
     session.waitForDriveIO()
     #expect(FileManager.default.fileExists(atPath: drive.root.appendingPathComponent("scratch.txt").path))
     try setUp()
-    session.waitForDriveIO()
 
-    let announcements = try sentDeviceRedirectionPDUs(channel).filter { $0.typeName == "rdpdr-device-list-announce" }
+    let announcements = try loopback.sentPDUs().filter { $0.typeName == "rdpdr-device-list-announce" }
     let docs = RDPDeviceRedirectionPDU.parse(fromEncoded: RDPDeviceRedirectionDeviceListAnnounce(devices: [
         .drive(deviceID: 1, name: "Docs"),
     ]).encoded())
@@ -719,6 +725,38 @@ import Testing
     #expect(!stalled.channel.isActive)
 }
 
+/// A User Logged On leaves resolving the shared folders to the I/O queue, so it does not wait
+/// for the I/O queued before it, here replies the server does not read. A Server Announce that
+/// overtakes that drive announce drops it: the server has forgotten what it would announce.
+@Test func deviceRedirectionSessionAnnouncesDrivesWithoutWaitingForDriveIO() throws {
+    let drive = try TemporaryDrive()
+    let stalled = try StalledDriveSession(drive, alsoSharing: [
+        RDPSharedDrive(name: "Gone", url: drive.base.appendingPathComponent("gone")),
+    ])
+    defer { stalled.close() }
+    #expect(stalled.session.takePendingEvents() == [.driveUnavailable(name: "Gone")])
+
+    let finished = DispatchSemaphore(value: 0)
+    DispatchQueue.global().async {
+        // The server starts over, and over again.
+        for packet: [UInt8] in [
+            [0x72, 0x44, 0x6E, 0x49, 0x01, 0x00, 0x0C, 0x00, 0x78, 0x56, 0x34, 0x12],
+            [0x72, 0x44, 0x50, 0x53],
+            [0x72, 0x44, 0x43, 0x43, 0x01, 0x00, 0x0C, 0x00, 0x78, 0x56, 0x34, 0x12],
+            [0x72, 0x44, 0x4C, 0x55],
+            [0x72, 0x44, 0x6E, 0x49, 0x01, 0x00, 0x0C, 0x00, 0x78, 0x56, 0x34, 0x12],
+        ] {
+            _ = try? stalled.session.receive(RDPDeviceRedirectionPDU.parse(from: Data(packet)))
+        }
+        finished.signal()
+    }
+    #expect(finished.wait(timeout: .now() + 5) == .success)
+    // Closing fails the replies in flight, which lets the I/O queue reach the drive announce.
+    stalled.channel.close(promise: nil)
+    stalled.session.waitForDriveIO()
+    #expect(stalled.session.takePendingEvents().isEmpty)
+}
+
 // MARK: Helpers
 
 /// A device redirection session sharing a drive over a connection whose server never reads,
@@ -731,7 +769,7 @@ private final class StalledDriveSession: Sendable {
     /// Once set, the session's next cancellation check closes the connection.
     let cancelled: Locked<Bool>
 
-    init(_ drive: TemporaryDrive) throws {
+    init(_ drive: TemporaryDrive, alsoSharing otherDrives: [RDPSharedDrive] = []) throws {
         let readByteCount = RDPSharedDriveDevice.maximumReadByteCount
         try Data(count: readByteCount).write(to: drive.root.appendingPathComponent("large.bin"))
         let server = try ServerBootstrap(group: MultiThreadedEventLoopGroup.singleton)
@@ -751,7 +789,7 @@ private final class StalledDriveSession: Sendable {
             staticChannelID: 1004,
             channel: channel,
             computerName: "RDPKIT",
-            drives: [RDPSharedDrive(name: "Docs", url: drive.root)],
+            drives: [RDPSharedDrive(name: "Docs", url: drive.root)] + otherDrives,
             isCancelled: {
                 guard cancelled.value else {
                     return false
@@ -768,6 +806,7 @@ private final class StalledDriveSession: Sendable {
         ] {
             try session.receive(RDPDeviceRedirectionPDU.parse(from: Data(packet)))
         }
+        session.waitForDriveIO()
         try session.receive(deviceIORequestPDU(driveRequest(major: RDPDriveMajorFunction.create, body: createBody(
             path: "\\large.bin",
             disposition: RDPDriveCreateDisposition.open
@@ -785,6 +824,86 @@ private final class StalledDriveSession: Sendable {
     func close() {
         channel.close(promise: nil)
         server.close(promise: nil)
+    }
+}
+
+/// A device redirection session sharing `drives` over a loopback connection whose server keeps
+/// what the client sends. The session sends from its I/O queue as well as the calling thread,
+/// which an `EmbeddedChannel`, confined to one thread, does not allow.
+private final class LoopbackDriveSession {
+    let session: RDPDeviceRedirectionSession
+    private let server: Channel
+    private let channel: Channel
+    private let receiver: ReceivingHandler
+
+    init(drives: [RDPSharedDrive], pendingEventHandler: @escaping @Sendable () -> Void = {}) throws {
+        let receiver = ReceivingHandler()
+        self.receiver = receiver
+        server = try ServerBootstrap(group: MultiThreadedEventLoopGroup.singleton)
+            .childChannelInitializer { channel in
+                channel.eventLoop.makeCompletedFuture {
+                    try channel.pipeline.syncOperations.addHandler(receiver)
+                }
+            }
+            .bind(host: "127.0.0.1", port: 0)
+            .wait()
+        channel = try ClientBootstrap(group: MultiThreadedEventLoopGroup.singleton)
+            .connect(host: "127.0.0.1", port: try #require(server.localAddress?.port))
+            .wait()
+        session = RDPDeviceRedirectionSession(
+            userChannelID: 1006,
+            staticChannelID: 1004,
+            channel: channel,
+            computerName: "RDPKIT",
+            drives: drives,
+            pendingEventHandler: pendingEventHandler
+        )
+    }
+
+    /// What the session sent, once the drive I/O queued so far is done. The connection closes
+    /// behind the writes queued on its event loop, so the server has them all once it sees the
+    /// close.
+    func sentPDUs() throws -> [RDPDeviceRedirectionPDU] {
+        session.waitForDriveIO()
+        try channel.close().wait()
+        #expect(receiver.closed.wait(timeout: .now() + 10) == .success)
+        var pdus: [RDPDeviceRedirectionPDU] = []
+        var reassembler = RDPStaticVirtualChannelReassembler()
+        var received = receiver.received.value
+        while let packet = try received.nextPacket() {
+            let chunk = try RDPStaticVirtualChannelPDU.parse(
+                fromUserData: mcsSendDataRequest(fromTPKT: packet).userData,
+                maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumPayloadByteCount
+            )
+            if let message = try reassembler.append(chunk, maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumPayloadByteCount) {
+                try pdus.append(RDPDeviceRedirectionPDU.parse(from: message.payload))
+            }
+        }
+        return pdus
+    }
+
+    func close() {
+        channel.close(promise: nil)
+        server.close(promise: nil)
+    }
+}
+
+/// Keeps what the client of a test server sends, and signals once its connection closes.
+private final class ReceivingHandler: ChannelInboundHandler, Sendable {
+    typealias InboundIn = ByteBuffer
+
+    let received = Locked(ClientByteStream())
+    let closed = DispatchSemaphore(value: 0)
+
+    func channelRead(context: ChannelHandlerContext, data: NIOAny) {
+        var buffer = unwrapInboundIn(data)
+        let bytes = buffer.readBytes(length: buffer.readableBytes) ?? []
+        received.withLock { $0.append(bytes) }
+    }
+
+    func channelInactive(context: ChannelHandlerContext) {
+        closed.signal()
+        context.fireChannelInactive()
     }
 }
 
@@ -996,21 +1115,4 @@ private func lengthPrefixed(_ data: Data) -> Data {
     body.appendLittleEndianUInt32(UInt32(data.count))
     body.append(data)
     return body
-}
-
-private func sentDeviceRedirectionPDUs(_ channel: EmbeddedChannel) throws -> [RDPDeviceRedirectionPDU] {
-    channel.embeddedEventLoop.run()
-    var pdus: [RDPDeviceRedirectionPDU] = []
-    var reassembler = RDPStaticVirtualChannelReassembler()
-    while var buffer = try channel.readOutbound(as: ByteBuffer.self) {
-        let packet = Data(buffer.readBytes(length: buffer.readableBytes) ?? [])
-        let chunk = try RDPStaticVirtualChannelPDU.parse(
-            fromUserData: mcsSendDataRequest(fromTPKT: packet).userData,
-            maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumPayloadByteCount
-        )
-        if let message = try reassembler.append(chunk, maximumChunkByteCount: RDPStaticVirtualChannelPDU.maximumPayloadByteCount) {
-            try pdus.append(RDPDeviceRedirectionPDU.parse(from: message.payload))
-        }
-    }
-    return pdus
 }
