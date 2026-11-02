@@ -208,3 +208,48 @@ func aSessionCancelledThroughItsCancellationStillDelivers() async throws {
     await drainMainQueue()
     #expect(received.snapshot == ["refused"])
 }
+
+/// `waitUntilEnded(timeout:)` returns once the session's thread is done with `run` and with
+/// `onEnd`, for every caller waiting; false when the time runs out first, and true at once for
+/// a session that never started or has ended.
+@MainActor
+@Test(.timeLimit(.minutes(1)))
+func aLiveSessionCanBeWaitedOnUntilItEnds() async throws {
+    #expect(await RDPLiveSession().waitUntilEnded(timeout: 30))
+
+    let session = RDPLiveSession()
+    let returned = Locked(false)
+    session.start(events: events(Received(), of: session)) { run in
+        while !run.cancellation.isCancelled {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        // As closing the connection takes a moment after the cancellation.
+        Thread.sleep(forTimeInterval: 0.2)
+        returned.withLock { $0 = true }
+        return report(status: "cancelled")
+    }
+    let waitStarted = ContinuousClock.now
+    #expect(await session.waitUntilEnded(timeout: 0.2) == false)
+    #expect(ContinuousClock.now - waitStarted < .seconds(10))
+    async let first = session.waitUntilEnded(timeout: 30)
+    async let second = session.waitUntilEnded(timeout: 30)
+    session.cancel()
+    #expect(await [first, second] == [true, true])
+    #expect(returned.value)
+    #expect(await session.waitUntilEnded(timeout: 0))
+
+    let ending = RDPLiveSession()
+    let endReturned = Locked(false)
+    ending.start(events: RDPLiveSession.Events(
+        onFrameDecoded: { _, _, _, _ in },
+        onFrameDecodeFailed: { _, _ in },
+        onEnd: { _ in
+            Thread.sleep(forTimeInterval: 0.2)
+            endReturned.withLock { $0 = true }
+        }
+    )) { _ in
+        report(status: "success")
+    }
+    #expect(await ending.waitUntilEnded(timeout: 30))
+    #expect(endReturned.value)
+}

@@ -186,6 +186,8 @@ session.start(
 }
 // Leaving the session: nothing delivered runs after this.
 session.cancel()
+// Before quitting: the session thread tells the server and closes the connection.
+_ = await session.waitUntilEnded(timeout: 2)
 ```
 
 The configuration also sets the keyboard the server assumes and the folders it

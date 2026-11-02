@@ -64,6 +64,8 @@ public final class RDPLiveSession: @unchecked Sendable {
     private let lock = NSLock()
     private var isDelivering = true
     private var hasStarted = false
+    private var hasEnded = false
+    private var endWaiters: [UUID: CheckedContinuation<Bool, Never>] = [:]
 
     /// `threadName` names the session's thread, as debuggers and crash reports show it.
     public init(threadName: String = "RDPKit session") {
@@ -108,7 +110,38 @@ public final class RDPLiveSession: @unchecked Sendable {
         cancellation.cancel()
     }
 
+    /// Waits until the session's thread is done, up to `timeout` seconds: true once `run` has
+    /// returned, which closes the connection, and `onEnd` too, if it was called; false when
+    /// `timeout` passes first. A session that never started returns true at once. An app that
+    /// quits waits on this after `cancel()`, so the session's thread tells the server the
+    /// session is over and closes the connection, rather than the server seeing it drop when
+    /// the process exits.
+    public func waitUntilEnded(timeout: TimeInterval) async -> Bool {
+        let id = UUID()
+        // Clamped to some 30 years, which DispatchTime holds.
+        let seconds = timeout.isNaN ? 0 : min(max(timeout, 0), 1_000_000_000)
+        return await withCheckedContinuation { continuation in
+            let isDone = lock.withLock {
+                guard hasStarted, !hasEnded else {
+                    return true
+                }
+                endWaiters[id] = continuation
+                return false
+            }
+            if isDone {
+                continuation.resume(returning: true)
+                return
+            }
+            DispatchQueue.global().asyncAfter(deadline: .now() + seconds) { [self] in
+                lock.withLock { endWaiters.removeValue(forKey: id) }?.resume(returning: false)
+            }
+        }
+    }
+
     private func runSession(events: Events, run: @Sendable (Run) -> RDPConnectionReport) {
+        defer {
+            end()
+        }
         let cancellation = cancellation
         let decodeQueue = RDPFrameDecodeQueue(
             shouldCancel: {
@@ -166,5 +199,16 @@ public final class RDPLiveSession: @unchecked Sendable {
             }
         }
         events.onEnd(report)
+    }
+
+    private func end() {
+        let waiters = lock.withLock {
+            hasEnded = true
+            defer { endWaiters.removeAll() }
+            return Array(endWaiters.values)
+        }
+        for waiter in waiters {
+            waiter.resume(returning: true)
+        }
     }
 }

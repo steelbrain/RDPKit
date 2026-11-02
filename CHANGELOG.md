@@ -312,7 +312,10 @@
   `deliver(_:)` puts the app's own main-thread work in the same order.
   `cancel()` drops whatever has not run yet, so a session the app left
   changes nothing. `onEnd` gets the report on the session thread unless the
-  session was cancelled.
+  session was cancelled. `waitUntilEnded(timeout:)` returns once the session's
+  thread is done and the connection is closed, so an app that quits right
+  after `cancel()` waits until the server has been told rather than for a
+  fixed time.
 
 ### Security
 
