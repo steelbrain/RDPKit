@@ -355,10 +355,14 @@ func deactivatedSessionThatNeverReactivatesFails(closes: Bool, failure: RDPConne
     let updates = (0 ... RDPClientConnection.maximumPendingGraphicsDesktopCount).map { _ in
         KRdpCapture.graphicsPacket(KRdpCapture.alphaUpdate())
     }
+    // The bound ends the run at the 17th update; the timeout only ends a run the bound misses.
+    // The updates must all come before it, and a debug build on a loaded machine takes seconds
+    // over their 17 desktops of pixels.
     let run = try KRdpCapture.run(
         appending: [KRdpCapture.graphicsPacket(KRdpCapture.startFrame(id: 1) + KRdpCapture.avc420Update())] + updates,
         frameCaptureLimit: 2,
-        timeoutSeconds: 3
+        timeoutSeconds: 30,
+        guardSeconds: 40
     )
 
     #expect(run.report.error == "server sent more than 16 desktops of updates without ending the frame")
