@@ -158,7 +158,8 @@
   the server announced since.
 - `RDPClipboardLocalFile.read(contentsOf:maximumTotalByteCount:)` reads files
   to publish, at most 32 MiB by default and checked before each file is read,
-  stopping once its task is cancelled. Each keeps its own name in no folder: a
+  a MiB at a time, so a file that grew since is read no more than a byte past
+  the limit, stopping between them once its task is cancelled. Each keeps its own name in no folder: a
   `\`, which `publishLocalFiles` takes for a folder separator, becomes `_`.
   It throws an `RDPClipboardLocalFileReadError`. RDPClient reads and publishes
   copied files through these.

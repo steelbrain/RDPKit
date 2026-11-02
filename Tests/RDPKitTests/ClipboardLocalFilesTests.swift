@@ -82,6 +82,54 @@ private func directory(with files: [String: Data]) throws -> URL {
     }
 }
 
+/// A file that grew past what is left of the limit since its size was read is refused, read no
+/// more than a byte past, a chunk at a time.
+@Test func aLocalFileReadStopsAByteMoreThanTheLimit() throws {
+    let directory = try directory(with: ["large.bin": Data(count: 100), "full.bin": Data(count: 10), "empty.bin": Data()])
+    defer { try? FileManager.default.removeItem(at: directory) }
+    func handle(_ name: String) throws -> FileHandle {
+        try FileHandle(forReadingFrom: directory.appendingPathComponent(name))
+    }
+
+    let large = try handle("large.bin")
+    defer { try? large.close() }
+    #expect(try RDPClipboardLocalFile.contents(of: large, upTo: 10, chunkByteCount: 4) == nil)
+    #expect(try large.offset() == 11)
+    let full = try handle("full.bin")
+    defer { try? full.close() }
+    #expect(try RDPClipboardLocalFile.contents(of: full, upTo: 10, chunkByteCount: 4) == Data(count: 10))
+    let empty = try handle("empty.bin")
+    defer { try? empty.close() }
+    #expect(try RDPClipboardLocalFile.contents(of: empty, upTo: 0, chunkByteCount: 4) == Data())
+}
+
+/// Nor does a cancelled read finish a file it has begun: it stops at the next chunk. A pipe
+/// stands in for the file, so the read waits for each chunk the test writes.
+@Test(.timeLimit(.minutes(1)))
+func aLocalFileReadStopsBetweenChunksOnceItsTaskIsCancelled() async throws {
+    let pipe = Pipe()
+    let chunk = Data("abcd".utf8)
+    let reader = pipe.fileHandleForReading
+    let read = Task.detached {
+        Result { try RDPClipboardLocalFile.contents(of: reader, upTo: 100, chunkByteCount: chunk.count) }
+    }
+    try pipe.fileHandleForWriting.write(contentsOf: chunk)
+    // Cancelled only once the first chunk has been read.
+    while hasBytesToRead(reader) {
+        await Task.yield()
+    }
+    read.cancel()
+    try pipe.fileHandleForWriting.write(contentsOf: chunk)
+    try pipe.fileHandleForWriting.close()
+    let result = await read.value
+    #expect(throws: CancellationError.self) { try result.get() }
+}
+
+private func hasBytesToRead(_ fileHandle: FileHandle) -> Bool {
+    var descriptor = pollfd(fd: fileHandle.fileDescriptor, events: Int16(POLLIN), revents: 0)
+    return poll(&descriptor, 1, 0) > 0
+}
+
 /// A copy begun with an empty publish gets its files unless a newer copy replaced it: a later
 /// publish or a server copy announced since, fetched or not. A server copy that crossed it is
 /// older, and turning fetching off and on is no copy.
