@@ -598,7 +598,8 @@ private func outboundDisplayControlPayloads(_ channel: EmbeddedChannel) throws -
 }
 
 /// A layout of several monitors reaches the server on the session's DisplayControl channel
-/// ([MS-RDPEDISP] 2.2.2.2).
+/// ([MS-RDPEDISP] 2.2.2.2). The session handed out already knows the monitors of KRdp's
+/// first frame, before `onGraphicsFrame` gets it.
 @Test func multiMonitorLayoutReachesTheServer() throws {
     func drdynvc(_ payload: Data) -> Data {
         mcsSendDataIndication(
@@ -623,6 +624,7 @@ private func outboundDisplayControlPayloads(_ channel: EmbeddedChannel) throws -
     // The capture after its CapsConfirm (event 38), up to its first frame.
     let firstFrame = try KRdpCapture.events()[39...].map { try #require($0.bytes) }
     let sendErrors = Locked([String]())
+    let monitorsAtReady = Locked<(monitors: [RDPRemoteMonitor], issues: RDPRemoteMonitorLayoutIssues)?>(nil)
     let run = try KRdpCapture.run(
         prefix: 39,
         appending: [
@@ -636,6 +638,7 @@ private func outboundDisplayControlPayloads(_ channel: EmbeddedChannel) throws -
             }
         },
         onDisplayControlReady: { session in
+            monitorsAtReady.withLock { $0 = (session.serverMonitors, session.serverMonitorLayoutIssues) }
             do {
                 try session.send(layout)
             } catch {
@@ -646,6 +649,10 @@ private func outboundDisplayControlPayloads(_ channel: EmbeddedChannel) throws -
 
     #expect(sendErrors.value.isEmpty)
     #expect(run.clientPackets.contains { $0.range(of: layoutData) != nil })
+    let krdpMonitors = [RDPRemoteMonitor(rect: RDPFrameRect(left: 0, top: 0, right: 3840, bottom: 2400), isPrimary: true)]
+    #expect(monitorsAtReady.value?.monitors == krdpMonitors)
+    #expect(monitorsAtReady.value?.issues == [])
+    #expect(run.report.rdpGraphicsFirstFrame?.monitors == krdpMonitors)
 }
 
 @Test func displayControlSessionSaysWhetherItSentALayout() throws {
@@ -703,6 +710,11 @@ private func outboundDisplayControlPayloads(_ channel: EmbeddedChannel) throws -
         )
     }
     let session = makeSession()
+    #expect(session.serverMonitors.isEmpty)
+    let serverMonitors = [RDPRemoteMonitor(rect: RDPFrameRect(left: 0, top: 0, right: 1280, bottom: 720), isPrimary: true)]
+    layouts.setServerMonitors(serverMonitors, issues: .clipped)
+    #expect(session.serverMonitors == serverMonitors)
+    #expect(session.serverMonitorLayoutIssues == .clipped)
     let sentLayout = try RDPMonitorLayout(monitors: [
         .singlePrimary(width: 1920, height: 1080),
         RDPDisplayControlMonitorLayout(left: 1920, width: 1280, height: 1024),

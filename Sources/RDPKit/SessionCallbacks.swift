@@ -34,7 +34,8 @@ public typealias RDPInputSessionHandler = @Sendable (RDPInputSession) -> Void
 /// and so has the first graphics frame, so the first layout sent finds an output to resize:
 /// KRdp 6.8 ignores a layout that arrives before its video stream starts. It runs before
 /// `onGraphicsFrame` gets that frame, so a handler whose first frame fails to decode can ask
-/// for a keyframe (`RDPDisplayControlSession.resendLayout()`).
+/// for a keyframe (`RDPDisplayControlSession.resendLayout()`); the session's
+/// `serverMonitors` already hold that frame's monitors.
 public typealias RDPDisplayControlSessionHandler = @Sendable (RDPDisplayControlSession) -> Void
 public typealias RDPClipboardSessionHandler = @Sendable (RDPClipboardSession) -> Void
 public typealias RDPClipboardTextHandler = @Sendable (String) -> Void

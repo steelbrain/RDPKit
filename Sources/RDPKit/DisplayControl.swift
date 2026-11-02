@@ -570,12 +570,14 @@ private func cappedAreaProduct(_ lhs: UInt32, _ rhs: UInt32, _ other: UInt32) ->
     return second.overflow ? UInt64.max : second.partialValue
 }
 
-/// The layouts one connection asked its server for, shared by the display control sessions it
-/// hands out; read and written from any thread.
+/// The layouts one connection asked its server for, and the monitors the server laid out,
+/// shared by the display control sessions it hands out; read and written from any thread.
 final class RDPDisplayLayoutRecord: @unchecked Sendable {
     let connectLayout: RDPMonitorLayout
     private let lock = NSLock()
     private var sentLayout: RDPMonitorLayout?
+    private var monitors: [RDPRemoteMonitor] = []
+    private var monitorLayoutIssues: RDPRemoteMonitorLayoutIssues = []
 
     init(connectLayout: RDPMonitorLayout) {
         self.connectLayout = connectLayout
@@ -584,6 +586,17 @@ final class RDPDisplayLayoutRecord: @unchecked Sendable {
     var lastSentLayout: RDPMonitorLayout? {
         get { lock.withLock { sentLayout } }
         set { lock.withLock { sentLayout = newValue } }
+    }
+
+    var serverMonitors: (monitors: [RDPRemoteMonitor], issues: RDPRemoteMonitorLayoutIssues) {
+        lock.withLock { (monitors, monitorLayoutIssues) }
+    }
+
+    func setServerMonitors(_ monitors: [RDPRemoteMonitor], issues: RDPRemoteMonitorLayoutIssues) {
+        lock.withLock {
+            self.monitors = monitors
+            monitorLayoutIssues = issues
+        }
     }
 }
 
@@ -623,6 +636,22 @@ public final class RDPDisplayControlSession: Sendable {
     /// earlier one; nil until one is sent. A server may have refused or changed it.
     public var lastSentLayout: RDPMonitorLayout? {
         layouts.lastSentLayout
+    }
+
+    /// The server's monitors in the graphics output, as its latest ResetGraphics laid them out
+    /// ([MS-RDPEGFX] 2.2.2.14), which the frames after it carry as
+    /// ``RDPGraphicsFrameSnapshot/monitors``. When `onDisplayControlReady` hands out the
+    /// session they are already the first frame's, so a client can choose between one monitor
+    /// and the server's several before sending a layout. Empty before a ResetGraphics and in a
+    /// session without RDPGFX. Read from any thread.
+    public var serverMonitors: [RDPRemoteMonitor] {
+        layouts.serverMonitors.monitors
+    }
+
+    /// What is off about ``serverMonitors``, as a frame's
+    /// ``RDPGraphicsFrameSnapshot/monitorLayoutIssues`` says.
+    public var serverMonitorLayoutIssues: RDPRemoteMonitorLayoutIssues {
+        layouts.serverMonitors.issues
     }
 
     /// Whether this session sends nothing more: the server closed its channel or opened

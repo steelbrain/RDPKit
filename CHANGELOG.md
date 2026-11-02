@@ -6,9 +6,18 @@
 
 - `RDPDisplayControlSession.send(_:)` for an `RDPMonitorLayout` returns a
   discardable `Bool`.
+- `onDisplayControlReady` runs before `onGraphicsFrame` gets the first frame,
+  still only once that frame has arrived, so a handler whose first frame fails
+  to decode can ask for a keyframe. A client that chose its first layout from
+  the monitors of frames it saw before `onDisplayControlReady` reads the
+  session's `serverMonitors` instead.
 
 ### Additions
 
+- `RDPDisplayControlSession.serverMonitors` and `serverMonitorLayoutIssues`
+  hold the server's monitors as its latest ResetGraphics laid them out: the
+  first frame's when `onDisplayControlReady` hands out the session, so a client
+  can keep the server's several monitors rather than send one.
 - `RDPDisplayControlSession.send(_:)` says whether the layout went out, and
   `isEnded` whether the session sends anything more: once the server replaces
   its channel or the connection closes, a layout is for the next session.
@@ -38,10 +47,8 @@
 
 ### Compatibility and fixes
 
-- `onDisplayControlReady` runs before `onGraphicsFrame` gets the first frame,
-  still only once that frame has arrived, so a handler whose first frame fails
-  to decode can ask for a keyframe. RDPClient sends a keyframe request it made
-  before Display Control was ready once it is.
+- RDPClient sends a keyframe request it made before Display Control was ready
+  once it is.
 - `RDPRemoteDisplayViewport` maps an AppKit view's top pixel row: with
   bottom-left coordinates the top edge is inside and the bottom edge outside,
   as `NSMouseInRect` counts them, so hovering or clicking the remote desktop's

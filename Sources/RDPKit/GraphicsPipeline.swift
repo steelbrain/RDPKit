@@ -152,6 +152,8 @@ extension RDPClientConnection {
             }
         case RDPGFXCommandID.endFrame:
             return try RDPGFXEndFramePDU.parse(from: message).frameID
+        case RDPGFXCommandID.resetGraphics:
+            displayLayouts.setServerMonitors(compositor.monitors, issues: compositor.monitorLayoutIssues)
         default:
             break
         }
