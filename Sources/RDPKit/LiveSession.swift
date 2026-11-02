@@ -172,8 +172,10 @@ public final class RDPLiveSession: @unchecked Sendable {
                 continuation.resume(returning: true)
                 return
             }
-            DispatchQueue.global().asyncAfter(deadline: .now() + seconds) { [self] in
-                lock.withLock { endWaiters.removeValue(forKey: id) }?.resume(returning: false)
+            // Weakly, so a long timeout does not keep an ended session alive: until it ends,
+            // its thread holds it, and ending resumes every waiter.
+            DispatchQueue.global().asyncAfter(deadline: .now() + seconds) { [weak self] in
+                self?.lock.withLock { self?.endWaiters.removeValue(forKey: id) }?.resume(returning: false)
             }
         }
     }

@@ -254,6 +254,29 @@ func aLiveSessionCanBeWaitedOnUntilItEnds() async throws {
     #expect(endReturned.value)
 }
 
+/// Waiting with a long timeout does not keep a session alive once it has ended.
+@MainActor
+@Test(.timeLimit(.minutes(1)))
+func aLiveSessionWaitedOnLongIsFreedOnceItEnds() async throws {
+    var session = RDPLiveSession()
+    let proceed = DispatchSemaphore(value: 0)
+    session.start(events: events(Received(), of: session)) { _ in
+        proceed.wait()
+        return report(status: "success")
+    }
+    async let ended = session.waitUntilEnded(timeout: 3600)
+    // Lets the wait start before the session ends.
+    try await Task.sleep(nanoseconds: 100_000_000)
+    proceed.signal()
+    #expect(await ended)
+    // Once its thread is done, only the test holds the session.
+    let deadline = ContinuousClock.now + .seconds(10)
+    while !isKnownUniquelyReferenced(&session), ContinuousClock.now < deadline {
+        try await Task.sleep(nanoseconds: 10_000_000)
+    }
+    #expect(isKnownUniquelyReferenced(&session))
+}
+
 /// A recipient hands work to its object while the object lives, without keeping it alive.
 @MainActor
 @Test(.timeLimit(.minutes(1)))
