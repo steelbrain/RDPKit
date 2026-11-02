@@ -4,522 +4,192 @@
 
 ### Breaking changes
 
-- The session asks the server for a keyframe itself after video fails to
-  decode: an app that resends a layout for one, as RDPClient did, turns
-  `RDPConnectionConfiguration.recoversVideoWithLayoutResend` off or drops its
-  own, so the server is not asked twice.
-- `RDPDisplayControlSession.send(_:)` for an `RDPMonitorLayout` returns a
-  discardable `Bool`. `@discardableResult` does not cover `try?`, so
-  `try? session.send(layout)` now warns that its result is unused, an error
-  under warnings-as-errors: write `_ = try? session.send(layout)`.
-- `onDisplayControlReady` runs before `onGraphicsFrame` gets the first frame,
-  still only once that frame has arrived, so a handler whose first frame fails
-  to decode can ask for a keyframe. A client that chose its first layout from
-  the monitors of frames it saw before `onDisplayControlReady` reads the
-  session's `serverMonitors` instead.
-- Network Level Authentication refuses a server that answers with CredSSP
-  version 2, 3 or 4, as Windows clients do by default, with the new
-  `RDPConnectionFailure.legacyCredSSPVersion` and before sending any
-  credential. Those versions prove the TLS key by sealing the certificate's
-  raw public key, the encryption oracle of CVE-2018-0886.
-  `RDPConnectionConfiguration.legacyCredSSP` accepts them for a server without
-  the 2018 CredSSP update: connect with it off, and on that failure ask the
-  user before connecting again with it on. It covers only that server: a
-  Server Redirection's target answering below version 5 is refused the same
-  way. `RDPLegacyCredSSPConsent` keeps that rule for an app: it offers the
-  old version only after the server connected to answered with it, and
-  allows it only for the next connection to that server once the user
-  agrees. `connectionEnded(report:)` reads the server from the report,
-  `allow()` takes the offer, `allowedTarget` says what was agreed to, and
-  `reset()` forgets both. RDPClient offers Connect Anyway with it.
-- `RDPVideoToolboxFrameDecoder` throws the new
-  `RDPVideoDecodeError.needsCompositor(_:)` for `.surfaceCopy` and `.alpha`
-  snapshots, which it took for empty video samples that stalled the surface's
-  video until a keyframe. `RDPFrameDecodeQueue` already applied them.
-- While `fetchesRemoteCopies` is off, `onClipboardRemoteCopyUnavailable` is
-  called at once, with `isEmpty` true, when the server empties its
-  clipboard; other copies still wait until fetching is back on.
-- When the server's clipboard restarts, its Monitor Ready sets
-  `RDPClipboardSession.fetchesRemoteCopies` back to
-  `clipboardFetchesRemoteCopies` before `onClipboardReady` gets the session
-  again, so a client that decides on another thread fetches nothing the
-  restarted server announces before it has decided again. A client that turned
-  fetching off sets it again in `onClipboardReady`, as on the first start.
+- New `RDPConnectionFailure` cases, which an exhaustive `switch` handles:
+  - `legacyCredSSPVersion(version:)`: Network Level Authentication refuses a
+    server that answers with CredSSP version 2, 3 or 4, as Windows clients
+    do, before sending any credential (CVE-2018-0886).
+    `RDPConnectionConfiguration.legacyCredSSP` accepts them for that server
+    only, never for a Server Redirection's target.
+    `RDPLegacyCredSSPConsent` keeps the rule for an app: connect without it,
+    offer it after this failure, and allow it for the next connection to that
+    server once the user agrees (`connectionEnded(report:)`, `allow()`,
+    `allowedTarget`, `reset()`).
+  - `noConnectionConfirm(reason:)`: the server sent no X.224 Connection
+    Confirm, in place of `connectionClosed`, `connectionLost`, `timedOut` and
+    `protocolViolation` at that stage. `RDPNoConnectionConfirmReason` says what
+    came instead: a close, a reset, nothing, or another protocol's first bytes.
+  - `credSSPClosedAfterCredentials`: the server dropped the connection after
+    NTLM proved the credentials and before answering them, as a CredSSP
+    version 2 server does for a wrong password.
+  - `noFramePresented(framesReceived:lastNotPresentedReason:)`: a live session
+    activated but showed no frame within the timeout, in place of
+    `graphicsFrameHandler` and `timedOut`.
 - `RDPConnectionConfiguration.legacyRSAKeyExchange` is an
-  `RDPLegacyRSAKeyExchange`: `.never` (the default), `.fallback` or
-  `.always`, which is what `true` was. With `.fallback` a certificate that
-  refuses ECDHE gets a second connection within the run, offering only RSA key
-  exchange, before any credential is sent; a Server Redirection's target that
-  refuses it still ends the run with `tlsKeyUsageIncorrect`. RDPClient falls
-  back this way in place of its own retry.
-- Two new `RDPConnectionFailure` cases, which an exhaustive `switch` handles,
-  replace guesses from the stage:
-  - `noConnectionConfirm(reason:)`: the server answered the connection request
-    with no X.224 Connection Confirm. In place of `connectionClosed`,
-    `connectionLost`, `timedOut` and `protocolViolation` at the negotiation
-    stage. `RDPNoConnectionConfirmReason` says what came instead: a close, a
-    reset, nothing, or `unexpectedReply(firstBytes:)`, the first 16 bytes of
-    another protocol's reply, such as an SSH banner. Only that last one means
-    another service for sure; a close or silence can also be a host at its
-    connection limit or a firewall.
-  - `credSSPClosedAfterCredentials`: the server closed or reset the
-    connection during Network Level Authentication after the client's NTLM
-    AUTHENTICATE proved its credentials, before answering them, with no
-    NTSTATUS, as a CredSSP version 2 server rejects a sign-in. The credentials
-    may be wrong. A close before the AUTHENTICATE is still `connectionClosed`
-    or `connectionLost`, and one after the server answered them a plain close.
-- A live session that activates but shows no frame within the timeout ends
-  with the new `RDPConnectionFailure.noFramePresented(framesReceived:lastNotPresentedReason:)`,
-  which an exhaustive `switch` handles: in place of `graphicsFrameHandler`
-  when frames came that the handler could not show, and of `timedOut` when
-  none came or the server did not set up its graphics. A capture run still
-  times out with `timedOut`, and `graphicsFrameHandler` is now only a handler
-  that threw another error. A client can retry such a session, as one with no
-  desktop, without reading the stage and the first frame.
+  `RDPLegacyRSAKeyExchange`: `.never` (the default); `.fallback`, which
+  connects again within the run offering only RSA key exchange when a
+  certificate refuses ECDHE, before any credential is sent; or `.always`,
+  which is what `true` was.
 - The remote-copy handlers, `onClipboardText`, `onClipboardContent`,
   `onClipboardFileGroupDescriptor` and `onClipboardRemoteCopyUnavailable`, get
-  the copy's number as a second argument, so a client no longer keeps the
-  clipboard session to read `deliveredRemoteCopyNumber` in them: write
-  `{ text, copyNumber in }`, or `{ text, _ in }`.
+  the copy's number as a second argument: write `{ text, _ in }`.
+- The session asks the server for a keyframe itself after video fails to
+  decode (see below). An app that resends a layout for one turns
+  `recoversVideoWithLayoutResend` off or drops its own.
+- `onDisplayControlReady` runs before `onGraphicsFrame` gets the first frame,
+  still only once it has arrived. Choose the first layout from the session's
+  `serverMonitors`.
+- `RDPDisplayControlSession.send(_:)` returns a discardable `Bool`, which
+  `try?` does not discard: write `_ = try? session.send(layout)`.
+- `RDPVideoToolboxFrameDecoder` throws `RDPVideoDecodeError.needsCompositor(_:)`
+  for `.surfaceCopy` and `.alpha` snapshots, which it took for empty video.
+- While `fetchesRemoteCopies` is off, a server that empties its clipboard is
+  reported at once, with `isEmpty` true. A restarted server clipboard sets
+  `fetchesRemoteCopies` back to `clipboardFetchesRemoteCopies` before
+  `onClipboardReady`, so a client that turned it off does so there again.
 - `RDPClipboardRemoteFileTransferPlanningError` has a new case,
-  `fileCountLimitExceeded`, which an exhaustive `switch` handles.
-- File-contents answers to streams from
-  `RDPClipboardSession.firstDownloadStreamID` (`0x8000_0000`) up no longer
-  reach `onClipboardFileContents`: those streams are the new download's.
+  `fileCountLimitExceeded`. File-contents answers to streams from
+  `RDPClipboardSession.firstDownloadStreamID` (`0x8000_0000`) up go to the new
+  download instead of `onClipboardFileContents`.
 
 ### Additions
 
-- `RDPDisplayControlSession.serverMonitors` and `serverMonitorLayoutIssues`
-  hold the server's monitors as its latest ResetGraphics laid them out: the
-  first frame's when `onDisplayControlReady` hands out the session, so a client
-  can keep the server's several monitors rather than send one.
-- `RDPDisplayControlSession.send(_:)` says whether the layout went out, and
-  `isEnded` whether the session sends anything more: once the server replaces
-  its channel or the connection closes, a layout is for the next session.
-  `send(_:)` for an `RDPDisplayRequest` returns a discardable `Bool` too,
-  false also when the server's capabilities refuse the request.
-  `RDPDisplayRequest.monitorLayout` is public, so a request goes through it.
-- `RDPRemoteMonitor.index` is the monitor's place in the server's list, which
-  stays put when RDPKit leaves out a monitor with nothing in the graphics
-  output, so a client numbers displays as the server does.
-- `RDPMonitorLayout(remoteMonitors:scaleFactors:)` makes a layout of the
-  server's monitors, from a frame or the report, to keep or change them through
-  Display Control, and `formsOneGroup` is public.
-- Frames' `monitorLayoutIssues` and the report's `rdpMonitorLayoutIssues` say
-  what is off about the server's monitor layout: a monitor RDPKit cut to the
-  graphics output, monitors that overlap, no or several primary monitors, or
-  part of the output on no monitor. KRdp's exclusive right and bottom edges
-  count as exact: KRdp 6.8 always sends one monitor.
-- `RDPConnectionConfiguration.receivesServerMonitorLayout` asks for the
-  server's Monitor Layout PDU without sending a layout. Windows 11 and
-  gnome-remote-desktop send their desktop; KRdp sends the size the client asked
-  for, not the one it streams.
-- Keyframe recovery: once the frame handler throws
-  `RDPGraphicsFrameNotPresented` for a video frame, as the new
-  `RDPFrameDecodeCompletion.requirePresented()` does for a failed decode, the
-  session sends `RDPDisplayControlSession.requestKeyframe()`'s layout, which
-  keeps the server's desktop as it is: the layout last sent while it is
-  unanswered, otherwise that layout again when the server shows the monitors
-  it asked for, or the server's one monitor at the scale last sent; a server
-  that lists no monitors, as MS-RDPEGFX allows, has one of its graphics
-  output's size. Several monitors laid out otherwise get no request: the
-  server never says their scales, and asking for any could change them. It
-  sends at most one every 3 seconds and 3 until video decodes again, holds one
-  until Display Control is handed out, and `rdpKeyframeRequestCount` counts
-  them.
-  Windows 11 answered with a ResetGraphics and an IDR 0.23 s later, the
-  desktop unchanged (observed live).
-- `RDPDisplayControlSession.isLastSentLayoutPending` says whether the layout
-  last sent is still unanswered: until a ResetGraphics lays out its monitors,
-  or, from a server that changes what it is asked for, until one has come
-  for it and each layout before it. A ResetGraphics for an earlier layout
-  leaves it pending, so the keyframe request asks for it rather than the
-  size the window left. Frames'
-  `graphicsResetCount`, also on `RDPFrameMetadata` and the session, counts
-  the connection's ResetGraphics PDUs, so a client sees the server lay out its
-  graphics again even to the same size and monitors.
-- `RDPDisplayControlSession.resendLayout()` sends `lastSentLayout` again, or
-  `connectLayout`, the layout the connection started with. Windows 11 and
-  gnome-remote-desktop answer it with a keyframe, which they send no other way
-  after video fails to decode.
-
-- `RDPRemoteDisplayViewport.sourceRect` and
-  `RDPFrameSampleBufferFactory.sourceRect` show part of the remote desktop,
-  such as one of its monitors: `init(frame:monitor:bounds:coordinateOrigin:)`
-  maps input within an `RDPRemoteMonitor`, and the factory crops the picture to
-  it.
-- `RDPRemoteDisplayViewport.backingScaleFactor` puts `contentRect` on a whole
-  screen pixel, keeping its size, so a desktop shown one to one in a view of
-  odd width is not drawn half a pixel off and blurred; `remotePoint(from:)`
-  maps where it is drawn. `nearestRemotePoint(from:)` maps a point past the
-  desktop, such as a drag's, to its nearest pixel by the viewport's own edge
-  convention, so a drag below a `.bottomLeft` view reaches the bottom row.
-- The report's `rdpLogonNotification` says the server notified that a user
-  logged on, and `rdpLogonErrorInfo` holds its latest logon error
-  notification, as sent. Without Network Level Authentication a server
-  activates the session whatever the password, so activation does not say
-  the sign-in worked; a user who logs on at the server's own logon screen is
-  notified too.
-- The report's `rdpKeyboardIndicators` holds the toggle keys the server last
-  said are on, so a client can set Caps Lock again when it drifts.
-  `RDPToggleKeyFlags` is `Encodable` and `Hashable`. `RDPInputSession` has them
-  too, as `serverToggleKeys`, readable from any thread, and
-  `RDPRemoteInputView` synchronizes the toggle keys before the next key once
-  the server says its Caps Lock changed away from the Mac's, as another client
-  of the session can make it.
-- The report's `rdpGraphicsFailureUpdateFirstMessageIndex` and
-  `rdpGraphicsFailureUpdateMessageCount` say where a failing graphics update's
-  summaries start and how many PDUs it held, which RDPPreflight and
-  RDPClient's diagnostics show, and `RDPGFXMessageSummary.omittedListEntryCount`
-  how many entries its codec lists left out.
-- `RDPClipboardFileGroupDescriptorW.downloadPlan(limits:)` plans the download
-  of a remote copy's files within `RDPClipboardDownloadLimits` (32 MiB, 1000
-  files, 512 KiB ranges, two minutes per request): the files under the names
-  they get, whether folders are left out, entries or names that carry them,
-  and the declared total, so an app can refuse a copy or name its first file
-  before it makes a folder. `RDPClipboardSession.downloadRemoteFiles(_:copyNumber:into:progress:writeFile:)`
-  follows the plan: a size request per file, then ranges, asking again for the
-  rest of a range the server answers short. It ends with an
-  `RDPClipboardDownloadError` once a newer copy replaces the one downloading,
-  the connection closes, or the server refuses, stalls or sends short, and
-  with `CancellationError` when its task is cancelled, writing nothing more.
-  It awaits `progress`, so reports arrive in order and none after it returns,
-  also through a hop to the main actor. `writeFile` lets an app set a
-  quarantine mark. RDPClient downloads through it.
-- `RDPClipboardFileGroupDescriptorW.remoteFileTransferFiles` takes a
-  `maximumFileCount`.
-- `RDPConnectionReport.credentialsVerifiedBeforeActivation` says whether the
-  server checked the credentials before the session started: it selected
-  CredSSP, with or without Early User Authorization, or RDSTLS. A client saves
-  a password only then, without matching `selectedProtocols` names.
-- `RDPInputSession`, `RDPDisplayControlSession` and `RDPClipboardSession` carry
-  an `RDPConnectionContext`, the `redirectionDepth` and
-  `credentialsVerifiedBeforeActivation` of the connection they belong to, for
-  their ready handlers to read rather than the live report, which a Server
-  Redirection moves on. RDPClient decides whether to save a password from it.
-- `RDPConnectionConfiguration.clipboardFetchesRemoteCopies` sets what
-  `RDPClipboardSession.fetchesRemoteCopies` starts as, so a client with
-  sharing off fetches nothing of the server's clipboard, without turning it off
-  in `onClipboardReady`. RDPClient starts with it off until its clipboard
-  bridge attaches.
-- `RDPClipboardSession.startFetchingRemoteCopies()` turns fetching on and
-  says whether a copy the server announced is being fetched then, decided
-  under the same lock. Reading `isAwaitingRemoteCopy` after turning fetching
-  on said false when the copy came first, and a client that then published
-  replaced the server's copy with its own. RDPClient's bridge attaches
-  through it.
-- `RDPClipboardSession.serverHoldsLocalCopy` says whether the server's
-  clipboard holds the client's last publish, which was not empty, and
-  `withdrawLocalCopy()` takes it back with an empty publish only then, so a
-  client that stops sharing leaves a copy the server's user made since alone:
-  Windows empties its clipboard for an empty publish. RDPClient withdraws
-  through it.
-- `RDPClipboardSession.beginLocalCopy()` publishes an empty copy at once for
-  content still to come, such as files being read, so an older server copy is
-  neither fetched nor reported in its place, and `publishLocalFiles(_:forCopy:)`
-  offers the files unless a newer copy replaced it: a later publish, or a copy
-  the server announced since.
-- `RDPClipboardLocalFile.read(contentsOf:maximumTotalByteCount:)` reads files
-  to publish, at most 32 MiB by default and checked before each file is read,
-  a MiB at a time, so a file that grew since is read no more than a byte past
-  the limit, stopping between them once its task is cancelled. Each keeps its own name in no folder: a
-  `\`, which `publishLocalFiles` takes for a folder separator, becomes `_`.
-  It throws an `RDPClipboardLocalFileReadError`. RDPClient reads and publishes
-  copied files through these.
-- `run` and `connect` take a `storedClientLicenseProvider`, asked for the
-  client license to present only once a server starts licensing, at most once
-  per connection, in place of `storedClientLicense`, and an
-  `onClientLicenseIssued` handler that gets a new or upgraded license as soon
-  as it arrives. The deadline for the connection's next step starts once
-  either returns, so a Keychain prompt takes none of it. RDPClient reads and
-  saves its Keychain license through them.
-- A run whose stored client license the server's licensing fails with, by a
-  Licensing Error Message or by ending the connection for a licensing reason,
-  before the session activates, connects again once from the start without
-  it, so a license the server no longer takes does not fail every connection
-  until the application drops it. `RDPConnectionReport.rdpStoredClientLicenseRejected`
-  says so; a license the server issues then reaches `onClientLicenseIssued`.
-- `RDPConnectionReport.usedLegacyRSAKeyExchange` says whether the TLS
-  handshake offered only RSA key exchange, which has no forward secrecy.
-- The `RDPKitTesting` library holds `RDPClipboardTestServer`, the server's
-  end of a clipboard channel in memory. An app's tests drive their clipboard
-  code with it against a real `RDPClipboardSession`, and the handlers run as
-  `run` calls them. The server can:
-  - copy text, files, or other formats (`copyFormats(_:)`), and empty or
-    restart its clipboard;
-  - fail format data requests;
-  - answer each file request (`fileRequestAnswer`) in full, with a failure,
-    cut short, or later (`.hold`, then `answerHeldFileRequests(_:)`);
-  - record the client's copies in order (`clientCopies`), and paste the
-    client's text or files (`pasteFiles()`).
-
-  With `isStepping` on, the server's messages wait until `step()` hands each
-  one to the session. `isSettled` is true once nothing the server set off is
-  still under way, and `settle()`'s documentation shows how to wait for
-  handlers that hand work on to the main queue.
-- `RDPKitTesting`'s `RDPDisplayControlTestServer` hands an app's
-  `onDisplayControlReady` code a real `RDPDisplayControlSession`.
-  `resetGraphics(monitors:issues:outputRect:)` lays out the server's monitors
-  as a ResetGraphics does, setting `serverMonitors` and counting
-  `graphicsResetCount`, and returns the `RDPServerLayout` the frames after it
-  carry, for the app's `onServerLayout` handler. `endSession()` ends the
-  session as a server that replaces its channel does, and `sentLayouts`
-  records what the session sent.
-- `RDPConnectionReport.presentedFrameCount` counts the frames the
-  `onGraphicsFrame` handler showed on the connection, where
-  `rdpGraphicsFirstFrame` is the first that came, shown or not, and
-  `runPresentedFrameCount` those of the whole run, so a run that showed a
-  desktop before a Server Redirection's target failed still says so.
-- `RDPKitAppKit`'s `RDPPasteboardClipboard` bridges a Mac pasteboard and a
-  session's clipboard, as RDPClient and RDPeek each did with a copy of their
-  own: `attach(_:)`, the `receive…` calls for the session's handlers, `poll()`
-  once a second, `syncNow()`, `setSharingEnabled(_:)` and
-  `startTemporarySharing()`. It publishes the user's copies, puts the server's
-  text and quarantined downloads on the pasteboard, drops what a newer copy
-  replaced, sends nothing while macOS denies reading the pasteboard, and clears
-  the copy it sent when the server's clipboard is emptied, also while sharing
-  is off. `onEvent` reports what happened for the app to word, with
-  `downloadLimits` and `maximumLocalFileByteCount` to name the limits a copy
-  went over and `temporarySharingDuration` how long a share lasts, and
-  `removeStaleDownloadDirectories(in:changedBefore:keeping:)` clears what
-  earlier runs left. RDPClient now uses it.
-- `RDPConnectionReport.targetHost` and `targetPort` give `target` apart, and
-  `redirectionNamedHost` says whether a Server Redirection named that host,
-  rather than only a routing token that leads to the configured host again.
-- `RDPKeyboard` is a keyboard as a client announces it, layout, type and
-  subtype, and `character(for:shift:capsLock:)` says what Windows types for a
-  scancode with it, from tables Windows 11 reported for every layout a Mac
-  input source announces, Japanese with a 106/109-key or 101-key keyboard
-  among them, so a client sends a character as its scancode only where the
-  server types the same one. `Scripts/generate-windows-keyboard-layout-tables.py`
-  and `Scripts/capture-windows-keyboard-layouts.ps1` capture them again.
-- The `RDPKitAppKit` library, for macOS, holds `RDPRemoteInputView`, which
-  sends the Mac's keyboard, mouse and scroll input to an `RDPInputSession`:
-  RDPClient's input view with RDPeek's refinements. Modifiers found held are
-  pressed from their own side bits, a click on a background window presses
-  none, a button goes up only if the server saw it go down, and a release off
-  the shown desktop goes at its nearest pixel. `pointMapping` takes an
-  `RDPRemotePointMapping` for a view that shows part of the desktop, and
-  `claimsCommandShortcuts` gives ⌘ and ⌃ chords to the server ahead of the
-  menus. The keyboard handling behind the view is public too:
-  `RDPMacKeyboardLayout` maps the Mac's input source to the `RDPKeyboard` to
-  announce (`current()`), Japanese keyboards included;
-  `RDPMacKeyboardMapping` turns key codes into scancodes or Unicode;
-  `RDPMacModifierKey` reads each side of a modifier from an event's flags;
-  `RDPMacDeferredModifierKeys` holds back the Windows keys and right Alt; and
-  `RDPMacDeadKeys` reads dead keys from the Mac's layout.
-  `RDPRemoteDisplayViewport(frame:view:)` maps a view's points onto the
-  desktop it shows on whole screen pixels.
-- `RDPKitAppKit` also holds the video side of a macOS client, from RDPClient
-  with RDPeek's container layer:
-  - `RDPRemoteDesktopVideoView` shows decoded frames through an
-    `AVSampleBufferDisplayLayer` (`displayLayer`). It flushes on a format
-    change and shows the last frame again when the layer fails. `videoLayout`
-    places and clips the video, for chosen monitors, and `sourceRect` crops
-    each frame.
-  - `RDPRemoteDesktopVideoLayout(viewport:)` lays the video out where an
-    `RDPRemoteDisplayViewport` draws the desktop, on a whole screen pixel. A
-    whole desktop gets a layer the size of the view, so a frame of a new size
-    letterboxes in it rather than stretching.
-  - `RDPFramePresenter` paces frames to the display for a video view. It
-    shows the first frame at once, and holds each later one for the next
-    refresh. `present(_:)` says whether a frame was shown, waits or replaced
-    one that waited, a skipped presentation. Turning `isPacing` off or
-    `flush()` shows the frame waiting, and `clear()` drops it.
-  - Underneath it, `RDPFramePresentationClock` paces to the window's display
-    link, which runs only while a frame waits (`requestFrame()`), and
-    publishes the screen's timing as `RDPFramePacingState`.
-    `RDPFramePresentationBuffer` holds the one frame waiting for it.
-- `RDPTrustedServerCertificates` keeps the certificates a user trusted, one
-  per host and port, by the storage identifiers an app stores. It decides
-  trust on first use: `refusal(of:port:acceptsUntrusted:)` refuses a
-  certificate nobody trusts as `.untrusted`, and one that replaced a trusted
-  certificate as `.changed` even when untrusted ones are accepted.
-  `RDPServerCertificateTrustKey(storageIdentifier:)` reads a stored key back.
-  RDPClient's store keeps only the storage.
-- `RDPConnectionConfiguration.connectAttempts` and `connectRetryDelay` try a
-  TCP connect again, a delay apart, when it fails before the server answers:
-  unreachable, timed out, or without a category. That gets past the first
-  connection into the local network failing while Apple platforms ask to
-  allow local network access. A refused connection, one the system does not
-  permit, or a name that does not resolve fails at once. The report's
-  `connectAttempt`, live too, says which try is under way, and
-  `nextConnectAttemptDate`, while the client waits, when the next one starts.
-- `RDPDiagnosticText` formats what a diagnostics view such as Stats for Nerds
-  shows: metric units, Core Video pixel formats, hex codes, a one-line
-  performance summary, and summaries of a report's channels, capability sets,
-  messages, Client Info, RDPGFX updates, graphics failure, first frame,
-  redirection and termination. RDPKitAppKit adds `refreshRange(_:)` for an
-  `RDPFramePacingState`. RDPClient's window uses it; the layout stays the
-  app's.
-- `RDPConnectionIdentity.legacyCredentialMoves(keptBy:)` plans moving the
-  passwords saved under an account's earlier names to its current one, as
-  `RDPCredentialAccountMove` steps in order: for a lookup that finds nothing
-  under the current name, and for a profile deleted while others keep the
-  account. Each step renames, and says whether to delete the earlier one when
-  the current name has a password already. The app keeps only the store's
-  I/O, as RDPClient now does.
-- `RDPConnectionConfiguration.keyboard` sets or reads the layout, type and
-  subtype together as an `RDPKeyboard`, as `RDPMacKeyboardLayout.current()`
-  gives it.
-- `RDPDesktopSize(_:)` takes an `RDPDisplayRequest`, its width even as
-  Display Control rounds it, so the layout sent once connected resizes
-  nothing.
-- `RDPScrollWheelAccumulator.events(deltaX:deltaY:isPrecise:at:)` takes a
-  scroll as AppKit reports it, a line a notch of 120 rotation units and a
-  precise scroll's point 10, with the horizontal axis negated for RDP.
+- Display Control and the server's layout:
+  - `RDPDisplayControlSession` has `serverMonitors` and
+    `serverMonitorLayoutIssues` as the latest ResetGraphics laid them out,
+    `graphicsResetCount`, `isEnded`, `isLastSentLayoutPending`,
+    `resendLayout()` and `requestKeyframe()`; `send(_:)` says whether a layout
+    went out, and `RDPDisplayRequest.monitorLayout` is public.
+  - Keyframe recovery: once the frame handler throws
+    `RDPGraphicsFrameNotPresented` for a video frame, as
+    `RDPFrameDecodeCompletion.requirePresented()` does for a failed decode, the
+    session sends a layout that keeps the desktop as it is, at most one every
+    3 seconds and 3 until video decodes again; `rdpKeyframeRequestCount`
+    counts them. Windows 11 and gnome-remote-desktop answer with a keyframe,
+    which they send no other way.
+  - `RDPRemoteMonitor.index`, `RDPMonitorLayout(remoteMonitors:scaleFactors:)`,
+    a public `formsOneGroup`, `monitorLayoutIssues` on frames and the report,
+    `graphicsResetCount` on frames and `RDPFrameMetadata`, and
+    `RDPConnectionConfiguration.receivesServerMonitorLayout`.
+- Clipboard files both ways:
+  `RDPClipboardFileGroupDescriptorW.downloadPlan(limits:)` plans a remote copy
+  within `RDPClipboardDownloadLimits` (32 MiB, 1,000 files, 512 KiB ranges,
+  two minutes a request), and
+  `RDPClipboardSession.downloadRemoteFiles(_:copyNumber:into:progress:writeFile:)`
+  fetches it until a newer copy replaces it, the connection closes or the
+  server refuses, stalls or cuts it short.
+  `RDPClipboardLocalFile.read(contentsOf:maximumTotalByteCount:)` reads files
+  to publish, and `beginLocalCopy()` with `publishLocalFiles(_:forCopy:)`
+  offers them unless a newer copy came first.
+- Clipboard sharing that follows the user: `clipboardFetchesRemoteCopies`,
+  `startFetchingRemoteCopies()`, `serverHoldsLocalCopy` and
+  `withdrawLocalCopy()` turn sharing on and off without losing or replacing a
+  copy the user made.
+- `connectAttempts` and `connectRetryDelay` try a TCP connect again when it
+  fails before the server answers, as the first connection into the local
+  network does while Apple platforms ask for access. The report's
+  `connectAttempt` and `nextConnectAttemptDate` follow it, live too.
+- `storedClientLicenseProvider` and `onClientLicenseIssued` read and save the
+  client license only once a server licenses. A stored license the server
+  rejects gets one more connection without it
+  (`rdpStoredClientLicenseRejected`).
+- The report adds `credentialsVerifiedBeforeActivation`, also on the input,
+  display and clipboard sessions' `RDPConnectionContext` with
+  `redirectionDepth`; `usedLegacyRSAKeyExchange`; `presentedFrameCount` and
+  `runPresentedFrameCount`; `targetHost`, `targetPort` and
+  `redirectionNamedHost`; `rdpLogonNotification` and `rdpLogonErrorInfo`;
+  `rdpKeyboardIndicators`, also `RDPInputSession.serverToggleKeys`; and
+  `rdpGraphicsFailureUpdateFirstMessageIndex` and
+  `rdpGraphicsFailureUpdateMessageCount`.
 - `RDPLiveSession` runs a connection for an app whose interface lives on the
-  main thread, as RDPClient did on its own. `start(events:run:)` calls `run`
-  on a named thread with the handlers to pass to `RDPSessionClient.run`:
-  - `onGraphicsFrame` decodes each frame on an `RDPFrameDecodeQueue` and
-    reports one that failed as not presented;
-  - `onWireReceive` coalesces wire samples, the last one sent before the end.
-  `events` gets decoded frames, failures and samples on the main queue, and
-  with `onServerLayout` the server's layout (`RDPServerLayout`: monitors,
-  their issues, the ResetGraphics count and the output) ahead of each
-  connection's first frame, a Server Redirection's included, and of each
-  frame whose layout changed, also one that fails to decode.
-  `deliver(_:)` puts the app's own main-thread work in the same order, and
-  `recipient(_:)` hands it to an object held weakly, such as the view
-  controller, so the session's thread does not keep a closed one alive.
-  `cancel()` drops whatever has not run yet, so a session the app left
-  changes nothing. `onEnd` gets the report on the session thread unless the
-  session was cancelled. `waitUntilEnded(timeout:)` returns once the session's
-  thread is done and the connection is closed, so an app that quits right
-  after `cancel()` waits until the server has been told rather than for a
-  fixed time. RDPClient does that when it quits, tries a connect three times,
-  and shows the server's layout and the connect attempt in Stats for Nerds.
+  main thread: it decodes off it and delivers frames, failures, wire samples
+  and the server's layout (`onServerLayout`, `RDPServerLayout`) on the main
+  queue, with `deliver(_:)` and `recipient(_:)` for the app's own work,
+  `cancel()`, and `waitUntilEnded(timeout:)` for quitting.
+- `RDPTrustedServerCertificates` trusts a server's certificate on first use,
+  per host and port. `RDPConnectionIdentity.legacyCredentialMoves(keptBy:)`
+  plans moving saved passwords to an account's current name.
+- `RDPKeyboard`, the layout, type and subtype a client announces, also as
+  `RDPConnectionConfiguration.keyboard`, and `character(for:shift:capsLock:)`,
+  what Windows types for a scancode, from tables Windows 11 reported for every
+  layout a Mac announces, Japanese included.
+- `RDPScrollWheelAccumulator.events(deltaX:deltaY:isPrecise:at:)` takes an
+  AppKit scroll, and `RDPDesktopSize(_:)` an `RDPDisplayRequest`.
+- `RDPRemoteDisplayViewport` shows part of the desktop (`sourceRect`,
+  `init(frame:monitor:bounds:coordinateOrigin:)`), draws on whole screen
+  pixels (`backingScaleFactor`) and maps points past the desktop
+  (`nearestRemotePoint(from:)`); `RDPFrameSampleBufferFactory.sourceRect` crops
+  to it.
+- `RDPDiagnosticText` formats what a diagnostics view shows: units, pixel
+  formats, hex codes, and summaries of a report's channels, capabilities,
+  messages, graphics failure, redirection and termination.
+- The new `RDPKitAppKit` library, for macOS, holds what RDPClient and RDPeek
+  each had:
+  - `RDPRemoteInputView` sends keyboard, mouse and scroll input to an
+    `RDPInputSession`; the keyboard handling behind it is public as
+    `RDPMacKeyboardLayout`, `RDPMacKeyboardMapping`, `RDPMacModifierKey`,
+    `RDPMacDeferredModifierKeys` and `RDPMacDeadKeys`.
+  - `RDPRemoteDesktopVideoView` and `RDPRemoteDesktopVideoLayout` show decoded
+    frames through an `AVSampleBufferDisplayLayer`, and `RDPFramePresenter`,
+    over `RDPFramePresentationClock` and `RDPFramePresentationBuffer`, paces
+    them to the display.
+  - `RDPPasteboardClipboard` bridges the pasteboard and a session's clipboard:
+    text and files both ways, temporary sharing, quarantined downloads, and
+    `onEvent` for the app to word, with `downloadLimits`,
+    `maximumLocalFileByteCount` and `temporarySharingDuration` to name.
+- The new `RDPKitTesting` library holds in-memory servers for an app's tests:
+  `RDPClipboardTestServer`, the server end of a clipboard channel, and
+  `RDPDisplayControlTestServer`, which hands out a real
+  `RDPDisplayControlSession` and lays out monitors with
+  `resetGraphics(monitors:issues:outputRect:)`.
+- RDPClient is built on all of the above.
 
 ### Security
 
-- Data a server, or anyone on the path, sends with the X.224 Connection
-  Confirm ends the connection before the TLS handshake. It was read later as
-  if TLS had protected it, so it could inject PDUs such as a Server
-  Redirection.
+- Data sent along with the X.224 Connection Confirm ends the connection
+  before TLS. It was read later as if TLS had protected it, so it could
+  inject PDUs such as a Server Redirection.
 - Wire transcripts and report hex zero a Server Redirection's cleartext
-  password also where another field, such as the user name, has its bytes or
-  overlaps it.
-- A RemoteFX message writes at most sixteen times its surface's pixels, as
-  other graphics updates do, gives at most 65,535 region rects, and leaves one
-  decoded tile per position; RemoteFX Progressive keeps state for at most
-  65,536 tile positions over all surfaces. One message can no longer hold
-  gigabytes of tiles or keep the session drawing for seconds.
-- A Monitor Layout PDU of more than 16 monitors is refused.
-- The copies a graphics frame holds count toward its memory bound, which
-  never passes the 1 GiB all RDPGFX surfaces may hold; copies out of a staging
-  surface expand in time linear in their points and carry at most 4,096 access
-  units a frame; and a failing update's report keeps at most 64 PDU summaries
-  of at most 1,024 list entries each.
-- At most 32 MiB of the server's shared-drive requests wait for the drive I/O
-  queue, and directory listings hold at most 64 MiB of names together, so a
-  server can no longer make the client hold its requests or listings until
-  memory runs out.
-- The connection stops reading from a server that stops reading once 80 MiB
-  of the client's bytes wait for its socket, and reads again under 64 MiB, so
-  the replies cliprdr, rdpdr and rdpsnd send without waiting, such as Format
-  List Responses, failed device requests and Wave Confirms, can no longer
-  pile up without bound; TCP holds the server back instead.
-- RDPClient deletes the saved password of an account a profile is saved off,
-  as Delete Profile does, unless another profile uses that account.
-- Remote files are numbered in linear time, so a server's file list of long
-  names that differ only near the end can no longer keep the transfer's
-  planning busy for minutes.
+  password also where another field overlaps it.
+- One RemoteFX or RemoteFX Progressive message can no longer make gigabytes of
+  tiles or keep the session drawing for seconds; a graphics frame's copies
+  count toward its 1 GiB bound; a Monitor Layout PDU of more than 16 monitors
+  is refused.
+- A server that stops reading, or floods shared-drive requests and listings,
+  can no longer make the client hold data without bound.
+- Remote file names are numbered in linear time.
+- RDPClient deletes the saved password of an account no profile uses.
 
 ### Compatibility and fixes
 
-- RDPClient sends a keyframe request it made before Display Control was ready
-  once it is.
-- RDPClient saves a password only when the server checked it, with Network
-  Level Authentication or RDSTLS.
-- RDPClient announces a Windows layout that types the Mac layout's letters on
-  the same keys, so Control shortcuts reach the letters they show, for Turkish
-  F, German DIN 2137, ABC QWERTZ and ABC AZERTY, Latvian, Lithuanian and LST
-  1582, Hungarian QWERTY, Romanian, Finnish Extended, Slovenian, Albanian and
-  Kabyle AZERTY.
-- RDPClient synchronizes Caps Lock again when a key or click shows a toggle it
-  missed, releases the keys held when a menu opens, moves the remote pointer to
-  a scroll's position before the wheel, sends no Windows or Alt tap while
-  another modifier or a button is down, types the JIS keypad comma as a comma,
-  and composes the key after a dead key that follows one sent as an Alt chord.
-- `RDPAudioPlayer` keeps playing after the output device or its sample rate
-  changes. The engine stopped, and starting it again played nothing: the
-  queue never drained and later audio was dropped.
-- `RDPRemoteDisplayViewport` maps an AppKit view's top pixel row: with
-  bottom-left coordinates the top edge is inside and the bottom edge outside,
-  as `NSMouseInRect` counts them, so hovering or clicking the remote desktop's
-  first row works without a letterbox.
-- NTLM upper-cases the user name with Windows' own table, one UTF-16 code
-  unit at a time, as read from Windows 11. A user name with µ, ı, ſ, ς,
-  Georgian letters, a character outside the BMP, or another of the 252 code
-  units where Unicode's case mapping differs, failed to sign in.
-- A dynamic virtual channel Data First shorter than a full PDU is accepted:
-  xrdp sends RDPGFX messages in 1,500-byte blocks, and its first message
-  longer than that ended the session.
-- After VideoToolbox invalidates a decompression session, as iOS does in the
-  background, a surface's video waits for a keyframe instead of decoding
-  P-frames without their references. Servers that cannot be asked for one,
-  FreeRDP shadow and KRdp, show the last picture until their next periodic
-  keyframe.
-- An HEVC stream waiting for a keyframe starts again at a BLA picture too.
-- `RDPGraphicsPathDescription` names RDPGFX 10.0 to 10.6 with each version's
-  flags.
-- RDPGFX video is no longer painted over with black or stale pixels when a
-  frame changes more than 1,024 separate areas around it, unless the video
-  itself lies in more than 1,024 pieces, or leaving it out would split the
-  changed area into more than 512.
-- NSCodec Set Surface Bits are drawn the right way up.
-- A second RDPGFX channel starts ClearCodec afresh, so its streams are no
-  longer refused as out of sequence.
-- Classic RemoteFX tiles that a later tile replaces, or that fall outside the
-  area drawn, are no longer decoded, so bad data in them no longer fails the
-  update.
-- A Set Error Info of ERRINFO_NONE clears an earlier error, so a Deactivate
-  All after it reactivates the session instead of ending it.
-- A `timeoutSeconds` of 0 or less set after the configuration's initializer
-  counts as 1 second, as the initializer counts it.
+- NTLM upper-cases the user name with Windows' own table, so user names with
+  µ, ı, ſ, ς, Georgian letters or characters outside the BMP sign in.
+- xrdp's RDPGFX messages longer than 1,500 bytes no longer end the session.
+- Video waits for a keyframe after VideoToolbox invalidates its session, as
+  iOS does in the background; an HEVC stream also restarts at a BLA picture.
+- RDPGFX: video is no longer painted over when a frame changes more than
+  1,024 areas around it, NSCodec surface bits are the right way up, a second
+  channel starts ClearCodec afresh, and RemoteFX tiles that are replaced or
+  not drawn are not decoded.
+- A Set Error Info of ERRINFO_NONE clears an earlier error, so the session
+  reactivates after a Deactivate All.
 - After a Server Redirection with no credentials configured, the reconnect
-  sends the redirection's user name and domain with its password cookie, and
-  the report names them.
-- Input sent as the server deactivates the session, and a layout sent as a
-  display control session ends, are dropped instead of written after the
-  reactivation.
-- Wire transcripts redact only the I/O channel, so a large clipboard, drive
-  or audio message is no longer partly zeroed, and their docs say which client
-  PDUs they record.
-- `shouldCancel` is polled while a clipboard reply or a shared-drive request
-  waits for room, so `run` returns cancelled instead of staying blocked.
-- Shared drives are announced from the drive I/O queue, so a folder on a
-  network volume that stopped answering no longer holds up the connection.
-- A shared-drive file opened with MAXIMUM_ALLOWED falls back to read access
-  also when it is locked in the Finder, on a read-only volume or sandbox
-  grant, or a running program.
-- A server copy announced while a Format List of the client's is unanswered,
-  an empty one included, is acknowledged but neither fetched nor reported:
-  the server takes the client's copy after it, so an app no longer replaces
-  what the user just copied, or files RDPClient is still reading, with the
-  older one, also after the server's clipboard restarts. Only the empty list
-  sent on joining cliprdr before the app's first copy, or once a server copy
-  has replaced it, does not count, so KRdp's copy at connect, sent ahead of
-  its answer to that list, is still fetched.
-- The server's next copy stops the app's earlier copy being offered also when
-  a client Format List was unanswered as the server clipboard restarted.
-- A Format Data Response whose chunk the channel layer refuses, or whose
-  cliprdr header does not parse, still answers its request, so later remote
-  copies are still fetched.
-- Without `onClipboardFileGroupDescriptor`, a remote copy of files is fetched
-  for the other formats offered with it, or reported unavailable, instead of
-  fetching a file list the app would drop.
-- RDPClient's Port field takes every TCP port; one above 8192 was dropped.
-- RDPClient connects a profile from the list with the Remember choice the
-  form shows beside its password, so the password Keychain has for it is no
-  longer deleted once signed in. Deleting one of two profiles for an account
-  no longer leaves the other signing in with the deleted one's legacy
-  password.
-- RDPClient reads a stored client license off the main thread, so a Keychain
-  prompt no longer freezes every window.
-- RDPFirstFrameCapture goes on after a frame fails to decode, until
-  `--settle-seconds` ends or, with no frame decoded, `--timeout-seconds`.
-- RDPFrameBenchmark's `--frames` takes 1 to 60, which leaves it spare frames.
+  sends the redirection's user name and domain.
+- Input and layouts sent as the session deactivates or Display Control ends
+  are dropped; `shouldCancel` is polled while a reply waits for room; a
+  stalled network volume no longer holds up announcing shared drives.
+- Clipboard: a server copy announced while the client's copy is unanswered no
+  longer replaces what the user just copied; a malformed Format Data Response
+  still answers its request; a file copy's other formats are fetched when the
+  app takes no file lists.
+- `RDPAudioPlayer` keeps playing after the output device changes, and
+  `RDPRemoteDisplayViewport` maps an AppKit view's top pixel row.
+- RDPClient: Control shortcuts reach the letters shown on more Mac layouts,
+  Caps Lock stays in step, keys held when a menu opens are released, Port takes
+  every TCP port, profiles keep the right saved passwords, a password is saved
+  only when the server checked it, and a Keychain prompt no longer freezes
+  the windows.
+- RDPFirstFrameCapture goes on after a frame fails to decode;
+  RDPFrameBenchmark's `--frames` takes 1 to 60.
 
 ## 0.6.0
 
