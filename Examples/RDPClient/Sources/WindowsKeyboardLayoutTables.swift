@@ -361,7 +361,7 @@ extension MacRDPWindowsKeyboardLayout {
             "!\"£$%^&*()_+QWERTYUIOP{}ASDFGHJKL:@¬~ZXCVBNM<>?|\0\0",
             "------------SSSSSSSSSS--SSSSSSSSS----SSSSSSS------"
         ),
-        // ABC-AZERTY, French, French-numerical
+        // ABC-AZERTY, French, French-numerical, Kabyle-AZERTY
         0x0000_080C: (
             "&é\"'(§è!çà)-azertyuiop\0$qsdfghjklmù²µwxcvbn,;:=<\0\0",
             "1234567890°_AZERTYUIOP\0*QSDFGHJKLM%³£WXCVBN?./+>\0\0",

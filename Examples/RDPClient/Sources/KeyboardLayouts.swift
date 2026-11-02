@@ -196,6 +196,7 @@ enum MacRDPKeyboardLayout {
         "Italian": 0x0000_0410,
         "Italian-Pro": 0x0000_0410,
         "Jawi-QWERTY": 0x0000_0401,
+        "Kabyle-AZERTY": 0x0000_080C,
         "Kannada": 0x0000_044B,
         "Kannada-QWERTY": 0x0000_044B,
         "Kazakh": 0x0000_043F,

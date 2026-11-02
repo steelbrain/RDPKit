@@ -493,7 +493,8 @@ private func windowsTypes(
 @Test func macLayoutsAnnounceAWindowsLayoutWithTheirLettersInPlace() throws {
     let names = [
         "ABC-AZERTY", "ABC-QWERTZ", "Albanian", "FinnishExtended", "German-DIN-2137", "Hungarian-QWERTY",
-        "Latvian", "Lithuanian", "Lithuanian-LST1582", "Romanian", "Slovenian-QWERTZ", "Turkish-Standard",
+        "Kabyle-AZERTY", "Latvian", "Lithuanian", "Lithuanian-LST1582", "Romanian", "Slovenian-QWERTZ",
+        "Turkish-Standard",
     ]
     let letterKeys: [(keyCode: Int, scancode: UInt16)] = [
         (kVK_ANSI_A, 0x1E), (kVK_ANSI_B, 0x30), (kVK_ANSI_C, 0x2E), (kVK_ANSI_D, 0x20), (kVK_ANSI_E, 0x12),
