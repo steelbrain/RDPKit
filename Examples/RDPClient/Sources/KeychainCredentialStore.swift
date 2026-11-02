@@ -47,19 +47,16 @@ struct KeychainCredentialStore: Sendable {
         // A password saved by an earlier release moves to the current name. It is renamed, in
         // one step, rather than saved again, so one deleted meanwhile, as by Delete Profile in
         // another window, stays deleted.
-        for legacyAccount in key.identity.legacyCredentialAccountNames {
-            guard let password = try passwords.password(account: legacyAccount) else {
+        for move in key.identity.legacyCredentialMoves() {
+            guard let password = try passwords.password(account: move.legacyAccountName) else {
                 continue
             }
-            switch try passwords.rename(account: legacyAccount, to: key.account) {
+            switch try move.apply(to: passwords) {
             case .renamed:
                 return password
-            case .notFound:
-                // Deleted, or moved by another lookup, meanwhile.
-                return try passwords.password(account: key.account)
-            case .newNameTaken:
-                // A password saved under the current name meanwhile is the newer one.
-                try passwords.deletePassword(account: legacyAccount)
+            case .notFound, .newNameTaken:
+                // Deleted or moved by another lookup meanwhile, or a password saved under the
+                // current name meanwhile, which is the newer one.
                 return try passwords.password(account: key.account)
             }
         }
@@ -91,17 +88,22 @@ struct KeychainCredentialStore: Sendable {
     /// already. The deleted profile's password then does not take the account's name, where
     /// their lookup would read it in place of their own.
     func moveLegacyPasswords(for key: KeychainCredentialKey, keptBy others: [RDPConnectionIdentity]) throws {
-        let ownNames = key.identity.legacyCredentialAccountNames
-        let namesInUse = others.flatMap(\.legacyCredentialAccountNames)
-        for legacyAccount in namesInUse where !ownNames.contains(legacyAccount) {
-            // Not found, or the name taken: their lookup reads the account's name first.
-            _ = try passwords.rename(account: legacyAccount, to: key.account)
+        for move in key.identity.legacyCredentialMoves(keptBy: others) {
+            try move.apply(to: passwords)
         }
-        for legacyAccount in ownNames where !namesInUse.contains(legacyAccount) {
-            if try passwords.rename(account: legacyAccount, to: key.account) == .newNameTaken {
-                try passwords.deletePassword(account: legacyAccount)
-            }
+    }
+}
+
+extension RDPCredentialAccountMove {
+    /// Renames the password, and deletes it when the account's name has one and the move says
+    /// to.
+    @discardableResult
+    func apply(to passwords: any KeychainPasswords) throws -> KeychainPasswordRename {
+        let result = try passwords.rename(account: legacyAccountName, to: accountName)
+        if result == .newNameTaken, deletesLegacyPasswordWhenTaken {
+            try passwords.deletePassword(account: legacyAccountName)
         }
+        return result
     }
 }
 

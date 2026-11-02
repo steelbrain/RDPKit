@@ -307,6 +307,13 @@
   certificate as `.changed` even when untrusted ones are accepted.
   `RDPServerCertificateTrustKey(storageIdentifier:)` reads a stored key back.
   RDPClient's store keeps only the storage.
+- `RDPConnectionIdentity.legacyCredentialMoves(keptBy:)` plans moving the
+  passwords saved under an account's earlier names to its current one, as
+  `RDPCredentialAccountMove` steps in order: for a lookup that finds nothing
+  under the current name, and for a profile deleted while others keep the
+  account. Each step renames, and says whether to delete the earlier one when
+  the current name has a password already. The app keeps only the store's
+  I/O, as RDPClient now does.
 - `RDPConnectionConfiguration.keyboard` sets or reads the layout, type and
   subtype together as an `RDPKeyboard`, as `RDPMacKeyboardLayout.current()`
   gives it.

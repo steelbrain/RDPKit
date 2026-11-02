@@ -75,6 +75,33 @@ import Testing
     #expect(RDPConnectionIdentity(host: "Server.Local").legacyCredentialAccountNames.isEmpty)
 }
 
+/// A lookup moves the identity's own earlier names, deleting one the account's name replaced; a
+/// profile going while others keep the account moves their earlier names first, keeping them
+/// when taken, then its own that none of them share.
+@Test func connectionIdentityPlansTheMovesOfItsEarlierNames() {
+    let account = "anees@server.local:3389"
+    func move(_ name: String, deletes: Bool) -> RDPCredentialAccountMove {
+        RDPCredentialAccountMove(legacyAccountName: name, accountName: account, deletesLegacyPasswordWhenTaken: deletes)
+    }
+    let upper = RDPConnectionIdentity(host: "SERVER.local", username: "anees")
+    let title = RDPConnectionIdentity(host: "Server.Local", username: "anees")
+    let lower = RDPConnectionIdentity(host: "server.local", username: "anees")
+
+    #expect(upper.legacyCredentialMoves() == [move("anees@SERVER.local:3389", deletes: true)])
+    #expect(lower.legacyCredentialMoves().isEmpty)
+    #expect(RDPConnectionIdentity(host: "Server.Local").legacyCredentialMoves().isEmpty)
+
+    #expect(upper.legacyCredentialMoves(keptBy: [title, lower, title]) == [
+        move("anees@Server.Local:3389", deletes: false),
+        move("anees@SERVER.local:3389", deletes: true),
+    ])
+    // One the others share stays for their lookup.
+    #expect(upper.legacyCredentialMoves(keptBy: [RDPConnectionIdentity(host: "SERVER.local", username: "anees")]).isEmpty)
+    // Another account's earlier names are not this account's to move.
+    #expect(upper.legacyCredentialMoves(keptBy: [RDPConnectionIdentity(host: "Server.Local", username: "other")])
+        == [move("anees@SERVER.local:3389", deletes: true)])
+}
+
 @Test func connectionIdentityTrimsComponents() {
     let identity = RDPConnectionIdentity(
         host: "  Server.Local  ",

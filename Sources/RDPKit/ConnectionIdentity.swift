@@ -79,6 +79,27 @@ public struct RDPDesktopSize: Equatable, Hashable, Sendable {
     }
 }
 
+/// A password that may be saved under an earlier name of an account, and how to move it to the
+/// account's name, ``RDPConnectionIdentity/credentialAccountName``, in an app's own store such
+/// as Keychain: rename it in one step, rather than save it again, so one deleted meanwhile
+/// stays deleted. Nothing saved under ``legacyAccountName`` means nothing to move.
+public struct RDPCredentialAccountMove: Equatable, Sendable {
+    /// The earlier name, one of ``RDPConnectionIdentity/legacyCredentialAccountNames``.
+    public var legacyAccountName: String
+    /// The account's name.
+    public var accountName: String
+    /// What to do when ``accountName`` has a password already: true deletes the one under
+    /// ``legacyAccountName``, which is older; false leaves it for the lookup of the profile
+    /// whose earlier name it is.
+    public var deletesLegacyPasswordWhenTaken: Bool
+
+    public init(legacyAccountName: String, accountName: String, deletesLegacyPasswordWhenTaken: Bool) {
+        self.legacyAccountName = legacyAccountName
+        self.accountName = accountName
+        self.deletesLegacyPasswordWhenTaken = deletesLegacyPasswordWhenTaken
+    }
+}
+
 public struct RDPConnectionIdentity: Equatable, Hashable, Sendable {
     public var host: String
     public var port: UInt16
@@ -140,6 +161,44 @@ public struct RDPConnectionIdentity: Equatable, Hashable, Sendable {
         }
         let hostAsEntered = "\(qualifiedUsername)@\(host):\(port)"
         return hostAsEntered == credentialAccountName ? [] : [hostAsEntered]
+    }
+
+    /// The steps that move passwords saved under earlier names of this identity's account to
+    /// ``credentialAccountName``, in order, for an app's own store such as Keychain; none
+    /// without a username.
+    ///
+    /// With no `others`, as when a lookup finds nothing under the account's name, each of
+    /// ``legacyCredentialAccountNames`` moves, and is deleted when the account's name has a
+    /// password already, the newer one.
+    ///
+    /// With `others`, the identities that keep the account once this one goes, as profiles
+    /// still saved for it do, two kinds of earlier name move:
+    /// 1. Each of theirs this identity does not share, as their lookups would move it. It
+    ///    stays when the account's name has a password. This identity's password then cannot
+    ///    take the account's name, where their lookups would read it in place of their own.
+    /// 2. Each of this identity's that none of them share, as their lookups never try it. It is
+    ///    deleted when the account's name has a password.
+    ///
+    /// An earlier name one of them shares stays for its lookup. Identities of other accounts
+    /// are left out.
+    public func legacyCredentialMoves(keptBy others: [RDPConnectionIdentity] = []) -> [RDPCredentialAccountMove] {
+        guard let accountName = credentialAccountName else {
+            return []
+        }
+        let ownNames = legacyCredentialAccountNames
+        var namesInUse: [String] = []
+        for other in others where other.credentialAccountName == accountName {
+            for name in other.legacyCredentialAccountNames where !namesInUse.contains(name) {
+                namesInUse.append(name)
+            }
+        }
+        let theirs = namesInUse.filter { !ownNames.contains($0) }.map {
+            RDPCredentialAccountMove(legacyAccountName: $0, accountName: accountName, deletesLegacyPasswordWhenTaken: false)
+        }
+        let own = ownNames.filter { !namesInUse.contains($0) }.map {
+            RDPCredentialAccountMove(legacyAccountName: $0, accountName: accountName, deletesLegacyPasswordWhenTaken: true)
+        }
+        return theirs + own
     }
 
     /// Whether `other` is the same account on the same server, so the two share a saved
