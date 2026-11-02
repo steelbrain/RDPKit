@@ -1,5 +1,6 @@
 #if os(macOS)
 import AppKit
+import RDPKit
 @testable import RDPKitAppKit
 import Testing
 
@@ -106,6 +107,24 @@ private func drainMainQueue() async {
     #expect(state.displayLinkFramesPerSecond == 60)
     #expect(state.maximumRefreshRate == 120)
     #expect(state.clockState == "window display link")
+}
+
+/// The refresh range reads shortest to longest interval and the step between them, "variable"
+/// for a screen with no fixed step, and "none" for what the screen did not say.
+@Test func framePacingStateRefreshRangeReadsAsIntervals() {
+    let fixed = RDPFramePacingState(
+        minimumRefreshInterval: 1.0 / 120.0,
+        maximumRefreshInterval: 1.0 / 24.0,
+        displayUpdateGranularity: 1.0 / 120.0
+    )
+    #expect(RDPDiagnosticText.refreshRange(fixed) == "8.3 ms-41.7 ms, step 8.3 ms")
+    let variable = RDPFramePacingState(
+        minimumRefreshInterval: 1.0 / 120.0,
+        maximumRefreshInterval: 1.0 / 48.0,
+        displayUpdateGranularity: 0
+    )
+    #expect(RDPDiagnosticText.refreshRange(variable) == "8.3 ms-20.8 ms, step variable")
+    #expect(RDPDiagnosticText.refreshRange(RDPFramePacingState()) == "none-none, step none")
 }
 
 @Test func framePacingStateMarksUpdatedDisplayLinkActive() {

@@ -70,10 +70,38 @@ private func report() -> RDPConnectionReport {
     ]) == "a: first\nb: second")
     #expect(RDPDiagnosticText.warnings([]) == "none")
 
+    #expect(RDPDiagnosticText.connectionTarget(of: report) == "127.0.0.1:3389")
+    report.redirectionDepth = 1
+    #expect(RDPDiagnosticText.connectionTarget(of: report) == "127.0.0.1:3389, after a server redirection")
     report.redirectionDepth = 2
     #expect(RDPDiagnosticText.connectionTarget(of: report) == "127.0.0.1:3389, after 2 server redirections")
+}
+
+/// The server's end reads as the names it gave, an unknown code's in hex, and RDPKit's category
+/// for them; the category alone when it gave neither.
+@Test func diagnosticTextNamesHowTheServerEndedTheSession() {
+    #expect(RDPDiagnosticText.remoteTermination(nil) == "none")
     #expect(RDPDiagnosticText.remoteTermination(RDPRemoteTermination(errorInfo: 0x0000_000B))
         == "ERRINFO_RPC_INITIATED_DISCONNECT_BYUSER (user)")
+    #expect(RDPDiagnosticText.remoteTermination(RDPRemoteTermination(disconnectReason: 3))
+        == "rn-user-requested (unspecified)")
+    #expect(RDPDiagnosticText.remoteTermination(RDPRemoteTermination(errorInfo: 0x0000_9999))
+        == "ERRINFO_0x00009999 (unknown)")
+    #expect(RDPDiagnosticText.remoteTermination(RDPRemoteTermination(errorInfo: 0x0000_0003, disconnectReason: 3))
+        == "ERRINFO_IDLE_TIMEOUT, rn-user-requested (timeLimit)")
+    #expect(RDPDiagnosticText.remoteTermination(RDPRemoteTermination()) == "unknown")
+}
+
+/// Client Info reads "not attempted" until the channels are joined, then "not sent" until it
+/// goes.
+@Test func diagnosticTextSaysWhetherClientInfoWentToTheServer() {
+    var report = report()
+    #expect(RDPDiagnosticText.clientInfo(of: nil) == "not attempted")
+    #expect(RDPDiagnosticText.clientInfo(of: report) == "not attempted")
+    report.rdpClientInfoSent = false
+    #expect(RDPDiagnosticText.clientInfo(of: report) == "not sent")
+    report.rdpClientInfoSent = true
+    #expect(RDPDiagnosticText.clientInfo(of: report) == "sent")
 }
 
 /// The failure row says which of the update's PDUs failed and which one its summaries start

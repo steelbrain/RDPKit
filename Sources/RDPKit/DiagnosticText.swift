@@ -135,6 +135,9 @@ public enum RDPDiagnosticText {
             return "none"
         }
         let names = [termination.errorInfoName, termination.disconnectReasonName].compactMap { $0 }
+        guard !names.isEmpty else {
+            return termination.category.rawValue
+        }
         return "\(names.joined(separator: ", ")) (\(termination.category.rawValue))"
     }
 
@@ -176,6 +179,15 @@ public enum RDPDiagnosticText {
     /// `typeName`s; "not observed" without any.
     public static func messageTypes(_ typeNames: [String]?, limit: Int = 4) -> String {
         list(typeNames.map { Array($0.prefix(limit)) }, missing: "not observed")
+    }
+
+    /// Whether the Client Info PDU went to the server: "sent"; "not sent" once the channels are
+    /// joined, until it goes or when the connection stopped first; "not attempted" before then.
+    public static func clientInfo(of report: RDPConnectionReport?) -> String {
+        guard let sent = report?.rdpClientInfoSent else {
+            return "not attempted"
+        }
+        return sent ? "sent" : "not sent"
     }
 
     /// The RDPGFX capability the server selected, as its version and flags in hex.

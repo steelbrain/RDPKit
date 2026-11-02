@@ -1,5 +1,6 @@
 #if os(macOS)
 import AppKit
+import RDPKit
 
 /// The screen a session's window is on and the display clock pacing its frames, for
 /// diagnostics: what `RDPFramePresentationClock` publishes.
@@ -132,6 +133,20 @@ extension RDPFramePacingState {
             hasDisplayLink: hasDisplayLink,
             isDisplayLinkPaused: isPaused
         )
+    }
+}
+
+public extension RDPDiagnosticText {
+    /// The screen's refresh intervals, shortest to longest, and the step between them, such as
+    /// "8.3 ms-41.7 ms, step 8.3 ms"; "variable" for a screen that updates at any interval
+    /// between them.
+    static func refreshRange(_ framePacing: RDPFramePacingState) -> String {
+        let minimum = refreshInterval(framePacing.minimumRefreshInterval)
+        let maximum = refreshInterval(framePacing.maximumRefreshInterval)
+        let granularity = framePacing.displayUpdateGranularity == 0
+            ? "variable"
+            : refreshInterval(framePacing.displayUpdateGranularity)
+        return "\(minimum)-\(maximum), step \(granularity)"
     }
 }
 #endif
