@@ -315,6 +315,39 @@ func clipboardDownloadGivesUpOnARequestLeftUnanswered() async throws {
     try await channel.close()
 }
 
+/// The timeout bounds each request, not the download: a file whose every range comes just
+/// within it, as over a slow link, downloads however long the whole takes.
+@Test(.timeLimit(.minutes(1)))
+func clipboardDownloadTimesEachRequestOnItsOwn() async throws {
+    let file = Data((0 ..< 4096).map { UInt8($0 % 251) })
+    let list = fileList([("slow.bin", file)])
+    let server = ClipboardFileServer(contents: [file]) { _, _ in nil }
+    let channel = NIOAsyncTestingChannel()
+    let (session, copyNumber) = try await makeSession(holding: list, on: server, channel: channel)
+    let written = Locked<Data?>(nil)
+
+    let plan = try list.downloadPlan(limits: RDPClipboardDownloadLimits(rangeByteCount: 1024))
+    let download = Task {
+        try await session.downloadRemoteFiles(
+            plan,
+            copyNumber: copyNumber,
+            into: URL(fileURLWithPath: "/downloads"),
+            writeFile: { data, _ in written.withLock { $0 = data } }
+        )
+    }
+    // The size, then four ranges, each answered 110 seconds after it was asked for.
+    for index in 0 ..< 5 {
+        try await waitUntil { server.requests.count == index + 1 }
+        await channel.testingEventLoop.advanceTime(by: .seconds(110))
+        let answer = server.answer(server.requests[index])
+        _ = try session.receive(RDPClipboardPDU.parse(from: answer.encoded()))
+    }
+    let result = try #require(await outcome(of: download))
+    #expect(try result.get().fileURLs.map(\.lastPathComponent) == ["slow.bin"])
+    #expect(written.value == file)
+    try await channel.close()
+}
+
 /// A newer copy, the server's or a publish, or turning fetching off, ends a download waiting
 /// for an answer, and one of an older copy never starts.
 @Test(.timeLimit(.minutes(1)))
