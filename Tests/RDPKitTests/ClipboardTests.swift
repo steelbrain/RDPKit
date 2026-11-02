@@ -981,7 +981,7 @@ private final class ClipboardPublishRace: @unchecked Sendable {
 
     let answered = Locked(0)
     let finished = DispatchSemaphore(value: 0)
-    DispatchQueue.global().async {
+    Thread.detachNewThread {
         for streamID in 0 ..< 64 {
             let request = RDPClipboardFileContentsRequestPDU.range(
                 streamID: UInt32(streamID),
@@ -1007,7 +1007,7 @@ private final class ClipboardPublishRace: @unchecked Sendable {
     let budget = RDPPendingByteBudget(limit: 10)
     budget.reserve(8)
     let reserved = DispatchSemaphore(value: 0)
-    DispatchQueue.global().async {
+    Thread.detachNewThread {
         budget.reserve(4)
         reserved.signal()
     }
@@ -1027,7 +1027,7 @@ private final class ClipboardPublishRace: @unchecked Sendable {
     let cancelled = Locked(false)
     let reserved = Locked<Bool?>(nil)
     let finished = DispatchSemaphore(value: 0)
-    DispatchQueue.global().async {
+    Thread.detachNewThread {
         reserved.withLock { $0 = budget.reserve(4) { cancelled.value } }
         finished.signal()
     }
@@ -1067,7 +1067,7 @@ private final class ClipboardPublishRace: @unchecked Sendable {
     _ = try session.receive(RDPClipboardPDU(messageType: RDPClipboardMessageType.monitorReady))
 
     let finished = DispatchSemaphore(value: 0)
-    DispatchQueue.global().async {
+    Thread.detachNewThread {
         for streamID in 0 ..< 64 {
             let request = RDPClipboardFileContentsRequestPDU.range(
                 streamID: UInt32(streamID),

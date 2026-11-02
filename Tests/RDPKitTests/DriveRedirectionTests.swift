@@ -726,7 +726,7 @@ import Testing
 
     let queued = Locked(0)
     let finished = DispatchSemaphore(value: 0)
-    DispatchQueue.global().async {
+    Thread.detachNewThread {
         for _ in 0 ..< 64 {
             _ = try? stalled.session.receive(deviceIORequestPDU(driveRequest(
                 fileID: 1,
@@ -752,7 +752,7 @@ import Testing
     defer { stalled.close() }
 
     let finished = DispatchSemaphore(value: 0)
-    DispatchQueue.global().async {
+    Thread.detachNewThread {
         for _ in 0 ..< 64 {
             _ = try? stalled.session.receive(deviceIORequestPDU(driveRequest(
                 fileID: 1,
@@ -780,7 +780,7 @@ import Testing
     #expect(stalled.session.takePendingEvents() == [.driveUnavailable(name: "Gone")])
 
     let finished = DispatchSemaphore(value: 0)
-    DispatchQueue.global().async {
+    Thread.detachNewThread {
         // The server starts over, and over again.
         for packet: [UInt8] in [
             [0x72, 0x44, 0x6E, 0x49, 0x01, 0x00, 0x0C, 0x00, 0x78, 0x56, 0x34, 0x12],

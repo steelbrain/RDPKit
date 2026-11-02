@@ -331,7 +331,7 @@ func startingTLSRejectsDataSentAfterTheConnectionConfirm(extra: Data) throws {
     let returned = DispatchSemaphore(value: 0)
     // Only that thread receives; this one may close, which any thread can.
     nonisolated(unsafe) let receivingTransport = transport
-    DispatchQueue.global().async {
+    Thread.detachNewThread {
         result.withLock { $0 = Result { try receivingTransport.receive(timeout: .milliseconds(1)) } }
         returned.signal()
     }
