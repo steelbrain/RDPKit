@@ -1240,6 +1240,66 @@ private final class ClipboardPublishRace: @unchecked Sendable {
     _ = try channel.finish()
 }
 
+/// The server holds the client's copy from a publish that is not empty until an empty one, or
+/// a server copy of its own, fetched or not; one that crossed the publish is older and leaves
+/// it. Withdrawing publishes an empty copy only while the server holds the client's.
+@Test func clipboardSessionWithdrawsItsCopyOnlyWhileTheServerHoldsIt() throws {
+    let channel = EmbeddedChannel()
+    let sent = ClipboardSentMessages()
+    let session = RDPClipboardSession(
+        userChannelID: 1006,
+        staticChannelID: 1007,
+        channel: channel,
+        sentMessageHandler: sent.record
+    )
+    let textCopy = RDPClipboardFormatListPDU(entries: [
+        RDPClipboardFormatListEntry(formatID: RDPClipboardFormatID.unicodeText),
+    ]).encoded()
+    func receive(_ data: Data) throws -> RDPClipboardEvent? {
+        try session.receive(RDPClipboardPDU.parse(from: data))
+    }
+    func sentFormatListCount() -> Int {
+        sent.summaries.count { $0.typeName == "clipboard-format-list" }
+    }
+
+    _ = try receive(RDPClipboardCapabilitiesPDU().encoded())
+    _ = try session.receive(RDPClipboardPDU(messageType: RDPClipboardMessageType.monitorReady))
+    _ = try session.receive(serverFormatListResponse)
+    #expect(!session.serverHoldsLocalCopy)
+    #expect(!session.withdrawLocalCopy())
+    #expect(sentFormatListCount() == 1)
+
+    session.publishLocalUnicodeText("local")
+    #expect(session.serverHoldsLocalCopy)
+    #expect(try receive(textCopy) == nil)
+    #expect(session.serverHoldsLocalCopy)
+    _ = try session.receive(serverFormatListResponse)
+    #expect(session.withdrawLocalCopy())
+    #expect(!session.serverHoldsLocalCopy)
+    #expect(try clipboardPayload(fromPackets: #require(sent.packets.last)) == RDPClipboardFormatListPDU(entries: []).encoded())
+    #expect(!session.withdrawLocalCopy())
+    #expect(sentFormatListCount() == 3)
+    _ = try session.receive(serverFormatListResponse)
+
+    for fetches in [true, false] {
+        session.fetchesRemoteCopies = fetches
+        session.publishLocalFiles([RDPClipboardLocalFile(fileName: "notes.txt", contents: Data([1]))])
+        #expect(session.serverHoldsLocalCopy)
+        _ = try session.receive(serverFormatListResponse)
+        _ = try receive(textCopy)
+        #expect(!session.serverHoldsLocalCopy)
+        let count = sentFormatListCount()
+        #expect(!session.withdrawLocalCopy())
+        #expect(sentFormatListCount() == count)
+    }
+
+    session.publishLocalContent(RDPClipboardContent(html: "<b>local</b>"))
+    #expect(session.serverHoldsLocalCopy)
+    session.publishLocalUnicodeText(nil)
+    #expect(!session.serverHoldsLocalCopy)
+    _ = try channel.finish()
+}
+
 /// Joining cliprdr announces the client's clipboard, empty when nothing was published, which
 /// is no copy of the user's; KRdp sends its copy at connect before it answers that list. A
 /// server copy that crosses only that list is still fetched; one that crosses a joining list

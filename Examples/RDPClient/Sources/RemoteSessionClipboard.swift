@@ -19,6 +19,9 @@ protocol RDPClipboardSending: AnyObject, Sendable {
     func hasPublished(since remoteCopyNumber: Int) -> Bool
     func publishLocalUnicodeText(_ text: String?)
     func publishLocalFiles(_ files: [RDPClipboardLocalFile])
+    /// Publishes an empty copy while the server's clipboard holds this Mac's last one.
+    @discardableResult
+    func withdrawLocalCopy() -> Bool
     func downloadRemoteFiles(
         _ list: RDPClipboardFileGroupDescriptorW,
         copyNumber: Int,
@@ -43,9 +46,6 @@ final class RDPRemoteSessionClipboard {
     /// Whether the local copy last seen has not reached the server: it could not be read or
     /// sent, or its read was cut short. A remote copy since is newer, which clears it.
     private var localCopyIsUnsent = false
-    /// Whether the server's clipboard holds the last local copy sent: text or files went, and
-    /// no empty clipboard or remote copy since. Only then does ending sharing empty it.
-    private var serverHoldsLocalCopy = false
     /// Nil once the read has finished.
     private var localFileRead: Task<Void, Never>?
     private var temporarySharingExpiresAt: Date?
@@ -112,7 +112,6 @@ final class RDPRemoteSessionClipboard {
         message = nil
         // A later session's server has a clipboard of its own.
         remoteCopyChangeCount = nil
-        serverHoldsLocalCopy = false
         discardFileTransfer()
         cancelLocalFileRead()
         removePastedDownloadUnlessOnPasteboard()
@@ -128,12 +127,9 @@ final class RDPRemoteSessionClipboard {
             session?.fetchesRemoteCopies = false
             discardFileTransfer()
             cancelLocalFileRead()
-            // Windows empties its clipboard for an empty Format List, so a copy the server's
-            // user made since, theirs and not this Mac's, is left alone.
-            if serverHoldsLocalCopy {
-                session?.publishLocalUnicodeText(nil)
-                serverHoldsLocalCopy = false
-            }
+            // Windows empties its clipboard for an empty Format List, so only this Mac's copy
+            // is taken back: one the server's user made since is theirs, and left alone.
+            session?.withdrawLocalCopy()
             message = "Disabled."
             pasteboardChangeCount = pasteboard.changeCount
             return
@@ -205,7 +201,6 @@ final class RDPRemoteSessionClipboard {
         pasteboardChangeCount = pasteboard.changeCount
         remoteCopyChangeCount = pasteboardChangeCount
         localCopyIsUnsent = false
-        serverHoldsLocalCopy = false
         message = "Remote text copied."
     }
 
@@ -231,7 +226,6 @@ final class RDPRemoteSessionClipboard {
         // A local copy the poll has not published yet is older than this one.
         pasteboardChangeCount = pasteboard.changeCount
         localCopyIsUnsent = false
-        serverHoldsLocalCopy = false
     }
 
     func receiveFileList(_ descriptorList: RDPClipboardFileGroupDescriptorW, copyNumber: Int) {
@@ -244,7 +238,6 @@ final class RDPRemoteSessionClipboard {
         // older than these files.
         pasteboardChangeCount = pasteboard.changeCount
         localCopyIsUnsent = false
-        serverHoldsLocalCopy = false
         guard let session else {
             return
         }
@@ -337,7 +330,6 @@ final class RDPRemoteSessionClipboard {
             // sharing turns on, nor applied should it reach this thread late. A remote copy made
             // during the read is newer still, and wins.
             session?.publishLocalUnicodeText(nil)
-            serverHoldsLocalCopy = false
             // Reading up to 32 MiB, or a file iCloud has to download first, would stall the UI.
             localFileRead = Task { [weak self] in
                 let payload = await Task.detached(priority: .userInitiated) {
@@ -362,21 +354,17 @@ final class RDPRemoteSessionClipboard {
         case let .text(text):
             session.publishLocalUnicodeText(text)
             localCopyIsUnsent = false
-            serverHoldsLocalCopy = true
             message = "Local text synced."
         case let .files(files):
             session.publishLocalFiles(files)
             localCopyIsUnsent = false
-            serverHoldsLocalCopy = true
             message = files.count == 1 ? "Local file synced." : "\(files.count) local files synced."
         case .empty:
             session.publishLocalUnicodeText(nil)
             localCopyIsUnsent = false
-            serverHoldsLocalCopy = false
             message = "Local clipboard has no text."
         case let .unsupported(reason):
             session.publishLocalUnicodeText(nil)
-            serverHoldsLocalCopy = false
             message = reason
         }
     }

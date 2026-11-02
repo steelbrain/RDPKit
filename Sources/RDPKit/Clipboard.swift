@@ -1097,6 +1097,30 @@ public final class RDPClipboardSession: @unchecked Sendable {
         lock.withLock { formatDataRequests.contains { $0.copyID == remoteCopyID } }
     }
 
+    /// Whether the server's clipboard holds this client's last publish, which was not empty:
+    /// from that publish until an empty one, or until the server announces a copy of its own,
+    /// fetched or not, that replaces it there. A copy that crossed the publish on its way, and
+    /// is older, leaves it.
+    public var serverHoldsLocalCopy: Bool {
+        lock.withLock { isOfferingPublishedCopy && localContent != .empty }
+    }
+
+    /// Takes this client's copy back off the server's clipboard, publishing an empty one, while
+    /// ``serverHoldsLocalCopy``; otherwise does nothing and returns false. Windows empties its
+    /// clipboard for an empty publish, so a client that stops sharing withdraws its copy this
+    /// way, leaving a copy the server's user made since alone. Checked and published under one
+    /// lock, so a server copy the session takes on its own thread meanwhile is never emptied.
+    @discardableResult
+    public func withdrawLocalCopy() -> Bool {
+        lock.withLock {
+            guard isOfferingPublishedCopy, localContent != .empty else {
+                return false
+            }
+            publishLocked(.empty)
+            return true
+        }
+    }
+
     public func publishLocalUnicodeText(_ text: String?) {
         publish(text.map { .content(RDPClipboardContent(text: $0)) } ?? .empty)
     }
@@ -1628,8 +1652,11 @@ public final class RDPClipboardSession: @unchecked Sendable {
     /// the remote copy being fetched is retired: the answer to the request that has gone out is
     /// still matched to it and dropped, and the rest are never asked for.
     private func publish(_ content: RDPClipboardLocalContent) {
-        lock.lock()
-        defer { lock.unlock() }
+        lock.withLock { publishLocked(content) }
+    }
+
+    /// Callers hold `lock`.
+    private func publishLocked(_ content: RDPClipboardLocalContent) {
         replaceRemoteCopy(with: [])
         publishedCopyID = remoteCopyID
         localContent = content

@@ -88,10 +88,23 @@ private final class RecordedClipboard: RDPClipboardSending, @unchecked Sendable 
     private var lastCopyNumber = 0
     private var publishedCopyNumber = 0
 
-    /// A copy the server announces, and the number its handler gets.
+    /// Whether the server's clipboard holds the last publish, which was not empty.
+    private(set) var serverHoldsLocalCopy = false
+
+    /// A copy the server announces, and the number its handler gets. It replaces the local
+    /// copy on the server.
     func announceRemoteCopy() -> Int {
         lastCopyNumber += 1
+        serverHoldsLocalCopy = false
         return lastCopyNumber
+    }
+
+    func withdrawLocalCopy() -> Bool {
+        guard serverHoldsLocalCopy else {
+            return false
+        }
+        publishLocalUnicodeText(nil)
+        return true
     }
 
     func hasPublished(since remoteCopyNumber: Int) -> Bool {
@@ -100,11 +113,13 @@ private final class RecordedClipboard: RDPClipboardSending, @unchecked Sendable 
 
     func publishLocalUnicodeText(_ text: String?) {
         recordPublish()
+        serverHoldsLocalCopy = text != nil
         publishedTexts.append(text)
     }
 
     func publishLocalFiles(_ files: [RDPClipboardLocalFile]) {
         recordPublish()
+        serverHoldsLocalCopy = !files.isEmpty
         publishedFiles.append(files)
     }
 

@@ -115,6 +115,12 @@
   downloads through it.
 - `RDPClipboardFileGroupDescriptorW.remoteFileTransferFiles` takes a
   `maximumFileCount`.
+- `RDPClipboardSession.serverHoldsLocalCopy` says whether the server's
+  clipboard holds the client's last publish, which was not empty, and
+  `withdrawLocalCopy()` takes it back with an empty publish only then, so a
+  client that stops sharing leaves a copy the server's user made since alone:
+  Windows empties its clipboard for an empty publish. RDPClient withdraws
+  through it.
 
 ### Security
 
