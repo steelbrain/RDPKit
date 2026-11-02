@@ -69,6 +69,14 @@ public struct RDPDesktopSize: Equatable, Hashable, Sendable {
 
         try self.init(width: parsedWidth, height: parsedHeight)
     }
+
+    /// The desktop to connect with so that sending `request` through Display Control once
+    /// connected resizes nothing: its size, whose width Display Control rounds down to even,
+    /// raised to the 640x480 a connection takes at least.
+    public init(_ request: RDPDisplayRequest) {
+        width = UInt16(max(request.width, 640))
+        height = UInt16(max(request.height, 480))
+    }
 }
 
 public struct RDPConnectionIdentity: Equatable, Hashable, Sendable {

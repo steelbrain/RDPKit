@@ -374,17 +374,15 @@ struct RDPConnectDesktop: Equatable {
         viewerPointSize: CGSize,
         viewerPixelSize: RDPViewerPixelSize?
     ) {
-        let pointLayout = RDPDisplayRequest(pointSize: viewerPointSize, backingScaleFactor: 1)
         guard followsViewSize,
               let viewerPixelSize,
               UInt32(fieldSize.width) == viewerPixelSize.width,
-              UInt32(fieldSize.height) == viewerPixelSize.height,
-              let pointSize = try? RDPDesktopSize(width: UInt16(pointLayout.width), height: UInt16(pointLayout.height))
+              UInt32(fieldSize.height) == viewerPixelSize.height
         else {
             size = fieldSize
             return
         }
-        size = pointSize
+        size = RDPDesktopSize(RDPDisplayRequest(pointSize: viewerPointSize, backingScaleFactor: 1))
     }
 
     /// The monitor layout the session starts with, to send again through Display Control.

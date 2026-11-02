@@ -312,6 +312,19 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
         extendedClientDataSupported ? Self.validMonitorLayout(monitorLayout) : nil
     }
 
+    /// The keyboard the server assumes, as `RDPMacKeyboardLayout.current()` gives it: the
+    /// layout, type and subtype together.
+    public var keyboard: RDPKeyboard {
+        get {
+            RDPKeyboard(layout: keyboardLayout, type: keyboardType, subType: keyboardSubType)
+        }
+        set {
+            keyboardLayout = newValue.layout
+            keyboardType = newValue.type
+            keyboardSubType = newValue.subType
+        }
+    }
+
     var clientKeyboard: RDPClientKeyboard {
         RDPClientKeyboard(
             layout: keyboardLayout,

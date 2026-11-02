@@ -722,7 +722,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
             viewerPixelSize: viewerPixelSize
         )
         requestedDesktop = connectDesktop
-        let configuration = RDPConnectionConfiguration(
+        var configuration = RDPConnectionConfiguration(
             target: target,
             credentials: credentials,
             timeoutSeconds: Int(timeoutSeconds),
@@ -738,9 +738,6 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
             clipboardFetchesRemoteCopies: false,
             audioPlaybackEnabled: audioPlaybackEnabled,
             graphicsCapabilityProfile: graphicsCapabilityProfile,
-            keyboardLayout: keyboard.layout,
-            keyboardType: keyboard.type,
-            keyboardSubType: keyboard.subType,
             // A certificate that refuses ECDHE gets a second connection with RSA key exchange,
             // before any credential is sent.
             legacyRSAKeyExchange: .fallback,
@@ -748,6 +745,8 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
             // The Mac's name, as servers list clients; RDPKit cuts it to 15 characters.
             clientName: SCDynamicStoreCopyComputerName(nil, nil) as String? ?? "RDPKIT"
         )
+        configuration.keyboard = keyboard
+        let sessionConfiguration = configuration
 
         let session = RDPLiveSession(threadName: "RDPClient session")
         let cancellation = session.cancellation
@@ -887,8 +886,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                 }
             )
         ) { run in
-            let sessionConfiguration = configuration
-            return RDPSessionClient().run(
+            RDPSessionClient().run(
                 configuration: sessionConfiguration,
                 // A frame that fails to decode leaves stale pixels, not a broken session, so the
                 // session goes on, acknowledges it, and asks the server for a keyframe for video.

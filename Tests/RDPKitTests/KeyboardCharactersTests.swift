@@ -76,3 +76,18 @@ private func character(
         #expect(RDPKeyboard(layout: RDPKeyboardLayout(rawValue: klid)).hasCharacterTable)
     }
 }
+
+/// A configuration's keyboard is its layout, type and subtype together, both ways.
+@Test func aConfigurationsKeyboardIsItsLayoutTypeAndSubtype() {
+    var configuration = RDPConnectionConfiguration(host: "example.test")
+    #expect(configuration.keyboard == .unitedStates)
+
+    configuration.keyboard = .japanese106
+    #expect(configuration.keyboardLayout == .japanese)
+    #expect(configuration.keyboardType == .japanese)
+    #expect(configuration.keyboardSubType == 2)
+
+    configuration.keyboardSubType = 0
+    #expect(configuration.keyboard == RDPKeyboard(layout: .japanese, type: .japanese))
+}
+

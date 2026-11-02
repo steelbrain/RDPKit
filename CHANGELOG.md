@@ -280,6 +280,12 @@
     link, which runs only while a frame waits (`requestFrame()`), and
     publishes the screen's timing as `RDPFramePacingState`.
     `RDPFramePresentationBuffer` holds the one frame waiting for it.
+- `RDPConnectionConfiguration.keyboard` sets or reads the layout, type and
+  subtype together as an `RDPKeyboard`, as `RDPMacKeyboardLayout.current()`
+  gives it.
+- `RDPDesktopSize(_:)` takes an `RDPDisplayRequest`, its width even as
+  Display Control rounds it, so the layout sent once connected resizes
+  nothing.
 - `RDPScrollWheelAccumulator.events(deltaX:deltaY:isPrecise:at:)` takes a
   scroll as AppKit reports it, a line a notch of 120 rotation units and a
   precise scroll's point 10, with the horizontal axis negated for RDP.

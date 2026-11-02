@@ -173,6 +173,19 @@ import Testing
     #expect(size.height == 1080)
 }
 
+/// A display request's desktop is the size its layout asks for, an odd width rounded down as
+/// Display Control rounds it, and at least 640x480.
+@Test func desktopSizeTakesADisplayRequestsSize() {
+    let scale = RDPDisplayScaleFactors(backingScaleFactor: 2)
+    let odd = RDPDesktopSize(RDPDisplayRequest(width: 1513, height: 951, scaleFactors: scale))
+    #expect(odd == (try? RDPDesktopSize(width: 1512, height: 951)))
+
+    let small = RDPDesktopSize(RDPDisplayRequest(width: 300, height: 200, scaleFactors: scale))
+    #expect(small == (try? RDPDesktopSize(width: 640, height: 480)))
+    let large = RDPDesktopSize(RDPDisplayRequest(width: 9000, height: 9000, scaleFactors: scale))
+    #expect(large == (try? RDPDesktopSize(width: 8192, height: 8192)))
+}
+
 @Test func desktopSizeRejectsInvalidOrOutOfRangeValues() {
     #expect(
         throws: RDPConnectionValidationError.invalidDesktopSize,

@@ -666,9 +666,7 @@ struct MockKRDPServerTests {
     /// The configured keyboard reaches the Client Core Data and the Input Capability Set.
     @Test func clientAnnouncesTheConfiguredKeyboard() throws {
         let report = try runMock(.init()) {
-            $0.keyboardLayout = RDPKeyboardLayout(rawValue: 0x0000_0411)
-            $0.keyboardType = .japanese
-            $0.keyboardSubType = 2
+            $0.keyboard = .japanese106
             $0.keyboardFunctionKeyCount = 12
         }.report
 
