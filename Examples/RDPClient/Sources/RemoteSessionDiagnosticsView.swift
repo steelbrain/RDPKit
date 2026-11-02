@@ -304,8 +304,8 @@ struct RemoteSessionDiagnosticsWindowContent: View {
                     DiagnosticRow("Graphics Profile", snapshot.report?.rdpGraphicsCapabilityProfile.rawValue ?? "not requested")
                     DiagnosticRow("Graphics", graphicsCapability(snapshot.report))
                     DiagnosticRow("Graphics Path", RDPGraphicsPathDescription.describe(report: snapshot.report))
-                    DiagnosticRow("Graphics Updates", graphicsUpdateSummary(snapshot.report?.rdpGraphicsUpdateMessages))
-                    DiagnosticRow("Graphics Failure", graphicsFailureSummary(snapshot.report))
+                    DiagnosticRow("Graphics Updates", Self.graphicsUpdateSummary(snapshot.report?.rdpGraphicsUpdateMessages))
+                    DiagnosticRow("Graphics Failure", Self.graphicsFailureSummary(snapshot.report))
                     DiagnosticRow("Update Packets", countSummary(snapshot.report?.rdpGraphicsUpdateResponseCount))
                     DiagnosticRow("Presented Frames", "\(snapshot.presentedFrameCount)")
                     DiagnosticRow("Input", snapshot.inputReady ? "ready" : "not ready")
@@ -671,7 +671,7 @@ struct RemoteSessionDiagnosticsWindowContent: View {
             .joined(separator: ", ")
     }
 
-    private func graphicsUpdateSummary(_ messages: [RDPGFXMessageSummary]?) -> String {
+    private static func graphicsUpdateSummary(_ messages: [RDPGFXMessageSummary]?) -> String {
         guard let messages, !messages.isEmpty else {
             return "not observed"
         }
@@ -718,7 +718,10 @@ struct RemoteSessionDiagnosticsWindowContent: View {
             .joined(separator: ", ")
     }
 
-    private func graphicsFailureSummary(_ report: RDPConnectionReport?) -> String {
+    /// Which PDU of the first failing graphics update failed, and of how many, then the first
+    /// few PDUs summarized: those around the failing one, which in an update of more than 64
+    /// do not start at its first.
+    static func graphicsFailureSummary(_ report: RDPConnectionReport?) -> String {
         guard let report,
               report.rdpGraphicsFailureUpdatePayloadHex != nil
                 || report.rdpGraphicsFailureUpdateResponseHex != nil
@@ -726,7 +729,13 @@ struct RemoteSessionDiagnosticsWindowContent: View {
             return "none"
         }
 
-        let index = report.rdpGraphicsFailureUpdateMessageIndex.map { "message \($0)" } ?? "transport"
+        var index = report.rdpGraphicsFailureUpdateMessageIndex.map { "message \($0)" } ?? "transport"
+        if let messageCount = report.rdpGraphicsFailureUpdateMessageCount {
+            index += " of \(messageCount)"
+        }
+        if let firstIndex = report.rdpGraphicsFailureUpdateFirstMessageIndex {
+            index += ", summaries from \(firstIndex)"
+        }
         let messages = graphicsUpdateSummary(report.rdpGraphicsFailureUpdateMessages)
         return messages == "not observed" ? index : "\(index): \(messages)"
     }

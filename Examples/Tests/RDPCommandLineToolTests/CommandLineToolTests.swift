@@ -284,6 +284,27 @@ import Testing
     #expect(json.joined().contains("\"rdpGraphicsFrameAcknowledgeCount\" : 12"))
 }
 
+/// A failing graphics update prints which of its PDUs failed, how many it held and which one
+/// its summaries start at: around the failing PDU, not at the update's first, in an update of
+/// more than 64.
+@Test func preflightPrintsWhereTheFailingUpdatesSummariesStart() throws {
+    var report = RDPSessionClient().dryRun(configuration: RDPConnectionConfiguration(host: "server.example"))
+    report.rdpGraphicsFailureUpdatePayloadHex = "00"
+    report.rdpGraphicsFailureUpdateMessageIndex = 80
+    report.rdpGraphicsFailureUpdateFirstMessageIndex = 48
+    report.rdpGraphicsFailureUpdateMessageCount = 161
+
+    var text: [String] = []
+    try printReport(report, json: false) { text.append($0) }
+
+    let indexLine = try #require(text.firstIndex(of: "rdp graphics failure update message index: 80"))
+    #expect(Array(text[indexLine...].prefix(3)) == [
+        "rdp graphics failure update message index: 80",
+        "rdp graphics failure update message count: 161",
+        "rdp graphics failure update first message index: 48",
+    ])
+}
+
 @Test func connectionOptionsRejectPortZero() {
     #expect(throws: RDPCommandLineError.invalidValue(option: "--port", value: "0", expected: "1...65535")) {
         try FirstFrameCaptureOptions.parse(["RDPFirstFrameCapture", "--port", "0"])

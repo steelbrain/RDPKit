@@ -364,6 +364,42 @@ func deactivatedSessionThatNeverReactivatesFails(closes: Bool, failure: RDPConne
     #expect(run.report.error == "server sent more than 16 desktops of updates without ending the frame")
 }
 
+/// An update that fails to decode can hold millions of 8-byte PDUs, kept for the rest of a
+/// live session: the report summarizes the 64 around the failing one and says where they are.
+@Test func failingGraphicsUpdateSummarizesThePDUsAroundTheFailingOne() throws {
+    let unknown = Data(Array(repeating: graphicsMessage(commandID: 0x00FF, payload: Data()), count: 80).joined())
+    var delete = Data()
+    delete.appendLittleEndianUInt16(99)
+    let run = try KRdpCapture.run(
+        appending: [
+            KRdpCapture.graphicsPacket(unknown + graphicsMessage(commandID: RDPGFXCommandID.deleteSurface, payload: delete) + unknown),
+        ],
+        frameCaptureLimit: 2
+    )
+
+    #expect(run.report.error == "invalid RDP Graphics Pipeline PDU")
+    #expect(run.report.rdpGraphicsFailureUpdateMessageCount == 161)
+    #expect(run.report.rdpGraphicsFailureUpdateMessageIndex == 80)
+    #expect(run.report.rdpGraphicsFailureUpdateFirstMessageIndex == 48)
+    #expect(run.report.rdpGraphicsFailureUpdateMessages?.count == 64)
+    #expect(run.report.rdpGraphicsFailureUpdateMessages?[32].typeName == "rdpgfx-delete-surface")
+}
+
+/// An update that does not decode into PDUs, here three bytes of a header's eight, has no
+/// failing PDU and none to count.
+@Test func graphicsUpdateThatHoldsNoPDUsRecordsNoPDUIndices() throws {
+    let run = try KRdpCapture.run(
+        appending: [KRdpCapture.graphicsPacket(Data([0x01, 0x02, 0x03]))],
+        frameCaptureLimit: 2
+    )
+
+    #expect(run.report.error == "invalid RDP Graphics Pipeline PDU")
+    #expect(run.report.rdpGraphicsFailureUpdatePayloadHex != nil)
+    #expect(run.report.rdpGraphicsFailureUpdateMessageIndex == nil)
+    #expect(run.report.rdpGraphicsFailureUpdateFirstMessageIndex == nil)
+    #expect(run.report.rdpGraphicsFailureUpdateMessageCount == nil)
+}
+
 /// The next snapshot names each surface deleted since the last one once, so a server that
 /// creates and deletes surfaces it never shows cannot grow the list without bound.
 @Test func surfacesDeletedBetweenSnapshotsAreNamedOnce() throws {

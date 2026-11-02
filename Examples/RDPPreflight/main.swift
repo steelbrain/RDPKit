@@ -605,6 +605,14 @@ func printReport(
         if let failureIndex = report.rdpGraphicsFailureUpdateMessageIndex {
             print("rdp graphics failure update message index: \(failureIndex)")
         }
+        // The summaries are of the PDUs around the failing one, which an update of more than 64
+        // does not start with.
+        if let messageCount = report.rdpGraphicsFailureUpdateMessageCount {
+            print("rdp graphics failure update message count: \(messageCount)")
+        }
+        if let firstIndex = report.rdpGraphicsFailureUpdateFirstMessageIndex {
+            print("rdp graphics failure update first message index: \(firstIndex)")
+        }
         if let failureMessages = report.rdpGraphicsFailureUpdateMessages,
            !failureMessages.isEmpty
         {

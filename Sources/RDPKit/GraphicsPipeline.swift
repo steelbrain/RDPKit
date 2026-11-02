@@ -455,11 +455,19 @@ extension RDPClientConnection {
         report.rdpGraphicsFailureUpdateResponseHex = packet.rdpHexString
         // A reassembled message can be megabytes, kept for the rest of a live session.
         report.rdpGraphicsFailureUpdatePayloadHex = payload.prefix(RDPRecordLimit.failurePayloadByteCount).rdpHexString
-        report.rdpGraphicsFailureUpdateMessages = messages.map { message in
+        // It can also hold millions of PDUs of 8 bytes each: only those around the failing one
+        // are summarized.
+        let first = max(0, min((index ?? 0) - RDPRecordLimit.messages / 2, messages.count - RDPRecordLimit.messages))
+        report.rdpGraphicsFailureUpdateMessages = messages[first...].prefix(RDPRecordLimit.messages).map { message in
             (try? RDPGFXMessageSummary.summarize(message, includeVideoDetails: false))
                 ?? RDPGFXMessageSummary(typeName: message.typeName)
         }
         report.rdpGraphicsFailureUpdateMessageIndex = index
+        // An update that did not decode into PDUs has none to count.
+        if !messages.isEmpty {
+            report.rdpGraphicsFailureUpdateFirstMessageIndex = first
+            report.rdpGraphicsFailureUpdateMessageCount = messages.count
+        }
     }
 
     // MARK: Primary surface

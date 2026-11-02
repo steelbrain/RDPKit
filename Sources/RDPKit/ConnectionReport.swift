@@ -129,8 +129,15 @@ public struct RDPConnectionReport: Encodable, Equatable, Sendable {
     public var rdpFastPathUpdateMessages: [RDPFastPathUpdateSummary]?
     public var rdpGraphicsFailureUpdateResponseHex: String?
     public var rdpGraphicsFailureUpdatePayloadHex: String?
+    /// The PDUs around the failing one, at most 64 of an update that can hold millions.
     public var rdpGraphicsFailureUpdateMessages: [RDPGFXMessageSummary]?
+    /// Where in the update the failing PDU is; nil when the update did not decode into PDUs.
     public var rdpGraphicsFailureUpdateMessageIndex: Int?
+    /// Where in the update the first of `rdpGraphicsFailureUpdateMessages` is; nil when the
+    /// update did not decode into PDUs.
+    public var rdpGraphicsFailureUpdateFirstMessageIndex: Int?
+    /// How many PDUs the update held; nil when it did not decode into PDUs.
+    public var rdpGraphicsFailureUpdateMessageCount: Int?
     /// The first frame acknowledgements sent: as many as a capture run's
     /// frames, 8 in a live session.
     public var rdpGraphicsFrameAcknowledgeHexes: [String]?
@@ -243,6 +250,8 @@ public struct RDPConnectionReport: Encodable, Equatable, Sendable {
         rdpGraphicsFailureUpdatePayloadHex: String? = nil,
         rdpGraphicsFailureUpdateMessages: [RDPGFXMessageSummary]? = nil,
         rdpGraphicsFailureUpdateMessageIndex: Int? = nil,
+        rdpGraphicsFailureUpdateFirstMessageIndex: Int? = nil,
+        rdpGraphicsFailureUpdateMessageCount: Int? = nil,
         rdpGraphicsFrameAcknowledgeHexes: [String]? = nil,
         rdpGraphicsFrameAcknowledgeCount: Int? = nil,
         rdpGraphicsFrames: [RDPGraphicsFrameSnapshot]? = nil,
@@ -348,6 +357,8 @@ public struct RDPConnectionReport: Encodable, Equatable, Sendable {
         self.rdpGraphicsFailureUpdatePayloadHex = rdpGraphicsFailureUpdatePayloadHex
         self.rdpGraphicsFailureUpdateMessages = rdpGraphicsFailureUpdateMessages
         self.rdpGraphicsFailureUpdateMessageIndex = rdpGraphicsFailureUpdateMessageIndex
+        self.rdpGraphicsFailureUpdateFirstMessageIndex = rdpGraphicsFailureUpdateFirstMessageIndex
+        self.rdpGraphicsFailureUpdateMessageCount = rdpGraphicsFailureUpdateMessageCount
         self.rdpGraphicsFrameAcknowledgeHexes = rdpGraphicsFrameAcknowledgeHexes
         self.rdpGraphicsFrameAcknowledgeCount = rdpGraphicsFrameAcknowledgeCount
         self.rdpGraphicsFrames = rdpGraphicsFrames
