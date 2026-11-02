@@ -65,6 +65,11 @@ public struct RDPRemoteDisplayViewport: Equatable, Sendable {
 
     /// Maps `localPoint` with the desktop drawn in `contentRect` rather than in ``contentRect``:
     /// a view that aligns ``contentRect`` to the screen's pixels passes the rect it draws in.
+    ///
+    /// The edge the remote desktop starts at is inside and the opposite one outside. With
+    /// ``RDPLocalCoordinateOrigin/bottomLeft`` that puts the top edge inside and the bottom
+    /// one outside, as `NSMouseInRect` counts an unflipped view's edges: AppKit reports the
+    /// mouse in a view's top pixel row at the view's maxY.
     public func remotePoint(from localPoint: CGPoint, contentRect: CGRect) -> RDPRemotePoint? {
         guard localPoint.x.isFinite,
               localPoint.y.isFinite,
@@ -75,8 +80,18 @@ public struct RDPRemoteDisplayViewport: Equatable, Sendable {
               remotePixelSize.height.isFinite,
               remotePixelSize.width > 0,
               remotePixelSize.height > 0,
-              contentRect.contains(localPoint)
+              contentRect.minX <= localPoint.x,
+              localPoint.x < contentRect.maxX
         else {
+            return nil
+        }
+        let isInsideVertically = switch coordinateOrigin {
+        case .topLeft:
+            contentRect.minY <= localPoint.y && localPoint.y < contentRect.maxY
+        case .bottomLeft:
+            contentRect.minY < localPoint.y && localPoint.y <= contentRect.maxY
+        }
+        guard isInsideVertically else {
             return nil
         }
 
@@ -94,7 +109,7 @@ public struct RDPRemoteDisplayViewport: Equatable, Sendable {
     }
 }
 
-// Keeps the coordinate on a remote pixel: the bottom-left origin maps the content edge to `extent` itself.
+// Keeps the coordinate on a remote pixel, should rounding take a point by the far edge to `extent` itself.
 private func clampedRemoteCoordinate(_ value: CGFloat, extent: CGFloat) -> UInt16 {
     guard value.isFinite else {
         return 0

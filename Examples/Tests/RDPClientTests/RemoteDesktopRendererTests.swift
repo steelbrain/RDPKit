@@ -258,9 +258,43 @@ private final class RecordedPointerInput: RDPInputEventSending {
     }
 
     try move(to: CGPoint(x: desktop.minX - quarterPixel, y: desktop.midY))
+    try move(to: CGPoint(x: desktop.midX, y: desktop.minY))
     #expect(input.events.isEmpty)
-    try move(to: CGPoint(x: desktop.minX, y: desktop.maxY - quarterPixel))
-    try move(to: CGPoint(x: desktop.maxX - quarterPixel, y: desktop.minY))
+    // AppKit reports the mouse in the top pixel row at maxY, and in the bottom one above minY.
+    try move(to: CGPoint(x: desktop.minX, y: desktop.maxY))
+    try move(to: CGPoint(x: desktop.maxX - quarterPixel, y: desktop.minY + quarterPixel))
     #expect(input.events == [.pointerMove(x: 0, y: 0), .pointerMove(x: 999, y: 699)])
+    #expect(view.window === window)
+}
+
+/// A drag past the letterbox goes to the desktop's nearest edge, its bottom row included.
+@MainActor
+@Test func pointerDragPastTheDesktopClampsToItsEdge() throws {
+    let view = RemoteInputCaptureNSView()
+    let (window, _) = placeOnePixelWiderThanTheDesktop(view)
+    let input = RecordedPointerInput()
+    view.inputSession = input
+    let frame = frameMetadata(width: 1000, height: 700)
+    view.rdpFrame = frame
+    let desktop = view.backingAlignedDesktopRect(
+        of: RDPRemoteDisplayViewport(frame: frame, bounds: view.bounds, coordinateOrigin: .bottomLeft)
+    )
+    func drag(to location: CGPoint) throws {
+        view.mouseDragged(with: try #require(NSEvent.mouseEvent(
+            with: .leftMouseDragged,
+            location: location,
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            eventNumber: 0,
+            clickCount: 0,
+            pressure: 0
+        )))
+    }
+
+    try drag(to: CGPoint(x: desktop.minX - 50, y: desktop.minY - 50))
+    try drag(to: CGPoint(x: desktop.maxX + 50, y: desktop.maxY + 50))
+    #expect(input.events == [.pointerMove(x: 0, y: 699), .pointerMove(x: 999, y: 0)])
     #expect(view.window === window)
 }

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Compatibility and fixes
+
+- `RDPRemoteDisplayViewport` maps an AppKit view's top pixel row: with
+  bottom-left coordinates the top edge is inside and the bottom edge outside,
+  as `NSMouseInRect` counts them, so hovering or clicking the remote desktop's
+  first row works without a letterbox.
+
 ## 0.6.0
 
 ### Breaking changes
