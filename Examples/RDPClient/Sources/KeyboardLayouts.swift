@@ -114,13 +114,22 @@ enum MacRDPKeyboardLayout {
     /// FreeRDP's mapping (libfreerdp/locale/keyboard_apple.c), except where it names a
     /// language ID Windows 11 has no layout for: Australian and the Arabic PC layouts get the
     /// Windows layouts they mirror, and Afghan Uzbek, Inuktitut and Myanmar fall back to US.
+    /// Where FreeRDP's Windows layout puts letters elsewhere than the Mac's, so Control
+    /// shortcuts went as other letters, and for Mac layouts it does not list, the Windows
+    /// layout is the one whose keys type the Mac layout's letters, compared key by key with
+    /// UCKeyTranslate and a Windows 11 capture (2026-11-01): Finnish Extended, Hungarian
+    /// QWERTY, Latvian, Lithuanian, Lithuanian LST 1582, Romanian, and the ABC, Albanian,
+    /// German DIN 2137, Slovenian QWERTZ and Turkish F layouts.
     /// A layout added here needs its table: rerun Scripts/generate-windows-keyboard-layout-tables.py.
     static let windowsLayouts: [String: UInt32] = [
         "2SetHangul": 0x0000_0412,
         "390Hangul": 0x0000_0412,
         "3SetHangul": 0x0000_0412,
+        "ABC-AZERTY": 0x0000_080C,
+        "ABC-QWERTZ": 0x0000_0407,
         "AfghanDari": 0x0005_0429,
         "AfghanPashto": 0x0000_0463,
+        "Albanian": 0x0000_041C,
         "Arabic": 0x0000_0401,
         "Arabic-QWERTY": 0x0000_0401,
         "ArabicPC": 0x0000_0401,
@@ -159,13 +168,14 @@ enum MacRDPKeyboardLayout {
         "Estonian": 0x0000_0425,
         "Faroese": 0x0000_0438,
         "Finnish": 0x0000_040B,
-        "FinnishExtended": 0x0002_083B,
+        "FinnishExtended": 0x0000_040B,
         "FinnishSami-PC": 0x0001_083B,
         "French": 0x0000_080C,
         "French-numerical": 0x0000_080C,
         "French-PC": 0x0000_040C,
         "Georgian-QWERTY": 0x0001_0437,
         "German": 0x0000_0407,
+        "German-DIN-2137": 0x0000_0407,
         "GJCRomaja": 0x0000_0409,
         "Greek": 0x0000_0408,
         "GreekPolytonic": 0x0006_0408,
@@ -179,7 +189,7 @@ enum MacRDPKeyboardLayout {
         "Hebrew-QWERTY": 0x0000_040D,
         "HNCRomaja": 0x0000_0409,
         "Hungarian": 0x0000_040E,
-        "Hungarian-QWERTY": 0x0000_040E,
+        "Hungarian-QWERTY": 0x0001_040E,
         "Icelandic": 0x0000_040F,
         "Irish": 0x0000_1809,
         "IrishExtended": 0x0000_1809,
@@ -190,8 +200,9 @@ enum MacRDPKeyboardLayout {
         "Kannada-QWERTY": 0x0000_044B,
         "Kazakh": 0x0000_043F,
         "Khmer": 0x0001_0453,
-        "Latvian": 0x0000_0426,
-        "Lithuanian": 0x0000_0427,
+        "Latvian": 0x0001_0426,
+        "Lithuanian": 0x0001_0427,
+        "Lithuanian-LST1582": 0x0002_0427,
         "Macedonian": 0x0000_042F,
         "Malayalam": 0x0000_044C,
         "Malayalam-QWERTY": 0x0000_044C,
@@ -208,7 +219,7 @@ enum MacRDPKeyboardLayout {
         "Polish": 0x0001_0415,
         "PolishPro": 0x0000_0415,
         "Portuguese": 0x0000_0816,
-        "Romanian": 0x0000_0418,
+        "Romanian": 0x0001_0418,
         "Romanian-Standard": 0x0001_0418,
         "Russian": 0x0000_0419,
         "Russian-Phonetic": 0x0002_0419,
@@ -221,6 +232,7 @@ enum MacRDPKeyboardLayout {
         "Slovak": 0x0000_041B,
         "Slovak-QWERTY": 0x0001_041B,
         "Slovenian": 0x0000_0424,
+        "Slovenian-QWERTZ": 0x0000_0424,
         "Spanish": 0x0000_040A,
         "Spanish-ISO": 0x0000_040A,
         "Swedish": 0x0000_041D,
@@ -238,6 +250,7 @@ enum MacRDPKeyboardLayout {
         "Turkish": 0x0001_041F,
         "Turkish-QWERTY": 0x0000_041F,
         "Turkish-QWERTY-PC": 0x0000_041F,
+        "Turkish-Standard": 0x0001_041F,
         "Ukrainian": 0x0000_0422,
         "Ukrainian-PC": 0x0000_0422,
         "UnicodeHexInput": 0x0000_0409,

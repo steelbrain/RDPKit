@@ -486,6 +486,62 @@ private func windowsTypes(
     }
 }
 
+/// A Control shortcut goes as the scancode of the key the Mac types its letter on, so the
+/// Windows layout announced has to type the same letter there. These Mac layouts were mapped by
+/// that comparison (2026-11-01); each letter key of theirs must type its letter on Windows too.
+@MainActor
+@Test func macLayoutsAnnounceAWindowsLayoutWithTheirLettersInPlace() throws {
+    let names = [
+        "ABC-AZERTY", "ABC-QWERTZ", "Albanian", "FinnishExtended", "German-DIN-2137", "Hungarian-QWERTY",
+        "Latvian", "Lithuanian", "Lithuanian-LST1582", "Romanian", "Slovenian-QWERTZ", "Turkish-Standard",
+    ]
+    let letterKeys: [(keyCode: Int, scancode: UInt16)] = [
+        (kVK_ANSI_A, 0x1E), (kVK_ANSI_B, 0x30), (kVK_ANSI_C, 0x2E), (kVK_ANSI_D, 0x20), (kVK_ANSI_E, 0x12),
+        (kVK_ANSI_F, 0x21), (kVK_ANSI_G, 0x22), (kVK_ANSI_H, 0x23), (kVK_ANSI_I, 0x17), (kVK_ANSI_J, 0x24),
+        (kVK_ANSI_K, 0x25), (kVK_ANSI_L, 0x26), (kVK_ANSI_M, 0x32), (kVK_ANSI_N, 0x31), (kVK_ANSI_O, 0x18),
+        (kVK_ANSI_P, 0x19), (kVK_ANSI_Q, 0x10), (kVK_ANSI_R, 0x13), (kVK_ANSI_S, 0x1F), (kVK_ANSI_T, 0x14),
+        (kVK_ANSI_U, 0x16), (kVK_ANSI_V, 0x2F), (kVK_ANSI_W, 0x11), (kVK_ANSI_X, 0x2D), (kVK_ANSI_Y, 0x15),
+        (kVK_ANSI_Z, 0x2C),
+    ]
+    let filter = [kTISPropertyInputSourceType as String: kTISTypeKeyboardLayout as String] as CFDictionary
+    let sources = (TISCreateInputSourceList(filter, true)?.takeRetainedValue() as? [TISInputSource]) ?? []
+    var layoutData: [String: Data] = [:]
+    for source in sources {
+        guard let identifier = TISGetInputSourceProperty(source, kTISPropertyInputSourceID),
+              let data = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData)
+        else {
+            continue
+        }
+        layoutData[Unmanaged<CFString>.fromOpaque(identifier).takeUnretainedValue() as String] =
+            Unmanaged<CFData>.fromOpaque(data).takeUnretainedValue() as Data
+    }
+
+    for name in names {
+        let identifier = "com.apple.keylayout." + name
+        let data = try #require(layoutData[identifier], "\(name) is not installed")
+        let windows = try #require(MacRDPWindowsKeyboardLayout.layout(MacRDPWindowsKeyboard(
+            layout: MacRDPKeyboardLayout.windowsLayout(forInputSourceID: identifier)
+        )))
+        for key in letterKeys {
+            let macCharacter = data.withUnsafeBytes { bytes -> String? in
+                guard let layout = bytes.baseAddress?.assumingMemoryBound(to: UCKeyboardLayout.self) else {
+                    return nil
+                }
+                var deadKeyState: UInt32 = 0
+                var length = 0
+                var characters = [UniChar](repeating: 0, count: 4)
+                let status = UCKeyTranslate(
+                    layout, UInt16(key.keyCode), UInt16(kUCKeyActionDown), 0, UInt32(LMGetKbdType()),
+                    OptionBits(kUCKeyTranslateNoDeadKeysBit), &deadKeyState, 4, &length, &characters
+                )
+                return status == noErr ? String(utf16CodeUnits: characters, count: length) : nil
+            }
+            let windowsCharacter = windows.character(for: RDPKeyboardScancode(code: key.scancode), isShifted: false, isCapsLocked: false)
+            #expect(windowsCharacter.map(String.init) == macCharacter, "\(name), key code \(key.keyCode)")
+        }
+    }
+}
+
 /// Only a Japanese input source that types with US English gets Windows' Japanese layout: as
 /// a 106/109-key keyboard on a JIS keyboard, and as a 101-key one, which types what US types,
 /// on an ANSI or ISO keyboard. Everything else keeps the input source's layout, so Command and

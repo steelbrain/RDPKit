@@ -49,7 +49,7 @@ extension MacRDPWindowsKeyboardLayout {
             "!\"#¤%&/()=?\0QWERTYUIOPÅ\0ASDFGHJKLÆØ§*ZXCVBNM;:_>\0\0",
             "------------SSSSSSSSSSS-SSSSSSSSSSS--SSSSSSS------"
         ),
-        // Austrian, German
+        // ABC-QWERTZ, Austrian, German, German-DIN-2137
         0x0000_0407: (
             "1234567890ß\0qwertzuiopü+asdfghjklöä\0#yxcvbnm,.-<\0\0",
             "!\"§$%&/()=?\0QWERTZUIOPÜ*ASDFGHJKLÖÄ°'YXCVBNM;:_>\0\0",
@@ -73,7 +73,7 @@ extension MacRDPWindowsKeyboardLayout {
             "!\"·$%&/()=?¿QWERTYUIOP\0*ASDFGHJKLÑ\0ªÇZXCVBNM;:_>\0\0",
             "------------SSSSSSSSSS--SSSSSSSSSS--SSSSSSSS------"
         ),
-        // Finnish
+        // Finnish, FinnishExtended
         0x0000_040B: (
             "1234567890+\0qwertyuiopå\0asdfghjklöä§'zxcvbnm,.-<\0\0",
             "!\"#¤%&/()=?\0QWERTYUIOPÅ\0ASDFGHJKLÖÄ½*ZXCVBNM;:_>\0\0",
@@ -91,7 +91,7 @@ extension MacRDPWindowsKeyboardLayout {
             "!@#$%^&*)(_+QWERTYUIOP}{ASDFGHJKL:\"~|ZXCVBNM><?|\0\0",
             "????????????SSSSSSSSSS??SSSSSSSSS????SSSSSSS???---"
         ),
-        // Hungarian, Hungarian-QWERTY
+        // Hungarian
         0x0000_040E: (
             "123456789öüóqwertzuiopőúasdfghjkléá0űyxcvbnm,.-í\0\0",
             "'\"+!%/=()ÖÜÓQWERTZUIOPŐÚASDFGHJKLÉÁ§ŰYXCVBNM?:_Í\0\0",
@@ -133,12 +133,6 @@ extension MacRDPWindowsKeyboardLayout {
             "!@#$%\0&*()_+QWERTYUIOP\0{ASDFGHJKLÇ\0\"}ZXCVBNM<>:|?\0",
             "------------SSSSSSSSSS--SSSSSSSSSS---SSSSSSS------"
         ),
-        // Romanian
-        0x0000_0418: (
-            "1234567890+'qwertzuiopăîasdfghjklşţ]âyxcvbnm,.-<\0\0",
-            "!\"#¤%&/()=?*QWERTZUIOPĂÎASDFGHJKLŞŢ[ÂYXCVBNM;:_>\0\0",
-            "------------SSSSSSSSSSSSSSSSSSSSSSS-SSSSSSSS------"
-        ),
         // Russian, RussianWin
         0x0000_0419: (
             "1234567890-=йцукенгшщзхъфывапролджэё\\ячсмитьбю.\\\0\0",
@@ -156,6 +150,12 @@ extension MacRDPWindowsKeyboardLayout {
             "+ľščťžýáíé=\0qwertzuiopúäasdfghjklô§;ňyxcvbnm,.-&\0\0",
             "1234567890%\0QWERTZUIOP/(ASDFGHJKL\"!\0)YXCVBNM?:_*\0\0",
             "------------SSSSSSSSSS--SSSSSSSSS----SSSSSSS------"
+        ),
+        // Albanian
+        0x0000_041C: (
+            "1234567890-=qwertzuiopç@asdfghjklë[\\]yxcvbnm,./<\0\0",
+            "!\"#$%^&*()_+QWERTZUIOPÇ'ASDFGHJKLË{|}YXCVBNM;:?>\0\0",
+            "------------SSSSSSSSSSS-SSSSSSSSSS---SSSSSSS------"
         ),
         // Swedish, Swedish-Pro, SwedishSami-PC
         0x0000_041D: (
@@ -193,7 +193,7 @@ extension MacRDPWindowsKeyboardLayout {
             "!\"№;%:?*()_+ЙЦУКЕНГШЎЗХ'ФЫВАПРОЛДЖЭЁ/ЯЧСМІТЬБЮ,/\0\0",
             "------------SSSSSSSSSSS-SSSSSSSSSSSS-SSSSSSSSS----"
         ),
-        // Slovenian
+        // Slovenian, Slovenian-QWERTZ
         0x0000_0424: (
             "1234567890'+qwertzuiopšđasdfghjklčć\0žyxcvbnm,.-<\0\0",
             "!\"#$%&/()=?*QWERTZUIOPŠĐASDFGHJKLČĆ\0ŽYXCVBNM;:_>\0\0",
@@ -204,18 +204,6 @@ extension MacRDPWindowsKeyboardLayout {
             "1234567890+\0qwertyuiopüõasdfghjklöä\0'zxcvbnm,.-<\0\0",
             "!\"#¤%&/()=?\0QWERTYUIOPÜÕASDFGHJKLÖÄ\0*ZXCVBNM;:_>\0\0",
             "------------SSSSSSSSSSSSSSSSSSSSSSS--SSSSSSS------"
-        ),
-        // Latvian
-        0x0000_0426: (
-            "1234567890-fūgjrmvnzēčžhšusildatec\0\u{AD}ķņbīkpoā,.ļģ\0\0",
-            "!«»$%/&×()_FŪGJRMVNZĒČŽHŠUSILDATEC\0?ĶŅBĪKPOĀ;:ĻĢ\0\0",
-            "-----------SSSSSSSSSSSSSSSSSSSSSSS--SSSSSSSS--SS--"
-        ),
-        // Lithuanian
-        0x0000_0427: (
-            "!\"/;:,.?()_+ąžertyuiopį“asdfghjklųė`|zūcvbnmčšę\\\0\0",
-            "1234567890-=ĄŽERTYUIOPĮ”ASDFGHJKLŲĖ~\\ZŪCVBNMČŠĘ|\0\0",
-            "------------SSSSSSSSSSS-SSSSSSSSSSS--SSSSSSSSSS---"
         ),
         // Vietnamese
         0x0000_042A: (
@@ -373,7 +361,7 @@ extension MacRDPWindowsKeyboardLayout {
             "!\"£$%^&*()_+QWERTYUIOP{}ASDFGHJKL:@¬~ZXCVBNM<>?|\0\0",
             "------------SSSSSSSSSS--SSSSSSSSS----SSSSSSS------"
         ),
-        // French, French-numerical
+        // ABC-AZERTY, French, French-numerical
         0x0000_080C: (
             "&é\"'(§è!çà)-azertyuiop\0$qsdfghjklmù²µwxcvbn,;:=<\0\0",
             "1234567890°_AZERTYUIOP\0*QSDFGHJKLM%³£WXCVBN?./+>\0\0",
@@ -427,13 +415,19 @@ extension MacRDPWindowsKeyboardLayout {
             "!@#$%^&*(){}\"<>PYFGCRL?+AOEUIDHTNS_~|:QJKXBMWVZ|\0\0",
             "---------------SSSSSSS--SSSSSSSSSS----SSSSSSSSS---"
         ),
+        // Hungarian-QWERTY
+        0x0001_040E: (
+            "123456789öüóqwertyuiopőúasdfghjkléáíűzxcvbnm,.-í\0\0",
+            "'\"+!%/=()ÖÜÓQWERTYUIOPŐÚASDFGHJKLÉÁÍŰZXCVBNM?:_Í\0\0",
+            "---------SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS---S--"
+        ),
         // Polish
         0x0001_0415: (
             "1234567890+'qwertzuiopżśasdfghjklłą\0óyxcvbnm,.-<\0\0",
             "!\"#¤%&/()=?*QWERTZUIOPńćASDFGHJKLŁę\0źYXCVBNM;:_>\0\0",
             "------------SSSSSSSSSS--SSSSSSSSSS---SSSSSSS------"
         ),
-        // Romanian-Standard
+        // Romanian, Romanian-Standard
         0x0001_0418: (
             "1234567890-=qwertyuiopăîasdfghjklșț„âzxcvbnm,./\\\0\0",
             "!@#$%^&*()_+QWERTYUIOPĂÎASDFGHJKLȘȚ”ÂZXCVBNM;:?|\0\0",
@@ -451,11 +445,23 @@ extension MacRDPWindowsKeyboardLayout {
             "+\"/,?\u{E38}_.()-%\u{E4A}ฤๆญษ\u{E36}ฝซถฒฯฦ\u{E4B}ธำณ\u{E4C}\u{E37}ผชโฆฑ฿\u{E4D}ฎฏฐภ\u{E31}ศฮฟฉฬ\u{E4D}\0\0",
             "SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS--"
         ),
-        // Turkish
+        // Turkish, Turkish-Standard
         0x0001_041F: (
             "1234567890/-fgğıodrnhpqwuieaütkmlyş+xjövcçzsb.,<\0\0",
             "!\"\0$%&'()=?_FGĞIODRNHPQWUİEAÜTKMLYŞ*XJÖVCÇZSB:;>\0\0",
             "------------SSSSSSSSSSSSSSSSSSSSSSS-SSSSSSSSS-----"
+        ),
+        // Latvian
+        0x0001_0426: (
+            "1234567890-=qwertyuiop[]asdfghjkl;'`\\zxcvbnm,./\\\0\0",
+            "!@#$%^&*()_+QWERTYUIOP{}ASDFGHJKL:\"~|ZXCVBNM<>?|\0\0",
+            "------------SSSSSSSSSS--SSSSSSSSS----SSSSSSS------"
+        ),
+        // Lithuanian
+        0x0001_0427: (
+            "ąčęėįšųū90-žqwertyuiop[]asdfghjkl;'`\\zxcvbnm,./\\\0\0",
+            "ĄČĘĖĮŠŲŪ()_ŽQWERTYUIOP{}ASDFGHJKL:\"~|ZXCVBNM<>?|\0\0",
+            "SSSSSSSS---SSSSSSSSSSS--SSSSSSSSS----SSSSSSS------"
         ),
         // Georgian-QWERTY
         0x0001_0437: (
@@ -493,13 +499,19 @@ extension MacRDPWindowsKeyboardLayout {
             "!\"№;%:?*()_+ЯШЕРТ\0УИОП{}А\0ДФГХ\0КЛ:ЬЪ/ЗЖ\0ВБНМ<>?/\0\0",
             "------------SSSSSSSSSSSSSSSSSSSSSSS--SSSSSSSSS----"
         ),
+        // Lithuanian-LST1582
+        0x0002_0427: (
+            "!-/;:,.=()?xąžertyuiopįwasdšghjklųė`qzūcvbnmčfę<\0\0",
+            "1234567890+XĄŽERTYUIOPĮWASDŠGHJKLŲĖ~QZŪCVBNMČFĘ>\0\0",
+            "-----------SSSSSSSSSSSSSSSSSSSSSSSS-SSSSSSSSSSS---"
+        ),
         // Bangla, Bangla-QWERTY
         0x0002_0445: (
             "১২৩৪৫৬৭৮৯০-\u{9C3}\u{9CC}\u{9C8}\u{9BE}\u{9C0}\u{9C2}বহগদজড\u{9BC}\u{9CB}\u{9C7}\u{9CD}\u{9BF}\u{9C1}পরকতচট॥\0\0\u{982}মনবলস,.য়\0\0\0",
             "!@\0\0\0\0\0\0()\u{983}ঋঔঐআঈঊভঙঘধঝঢঞওএঅইউফৎখথছঠ\0\0\0\u{981}ণ\0\0\0শষ।য\0\0\0",
             "--------------------------------------------------"
         ),
-        // FinnishExtended, Sami-PC
+        // Sami-PC
         0x0002_083B: (
             "1234567890+\0ášertŧuiopåŋasdfghjklöä§đzčcvbnm,.-ž\0\0",
             "!\"#¤%&/()=?\0ÁŠERTŦUIOPÅŊASDFGHJKLÖÄ½ĐZČCVBNM;:_Ž\0\0",
