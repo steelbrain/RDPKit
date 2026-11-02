@@ -677,6 +677,96 @@ private func outboundDisplayControlPayloads(_ channel: EmbeddedChannel) throws -
     #expect(run.report.rdpGraphicsFirstFrame?.monitors == krdpMonitors)
 }
 
+/// Each ResetGraphics counts, also one to the same size and monitors, which frames carry and
+/// which answers the layout sent before it: KRdp's first frame comes after its own reset and
+/// the layout sent as Display Control comes up, which is pending until the next reset.
+@Test func framesCountTheServersGraphicsResetsAndAResetAnswersTheLayoutSent() throws {
+    func drdynvc(_ payload: Data) -> Data {
+        mcsSendDataIndication(
+            channelID: KRdpCapture.drdynvcChannelID,
+            userData: RDPStaticVirtualChannelPDU(payload: payload).encodedUserData()
+        )
+    }
+    var caps = Data()
+    for value: UInt32 in [5, 20, 4, 3840, 2160] {
+        caps.appendLittleEndianUInt32(value)
+    }
+    // The capture's own ResetGraphics again: 3840x2400 with one monitor, exclusive bounds.
+    var reset = Data()
+    for value: UInt32 in [3840, 2400, 1, 0, 0, 3840, 2400, 1] {
+        reset.appendLittleEndianUInt32(value)
+    }
+    reset.append(Data(count: 320 - 20))
+    let firstFrame = try KRdpCapture.events()[39...].map { try #require($0.bytes) }
+    let displayControl = Locked<RDPDisplayControlSession?>(nil)
+    let seen = Locked<[(resetCount: UInt32, metadataResetCount: UInt32, isPending: Bool?)]>([])
+    let run = try KRdpCapture.run(
+        prefix: 39,
+        appending: [
+            drdynvc(Data([0x10, 0x02]) + Data("Microsoft::Windows::RDS::DisplayControl".utf8) + Data([0])),
+            drdynvc(RDPDynamicVirtualChannelDataPDU(channelID: 2, payload: caps).encoded()),
+        ] + firstFrame + [
+            KRdpCapture.graphicsPacket(
+                graphicsMessage(commandID: RDPGFXCommandID.resetGraphics, payload: reset)
+                    + KRdpCapture.startFrame(id: 900)
+                    + KRdpCapture.avc420Update()
+                    + KRdpCapture.endFrame(id: 900)
+            ),
+        ],
+        frameCaptureLimit: 2,
+        onGraphicsFrame: { frame in
+            let isPending = displayControl.value?.isLastSentLayoutPending
+            seen.withLock { $0.append((frame.graphicsResetCount, RDPFrameMetadata(frame).graphicsResetCount, isPending)) }
+        },
+        onDisplayControlReady: { session in
+            #expect(session.isLastSentLayoutPending == false)
+            #expect(session.graphicsResetCount == 1)
+            #expect((try? session.send(.singlePrimary(width: 1920, height: 1080))) == true)
+            displayControl.withLock { $0 = session }
+        }
+    )
+
+    #expect(run.report.error == nil)
+    #expect(seen.value.map(\.resetCount) == [1, 2])
+    #expect(seen.value.map(\.metadataResetCount) == [1, 2])
+    #expect(seen.value.map(\.isPending) == [true, false])
+    #expect(displayControl.value?.graphicsResetCount == 2)
+    #expect(run.report.rdpGraphicsFrames?.map(\.graphicsResetCount) == [1, 2])
+}
+
+/// Sending a layout makes it pending until a ResetGraphics comes; a layout the server's
+/// capabilities refuse, or one an ended session does not send, leaves that as it was.
+@Test func displayControlSessionHoldsTheLastSentLayoutPendingUntilAReset() throws {
+    let channel = EmbeddedChannel()
+    try channel.connect(to: SocketAddress(ipAddress: "127.0.0.1", port: 3389)).wait()
+    let layouts = RDPDisplayLayoutRecord(connectLayout: .singlePrimary(width: 1280, height: 720))
+    let session = RDPDisplayControlSession(
+        dynamicChannelID: 2,
+        capabilities: RDPDisplayControlCapabilities(maxNumMonitors: 1, maxMonitorAreaFactorA: 3840, maxMonitorAreaFactorB: 2160),
+        userChannelID: 1007,
+        staticChannelID: 1004,
+        channel: channel,
+        layouts: layouts
+    )
+    #expect(session.isLastSentLayoutPending == false)
+    #expect(session.graphicsResetCount == 0)
+
+    #expect(try session.send(.singlePrimary(width: 1920, height: 1080)))
+    #expect(session.isLastSentLayoutPending)
+    layouts.noteResetGraphics(monitors: [], issues: [])
+    #expect(session.isLastSentLayoutPending == false)
+    #expect(session.graphicsResetCount == 1)
+
+    #expect(throws: RDPMonitorLayoutError.self) {
+        try session.send(.singlePrimary(width: 4096, height: 2160))
+    }
+    #expect(session.isLastSentLayoutPending == false)
+    #expect(session.lastSentLayout == .singlePrimary(width: 1920, height: 1080))
+    session.end()
+    #expect(try session.send(.singlePrimary(width: 1280, height: 720)) == false)
+    #expect(session.isLastSentLayoutPending == false)
+}
+
 @Test func displayControlSessionSaysWhetherItSentALayout() throws {
     let channel = EmbeddedChannel()
     try channel.connect(to: SocketAddress(ipAddress: "127.0.0.1", port: 3389)).wait()
@@ -734,7 +824,7 @@ private func outboundDisplayControlPayloads(_ channel: EmbeddedChannel) throws -
     let session = makeSession()
     #expect(session.serverMonitors.isEmpty)
     let serverMonitors = [RDPRemoteMonitor(rect: RDPFrameRect(left: 0, top: 0, right: 1280, bottom: 720), isPrimary: true)]
-    layouts.setServerMonitors(serverMonitors, issues: .clipped)
+    layouts.noteResetGraphics(monitors: serverMonitors, issues: .clipped)
     #expect(session.serverMonitors == serverMonitors)
     #expect(session.serverMonitorLayoutIssues == .clipped)
     let sentLayout = try RDPMonitorLayout(monitors: [

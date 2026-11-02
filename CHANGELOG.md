@@ -50,6 +50,11 @@
   server's Monitor Layout PDU without sending a layout. Windows 11 and
   gnome-remote-desktop send their desktop; KRdp sends the size the client asked
   for, not the one it streams.
+- `RDPDisplayControlSession.isLastSentLayoutPending` says whether the layout
+  last sent is still unanswered, until the next ResetGraphics, and frames'
+  `graphicsResetCount`, also on `RDPFrameMetadata` and the session, counts
+  the connection's ResetGraphics PDUs, so a client sees the server lay out its
+  graphics again even to the same size and monitors.
 - `RDPDisplayControlSession.resendLayout()` sends `lastSentLayout` again, or
   `connectLayout`, the layout the connection started with. Windows 11 and
   gnome-remote-desktop answer it with a keyframe, which they send no other way

@@ -199,6 +199,10 @@ public struct RDPGraphicsFrameSnapshot: Encodable, Equatable, Sendable {
     public var monitors: [RDPRemoteMonitor]
     /// What is off about ``monitors`` as the server laid them out.
     public var monitorLayoutIssues: RDPRemoteMonitorLayoutIssues
+    /// How many ResetGraphics PDUs the connection had when it handed out this frame, wrapping:
+    /// a frame whose count differs from the previous one's comes after the server laid out its
+    /// graphics again, even to the same size and monitors. 0 before one and outside RDPGFX.
+    public var graphicsResetCount: UInt32
     /// Where the surface is in the graphics output. Nil with a ``graphicsOutputRect`` for a
     /// surface not mapped to the output: a decoder keeps the update for later copies out of
     /// the surface and presents nothing.
@@ -233,6 +237,7 @@ public struct RDPGraphicsFrameSnapshot: Encodable, Equatable, Sendable {
         graphicsOutputRect: RDPFrameRect? = nil,
         monitors: [RDPRemoteMonitor] = [],
         monitorLayoutIssues: RDPRemoteMonitorLayoutIssues = [],
+        graphicsResetCount: UInt32 = 0,
         surfaceRect: RDPFrameRect? = nil,
         mappedOutputRect: RDPFrameRect? = nil,
         destinationRect: RDPFrameRect,
@@ -257,6 +262,7 @@ public struct RDPGraphicsFrameSnapshot: Encodable, Equatable, Sendable {
         self.graphicsOutputRect = graphicsOutputRect
         self.monitors = monitors
         self.monitorLayoutIssues = monitorLayoutIssues
+        self.graphicsResetCount = graphicsResetCount
         self.surfaceRect = surfaceRect
         self.mappedOutputRect = mappedOutputRect
         self.destinationRect = destinationRect
@@ -319,6 +325,7 @@ public struct RDPGraphicsFrameSnapshot: Encodable, Equatable, Sendable {
         case graphicsOutputRect
         case monitors
         case monitorLayoutIssues
+        case graphicsResetCount
         case surfaceRect
         case mappedOutputRect
         case destinationRect
@@ -346,6 +353,9 @@ public struct RDPGraphicsFrameSnapshot: Encodable, Equatable, Sendable {
         }
         if !monitorLayoutIssues.isEmpty {
             try container.encode(monitorLayoutIssues, forKey: .monitorLayoutIssues)
+        }
+        if graphicsResetCount != 0 {
+            try container.encode(graphicsResetCount, forKey: .graphicsResetCount)
         }
         try container.encodeIfPresent(surfaceRect, forKey: .surfaceRect)
         try container.encodeIfPresent(mappedOutputRect, forKey: .mappedOutputRect)

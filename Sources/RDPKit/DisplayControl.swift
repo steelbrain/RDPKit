@@ -576,6 +576,8 @@ final class RDPDisplayLayoutRecord: @unchecked Sendable {
     let connectLayout: RDPMonitorLayout
     private let lock = NSLock()
     private var sentLayout: RDPMonitorLayout?
+    private var isSentLayoutPending = false
+    private var resetCount: UInt32 = 0
     private var monitors: [RDPRemoteMonitor] = []
     private var monitorLayoutIssues: RDPRemoteMonitorLayoutIssues = []
 
@@ -584,18 +586,37 @@ final class RDPDisplayLayoutRecord: @unchecked Sendable {
     }
 
     var lastSentLayout: RDPMonitorLayout? {
-        get { lock.withLock { sentLayout } }
-        set { lock.withLock { sentLayout = newValue } }
+        lock.withLock { sentLayout }
+    }
+
+    /// Whether no ResetGraphics has come since ``lastSentLayout`` was sent.
+    var isLastSentLayoutPending: Bool {
+        lock.withLock { isSentLayoutPending }
+    }
+
+    /// The ResetGraphics PDUs the connection's graphics pipelines have handled, wrapping.
+    var graphicsResetCount: UInt32 {
+        lock.withLock { resetCount }
     }
 
     var serverMonitors: (monitors: [RDPRemoteMonitor], issues: RDPRemoteMonitorLayoutIssues) {
         lock.withLock { (monitors, monitorLayoutIssues) }
     }
 
-    func setServerMonitors(_ monitors: [RDPRemoteMonitor], issues: RDPRemoteMonitorLayoutIssues) {
+    func noteSent(_ layout: RDPMonitorLayout) {
+        lock.withLock {
+            sentLayout = layout
+            isSentLayoutPending = true
+        }
+    }
+
+    /// Records a ResetGraphics and the monitors it laid out.
+    func noteResetGraphics(monitors: [RDPRemoteMonitor], issues: RDPRemoteMonitorLayoutIssues) {
         lock.withLock {
             self.monitors = monitors
             monitorLayoutIssues = issues
+            resetCount &+= 1
+            isSentLayoutPending = false
         }
     }
 }
@@ -654,6 +675,23 @@ public final class RDPDisplayControlSession: Sendable {
         layouts.serverMonitors.issues
     }
 
+    /// Whether ``lastSentLayout`` went out and no ResetGraphics has come since, for a client
+    /// that waits for the server to take a layout before it sends the next, or that must not
+    /// count the server's monitors as the answer yet. The first ResetGraphics after the send
+    /// clears it, even one the server sent for an earlier layout or on its own. A server that
+    /// ignores a layout, as KRdp 6.8.1 does, leaves it pending until it resets graphics for
+    /// some other reason. Read from any thread.
+    public var isLastSentLayoutPending: Bool {
+        layouts.isLastSentLayoutPending
+    }
+
+    /// How many ResetGraphics PDUs ([MS-RDPEGFX] 2.2.2.14) the connection has had, as frames'
+    /// ``RDPGraphicsFrameSnapshot/graphicsResetCount`` say: a change shows the server laid out
+    /// its graphics again, also to the same size and monitors. Read from any thread.
+    public var graphicsResetCount: UInt32 {
+        layouts.graphicsResetCount
+    }
+
     /// Whether this session sends nothing more: the server closed its channel or opened
     /// another DisplayControl channel, whose session `onDisplayControlReady` hands out, or the
     /// connection has closed. Read from any thread.
@@ -695,7 +733,7 @@ public final class RDPDisplayControlSession: Sendable {
         guard !isEnded else {
             return false
         }
-        layouts.lastSentLayout = layout
+        layouts.noteSent(layout)
 
         let dynamicPayload = RDPDynamicVirtualChannelDataPDU(
             channelID: dynamicChannelID,

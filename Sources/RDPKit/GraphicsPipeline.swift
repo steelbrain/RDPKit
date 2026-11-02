@@ -159,7 +159,7 @@ extension RDPClientConnection {
         case RDPGFXCommandID.endFrame:
             return try RDPGFXEndFramePDU.parse(from: message).frameID
         case RDPGFXCommandID.resetGraphics:
-            displayLayouts.setServerMonitors(compositor.monitors, issues: compositor.monitorLayoutIssues)
+            displayLayouts.noteResetGraphics(monitors: compositor.monitors, issues: compositor.monitorLayoutIssues)
         default:
             break
         }
@@ -430,6 +430,12 @@ extension RDPClientConnection {
     /// showed any. A throwing handler ends the session and the frame is not
     /// acknowledged, unless it throws `RDPGraphicsFrameNotPresented`.
     private func deliver(_ frames: [RDPGraphicsFrameSnapshot]) throws -> Bool {
+        let resetCount = displayLayouts.graphicsResetCount
+        let frames = frames.map { frame in
+            var frame = frame
+            frame.graphicsResetCount = resetCount
+            return frame
+        }
         for frame in frames {
             if report.rdpGraphicsFirstFrame == nil {
                 report.rdpGraphicsFirstFrame = frame
