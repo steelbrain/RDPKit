@@ -78,6 +78,11 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
     var redirectionRoutingToken: Data?
     var redirectionSessionID: UInt32?
     var redirectionPasswordCookie: Data?
+    /// Set after a Server Redirection that names a user or domain when no credentials are
+    /// configured, such as on a server without Network Level Authentication where the user
+    /// signed in at its logon screen: the Client Info PDU sends ``redirectionPasswordCookie``
+    /// with this user name and domain. Its password is empty, and CredSSP never uses it.
+    var redirectionUser: RDPCredentials?
     /// Set after a Server Redirection whose password is PK-encrypted: the reconnect offers
     /// RDSTLS beside TLS and CredSSP, and authenticates with these when the target selects it.
     var redirectionRDSTLSCredentials: RDPRDSTLSPasswordCredentials?
@@ -139,6 +144,7 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
         self.redirectionRoutingToken = nil
         self.redirectionSessionID = nil
         self.redirectionPasswordCookie = nil
+        self.redirectionUser = nil
         self.redirectionRDSTLSCredentials = nil
         self.redirectionDepth = 0
     }
@@ -292,6 +298,12 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
             protocols.insert(.rdSTLS)
         }
         return RDPNegotiationRequest(requestedProtocols: protocols)
+    }
+
+    /// The credentials the Client Info PDU carries: the configured ones or, with none, the
+    /// user a Server Redirection named for its password cookie.
+    var clientInfoCredentials: RDPCredentials? {
+        credentials ?? (redirectionPasswordCookie == nil ? nil : redirectionUser)
     }
 
     var connectionRequest: X224ConnectionRequest {

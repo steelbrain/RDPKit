@@ -69,8 +69,11 @@ final class MockKRDPServer: LoopbackTestServer {
         var autoDetectBehavior = MockKRDPAutoDetectBehavior.singleRTT
         var licensingBehavior = MockKRDPLicensingBehavior.validClientThenDemandActive
         var redirectionBehavior = MockKRDPRedirectionBehavior.none
-        /// The user name `redirectFirstConnection` sends the client on with.
+        /// The user name, domain and password cookie `redirectFirstConnection` sends the client
+        /// on with.
         var redirectionUsername: String?
+        var redirectionDomain: String?
+        var redirectionPasswordCookie: Data?
         /// How many times `redirectLikeGnomeHandover` hands the session over, each time with
         /// new credentials, like gnome's system daemon to the greeter and the greeter to the user.
         var gnomeHandoverCount = 1
@@ -1183,7 +1186,11 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
     private func answerGraphicsCapsAdvertise(_ packet: Data, context: ChannelHandlerContext) throws {
         let staticPayload = try MockKRDPFixtures.staticVirtualChannelPayload(from: packet)
         if options.redirectionBehavior == .redirectFirstConnection, connectionIndex == 1 {
-            write(MockKRDPFixtures.serverRedirection(username: options.redirectionUsername), context: context)
+            write(MockKRDPFixtures.serverRedirection(
+                username: options.redirectionUsername,
+                domain: options.redirectionDomain,
+                passwordCookie: options.redirectionPasswordCookie
+            ), context: context)
             stage = .done
             return
         }
@@ -1774,7 +1781,12 @@ private enum MockKRDPFixtures {
 
     /// A redirection to `targetNetAddress`, or without one, to the same server
     /// with a routing token.
-    static func serverRedirection(targetNetAddress: String? = nil, username: String? = nil) -> Data {
+    static func serverRedirection(
+        targetNetAddress: String? = nil,
+        username: String? = nil,
+        domain: String? = nil,
+        passwordCookie: Data? = nil
+    ) -> Data {
         var flags = RDPServerRedirectionPDU.Flags.loadBalanceInfo
         var field = Data("Cookie: msts=load-balanced\r\n".utf8)
         if let targetNetAddress {
@@ -1784,11 +1796,17 @@ private enum MockKRDPFixtures {
         var fields = Data()
         fields.appendLittleEndianUInt32(UInt32(field.count))
         fields.append(field)
-        if let username {
-            flags.insert(.username)
-            let usernameField = utf16LENullTerminated(username)
-            fields.appendLittleEndianUInt32(UInt32(usernameField.count))
-            fields.append(usernameField)
+        for (flag, optionalField) in [
+            (RDPServerRedirectionPDU.Flags.username, username.map(utf16LENullTerminated)),
+            (.domain, domain.map(utf16LENullTerminated)),
+            (.password, passwordCookie),
+        ] {
+            guard let optionalField else {
+                continue
+            }
+            flags.insert(flag)
+            fields.appendLittleEndianUInt32(UInt32(optionalField.count))
+            fields.append(optionalField)
         }
 
         let redirectionLength = UInt16(12 + fields.count)

@@ -124,13 +124,14 @@ final class RDPClientConnection {
         ))
         clientName = RDPConnectionConfiguration.validClientName(configuration.clientName)
         let request = configuration.connectionRequest
+        let user = configuration.clientInfoCredentials
         reportStorage = RDPConnectionReportStorage(RDPConnectionReport(
             status: "running",
             stage: RDPConnectionStage.negotiation.rawValue,
             target: configuration.target,
             redirectionDepth: configuration.redirectionDepth,
-            username: configuration.credentials?.username,
-            domain: configuration.credentials?.domain,
+            username: user?.username,
+            domain: user?.domain,
             passwordConfigured: configuration.credentials != nil,
             requestedProtocols: request.negotiationRequest.requestedProtocols.names,
             requestHex: request.encodedTPKT().rdpHexString,

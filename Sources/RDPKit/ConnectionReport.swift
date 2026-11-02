@@ -23,6 +23,9 @@ public struct RDPConnectionReport: Encodable, Equatable, Sendable {
     /// took the logon and handed the session on, so a failure here is the
     /// target's, not that server's.
     public var redirectionDepth: Int
+    /// The configured credentials' user name and `domain` or, with none, those a Server
+    /// Redirection named with its password cookie, which the reconnect's Client Info PDU
+    /// carries.
     public var username: String?
     public var domain: String?
     public var passwordConfigured: Bool

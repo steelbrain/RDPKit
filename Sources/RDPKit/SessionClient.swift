@@ -188,6 +188,13 @@ extension RDPConnectionConfiguration {
                 domain: redirection.domain ?? credentials.domain,
                 password: credentials.password
             )
+        } else if redirection.username != nil || redirection.domain != nil {
+            // With no credentials the target still needs the user its cookie signs in.
+            redirected.redirectionUser = RDPCredentials(
+                username: redirection.username ?? "",
+                domain: redirection.domain,
+                password: ""
+            )
         }
         redirected.redirectionDepth += 1
         return redirected

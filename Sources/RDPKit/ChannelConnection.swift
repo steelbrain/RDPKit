@@ -121,7 +121,7 @@ extension RDPClientConnection {
         stage = .clientInfo
         try callbacks.throwIfCancelled()
         let clientInfo = RDPClientInfoPDU(
-            credentials: configuration.credentials,
+            credentials: configuration.clientInfoCredentials,
             passwordCookie: configuration.redirectionPasswordCookie,
             audioPlaybackEnabled: configuration.audioPlaybackEnabled,
             autoReconnectCookie: configuration.autoReconnectCookie

@@ -724,6 +724,31 @@ struct MockKRDPServerTests {
         #expect(report.rdpClientInfoSent == false)
     }
 
+    /// A redirection's user name and domain go with its password cookie in the reconnect's
+    /// Client Info PDU with no credentials configured too, as after a user signed in at the
+    /// logon screen of a server without Network Level Authentication. The report names them.
+    @Test func redirectionWithoutConfiguredCredentialsSendsItsUserWithTheCookie() throws {
+        let cookie = utf16LENullTerminated("one-time-cookie")
+        let run = try runMock(.init(
+            redirectionBehavior: .redirectFirstConnection,
+            redirectionUsername: "alice",
+            redirectionDomain: "CORP",
+            redirectionPasswordCookie: cookie
+        ), { $0.credentials = nil })
+        let clientInfo = try #require(run.transcript.clientInfo)
+
+        #expect(run.connectionCount == 2)
+        #expect(run.report.status == "success")
+        #expect(run.report.rdpClientInfoCredentialsIncluded == true)
+        #expect([run.report.username, run.report.domain] == ["alice", "CORP"])
+        #expect(!run.report.passwordConfigured)
+        // TS_INFO_PACKET after the security header: CodePage, Flags with INFO_AUTOLOGON, the
+        // lengths of Domain, UserName and Password, then the three ([MS-RDPBCGR] 2.2.1.11.1.1).
+        #expect(clientInfo.littleEndianUInt32(at: 8) & 0x0000_0008 != 0)
+        #expect([12, 14, 16].map { clientInfo.littleEndianUInt16(at: $0) } == [8, 10, UInt16(cookie.count)])
+        #expect(clientInfo.range(of: utf16LENullTerminated("CORP") + utf16LENullTerminated("alice") + cookie) != nil)
+    }
+
     /// A redirection's user name is the server's, so one the Client Info PDU cannot hold
     /// stays a protocol violation.
     @Test func redirectedUsernameTooLongForClientInfoIsAProtocolViolation() throws {

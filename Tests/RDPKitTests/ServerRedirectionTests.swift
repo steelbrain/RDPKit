@@ -514,6 +514,48 @@ private func targetNetAddresses(_ addresses: [Data]) -> Data {
     #expect([otherDomain.username, otherDomain.domain] == ["bob", "LAB"])
 }
 
+/// With no credentials configured, a redirection's user goes only to the Client Info PDU, with
+/// its password cookie: CredSSP still has no credentials, and without a cookie no user is sent.
+@Test func redirectionUserWithoutConfiguredCredentialsGoesWithTheCookieOnly() throws {
+    let configuration = RDPConnectionConfiguration(host: "broker.example")
+    var redirection = RDPServerRedirectionPDU(
+        channelID: 1003,
+        sessionID: 7,
+        flags: [.loadBalanceInfo, .username, .domain, .password]
+    )
+    redirection.loadBalanceInfo = Data("Cookie: msts=1\r\n".utf8)
+    redirection.username = "alice"
+    redirection.domain = "CORP"
+    redirection.passwordCookie = utf16LENullTerminated("cookie")
+
+    let redirected = try #require(configuration.redirected(by: redirection))
+    #expect(redirected.credentials == nil)
+    let user = try #require(redirected.clientInfoCredentials)
+    #expect([user.username, user.domain] == ["alice", "CORP"])
+
+    redirection.flags.remove(.password)
+    redirection.passwordCookie = nil
+    #expect(configuration.redirected(by: redirection)?.clientInfoCredentials == nil)
+}
+
+/// A redirection that names a domain and no user still sends that domain with its cookie.
+@Test func redirectionDomainWithoutAUserGoesWithTheCookie() throws {
+    let configuration = RDPConnectionConfiguration(host: "broker.example")
+    var redirection = RDPServerRedirectionPDU(
+        channelID: 1003,
+        sessionID: 7,
+        flags: [.loadBalanceInfo, .domain, .password]
+    )
+    redirection.loadBalanceInfo = Data("Cookie: msts=1\r\n".utf8)
+    redirection.domain = "CORP"
+    redirection.passwordCookie = utf16LENullTerminated("cookie")
+
+    let redirected = try #require(configuration.redirected(by: redirection))
+    #expect(redirected.credentials == nil)
+    let user = try #require(redirected.clientInfoCredentials)
+    #expect([user.username, user.domain] == ["", "CORP"])
+}
+
 /// gnome-remote-desktop 50.2 on Ubuntu 26.04.1 handing a Remote Login over to the GDM
 /// greeter (Fixtures/gnome-remote-login-redirection.json, the Password field zeroed by the
 /// transcript): one-time credentials flagged PK-encrypted for a client that announces macOS,
