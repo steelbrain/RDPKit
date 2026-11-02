@@ -2188,13 +2188,16 @@ struct MockKRDPServerTests {
         )])
     }
 
-    /// A Format Data Response longer than a channel message may be is dropped whole, but it
-    /// still answers its request: the client asks for the copy's next format, and the copy
-    /// arrives without the text.
-    @Test func clientFetchesOnAfterAResponseTooLongToReassemble() throws {
+    /// A Format Data Response the client cannot read, such as one longer than a channel
+    /// message may be, one whose only chunk the channel layer rejects, one with a bad last
+    /// chunk, or one whose header does not parse, is dropped whole, but it still answers its
+    /// request: the client asks for the copy's next format, and the copy arrives without the
+    /// text.
+    @Test(arguments: MockKRDPBrokenClipboardResponse.allCases)
+    func clientFetchesOnAfterAResponseItCannotRead(_ broken: MockKRDPBrokenClipboardResponse) throws {
         let observed = Locked(Observed())
         let run = try runMock(
-            .init(remoteClipboardText: "remote", remoteClipboardHTML: "<b>remote</b>", oversizedRemoteClipboardText: true),
+            .init(remoteClipboardText: "remote", remoteClipboardHTML: "<b>remote</b>", brokenRemoteClipboardText: broken),
             { $0.clipboardEnabled = true },
             client: {
                 RDPSessionClient().run(

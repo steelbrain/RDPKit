@@ -91,9 +91,8 @@ final class MockKRDPServer: LoopbackTestServer {
         var remoteClipboardHTML: String?
         /// Announce an empty clipboard: a Format List with no formats.
         var emptyRemoteClipboard = false
-        /// Answer the request for `remoteClipboardText` with the first chunk of a response
-        /// longer than the client reassembles.
-        var oversizedRemoteClipboardText = false
+        /// Answer the request for `remoteClipboardText` with a response the client cannot read.
+        var brokenRemoteClipboardText: MockKRDPBrokenClipboardResponse?
         var audioEnabled = false
         var waitForCompatibilityTraffic = false
         var requireBitmapCodecsCapability = false
@@ -139,6 +138,22 @@ enum MockKRDPSecurityProtocol {
     case rdSTLS
     case standard
     case failure(code: UInt32)
+}
+
+/// A Format Data Response the client drops before the clipboard session reads it.
+enum MockKRDPBrokenClipboardResponse: CaseIterable, Sendable {
+    /// The first chunk of a response longer than the client reassembles; the rest never comes.
+    case tooLongToReassemble
+    /// Two chunks, the last giving a totalLength one byte longer than the first's.
+    case badLastChunk
+    /// One chunk whose dataLen counts the 8-byte header too, so it runs past the data.
+    case headerDoesNotParse
+    /// One chunk, FIRST and LAST, whose totalLength is one byte longer than its data, so the
+    /// channel layer rejects it.
+    case rejectedChunk
+    /// The first of two chunks, then a `rejectedChunk`, then the last of the two, which
+    /// finds no message to complete: the rejected FIRST chunk ended the one it belonged to.
+    case rejectedChunkInsideAnother
 }
 
 enum MockKRDPGraphicsBehavior: Equatable {
@@ -1414,8 +1429,13 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
             transcript.withLock { $0.receivedLocalClipboardText = text }
             maybeReleaseCompatibilityGraphicsFrame(context: context)
         } else if let request = try RDPClipboardFormatDataRequestPDU.parseIfPresent(from: clipboardPDU) {
-            if request.formatID == RDPClipboardFormatID.unicodeText, options.oversizedRemoteClipboardText {
-                write(MockKRDPFixtures.oversizedClipboardFormatDataResponseStart(), context: context)
+            if request.formatID == RDPClipboardFormatID.unicodeText,
+               let broken = options.brokenRemoteClipboardText,
+               let text = options.remoteClipboardText
+            {
+                for packet in MockKRDPFixtures.brokenClipboardFormatDataResponse(broken, text: text) {
+                    write(packet, context: context)
+                }
                 return
             }
             for chunk in MockKRDPFixtures.clipboardPackets(clipboardFormatDataResponse(for: request).encoded()) {
@@ -2251,6 +2271,45 @@ private enum MockKRDPFixtures {
 
     static func clipboardPacket(_ payload: Data) -> Data {
         staticVirtualChannelPacket(payload, channelID: MockKRDPConstants.clipboardChannelID)
+    }
+
+    /// A Format Data Response of `text` broken as `broken` says.
+    static func brokenClipboardFormatDataResponse(_ broken: MockKRDPBrokenClipboardResponse, text: String) -> [Data] {
+        let response = RDPClipboardFormatDataResponsePDU.unicodeText(text)
+        let payload = response.encoded()
+        let firstByteCount = payload.count / 2
+        func chunk(totalLength: Int, flags: UInt32, _ data: Data) -> Data {
+            var userData = Data()
+            userData.appendLittleEndianUInt32(UInt32(totalLength))
+            userData.appendLittleEndianUInt32(flags | RDPStaticVirtualChannelFlags.showProtocol)
+            userData.append(data)
+            return mcsSendDataIndication(channelID: MockKRDPConstants.clipboardChannelID, userData: userData)
+        }
+        let rejectedChunk = chunk(totalLength: payload.count + 1, flags: RDPStaticVirtualChannelFlags.complete, payload)
+        switch broken {
+        case .tooLongToReassemble:
+            return [oversizedClipboardFormatDataResponseStart()]
+        case .badLastChunk:
+            return [
+                chunk(totalLength: payload.count, flags: RDPStaticVirtualChannelFlags.first, payload.prefix(firstByteCount)),
+                chunk(totalLength: payload.count + 1, flags: RDPStaticVirtualChannelFlags.last, payload.dropFirst(firstByteCount)),
+            ]
+        case .rejectedChunk:
+            return [rejectedChunk]
+        case .rejectedChunkInsideAnother:
+            return [
+                chunk(totalLength: payload.count, flags: RDPStaticVirtualChannelFlags.first, payload.prefix(firstByteCount)),
+                rejectedChunk,
+                chunk(totalLength: payload.count, flags: RDPStaticVirtualChannelFlags.last, payload.dropFirst(firstByteCount)),
+            ]
+        case .headerDoesNotParse:
+            var message = Data()
+            message.appendLittleEndianUInt16(RDPClipboardMessageType.formatDataResponse)
+            message.appendLittleEndianUInt16(RDPClipboardMessageFlags.responseOK)
+            message.appendLittleEndianUInt32(UInt32(8 + response.data.count))
+            message.append(response.data)
+            return [clipboardPacket(message)]
+        }
     }
 
     /// The FIRST chunk of a Format Data Response one byte longer than a static virtual

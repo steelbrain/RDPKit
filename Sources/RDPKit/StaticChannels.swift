@@ -8,14 +8,32 @@ extension RDPClientConnection {
         let isDynamicChannelTransport = name == RDPStaticVirtualChannel.drdynvc.name
         let maximumChunkByteCount = staticChannelChunkSize.byteCount
         let payload: Data
-        var firstChunk: RDPStaticVirtualChannelPDU?
+        // The start of the cliprdr message an error drops: the chunk's own, or the one it continues.
+        var clipboardMessageStart: Data?
         do {
-            let chunk = try RDPStaticVirtualChannelPDU.parse(
-                fromUserData: indication.userData,
-                maximumChunkByteCount: maximumChunkByteCount
-            )
-            if chunk.isFirst {
-                firstChunk = chunk
+            let chunk: RDPStaticVirtualChannelPDU
+            do {
+                chunk = try RDPStaticVirtualChannelPDU.parse(
+                    fromUserData: indication.userData,
+                    maximumChunkByteCount: maximumChunkByteCount
+                )
+            } catch {
+                // A chunk `parse` rejects, such as FIRST and LAST with a totalLength its data
+                // does not have, still starts a message when its flags say FIRST: it ends the
+                // message being reassembled, as a FIRST chunk that parses does ([MS-RDPBCGR]
+                // 3.1.5.2.2.1), and its own message is lost.
+                if name == RDPStaticVirtualChannel.cliprdr.name,
+                   let payload = RDPStaticVirtualChannelPDU.firstChunkPayload(fromUserData: indication.userData)
+                {
+                    staticChannelReassemblers[indication.channelID] = nil
+                    clipboardMessageStart = payload
+                }
+                throw error
+            }
+            if name == RDPStaticVirtualChannel.cliprdr.name {
+                clipboardMessageStart = chunk.isFirst
+                    ? chunk.payload
+                    : staticChannelReassemblers[indication.channelID]?.pendingMessagePrefix
             }
             // Appended in place: a copy out of the dictionary would copy the partial message per chunk.
             guard let message = try staticChannelReassemblers[indication.channelID, default: .init()]
@@ -29,8 +47,8 @@ extension RDPClientConnection {
                 throw error
             }
             recordChannelError(name, error)
-            if name == RDPStaticVirtualChannel.cliprdr.name, let firstChunk {
-                handleLostClipboardMessage(startingWith: firstChunk.payload)
+            if let clipboardMessageStart {
+                handleLostClipboardMessage(startingWith: clipboardMessageStart)
             }
             return
         }
@@ -59,9 +77,17 @@ extension RDPClientConnection {
         guard let clipboard else {
             return
         }
+        let pdu: RDPClipboardPDU
         do {
-            let pdu = try RDPClipboardPDU.parse(from: payload)
-            report.rdpClipboardMessages.appendCapped(.summarize(pdu), limit: RDPRecordLimit.messages)
+            pdu = try RDPClipboardPDU.parse(from: payload)
+        } catch {
+            recordChannelError(RDPStaticVirtualChannel.cliprdr.name, error)
+            handleLostClipboardMessage(startingWith: payload)
+            return
+        }
+        report.rdpClipboardMessages.appendCapped(.summarize(pdu), limit: RDPRecordLimit.messages)
+        // A response that fails here has already answered its request in the session.
+        do {
             try deliver(clipboard.receive(pdu), from: clipboard)
         } catch {
             recordChannelError(RDPStaticVirtualChannel.cliprdr.name, error)
@@ -69,8 +95,9 @@ extension RDPClientConnection {
     }
 
     /// A Format Data Response dropped whole, such as one over the 64 MiB a message may
-    /// hold, still answers the request it was for: left outstanding, that request would
-    /// hold back every later remote copy of the session.
+    /// hold, one whose first chunk does not parse, one with a bad later chunk, or one whose
+    /// header does not parse, still answers the request it was for: left outstanding, that
+    /// request would hold back every later remote copy of the session.
     private func handleLostClipboardMessage(startingWith payload: Data) {
         var cursor = ByteCursor(payload)
         guard let clipboard,

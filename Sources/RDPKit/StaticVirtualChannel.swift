@@ -150,6 +150,20 @@ struct RDPStaticVirtualChannelPDU: Equatable, Sendable {
         }
         return pdu
     }
+
+    /// The data after the header of a chunk whose flags have CHANNEL_FLAG_FIRST, read
+    /// without the checks `parse` makes, so a chunk it rejects still tells which message it
+    /// started; nil without a whole header or that flag.
+    static func firstChunkPayload(fromUserData userData: Data) -> Data? {
+        var cursor = ByteCursor(userData)
+        guard (try? cursor.readLittleEndianUInt32()) != nil,
+              let flags = try? cursor.readLittleEndianUInt32(),
+              flags & RDPStaticVirtualChannelFlags.first != 0
+        else {
+            return nil
+        }
+        return cursor.readRemainingData()
+    }
 }
 
 /// The largest chunk the static channels send: CHANNEL_CHUNK_LENGTH until a Demand Active
@@ -182,6 +196,13 @@ struct RDPStaticVirtualChannelReassembler: Sendable {
 
     init(maximumTotalLength: Int = defaultMaximumTotalLength) {
         self.maximumTotalLength = maximumTotalLength
+    }
+
+    /// The first two bytes of the message being reassembled, such as a cliprdr msgType
+    /// ([MS-RDPECLIP] 2.2.1); empty between messages. Read before `append`, it tells which
+    /// message a bad chunk that continues one drops.
+    var pendingMessagePrefix: Data {
+        totalLength == nil ? Data() : Data(payload.prefix(2))
     }
 
     /// Returns the complete message once its last chunk arrives. A FIRST chunk
