@@ -142,3 +142,85 @@ private func typedKey() throws -> KeychainCredentialKey {
         #expect(passwords.reads == 0)
     }
 }
+
+private func profile(host: String) -> ConnectionProfile {
+    ConnectionProfile(
+        id: UUID(),
+        host: host,
+        port: 3389,
+        username: "anees",
+        domain: "",
+        desktopWidth: 1920,
+        desktopHeight: 1080,
+        hideCertificateWarnings: false,
+        timeoutSeconds: 10,
+        graphicsCapabilityProfile: .automatic,
+        clipboardSharingEnabled: true,
+        audioPlaybackEnabled: false,
+        rememberPassword: true,
+        updatedAt: Date()
+    )
+}
+
+/// Saving a profile under another account, as after editing its username, takes it off its
+/// earlier account as Delete Profile does: that account's password goes, under its current
+/// name and its legacy one, unless another profile still uses the account, which then gets the
+/// legacy-named one. Saved on its own account, it releases nothing.
+@Test func savingAProfileUnderAnotherAccountReleasesItsEarlierPassword() throws {
+    let typed = profile(host: "Desktop.Example")
+    var renamed = typed
+    renamed.username = "bob"
+    let bobAccount = "bob@desktop.example:3389"
+    let alone = ConnectionProfileList(profiles: [typed])
+    let passwords = Passwords([currentAccount: "newer", legacyAccount: "older", bobAccount: "bob's"])
+
+    let store = KeychainCredentialStore(passwords: passwords)
+    // Before the save, the earlier account's password stays, for a save that fails.
+    try store.movePasswordsOfProfilesReplaced(by: renamed, in: alone)
+    #expect(passwords.saved == [currentAccount: "newer", legacyAccount: "older", bobAccount: "bob's"])
+    #expect(try store.releaseSavedPasswords(saved: renamed, over: alone) == typed)
+    #expect(passwords.saved == [bobAccount: "bob's"])
+
+    let shared = ConnectionProfileList(profiles: [typed, profile(host: "desktop.example")])
+    let sharedPasswords = Passwords([legacyAccount: "secret"])
+    let sharedStore = KeychainCredentialStore(passwords: sharedPasswords)
+    #expect(try sharedStore.releaseSavedPasswords(saved: renamed, over: shared) == nil)
+    #expect(sharedPasswords.saved == [currentAccount: "secret"])
+
+    var resized = typed
+    resized.desktopWidth = 2560
+    let kept = Passwords([legacyAccount: "secret"])
+    #expect(try KeychainCredentialStore(passwords: kept).releaseSavedPasswords(saved: resized, over: alone) == nil)
+    #expect(kept.saved == [legacyAccount: "secret"])
+    #expect(passwords.reads + sharedPasswords.reads + kept.reads == 0)
+}
+
+/// A profile moved to an account another profile was saved for replaces that one, which leaves
+/// the account to it: a password saved under the replaced one's legacy name, which the moved
+/// profile never tries, moves to the account's name.
+@Test func aProfileMovedOverAnotherForItsAccountKeepsItsLegacyPassword() throws {
+    let replaced = profile(host: "Desktop.Example")
+    let moved = profile(host: "laptop.example")
+    var movedHere = moved
+    movedHere.host = "desktop.example"
+    let saved = ConnectionProfileList(profiles: [replaced, moved])
+    let passwords = Passwords([legacyAccount: "secret"])
+
+    let store = KeychainCredentialStore(passwords: passwords)
+    try store.movePasswordsOfProfilesReplaced(by: movedHere, in: saved)
+    #expect(passwords.saved == [currentAccount: "secret"])
+    #expect(try store.releaseSavedPasswords(saved: movedHere, over: saved) == nil)
+    #expect(passwords.saved == [currentAccount: "secret"])
+
+    // With Remember off, the account keeps no password: the replaced profile's goes once the
+    // moved one is saved, and none moves before.
+    var forgetting = movedHere
+    forgetting.rememberPassword = false
+    let forgotten = Passwords([legacyAccount: "secret"])
+    let forgettingStore = KeychainCredentialStore(passwords: forgotten)
+    try forgettingStore.movePasswordsOfProfilesReplaced(by: forgetting, in: saved)
+    #expect(forgotten.saved == [legacyAccount: "secret"])
+    #expect(try forgettingStore.releaseSavedPasswords(saved: forgetting, over: saved) == nil)
+    #expect(forgotten.saved.isEmpty)
+    #expect(passwords.reads + forgotten.reads == 0)
+}

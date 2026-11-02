@@ -270,10 +270,12 @@ struct ConnectionManagerView: View {
     private func saveCurrentProfile() {
         do {
             let profile = try makeConnectionProfile()
-            let persistenceResult = try persistCredentialChangeIfNeeded(
-                credentialPersistenceRequest(for: profile)
-            )
+            let savedProfiles = try profileStore.profiles()
+            let persistenceRequest = try credentialPersistenceRequest(for: profile)
+            try credentialStore.movePasswordsOfProfilesReplaced(by: profile, in: savedProfiles)
+            let persistenceResult = try persistCredentialChangeIfNeeded(persistenceRequest)
             applyProfileList(try profileStore.save(profile))
+            let releasedProfile = try credentialStore.releaseSavedPasswords(saved: profile, over: savedProfiles)
             // The form already shows what was saved, password included: selecting the profile
             // does not fill it again or look its password up.
             appliedProfileID = profile.id
@@ -281,6 +283,9 @@ struct ConnectionManagerView: View {
             applyCredentialPersistenceResult(persistenceResult)
             profileMessage = "Profile saved."
             formError = nil
+            if let releasedProfile {
+                profileMessage = "Profile saved, and the password saved for \(releasedProfile.displayName) deleted."
+            }
         } catch {
             formError = String(describing: error)
         }
@@ -298,14 +303,8 @@ struct ConnectionManagerView: View {
     private func deleteProfile(_ profile: ConnectionProfile) {
         do {
             let wasSelected = selectedProfileID == profile.id
-            // The saved password goes with the last profile for its account.
             let sharingProfiles = try profileStore.profiles().profiles(sharingSavedPasswordWith: profile)
-            let deletedPassword = try sharingProfiles.isEmpty && deleteStoredCredentials(for: profile)
-            if !sharingProfiles.isEmpty, let key = KeychainCredentialKey(identity: profile.identity) {
-                // One saved under this profile's earlier name, which the others may spell
-                // otherwise and never find, moves to the account's name.
-                try credentialStore.moveLegacyPasswords(for: key, keptBy: sharingProfiles.map(\.identity))
-            }
+            let deletedPassword = try credentialStore.releaseSavedPassword(of: profile, sharingProfiles: sharingProfiles)
             applyProfileList(try profileStore.delete(id: profile.id))
             if wasSelected {
                 newConnection()
@@ -498,15 +497,6 @@ struct ConnectionManagerView: View {
             throw error
         }
         return result
-    }
-
-    /// Deletes `profile`'s saved password, and returns whether it had one. Deleting tells, so
-    /// Keychain is not read first.
-    private func deleteStoredCredentials(for profile: ConnectionProfile) throws -> Bool {
-        guard let key = KeychainCredentialKey(identity: profile.identity) else {
-            return false
-        }
-        return try credentialStore.deletePassword(for: key)
     }
 
     private func applyCredentialPersistenceResult(

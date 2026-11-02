@@ -137,6 +137,51 @@ private func profile(host: String) -> ConnectionProfile {
     #expect(try store.save(sameIdentity).profiles == [sameIdentity])
 }
 
+/// Saving a profile under another account, as after editing its username, moves it off its
+/// earlier account, whose saved password then goes as it would with a deleted profile. A profile
+/// already saved for the new account is replaced, so one account keeps one profile.
+@Test func savingAProfileUnderAnotherAccountLeavesItsEarlierOne() throws {
+    let store = try ConnectionProfileStore(defaults: makeDefaults())
+    let anees = profile(host: "desktop.example")
+    var bob = profile(host: "desktop.example")
+    bob.username = "bob"
+    _ = try store.save(anees)
+    let saved = try store.save(bob)
+
+    var renamed = anees
+    renamed.username = "bob"
+    #expect(saved.profile(movedOffItsAccountBy: renamed) == anees)
+    #expect(saved.profiles(sharingSavedPasswordWith: anees).isEmpty)
+    #expect(saved.profiles(replacedBy: renamed) == [bob])
+    #expect(try store.save(renamed).profiles == [renamed])
+
+    // The same account spelled otherwise, with other settings, or a new profile moves nothing.
+    var respelled = anees
+    respelled.host = "Desktop.Example"
+    respelled.desktopWidth = 2560
+    #expect(saved.profile(movedOffItsAccountBy: respelled) == nil)
+    #expect(saved.profile(movedOffItsAccountBy: profile(host: "other.example")) == nil)
+}
+
+/// Profiles earlier builds saved for one account stay when one of them is saved on it: only a
+/// profile moved to an account replaces those saved for it.
+@Test func savingAProfileOnItsAccountLeavesOthersSavedForIt() throws {
+    let defaults = try makeDefaults()
+    let typed = profile(host: "Desktop.Example")
+    let lowercase = profile(host: "desktop.example")
+    let encoder = JSONEncoder()
+    try writeElements(
+        [typed, lowercase].map { try JSONSerialization.jsonObject(with: encoder.encode($0)) },
+        to: defaults
+    )
+    let store = ConnectionProfileStore(defaults: defaults)
+
+    var resized = typed
+    resized.desktopWidth = 2560
+    #expect(try store.profiles().profiles(replacedBy: resized).isEmpty)
+    #expect(Set(try store.save(resized).profiles.map(\.id)) == [typed.id, lowercase.id])
+}
+
 /// "LAB\anees" with no domain signs in as "anees" in LAB, under the same saved password.
 @Test func savingTheDomainInTheUsernameReplacesTheProfileWithThatDomain() throws {
     let store = try ConnectionProfileStore(defaults: makeDefaults())

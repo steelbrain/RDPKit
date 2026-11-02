@@ -77,6 +77,86 @@ struct ConnectionProfileList: Equatable {
         }
         return profiles.filter { $0.id != profile.id && $0.identity.credentialAccountName == account }
     }
+
+    /// The saved profile with `profile`'s ID, when it is for another account: saving `profile`
+    /// takes that profile off its account, as deleting it would.
+    func profile(movedOffItsAccountBy profile: ConnectionProfile) -> ConnectionProfile? {
+        guard let saved = profiles.first(where: { $0.id == profile.id }),
+              saved.identity.credentialAccountName != profile.identity.credentialAccountName
+        else {
+            return nil
+        }
+        return saved
+    }
+
+    /// The profiles saving `profile` replaces: when it moves `profile` off its account, the
+    /// others saved for the account it moves to, so one account keeps one profile.
+    func profiles(replacedBy profile: ConnectionProfile) -> [ConnectionProfile] {
+        guard self.profile(movedOffItsAccountBy: profile) != nil else {
+            return []
+        }
+        return profiles.filter { $0.id != profile.id && $0.hasSameIdentity(as: profile) }
+    }
+}
+
+extension KeychainCredentialStore {
+    /// Takes `profile` off its account, as it is deleted or saved under another one. The saved
+    /// password goes with the last profile for its account, so it stays while `sharingProfiles`
+    /// use that account. Returns whether a password was deleted.
+    func releaseSavedPassword(of profile: ConnectionProfile, sharingProfiles: [ConnectionProfile]) throws -> Bool {
+        guard let key = KeychainCredentialKey(identity: profile.identity) else {
+            return false
+        }
+        guard sharingProfiles.isEmpty else {
+            // One saved under this profile's earlier name, which the others may spell
+            // otherwise and never find, moves to the account's name.
+            try moveLegacyPasswords(for: key, keptBy: sharingProfiles.map(\.identity))
+            return false
+        }
+        // Deleting tells whether there was one, so Keychain is not read first.
+        return try deletePassword(for: key)
+    }
+
+    /// Before `profile` is saved over `savedProfiles` with Remember on: a password the profiles
+    /// it replaces saved under a legacy name, which `profile` never tries, moves to the
+    /// account's name, where saving `profile`'s password replaces it. Their lookups read that
+    /// name first, so should the save fail, they keep their password.
+    func movePasswordsOfProfilesReplaced(
+        by profile: ConnectionProfile,
+        in savedProfiles: ConnectionProfileList
+    ) throws {
+        guard profile.rememberPassword else {
+            return
+        }
+        for replaced in savedProfiles.profiles(replacedBy: profile) {
+            _ = try releaseSavedPassword(of: replaced, sharingProfiles: [profile])
+        }
+    }
+
+    /// Once `profile` is saved over `savedProfiles`, takes saved passwords off the accounts the
+    /// save took profiles off, as Delete Profile does: the one `profile` moved off, and, with
+    /// Remember off, the profiles' it replaced, whose account `profile` keeps without one. Only
+    /// after the save, so that a save that fails leaves every password. Returns the saved
+    /// `profile` when its earlier account's password was deleted.
+    func releaseSavedPasswords(
+        saved profile: ConnectionProfile,
+        over savedProfiles: ConnectionProfileList
+    ) throws -> ConnectionProfile? {
+        if !profile.rememberPassword {
+            for replaced in savedProfiles.profiles(replacedBy: profile) {
+                _ = try releaseSavedPassword(of: replaced, sharingProfiles: [])
+            }
+        }
+        guard let previous = savedProfiles.profile(movedOffItsAccountBy: profile),
+              try releaseSavedPassword(
+                  of: previous,
+                  sharingProfiles: savedProfiles.profiles(sharingSavedPasswordWith: previous)
+              )
+        else {
+            return nil
+        }
+        return previous
+    }
 }
 
 enum ConnectionProfileStoreError: Error, CustomStringConvertible {
@@ -108,6 +188,9 @@ struct ConnectionProfileStore {
 
     func save(_ profile: ConnectionProfile) throws -> ConnectionProfileList {
         var stored = try storedProfiles()
+        // One account on a server keeps one profile: one moved to another's account replaces
+        // those saved for it.
+        let replacedIDs = Set(list(stored).profiles(replacedBy: profile).map(\.id))
         let encoded = try JSONSerialization.jsonObject(with: JSONEncoder().encode(profile))
         guard var element = encoded as? [String: Any] else {
             preconditionFailure("A ConnectionProfile encodes as a JSON object.")
@@ -123,6 +206,7 @@ struct ConnectionProfileStore {
         } else {
             stored.append(StoredProfile(json: element, profile: profile))
         }
+        stored.removeAll { $0.profile.map { replacedIDs.contains($0.id) } == true }
         try write(stored)
         return list(stored)
     }
