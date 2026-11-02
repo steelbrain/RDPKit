@@ -240,6 +240,25 @@ import Testing
     #expect(accumulator.events(vertical: 0.8, horizontal: 0, at: point) == [.verticalWheel(rotation: 1, x: 10, y: 20)])
 }
 
+/// A line is a notch and a point of a precise scroll a twelfth of one; content moving right is
+/// a scroll to the left, so the horizontal axis is negated.
+@Test func scrollWheelAccumulatorScalesAppKitScrollDeltas() {
+    var accumulator = RDPScrollWheelAccumulator()
+    let point = RDPRemotePoint(x: 10, y: 20)
+
+    #expect(accumulator.events(deltaX: 1, deltaY: 1, isPrecise: false, at: point) == [
+        .verticalWheel(rotation: 120, x: 10, y: 20),
+        .horizontalWheel(rotation: -120, x: 10, y: 20),
+    ])
+    #expect(accumulator.events(deltaX: -0.5, deltaY: 2, isPrecise: true, at: point) == [
+        .verticalWheel(rotation: 20, x: 10, y: 20),
+        .horizontalWheel(rotation: 5, x: 10, y: 20),
+    ])
+    // Fractions of a unit still carry over.
+    #expect(accumulator.events(deltaX: 0, deltaY: -0.05, isPrecise: true, at: point).isEmpty)
+    #expect(accumulator.events(deltaX: 0, deltaY: -0.05, isPrecise: true, at: point) == [.verticalWheel(rotation: -1, x: 10, y: 20)])
+}
+
 @Test func inputSessionDropsHorizontalWheelWithoutServerCapability() {
     let events: [RDPSlowPathInputEvent] = [
         .verticalWheel(rotation: 120, x: 20, y: 30),

@@ -3,9 +3,9 @@
 // MacRDPKeyboardLayout announces, each scancode below mapped with MapVirtualKeyEx and
 // typed with ToUnicodeEx (keyboard state left unchanged), without and with Shift and
 // Caps Lock. Japanese, announced with a Japanese keyboard, is written out in the
-// generator instead.
+// generator instead. Each layout's comment names the Mac input sources announcing it.
 
-extension MacRDPWindowsKeyboardLayout {
+extension RDPKeyboardCharacterTable {
     /// The character keys, in the order of each layout's strings.
     static let scancodes: [UInt16] = [
         0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D,
@@ -550,7 +550,7 @@ extension MacRDPWindowsKeyboardLayout {
     ]
 
     /// Windows' Japanese layout (0x0000_0411) per keyboard subtype, announced with keyboard
-    /// type 7 (see MacRDPWindowsKeyboard), in the same form.
+    /// type 7 (see RDPKeyboard), in the same form.
     static let japaneseLayouts: [UInt32: (unshifted: String, shifted: String, capsLock: String)] = [
         // 101-key keyboard (kbd101.dll): written out, not captured
         0: (

@@ -1,20 +1,21 @@
 #!/usr/bin/env python3
-"""Regenerates Sources/WindowsKeyboardLayoutTables.swift from a capture made on Windows.
+"""Regenerates Sources/RDPKit/WindowsKeyboardLayoutTables.swift from a capture made on Windows.
 
-RDPClient sends a character key as its scancode only when the Windows layout it announced
-types the same character, so it needs to know what each layout types. Windows answers that
-itself, for every layout MacRDPKeyboardLayout can announce:
+A client sends a character key as its scancode only when the Windows layout it announced
+types the same character, so RDPKeyboard.character(for:shift:capsLock:) tells what each
+layout types. Windows answers that itself, for every layout MacRDPKeyboardLayout can announce:
 
-1. python3 generate-windows-keyboard-layout-tables.py request > capture-request.json
-   lists those layouts (read from Sources/KeyboardLayouts.swift) and the scancodes.
+1. python3 Scripts/generate-windows-keyboard-layout-tables.py request > capture-request.json
+   lists those layouts (read from Examples/RDPClient/Sources/KeyboardLayouts.swift) and the
+   scancodes.
 2. On Windows 10 1607 or later, with capture-windows-keyboard-layouts.ps1 beside it:
    powershell -NoProfile -ExecutionPolicy Bypass -File capture-windows-keyboard-layouts.ps1 -RequestFile capture-request.json
    writes layouts.json next to the request.
-3. python3 generate-windows-keyboard-layout-tables.py tables layouts.json
-   rewrites Sources/WindowsKeyboardLayoutTables.swift.
+3. python3 Scripts/generate-windows-keyboard-layout-tables.py tables layouts.json
+   rewrites Sources/RDPKit/WindowsKeyboardLayoutTables.swift.
 
 Windows' Japanese layout is the exception. What it types follows the keyboard type and
-subtype, which a capture takes from the capturing PC, while RDPClient announces a Japanese
+subtype, which a capture takes from the capturing PC, while a Mac announces a Japanese
 keyboard; so its tables are written out below (JAPANESE), one per keyboard subtype.
 """
 
@@ -24,9 +25,9 @@ import sys
 import unicodedata
 from pathlib import Path
 
-SOURCES = Path(__file__).resolve().parent.parent / "Sources"
-MAPPING_SOURCE = SOURCES / "KeyboardLayouts.swift"
-TABLES_SOURCE = SOURCES / "WindowsKeyboardLayoutTables.swift"
+PACKAGE = Path(__file__).resolve().parent.parent
+MAPPING_SOURCE = PACKAGE / "Examples" / "RDPClient" / "Sources" / "KeyboardLayouts.swift"
+TABLES_SOURCE = PACKAGE / "Sources" / "RDPKit" / "WindowsKeyboardLayoutTables.swift"
 
 # The character keys MacRDPKeyboardMapping can send: the number, letter and punctuation rows,
 # the ISO key (0x56) and the JIS keys (0x73, 0x7D). Space is the same on every layout.
@@ -40,7 +41,7 @@ SCANCODES = (
 
 JAPANESE_KLID = 0x0000_0411
 
-# Windows' Japanese layout per keyboard subtype, which RDPClient announces with keyboard type 7:
+# Windows' Japanese layout per keyboard subtype, which a Mac announces with keyboard type 7:
 # what each key in SCANCODES types without and with Shift ("\0" for nothing); Caps Lock shifts
 # the letters only.
 JAPANESE = {
@@ -161,9 +162,9 @@ def tables(capture_path):
         "// MacRDPKeyboardLayout announces, each scancode below mapped with MapVirtualKeyEx and",
         "// typed with ToUnicodeEx (keyboard state left unchanged), without and with Shift and",
         "// Caps Lock. Japanese, announced with a Japanese keyboard, is written out in the",
-        "// generator instead.",
+        "// generator instead. Each layout's comment names the Mac input sources announcing it.",
         "",
-        "extension MacRDPWindowsKeyboardLayout {",
+        "extension RDPKeyboardCharacterTable {",
         "    /// The character keys, in the order of each layout's strings.",
         "    static let scancodes: [UInt16] = [",
     ]
@@ -194,7 +195,7 @@ def tables(capture_path):
         "",
         "    /// Windows' Japanese layout (0x%04X_%04X) per keyboard subtype, announced with keyboard"
         % (JAPANESE_KLID >> 16, JAPANESE_KLID & 0xFFFF),
-        "    /// type 7 (see MacRDPWindowsKeyboard), in the same form.",
+        "    /// type 7 (see RDPKeyboard), in the same form.",
         "    static let japaneseLayouts: [UInt32: (unshifted: String, shifted: String, capsLock: String)] = [",
     ]
     for sub_type, *strings in sorted(japanese, key=lambda entry: entry[0]):

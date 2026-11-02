@@ -228,6 +228,9 @@ let report = client.run(
   announced in the Client Core Data and the Input Capability Set. Windows
   applies the layout only to a session it creates; connecting to an existing
   session keeps its layout, while the type and subtype apply.
+  `RDPKeyboard.character(for:shift:capsLock:)` says what Windows types for a
+  scancode with each layout a Mac input source announces, so a client can send
+  a character as its scancode only where the server types the same one.
 - Pointer motion, buttons, extended buttons, vertical wheel, and horizontal wheel
 - Remote pointer shapes, system pointers, and pointer-cache updates, with
   `RDPRemotePointerBitmap` to turn a shape into premultiplied RGBA or a

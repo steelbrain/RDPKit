@@ -14,7 +14,7 @@ extension RDPInputSession: RDPInputEventSending {}
 final class RemoteInputCaptureNSView: NSView {
     var rdpFrame: RDPFrameMetadata?
     /// The keyboard the session announced; it decides which keys can go as scancodes.
-    var keyboard = MacRDPWindowsKeyboard.unitedStates
+    var keyboard = RDPKeyboard.unitedStates
     /// Whether the Mac's layout makes a key a dead key with these modifiers; tests replace it.
     var isDeadKey: @MainActor (UInt16, NSEvent.ModifierFlags) -> Bool = MacRDPDeadKeys.isDeadKey(keyCode:modifierFlags:)
     /// What the Mac's layout types for a key with no dead key pending; tests replace it.
@@ -156,12 +156,12 @@ final class RemoteInputCaptureNSView: NSView {
         guard let point = remotePoint(from: event) else {
             return
         }
-        let units = MacRDPScrollWheel.rotationUnits(
+        let events = wheelAccumulator.events(
             deltaX: event.scrollingDeltaX,
             deltaY: event.scrollingDeltaY,
-            hasPreciseScrollingDeltas: event.hasPreciseScrollingDeltas
+            isPrecise: event.hasPreciseScrollingDeltas,
+            at: point
         )
-        let events = wheelAccumulator.events(vertical: units.vertical, horizontal: units.horizontal, at: point)
         guard events.isEmpty == false else {
             return
         }
@@ -450,22 +450,8 @@ final class RemoteInputCaptureNSView: NSView {
     }
 }
 
-/// Converts AppKit scroll deltas into RDP wheel rotation units: a line (one wheel notch) is
-/// 120 units and a precise (trackpad) point 10.
+/// What goes ahead of a scroll's wheel events, which `RDPScrollWheelAccumulator` makes.
 enum MacRDPScrollWheel {
-    private static let unitsPerPoint = 10.0
-
-    /// AppKit reports positive `deltaX` for scrolling left, while RDP horizontal rotation is
-    /// positive to the right, so the horizontal axis is negated.
-    static func rotationUnits(
-        deltaX: CGFloat,
-        deltaY: CGFloat,
-        hasPreciseScrollingDeltas: Bool
-    ) -> (vertical: Double, horizontal: Double) {
-        let scale = hasPreciseScrollingDeltas ? unitsPerPoint : RDPScrollWheelAccumulator.unitsPerNotch
-        return (Double(deltaY) * scale, -Double(deltaX) * scale)
-    }
-
     /// A move to `point`, ahead of wheel events there, when the server last got the pointer
     /// elsewhere: a server may scroll what is under its own pointer, which follows the Mac's
     /// only while the window is key, as the tracking area reports moves only then. The wheel
@@ -782,7 +768,7 @@ enum MacRDPKeyboardMapping {
         charactersIgnoringModifiers: String?,
         for scancode: RDPKeyboardScancode,
         modifierFlags: NSEvent.ModifierFlags,
-        keyboard: MacRDPWindowsKeyboard
+        keyboard: RDPKeyboard
     ) -> Bool {
         guard let characters, let charactersIgnoringModifiers,
               characters == charactersIgnoringModifiers
@@ -793,10 +779,10 @@ enum MacRDPKeyboardMapping {
         if scancode == spaceScancode {
             return true
         }
-        guard let typed = MacRDPWindowsKeyboardLayout.layout(keyboard)?.character(
+        guard let typed = keyboard.character(
                   for: scancode,
-                  isShifted: modifierFlags.contains(.shift),
-                  isCapsLocked: modifierFlags.contains(.capsLock)
+                  shift: modifierFlags.contains(.shift),
+                  capsLock: modifierFlags.contains(.capsLock)
               )
         else {
             return false

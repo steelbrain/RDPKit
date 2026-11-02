@@ -367,14 +367,14 @@ private func windowsTypes(
     scancode: UInt16,
     _ modifierFlags: NSEvent.ModifierFlags = [],
     layout: UInt32 = 0x0000_0409,
-    keyboard: MacRDPWindowsKeyboard? = nil
+    keyboard: RDPKeyboard? = nil
 ) -> Bool {
     MacRDPKeyboardMapping.windowsTypes(
         characters,
         charactersIgnoringModifiers: ignoringModifiers ?? characters,
         for: RDPKeyboardScancode(code: scancode),
         modifierFlags: modifierFlags,
-        keyboard: keyboard ?? MacRDPWindowsKeyboard(layout: RDPKeyboardLayout(rawValue: layout))
+        keyboard: keyboard ?? RDPKeyboard(layout: RDPKeyboardLayout(rawValue: layout))
     )
 }
 
@@ -422,7 +422,7 @@ private func windowsTypes(
 /// Windows' Japanese layout (106/109-key) types the JIS legends, as macOS does on a JIS
 /// keyboard, so those keys go as scancodes.
 @Test func theJapaneseTableTypesTheJISLegends() {
-    let japanese = MacRDPWindowsKeyboard.japanese106
+    let japanese = RDPKeyboard.japanese106
     let unshifted: [(String, UInt16)] = [
         ("2", 0x03), ("-", 0x0C), ("^", 0x0D), ("q", 0x10), ("@", 0x1A), ("[", 0x1B),
         (";", 0x27), (":", 0x28), ("]", 0x2B), ("/", 0x35), ("\\", 0x73), ("\\", 0x7D),
@@ -450,21 +450,10 @@ private func windowsTypes(
     #expect(windowsTypes("_", scancode: 0x73, keyboard: japanese) == false)
 }
 
-/// Windows' Japanese layout with a 101-key keyboard types what US types on every key, Caps Lock
-/// too, where the 106/109-key one types the JIS legends.
-@Test func theJapanese101KeyTableTypesWhatUSTypes() throws {
-    let japanese101 = try #require(MacRDPWindowsKeyboardLayout.layout(.japanese101))
-    let unitedStates = try #require(MacRDPWindowsKeyboardLayout.layout(.unitedStates))
-    for code in MacRDPWindowsKeyboardLayout.scancodes {
-        for (isShifted, isCapsLocked) in [(false, false), (true, false), (false, true), (true, true)] {
-            let scancode = RDPKeyboardScancode(code: code)
-            #expect(
-                japanese101.character(for: scancode, isShifted: isShifted, isCapsLocked: isCapsLocked)
-                    == unitedStates.character(for: scancode, isShifted: isShifted, isCapsLocked: isCapsLocked)
-            )
-        }
-    }
-    let keyboard = MacRDPWindowsKeyboard.japanese101
+/// Windows' Japanese layout with a 101-key keyboard types what US types, where the 106/109-key
+/// one types the JIS legends.
+@Test func theJapanese101KeyTableTypesWhatUSTypes() {
+    let keyboard = RDPKeyboard.japanese101
     #expect(windowsTypes("@", scancode: 0x03, .shift, keyboard: keyboard))
     #expect(windowsTypes("\"", scancode: 0x03, .shift, keyboard: keyboard) == false)
     #expect(windowsTypes("`", scancode: 0x29, keyboard: keyboard))
@@ -491,15 +480,7 @@ private func windowsTypes(
     #expect(MacRDPKeyboardLayout.windowsLayout(forInputSourceID: "com.apple.inputmethod.Kotoeri.Japanese") == .unitedStates)
     // Every keyboard that can be announced has a table, so the scancode check covers it.
     for klid in Set(MacRDPKeyboardLayout.windowsLayouts.values) {
-        #expect(MacRDPWindowsKeyboardLayout.layout(MacRDPWindowsKeyboard(layout: RDPKeyboardLayout(rawValue: klid))) != nil)
-    }
-    #expect(MacRDPWindowsKeyboardLayout.layout(.japanese106) != nil)
-    // Japanese's tables follow the keyboard type and subtype.
-    #expect(MacRDPWindowsKeyboardLayout.layout(MacRDPWindowsKeyboard(layout: MacRDPKeyboardLayout.japanese)) == nil)
-    for table in Array(MacRDPWindowsKeyboardLayout.layouts.values) + MacRDPWindowsKeyboardLayout.japaneseLayouts.values {
-        #expect(table.unshifted.unicodeScalars.count == MacRDPWindowsKeyboardLayout.scancodes.count)
-        #expect(table.shifted.unicodeScalars.count == MacRDPWindowsKeyboardLayout.scancodes.count)
-        #expect(table.capsLock.unicodeScalars.count == MacRDPWindowsKeyboardLayout.scancodes.count)
+        #expect(RDPKeyboard(layout: RDPKeyboardLayout(rawValue: klid)).hasCharacterTable)
     }
 }
 
@@ -537,9 +518,8 @@ private func windowsTypes(
     for name in names {
         let identifier = "com.apple.keylayout." + name
         let data = try #require(layoutData[identifier], "\(name) is not installed")
-        let windows = try #require(MacRDPWindowsKeyboardLayout.layout(MacRDPWindowsKeyboard(
-            layout: MacRDPKeyboardLayout.windowsLayout(forInputSourceID: identifier)
-        )))
+        let windows = RDPKeyboard(layout: MacRDPKeyboardLayout.windowsLayout(forInputSourceID: identifier))
+        #expect(windows.hasCharacterTable, "\(name)")
         for key in letterKeys {
             let macCharacter = data.withUnsafeBytes { bytes -> String? in
                 guard let layout = bytes.baseAddress?.assumingMemoryBound(to: UCKeyboardLayout.self) else {
@@ -554,7 +534,7 @@ private func windowsTypes(
                 )
                 return status == noErr ? String(utf16CodeUnits: characters, count: length) : nil
             }
-            let windowsCharacter = windows.character(for: RDPKeyboardScancode(code: key.scancode), isShifted: false, isCapsLocked: false)
+            let windowsCharacter = windows.character(for: RDPKeyboardScancode(code: key.scancode), shift: false, capsLock: false)
             #expect(windowsCharacter.map(String.init) == macCharacter, "\(name), key code \(key.keyCode)")
         }
     }
@@ -569,29 +549,29 @@ private func windowsTypes(
     let french = RDPKeyboardLayout(rawValue: 0x0000_080C)
     let dvorak = RDPKeyboardLayout(rawValue: 0x0001_0409)
     let korean = RDPKeyboardLayout(rawValue: 0x0000_0412)
-    func keyboard(_ inputSourceLayout: RDPKeyboardLayout, isJapanese: Bool, isJIS: Bool) -> MacRDPWindowsKeyboard {
+    func keyboard(_ inputSourceLayout: RDPKeyboardLayout, isJapanese: Bool, isJIS: Bool) -> RDPKeyboard {
         MacRDPKeyboardLayout.windowsKeyboard(inputSourceLayout, isJapaneseInputSource: isJapanese, isJISKeyboard: isJIS)
     }
     #expect(keyboard(.unitedStates, isJapanese: true, isJIS: true) == .japanese106)
     #expect(keyboard(.unitedStates, isJapanese: true, isJIS: false) == .japanese101)
     // A Japanese input method typing with another layout, on any keyboard.
     for other in [german, french, dvorak] {
-        #expect(keyboard(other, isJapanese: true, isJIS: true) == MacRDPWindowsKeyboard(layout: other))
-        #expect(keyboard(other, isJapanese: true, isJIS: false) == MacRDPWindowsKeyboard(layout: other))
+        #expect(keyboard(other, isJapanese: true, isJIS: true) == RDPKeyboard(layout: other))
+        #expect(keyboard(other, isJapanese: true, isJIS: false) == RDPKeyboard(layout: other))
     }
     // An input source that is not Japanese, on any keyboard.
     #expect(keyboard(.unitedStates, isJapanese: false, isJIS: true) == .unitedStates)
-    #expect(keyboard(korean, isJapanese: false, isJIS: true) == MacRDPWindowsKeyboard(layout: korean))
+    #expect(keyboard(korean, isJapanese: false, isJIS: true) == RDPKeyboard(layout: korean))
     #expect(keyboard(.unitedStates, isJapanese: false, isJIS: false) == .unitedStates)
 
     // Type 7 with subtype 2 is kbd106.dll, with subtype 0 kbd101.dll; other layouts go as IBM
     // enhanced keyboards.
-    #expect(MacRDPWindowsKeyboard.japanese106.layout == MacRDPKeyboardLayout.japanese)
-    #expect(MacRDPWindowsKeyboard.japanese106.type == .japanese)
-    #expect(MacRDPWindowsKeyboard.japanese106.subType == 2)
-    #expect(MacRDPWindowsKeyboard.japanese101.layout == MacRDPKeyboardLayout.japanese)
-    #expect(MacRDPWindowsKeyboard.japanese101.type == .japanese)
-    #expect(MacRDPWindowsKeyboard.japanese101.subType == 0)
+    #expect(RDPKeyboard.japanese106.layout == RDPKeyboardLayout.japanese)
+    #expect(RDPKeyboard.japanese106.type == .japanese)
+    #expect(RDPKeyboard.japanese106.subType == 2)
+    #expect(RDPKeyboard.japanese101.layout == RDPKeyboardLayout.japanese)
+    #expect(RDPKeyboard.japanese101.type == .japanese)
+    #expect(RDPKeyboard.japanese101.subType == 0)
     for other in [.unitedStates, german, korean] {
         #expect(keyboard(other, isJapanese: false, isJIS: false).type == .ibmEnhanced)
         #expect(keyboard(other, isJapanese: false, isJIS: false).subType == 0)
@@ -627,7 +607,7 @@ private func windowsTypes(
     // A dead key types nothing, and Space after it the accent.
     view.keyDown(with: try keyEvent(.keyDown, keyCode: kVK_ANSI_6, characters: "", charactersIgnoringModifiers: "^"))
     view.keyDown(with: try keyEvent(.keyDown, keyCode: kVK_Space, characters: "^", charactersIgnoringModifiers: " "))
-    view.keyboard = MacRDPWindowsKeyboard(layout: RDPKeyboardLayout(rawValue: 0x0000_0407))
+    view.keyboard = RDPKeyboard(layout: RDPKeyboardLayout(rawValue: 0x0000_0407))
     view.keyDown(with: try keyEvent(.keyDown, keyCode: kVK_ANSI_Y, characters: "z"))
 
     #expect(input.events == [
@@ -743,7 +723,7 @@ private func windowsTypes(
 /// 101-key layout types "\" and "|" as US does, so what the Mac types there goes as Unicode, as
 /// does what the key left of 1 types.
 @Test func theISOKeysGoAsUnicodeWithTheJapanese101KeyLayout() {
-    let keyboard = MacRDPWindowsKeyboard.japanese101
+    let keyboard = RDPKeyboard.japanese101
     #expect(MacRDPKeyboardMapping.scancode(forKeyCode: UInt16(kVK_ANSI_Grave), isISOKeyboard: true) == RDPKeyboardScancode(code: 0x56))
     #expect(windowsTypes("`", scancode: 0x56, keyboard: keyboard) == false)
     #expect(windowsTypes("~", scancode: 0x56, .shift, keyboard: keyboard) == false)
@@ -768,14 +748,6 @@ private func windowsTypes(
 @Test func focusSynchronizationKeepsNumLockOnAndMirrorsCapsLock() {
     #expect(MacRDPKeyboardMapping.toggleFlags(for: []) == [.numLock])
     #expect(MacRDPKeyboardMapping.toggleFlags(for: [.capsLock, .shift]) == [.numLock, .capsLock])
-}
-
-@Test func scrollDeltasConvertToRDPRotationUnits() {
-    let lines = MacRDPScrollWheel.rotationUnits(deltaX: 1, deltaY: 1, hasPreciseScrollingDeltas: false)
-    let points = MacRDPScrollWheel.rotationUnits(deltaX: -0.5, deltaY: 2, hasPreciseScrollingDeltas: true)
-
-    #expect(lines.vertical == 120 && lines.horizontal == -120)
-    #expect(points.vertical == 20 && points.horizontal == 5)
 }
 
 private final class RecordedInput: RDPInputEventSending {
@@ -1146,7 +1118,7 @@ private let rightOptionFlags = NSEvent.ModifierFlags(rawValue: NSEvent.ModifierF
     let input = RecordedInput()
     let view = RemoteInputCaptureNSView()
     view.inputSession = input
-    view.keyboard = MacRDPWindowsKeyboard(layout: RDPKeyboardLayout(rawValue: 0x0000_0407))
+    view.keyboard = RDPKeyboard(layout: RDPKeyboardLayout(rawValue: 0x0000_0407))
     var deadKeyQuestions: [Int] = []
     view.isDeadKey = { keyCode, _ in
         deadKeyQuestions.append(Int(keyCode))
@@ -1411,7 +1383,7 @@ private let rightOptionFlags = NSEvent.ModifierFlags(rawValue: NSEvent.ModifierF
     input.supportsUnicodeInput = false
     let view = RemoteInputCaptureNSView()
     view.inputSession = input
-    view.keyboard = MacRDPWindowsKeyboard(layout: RDPKeyboardLayout(rawValue: 0x0000_0407))
+    view.keyboard = RDPKeyboard(layout: RDPKeyboardLayout(rawValue: 0x0000_0407))
     view.isDeadKey = { keyCode, _ in Int(keyCode) == kVK_ANSI_Equal }
     view.uncomposedOutput = { keyCode, _ in [kVK_ANSI_E: "e", kVK_Return: "\r"][Int(keyCode)] }
     func modifier(_ keyCode: Int, _ flags: NSEvent.ModifierFlags) throws {
@@ -1437,7 +1409,7 @@ private let rightOptionFlags = NSEvent.ModifierFlags(rawValue: NSEvent.ModifierF
     try press(kVK_ANSI_Equal, "", "´")
     try press(kVK_Return, "´\r", "\r")
     // A layout with no table: every character would have gone as Unicode.
-    view.keyboard = MacRDPWindowsKeyboard(layout: RDPKeyboardLayout(rawValue: 0x1234_5678))
+    view.keyboard = RDPKeyboard(layout: RDPKeyboardLayout(rawValue: 0x1234_5678))
     try press(kVK_ANSI_Q, "q", "q")
     let shift = NSEvent.ModifierFlags(rawValue: NSEvent.ModifierFlags.shift.rawValue | 0x2)
     try modifier(kVK_Shift, shift)
@@ -1510,7 +1482,7 @@ private let rightOptionFlags = NSEvent.ModifierFlags(rawValue: NSEvent.ModifierF
 
     view.keyDown(with: try keyEvent(.keyDown, keyCode: kVK_ANSI_KeypadEquals, characters: "="))
     view.keyUp(with: try keyEvent(.keyUp, keyCode: kVK_ANSI_KeypadEquals, characters: "="))
-    view.keyboard = MacRDPWindowsKeyboard(layout: RDPKeyboardLayout(rawValue: 0x0000_0407))
+    view.keyboard = RDPKeyboard(layout: RDPKeyboardLayout(rawValue: 0x0000_0407))
     view.keyDown(with: try keyEvent(.keyDown, keyCode: kVK_ANSI_KeypadEquals, characters: "="))
     view.keyUp(with: try keyEvent(.keyUp, keyCode: kVK_ANSI_KeypadEquals, characters: "="))
 

@@ -278,11 +278,22 @@ public enum RDPSlowPathInputEvent: Equatable, Sendable {
 /// call so small trackpad deltas add up. One wheel notch is `unitsPerNotch` rotation units.
 public struct RDPScrollWheelAccumulator: Sendable {
     public static let unitsPerNotch = 120.0
+    /// The rotation units for a point of a precise scroll, such as a trackpad's.
+    public static let unitsPerPoint = 10.0
 
     private var verticalRemainder = 0.0
     private var horizontalRemainder = 0.0
 
     public init() {}
+
+    /// Wheel events for a scroll as AppKit reports it (`scrollingDeltaX`, `scrollingDeltaY` and
+    /// `hasPreciseScrollingDeltas`): how far the content moves, positive down and right, in
+    /// points when `isPrecise` and in lines, each a notch, otherwise. The horizontal axis is
+    /// negated, since RDP's horizontal rotation is positive to the right.
+    public mutating func events(deltaX: Double, deltaY: Double, isPrecise: Bool, at point: RDPRemotePoint) -> [RDPSlowPathInputEvent] {
+        let scale = isPrecise ? Self.unitsPerPoint : Self.unitsPerNotch
+        return events(vertical: deltaY * scale, horizontal: -deltaX * scale, at: point)
+    }
 
     /// `vertical` is positive for scrolling up and `horizontal` positive for scrolling right, both
     /// in rotation units. `RDPInputSession` splits rotations larger than one event can hold.

@@ -203,6 +203,16 @@
 - `RDPConnectionReport.presentedFrameCount` counts the frames the
   `onGraphicsFrame` handler showed, where `rdpGraphicsFirstFrame` is the first
   that came, shown or not.
+- `RDPKeyboard` is a keyboard as a client announces it, layout, type and
+  subtype, and `character(for:shift:capsLock:)` says what Windows types for a
+  scancode with it, from tables Windows 11 reported for every layout a Mac
+  input source announces, Japanese with a 106/109-key or 101-key keyboard
+  among them, so a client sends a character as its scancode only where the
+  server types the same one. `Scripts/generate-windows-keyboard-layout-tables.py`
+  and `Scripts/capture-windows-keyboard-layouts.ps1` capture them again.
+- `RDPScrollWheelAccumulator.events(deltaX:deltaY:isPrecise:at:)` takes a
+  scroll as AppKit reports it, a line a notch of 120 rotation units and a
+  precise scroll's point 10, with the horizontal axis negated for RDP.
 
 ### Security
 

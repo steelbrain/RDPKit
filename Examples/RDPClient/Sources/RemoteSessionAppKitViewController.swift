@@ -37,7 +37,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
     private var sessionEndReason: RDPSessionEndReason?
     private var inputSession: RDPInputSession?
     /// The keyboard the current session announced.
-    private var keyboard = MacRDPWindowsKeyboard.unitedStates
+    private var keyboard = RDPKeyboard.unitedStates
     private var displayControlSession: RDPDisplayControlSession?
     private var displayControlMessage: String?
     private var autoApplyViewerSize = true

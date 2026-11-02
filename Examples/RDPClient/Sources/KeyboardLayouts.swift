@@ -2,29 +2,9 @@ import AppKit
 import Carbon.HIToolbox
 import RDPKit
 
-/// The keyboard RDPClient announces: a Windows layout, and the keyboard type and subtype, which
-/// choose between the layout's tables where Windows has more than one ([MS-RDPBCGR] 2.2.1.3.2).
-/// Of the layouts RDPClient announces, only Japanese has more than one: Windows 11's registry
-/// (`Terminal Server\KeyboardType Mapping\JPN`) maps type 7 with subtype 2 to the 106/109-key
-/// kbd106.dll, and with subtype 0 to the 101-key kbd101.dll (live, 2026-10-29). Function keys
-/// stay at RDPKit's default of 12.
-struct MacRDPWindowsKeyboard: Hashable {
-    var layout: RDPKeyboardLayout
-    var type = RDPKeyboardType.ibmEnhanced
-    var subType: UInt32 = 0
-
-    static let unitedStates = MacRDPWindowsKeyboard(layout: .unitedStates)
-    /// Windows' Japanese layout with a 106/109-key keyboard (kbd106.dll).
-    static let japanese106 = MacRDPWindowsKeyboard(layout: MacRDPKeyboardLayout.japanese, type: .japanese, subType: 2)
-    /// Windows' Japanese layout with a 101-key keyboard (kbd101.dll).
-    static let japanese101 = MacRDPWindowsKeyboard(layout: MacRDPKeyboardLayout.japanese, type: .japanese)
-}
-
 /// The Windows keyboard layout to announce for the Mac's current one, so the server turns
 /// scancodes into the characters the keys are labelled with.
 enum MacRDPKeyboardLayout {
-    static let japanese = RDPKeyboardLayout(rawValue: 0x0000_0411)
-
     /// The layout of the current input source; an input method such as a CJK IME
     /// reports the layout it types with. Unknown layouts fall back to US English. A Japanese
     /// input source typing with US English gets Windows' Japanese layout instead; see
@@ -40,7 +20,7 @@ enum MacRDPKeyboardLayout {
     /// layout's characters until the user switches the session's layout on the server, or
     /// signs out there so that the next connection creates the session.
     @MainActor
-    static func current() -> MacRDPWindowsKeyboard {
+    static func current() -> RDPKeyboard {
         let layoutSourceID: String? = TISCopyCurrentKeyboardLayoutInputSource().flatMap {
             property(kTISPropertyInputSourceID, of: $0.takeRetainedValue())
         }
@@ -88,9 +68,9 @@ enum MacRDPKeyboardLayout {
         _ inputSourceLayout: RDPKeyboardLayout,
         isJapaneseInputSource: Bool,
         isJISKeyboard: Bool
-    ) -> MacRDPWindowsKeyboard {
+    ) -> RDPKeyboard {
         guard isJapaneseInputSource, inputSourceLayout == .unitedStates else {
-            return MacRDPWindowsKeyboard(layout: inputSourceLayout)
+            return RDPKeyboard(layout: inputSourceLayout)
         }
         return isJISKeyboard ? .japanese106 : .japanese101
     }
@@ -400,55 +380,5 @@ enum MacRDPDeadKeys {
             modifierFlags.contains(pair.0) ? modifiers | pair.1 : modifiers
         }
         return UInt32(modifiers >> 8) & 0xFF
-    }
-}
-
-/// What Windows types for each character key with one keyboard layout.
-struct MacRDPWindowsKeyboardLayout {
-    private static let parsed = Dictionary(
-        uniqueKeysWithValues: layouts.map { klid, strings in
-            (MacRDPWindowsKeyboard(layout: RDPKeyboardLayout(rawValue: klid)), MacRDPWindowsKeyboardLayout(strings))
-        } + japaneseLayouts.map { subType, strings in
-            (
-                MacRDPWindowsKeyboard(layout: MacRDPKeyboardLayout.japanese, type: .japanese, subType: subType),
-                MacRDPWindowsKeyboardLayout(strings)
-            )
-        }
-    )
-
-    private let unshifted: [Unicode.Scalar]
-    private let shifted: [Unicode.Scalar]
-    private let capsLock: [Unicode.Scalar]
-
-    private init(_ strings: (unshifted: String, shifted: String, capsLock: String)) {
-        unshifted = Array(strings.unshifted.unicodeScalars)
-        shifted = Array(strings.shifted.unicodeScalars)
-        capsLock = Array(strings.capsLock.unicodeScalars)
-    }
-
-    /// Nil for a keyboard with no table.
-    static func layout(_ keyboard: MacRDPWindowsKeyboard) -> MacRDPWindowsKeyboardLayout? {
-        parsed[keyboard]
-    }
-
-    /// The character the key types, or nil when it is a dead key, types nothing or more than
-    /// one character, or Caps Lock does something to it other than shift it.
-    func character(for scancode: RDPKeyboardScancode, isShifted: Bool, isCapsLocked: Bool) -> Unicode.Scalar? {
-        guard !scancode.isExtended, let index = Self.scancodes.firstIndex(of: scancode.code) else {
-            return nil
-        }
-        var isShifted = isShifted
-        if isCapsLocked {
-            switch capsLock[index] {
-            case "S":
-                isShifted.toggle()
-            case "-":
-                break
-            default:
-                return nil
-            }
-        }
-        let character = isShifted ? shifted[index] : unshifted[index]
-        return character == "\0" ? nil : character
     }
 }

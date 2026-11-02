@@ -50,7 +50,7 @@ final class RemoteDesktopCanvasNSView: NSView {
         hasPresentedFrame: Bool,
         emptyMessage: String,
         inputSession: RDPInputSession?,
-        keyboard: MacRDPWindowsKeyboard,
+        keyboard: RDPKeyboard,
         isConnecting: Bool
     ) {
         let shouldShowDesktop = frame != nil && hasPresentedFrame
