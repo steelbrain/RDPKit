@@ -670,7 +670,7 @@ public final class RDPDisplayControlSession: Sendable {
         desktopScaleFactor: UInt32 = 100,
         deviceScaleFactor: UInt32 = 100
     ) {
-        try? send(RDPMonitorLayout.singlePrimary(
+        _ = try? send(RDPMonitorLayout.singlePrimary(
             width: width,
             height: height,
             desktopScaleFactor: desktopScaleFactor,
@@ -681,7 +681,7 @@ public final class RDPDisplayControlSession: Sendable {
     /// Sends the request's one monitor, or nothing when the server's ``capabilities`` do not
     /// allow it; `send(_:)` with its ``RDPDisplayRequest/monitorLayout`` says which.
     public func send(_ request: RDPDisplayRequest) {
-        try? send(request.monitorLayout)
+        _ = try? send(request.monitorLayout)
     }
 
     /// Asks the server for `layout` ([MS-RDPEDISP] 2.2.2.2). Throws ``RDPMonitorLayoutError``
