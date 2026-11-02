@@ -256,11 +256,13 @@ struct RDPStaticVirtualChannelReassembler: Sendable {
     }
 }
 
-/// Bytes of replies the server asked for, such as file reads, that a channel session has
-/// handed to the event loop and the socket has not taken yet. A reply waits while they would
-/// pass the limit, so a server that asks and stops reading cannot make the client queue
-/// replies without bound; one larger than the limit still goes once nothing else is pending.
-final class RDPOutboundByteBudget: @unchecked Sendable {
+/// Bytes a channel session holds pending, in either direction: replies the server asked for,
+/// such as file reads, that `write` has handed to the event loop and the socket has not taken
+/// yet, or what `reserve` and `release` count alone, such as the server's requests waiting for
+/// the device redirection I/O queue. More bytes wait while they would pass the limit, so a
+/// server that asks and stops reading cannot make the client queue replies or requests without
+/// bound; a count larger than the limit still goes once nothing else is pending.
+final class RDPPendingByteBudget: @unchecked Sendable {
     static let defaultLimit = 32 * 1_024 * 1_024
 
     private let limit: Int
@@ -271,15 +273,30 @@ final class RDPOutboundByteBudget: @unchecked Sendable {
         self.limit = limit
     }
 
-    /// Waits for room for `byteCount` more bytes, then counts them as pending. Never call it
-    /// on the event loop, whose writes `release` the bytes.
-    func reserve(_ byteCount: Int) {
+    /// Waits for room for `byteCount` more bytes, then counts them as pending and returns true.
+    /// Never call it on the event loop, whose writes `release` the bytes. `isCancelled` is
+    /// checked about once a second while it waits; once it returns true, the wait ends with
+    /// nothing counted and this returns false.
+    @discardableResult
+    func reserve(_ byteCount: Int, isCancelled: () -> Bool = { false }) -> Bool {
         condition.lock()
         defer { condition.unlock() }
+        var poll = Date() + 1
         while pendingByteCount > 0, pendingByteCount + byteCount > limit {
-            condition.wait()
+            if condition.wait(until: poll) {
+                continue
+            }
+            // Checked without the lock, which the event loop takes to release bytes.
+            condition.unlock()
+            let cancelled = isCancelled()
+            condition.lock()
+            if cancelled {
+                return false
+            }
+            poll = Date() + 1
         }
         pendingByteCount += byteCount
+        return true
     }
 
     func release(_ byteCount: Int) {
@@ -291,10 +308,13 @@ final class RDPOutboundByteBudget: @unchecked Sendable {
 
     /// Writes `packets` to `channel` in one event loop task, after waiting for room when not on
     /// the event loop; their bytes are released once the socket takes the last, or the write fails.
-    func write(_ packets: [Data], to channel: Channel) {
+    /// A wait that `isCancelled` ends drops the packets.
+    func write(_ packets: [Data], to channel: Channel, isCancelled: () -> Bool = { false }) {
         let byteCount = packets.reduce(0) { $0 + $1.count }
         if !channel.eventLoop.inEventLoop {
-            reserve(byteCount)
+            guard reserve(byteCount, isCancelled: isCancelled) else {
+                return
+            }
         } else {
             condition.withLock { pendingByteCount += byteCount }
         }

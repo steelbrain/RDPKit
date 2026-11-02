@@ -955,8 +955,8 @@ private final class ClipboardPublishRace: @unchecked Sendable {
 
 /// One reply waits while earlier ones would pass the budget, and goes, however large, once
 /// nothing else is pending.
-@Test func outboundByteBudgetHoldsAReplyUntilThereIsRoom() {
-    let budget = RDPOutboundByteBudget(limit: 10)
+@Test func pendingByteBudgetHoldsAReplyUntilThereIsRoom() {
+    let budget = RDPPendingByteBudget(limit: 10)
     budget.reserve(8)
     let reserved = DispatchSemaphore(value: 0)
     DispatchQueue.global().async {
@@ -969,6 +969,72 @@ private final class ClipboardPublishRace: @unchecked Sendable {
     budget.release(4)
     budget.reserve(64)
     budget.release(64)
+}
+
+/// A wait for room checks for cancellation about once a second, and ends with nothing
+/// counted once the connection is cancelled.
+@Test func pendingByteBudgetStopsWaitingOnceCancelled() {
+    let budget = RDPPendingByteBudget(limit: 10)
+    budget.reserve(8)
+    let cancelled = Locked(false)
+    let reserved = Locked<Bool?>(nil)
+    let finished = DispatchSemaphore(value: 0)
+    DispatchQueue.global().async {
+        reserved.withLock { $0 = budget.reserve(4) { cancelled.value } }
+        finished.signal()
+    }
+    #expect(finished.wait(timeout: .now() + 1.5) == .timedOut)
+    cancelled.withLock { $0 = true }
+    #expect(finished.wait(timeout: .now() + 5) == .success)
+    #expect(reserved.value == false)
+    // The cancelled wait counted nothing: once the 8 bytes go, 10 fit.
+    budget.release(8)
+    #expect(budget.reserve(10) { true })
+}
+
+/// A connection cancelled through a polled `shouldCancel` frees a reply waiting for a server
+/// that stopped reading: the wait checks it, and cancelling closes the connection.
+@Test func clipboardSessionStopsWaitingForRoomOnceCancelled() throws {
+    let server = try ServerBootstrap(group: MultiThreadedEventLoopGroup.singleton)
+        .childChannelOption(.autoRead, value: false)
+        .childChannelInitializer { $0.eventLoop.makeSucceededVoidFuture() }
+        .bind(host: "127.0.0.1", port: 0)
+        .wait()
+    defer { server.close(promise: nil) }
+    let channel = try ClientBootstrap(group: MultiThreadedEventLoopGroup.singleton)
+        .connect(host: "127.0.0.1", port: try #require(server.localAddress?.port))
+        .wait()
+    defer { channel.close(promise: nil) }
+    let cancelled = Locked(false)
+    // As `RDPTransport.pollCancellation` does.
+    let session = RDPClipboardSession(userChannelID: 1006, staticChannelID: 1007, channel: channel, isCancelled: {
+        guard cancelled.value else {
+            return false
+        }
+        channel.close(promise: nil)
+        return true
+    })
+    session.publishLocalFiles([RDPClipboardLocalFile(fileName: "large.bin", contents: Data(count: 8 * 1_024 * 1_024))])
+    _ = try session.receive(RDPClipboardPDU.parse(from: RDPClipboardCapabilitiesPDU().encoded()))
+    _ = try session.receive(RDPClipboardPDU(messageType: RDPClipboardMessageType.monitorReady))
+
+    let finished = DispatchSemaphore(value: 0)
+    DispatchQueue.global().async {
+        for streamID in 0 ..< 64 {
+            let request = RDPClipboardFileContentsRequestPDU.range(
+                streamID: UInt32(streamID),
+                fileIndex: 0,
+                position: 0,
+                requestedByteCount: UInt32.max
+            )
+            _ = try? session.receive(RDPClipboardPDU.parse(from: request.encoded()))
+        }
+        finished.signal()
+    }
+    #expect(finished.wait(timeout: .now() + 1) == .timedOut)
+    cancelled.withLock { $0 = true }
+    #expect(finished.wait(timeout: .now() + 10) == .success)
+    #expect(!channel.isActive)
 }
 
 /// One request is out at a time, so a response that does not parse, or a server whose

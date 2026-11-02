@@ -180,7 +180,8 @@ extension RDPClientConnection {
                     requestsRichFormats: callbacks.onClipboardContent != nil,
                     sentMessageHandler: { summary, _ in storage.recordClipboardSent(summary) },
                     // Its event goes out from the session loop, which the wake runs.
-                    pendingEventHandler: transport.wake
+                    pendingEventHandler: transport.wake,
+                    isCancelled: transport.pollCancellation
                 )
             case RDPStaticVirtualChannel.rdpsnd.name:
                 report.rdpAudioChannelID = channelID
@@ -192,7 +193,8 @@ extension RDPClientConnection {
                     channel: channel,
                     computerName: clientName,
                     drives: configuration.sharedDrives,
-                    chunkSize: staticChannelChunkSize
+                    chunkSize: staticChannelChunkSize,
+                    isCancelled: transport.pollCancellation
                 )
             default:
                 break

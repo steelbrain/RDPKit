@@ -942,7 +942,9 @@ public final class RDPClipboardSession: @unchecked Sendable {
     private let lock = NSLock()
     /// Replies to the server's requests wait on it, so a server that asks and stops reading
     /// cannot make the client queue copies of the local content without bound.
-    private let replyBudget = RDPOutboundByteBudget()
+    private let replyBudget = RDPPendingByteBudget()
+    /// Polled about once a second while a reply waits for room; true drops the reply.
+    private let isCancelled: @Sendable () -> Bool
     private var localContent = RDPClipboardLocalContent.empty
     /// Format Data Requests not yet answered, oldest first. They go out one at a time,
     /// so each response is matched to its request whatever the server's ordering.
@@ -978,7 +980,8 @@ public final class RDPClipboardSession: @unchecked Sendable {
         chunkSize: RDPStaticVirtualChannelChunkSize = RDPStaticVirtualChannelChunkSize(),
         requestsRichFormats: Bool = false,
         sentMessageHandler: RDPClipboardSentMessageHandler? = nil,
-        pendingEventHandler: @escaping @Sendable () -> Void = {}
+        pendingEventHandler: @escaping @Sendable () -> Void = {},
+        isCancelled: @escaping @Sendable () -> Bool = { false }
     ) {
         self.userChannelID = userChannelID
         self.staticChannelID = staticChannelID
@@ -987,6 +990,7 @@ public final class RDPClipboardSession: @unchecked Sendable {
         self.requestsRichFormats = requestsRichFormats
         self.sentMessageHandler = sentMessageHandler
         self.pendingEventHandler = pendingEventHandler
+        self.isCancelled = isCancelled
     }
 
     /// Whether a copy the server announces is fetched; on by default. While off, the server's
@@ -1557,7 +1561,7 @@ public final class RDPClipboardSession: @unchecked Sendable {
             sentMessageHandler(.summarize(pdu), first)
         }
         if waitingForRoom {
-            replyBudget.write(packets, to: channel)
+            replyBudget.write(packets, to: channel, isCancelled: isCancelled)
             return
         }
         channel.eventLoop.execute {

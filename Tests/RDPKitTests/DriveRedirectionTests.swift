@@ -1,6 +1,7 @@
 import Foundation
 import NIOCore
 import NIOEmbedded
+import NIOPosix
 @testable import RDPKit
 import Testing
 
@@ -667,7 +668,125 @@ import Testing
     ])
 }
 
+/// A server that stops reading the replies stops the client taking its requests too: the
+/// connection thread waits for room for each, so the rest stay in the server's socket.
+@Test func deviceRedirectionSessionStopsTakingRequestsWhileItsRepliesWait() throws {
+    let drive = try TemporaryDrive()
+    let stalled = try StalledDriveSession(drive)
+    defer { stalled.close() }
+
+    let queued = Locked(0)
+    let finished = DispatchSemaphore(value: 0)
+    DispatchQueue.global().async {
+        for _ in 0 ..< 64 {
+            _ = try? stalled.session.receive(deviceIORequestPDU(driveRequest(
+                fileID: 1,
+                major: RDPDriveMajorFunction.write,
+                body: writeBody(offset: 0, data: Data(count: 1_024 * 1_024))
+            )))
+            queued.withLock { $0 += 1 }
+        }
+        finished.signal()
+    }
+    #expect(finished.wait(timeout: .now() + 1) == .timedOut)
+    #expect(queued.value < 40)
+    // Closing fails the replies in flight, which frees the I/O queue and the waiting request.
+    stalled.channel.close(promise: nil)
+    #expect(finished.wait(timeout: .now() + 10) == .success)
+}
+
+/// A request waiting for room checks for cancellation about once a second; cancelling
+/// closes the connection, as `RDPTransport.pollCancellation` does, which frees it.
+@Test func deviceRedirectionSessionStopsWaitingForRoomOnceCancelled() throws {
+    let drive = try TemporaryDrive()
+    let stalled = try StalledDriveSession(drive)
+    defer { stalled.close() }
+
+    let finished = DispatchSemaphore(value: 0)
+    DispatchQueue.global().async {
+        for _ in 0 ..< 64 {
+            _ = try? stalled.session.receive(deviceIORequestPDU(driveRequest(
+                fileID: 1,
+                major: RDPDriveMajorFunction.write,
+                body: writeBody(offset: 0, data: Data(count: 1_024 * 1_024))
+            )))
+        }
+        finished.signal()
+    }
+    #expect(finished.wait(timeout: .now() + 1) == .timedOut)
+    stalled.cancelled.withLock { $0 = true }
+    #expect(finished.wait(timeout: .now() + 10) == .success)
+    #expect(!stalled.channel.isActive)
+}
+
 // MARK: Helpers
+
+/// A device redirection session sharing a drive over a connection whose server never reads,
+/// with its I/O queue stuck: the replies to reads of a large file wait for room the server
+/// never makes. Its first handle, file 1, is that file, open for writing.
+private final class StalledDriveSession: Sendable {
+    let server: Channel
+    let channel: Channel
+    let session: RDPDeviceRedirectionSession
+    /// Once set, the session's next cancellation check closes the connection.
+    let cancelled: Locked<Bool>
+
+    init(_ drive: TemporaryDrive) throws {
+        let readByteCount = RDPSharedDriveDevice.maximumReadByteCount
+        try Data(count: readByteCount).write(to: drive.root.appendingPathComponent("large.bin"))
+        let server = try ServerBootstrap(group: MultiThreadedEventLoopGroup.singleton)
+            .childChannelOption(.autoRead, value: false)
+            .childChannelInitializer { $0.eventLoop.makeSucceededVoidFuture() }
+            .bind(host: "127.0.0.1", port: 0)
+            .wait()
+        let channel = try ClientBootstrap(group: MultiThreadedEventLoopGroup.singleton)
+            .connect(host: "127.0.0.1", port: try #require(server.localAddress?.port))
+            .wait()
+        let cancelled = Locked(false)
+        self.server = server
+        self.channel = channel
+        self.cancelled = cancelled
+        session = RDPDeviceRedirectionSession(
+            userChannelID: 1006,
+            staticChannelID: 1004,
+            channel: channel,
+            computerName: "RDPKIT",
+            drives: [RDPSharedDrive(name: "Docs", url: drive.root)],
+            isCancelled: {
+                guard cancelled.value else {
+                    return false
+                }
+                channel.close(promise: nil)
+                return true
+            }
+        )
+        for packet: [UInt8] in [
+            [0x72, 0x44, 0x6E, 0x49, 0x01, 0x00, 0x0C, 0x00, 0x78, 0x56, 0x34, 0x12],
+            [0x72, 0x44, 0x50, 0x53],
+            [0x72, 0x44, 0x43, 0x43, 0x01, 0x00, 0x0C, 0x00, 0x78, 0x56, 0x34, 0x12],
+            [0x72, 0x44, 0x4C, 0x55],
+        ] {
+            try session.receive(RDPDeviceRedirectionPDU.parse(from: Data(packet)))
+        }
+        try session.receive(deviceIORequestPDU(driveRequest(major: RDPDriveMajorFunction.create, body: createBody(
+            path: "\\large.bin",
+            disposition: RDPDriveCreateDisposition.open
+        ))))
+        // Far more than the reply budget and what the sockets buffer.
+        var read = Data()
+        read.appendLittleEndianUInt32(UInt32(readByteCount))
+        read.appendLittleEndianUInt64(0)
+        read.append(Data(count: 20))
+        for _ in 0 ..< 6 {
+            try session.receive(deviceIORequestPDU(driveRequest(fileID: 1, major: RDPDriveMajorFunction.read, body: read)))
+        }
+    }
+
+    func close() {
+        channel.close(promise: nil)
+        server.close(promise: nil)
+    }
+}
 
 /// A shared folder in a temporary directory, removed when the test ends.
 private final class TemporaryDrive {
@@ -818,6 +937,12 @@ private extension RDPDeviceRedirectionPDU {
     static func parse(fromEncoded data: Data) -> RDPDeviceRedirectionPDU? {
         try? parse(from: data)
     }
+}
+
+private func deviceIORequestPDU(_ request: RDPDeviceIORequest) throws -> RDPDeviceRedirectionPDU {
+    var data = Data([0x72, 0x44, 0x52, 0x49])
+    data.append(request.encodedHeaderAndBody)
+    return try RDPDeviceRedirectionPDU.parse(from: data)
 }
 
 private func createBody(path: String, disposition: UInt32, options: UInt32 = 0, access: UInt32 = 0x0012_019F) -> Data {

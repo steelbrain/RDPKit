@@ -791,6 +791,31 @@ func liveSessionEndsNormallyOnlyForReasonsThatAreNoFailure(
     #expect(Date().timeIntervalSince(started) < 10)
 }
 
+/// A channel reply waiting for the server to read polls `shouldCancel` through the transport,
+/// which disconnects once it is cancelled, as a cancelled receive does.
+@Test func transportPollCancellationDisconnectsOnceCancelled() throws {
+    let server = try ServerBootstrap(group: MultiThreadedEventLoopGroup.singleton)
+        .childChannelInitializer { $0.eventLoop.makeSucceededVoidFuture() }
+        .bind(host: "127.0.0.1", port: 0)
+        .wait()
+    defer { server.close(promise: nil) }
+    let cancelled = Locked(false)
+    let transport = try RDPTransport.connect(
+        host: "127.0.0.1",
+        port: UInt16(try #require(server.localAddress?.port)),
+        timeoutSeconds: 10,
+        callbacks: RDPSessionCallbacks(shouldCancel: { cancelled.value })
+    )
+    defer { transport.close() }
+    let pollCancellation = transport.pollCancellation
+
+    #expect(!pollCancellation())
+    #expect(transport.channel.isActive)
+    cancelled.withLock { $0 = true }
+    #expect(pollCancellation())
+    try transport.channel.closeFuture.wait()
+}
+
 /// Answers the X.224 Connection Request by selecting TLS, then never speaks again.
 private final class SelectTLSThenStall: ChannelInboundHandler, Sendable {
     typealias InboundIn = ByteBuffer

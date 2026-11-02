@@ -298,9 +298,14 @@ enum RDPDeviceRedirectionEvent: Equatable, Sendable {
 /// The channel also exists for audio: Windows sends nothing on RDPSND unless the
 /// client advertises rdpdr ([MS-RDPEA] Appendix A, note on section 2.1).
 ///
-/// Drive I/O runs on a serial queue of its own, so file access never holds up the
-/// connection thread that receives graphics.
+/// Drive I/O runs on a serial queue of its own, so file access does not hold up the
+/// connection thread that receives graphics; that thread waits only while the requests
+/// queued for the drives fill `requestBudget`.
 final class RDPDeviceRedirectionSession: @unchecked Sendable {
+    /// What a queued request counts in `requestBudget` besides its body: the parsed request and
+    /// the queued work hold memory too, so requests with little or no body are bounded as well.
+    static let queuedRequestOverheadByteCount = 1_024
+
     let staticChannelID: UInt16
     private let userChannelID: UInt16
     private let channel: Channel
@@ -309,7 +314,13 @@ final class RDPDeviceRedirectionSession: @unchecked Sendable {
     private let drives: [RDPSharedDriveDevice]
     private let ioQueue = DispatchQueue(label: "RDPKit.device-redirection")
     /// Drive I/O waits on it, so a server that stops reading stops the reads it asked for.
-    private let replyBudget = RDPOutboundByteBudget()
+    private let replyBudget = RDPPendingByteBudget()
+    /// Requests queued for drive I/O and not yet served. The connection thread waits for room
+    /// before it queues one, so while replies wait in `replyBudget`, or requests outrun the
+    /// disk, the server's requests stay in its socket instead of piling up in the client.
+    private let requestBudget = RDPPendingByteBudget()
+    /// Polled about once a second while a request waits for room; true drops the request.
+    private let isCancelled: @Sendable () -> Bool
     private let lock = NSLock()
     private var minorVersion = RDPDeviceRedirectionVersion.minorRDP6
     private var announcedClientID: UInt32?
@@ -323,7 +334,8 @@ final class RDPDeviceRedirectionSession: @unchecked Sendable {
         channel: Channel,
         computerName: String,
         drives: [RDPSharedDrive] = [],
-        chunkSize: RDPStaticVirtualChannelChunkSize = RDPStaticVirtualChannelChunkSize()
+        chunkSize: RDPStaticVirtualChannelChunkSize = RDPStaticVirtualChannelChunkSize(),
+        isCancelled: @escaping @Sendable () -> Bool = { false }
     ) {
         self.userChannelID = userChannelID
         self.staticChannelID = staticChannelID
@@ -331,6 +343,7 @@ final class RDPDeviceRedirectionSession: @unchecked Sendable {
         self.computerName = computerName
         self.chunkSize = chunkSize
         self.drives = drives.enumerated().map { RDPSharedDriveDevice(deviceID: UInt32($0.offset + 1), drive: $0.element) }
+        self.isCancelled = isCancelled
     }
 
     @discardableResult
@@ -441,7 +454,12 @@ final class RDPDeviceRedirectionSession: @unchecked Sendable {
             ).encoded())
             return
         }
+        let byteCount = request.body.count + Self.queuedRequestOverheadByteCount
+        guard requestBudget.reserve(byteCount, isCancelled: isCancelled) else {
+            return
+        }
         ioQueue.async {
+            defer { self.requestBudget.release(byteCount) }
             if let completion = drive.completion(for: request) {
                 self.replyBudget.write(self.packets(completion.encoded()), to: self.channel)
             }

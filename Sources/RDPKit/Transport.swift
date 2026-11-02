@@ -598,6 +598,25 @@ final class RDPTransport {
         }
     }
 
+    /// Polls cancellation for a wait on the session thread outside this transport, such as a
+    /// clipboard reply waiting for the server to read, or a drive request waiting for the
+    /// device redirection I/O queue to make room. Once the connection is cancelled, it
+    /// disconnects, as a cancelled send or receive does, and returns true; the closed
+    /// connection fails the writes still pending, and the session loop's next receive throws.
+    var pollCancellation: @Sendable () -> Bool {
+        let channel = channel
+        let owesDisconnectUltimatum = owesDisconnectUltimatum
+        let cancellation = callbacks.cancellation
+        let shouldCancel = callbacks.shouldCancel
+        return {
+            guard cancellation?.isCancelled == true || shouldCancel?() == true else {
+                return false
+            }
+            Self.disconnect(channel, owesDisconnectUltimatum: owesDisconnectUltimatum)
+            return true
+        }
+    }
+
     /// Waits for the next message. A nil `timeout` waits until the connection
     /// closes; `RDPTransportError.timedOut` leaves the connection usable.
     func receive(timeout: TimeAmount?) throws -> Data {

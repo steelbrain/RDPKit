@@ -2,9 +2,12 @@ import Foundation
 
 /// Polled on the connection thread before each receive, and about once a
 /// second while the connection waits: to connect, for the TLS handshake, the
-/// certificate trust evaluation, a send, or a receive. Returning true cancels
-/// the connection. `RDPConnectionCancellation` takes effect without polling, and
-/// also stops graphics decoding in progress.
+/// certificate trust evaluation, a send, a receive, for the server to read the
+/// clipboard replies it asked for, or for the shared drives' I/O queue to make
+/// room for the server's next request, which a slow disk or a server that
+/// stopped reading holds up. Returning true cancels the connection.
+/// `RDPConnectionCancellation` takes effect without polling, and also stops
+/// graphics decoding in progress.
 public typealias RDPCancellationHandler = @Sendable () -> Bool
 
 /// Cancels a running connection from any thread. Cancelling closes the socket,
