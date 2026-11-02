@@ -1276,6 +1276,66 @@ private let rightOptionFlags = NSEvent.ModifierFlags(rawValue: NSEvent.ModifierF
         + altE + composedA)
 }
 
+/// Letters Caps Lock shifts go as scancodes, so the server's Caps Lock has to match the Mac's.
+/// A toggle the view never saw, such as one made while a menu was open, shows up in the next
+/// key's or click's flags, which synchronize the toggle-key state first, with the keys held.
+/// Before the first synchronization there is no state to compare with.
+@MainActor
+@Test func aCapsLockChangeTheViewMissedIsSynchronizedBeforeTheNextKeyOrClick() throws {
+    let leftControl = RDPKeyboardScancode(code: 0x1D)
+    let keyA = RDPKeyboardScancode(code: 0x1E)
+    let input = RecordedInput()
+    let view = RemoteInputCaptureNSView()
+    view.inputSession = input
+    view.frame = CGRect(x: 0, y: 0, width: 100, height: 100)
+    view.rdpFrame = RDPFrameMetadata(RDPGraphicsFrameSnapshot(
+        frameID: nil,
+        surfaceID: 0,
+        codecID: 0,
+        codecName: "test",
+        pixelFormat: 0,
+        destinationRect: RDPFrameRect(left: 0, top: 0, right: 100, bottom: 100),
+        regionRects: [],
+        encodedVideoData: Data()
+    ))
+    func pressA(_ characters: String, _ flags: NSEvent.ModifierFlags) throws {
+        view.keyDown(with: try keyEvent(.keyDown, keyCode: kVK_ANSI_A, characters: characters, charactersIgnoringModifiers: "a", modifierFlags: flags))
+        view.keyUp(with: try keyEvent(.keyUp, keyCode: kVK_ANSI_A, characters: characters, charactersIgnoringModifiers: "a", modifierFlags: flags))
+    }
+
+    try pressA("A", .capsLock)
+    #expect(input.events == [.keyboard(scancode: keyA, isReleased: false), .keyboard(scancode: keyA, isReleased: true)])
+
+    view.flagsChanged(with: try keyEvent(.flagsChanged, keyCode: kVK_CapsLock))
+    view.flagsChanged(with: try keyEvent(.flagsChanged, keyCode: kVK_Control, modifierFlags: .control))
+    input.events.removeAll()
+    try pressA("\u{01}", [.control, .capsLock])
+    #expect(input.events == [
+        .synchronize(toggleFlags: [.numLock, .capsLock]),
+        .keyboard(scancode: leftControl, isReleased: false),
+        .keyboard(scancode: keyA, isReleased: false),
+        .keyboard(scancode: keyA, isReleased: true),
+    ])
+
+    view.flagsChanged(with: try keyEvent(.flagsChanged, keyCode: kVK_Control, modifierFlags: .capsLock))
+    input.events.removeAll()
+    view.mouseDown(with: try #require(NSEvent.mouseEvent(
+        with: .leftMouseDown,
+        location: CGPoint(x: 10, y: 90),
+        modifierFlags: [],
+        timestamp: 0,
+        windowNumber: 0,
+        context: nil,
+        eventNumber: 0,
+        clickCount: 1,
+        pressure: 1
+    )))
+    #expect(input.events == [
+        .synchronize(toggleFlags: [.numLock]),
+        .pointerButton(button: .left, isDown: true, x: 10, y: 10),
+    ])
+}
+
 /// A server that takes no Unicode input gets the keys pressed, so its own layout types the
 /// text: right Option goes as Alt at once (AltGr), and a key whose character would have gone as
 /// Unicode, a dead key included, goes as its scancode with Shift as held. The Mac's composed

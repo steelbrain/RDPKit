@@ -38,6 +38,8 @@ final class RemoteInputCaptureNSView: NSView {
     private var wheelAccumulator = RDPScrollWheelAccumulator()
     /// A dead key went to the server as an Alt chord, so macOS composes the next key with its accent.
     private var followsChordedDeadKey = false
+    /// The toggle-key state the server was last synchronized with.
+    private var synchronizedToggleFlags: RDPToggleKeyFlags?
     private var commandKeyUpMonitor: Any?
 
     /// A server that takes no Unicode input gets every key as its scancode, so its own layout
@@ -162,6 +164,7 @@ final class RemoteInputCaptureNSView: NSView {
 
     override func keyDown(with event: NSEvent) {
         releaseModifiers(missingFrom: event.modifierFlags)
+        synchronizeToggleKeysIfChanged(event.modifierFlags)
         let isComposedByChordedDeadKey = followsChordedDeadKey && event.isARepeat == false
         followsChordedDeadKey = false
         let characters = isComposedByChordedDeadKey ? MacRDPKeyboardMapping.characters(
@@ -319,9 +322,20 @@ final class RemoteInputCaptureNSView: NSView {
     /// MS-RDPBCGR 2.2.8.1.1.3.1.1.5: on focus gain, send the toggle-key state followed by the
     /// keys still held, since the server's state may have changed while focus was elsewhere.
     private func synchronizeToggleKeys(_ modifierFlags: NSEvent.ModifierFlags) {
-        sendInput(inputState.synchronizationEvents(
-            toggleFlags: MacRDPKeyboardMapping.toggleFlags(for: modifierFlags)
-        ))
+        let toggleFlags = MacRDPKeyboardMapping.toggleFlags(for: modifierFlags)
+        synchronizedToggleFlags = toggleFlags
+        sendInput(inputState.synchronizationEvents(toggleFlags: toggleFlags))
+    }
+
+    /// A Caps Lock toggle the view never saw, such as one made while a menu was open, leaves the
+    /// server's Caps Lock stale, and the letters it shifts go as scancodes, so a key or click
+    /// whose flags show another toggle-key state synchronizes it first.
+    private func synchronizeToggleKeysIfChanged(_ modifierFlags: NSEvent.ModifierFlags) {
+        if let synchronizedToggleFlags,
+           synchronizedToggleFlags != MacRDPKeyboardMapping.toggleFlags(for: modifierFlags)
+        {
+            synchronizeToggleKeys(modifierFlags)
+        }
     }
 
     private func forwardCommandKeyUp(_ event: NSEvent) {
@@ -361,6 +375,9 @@ final class RemoteInputCaptureNSView: NSView {
 
     private func sendPointerButton(_ button: RDPPointerButton, isDown: Bool, event: NSEvent) {
         releaseModifiers(missingFrom: event.modifierFlags)
+        if isDown {
+            synchronizeToggleKeysIfChanged(event.modifierFlags)
+        }
         guard let inputEvent = inputState.pointerButton(button, isDown: isDown, at: remotePoint(from: event)) else {
             return
         }
