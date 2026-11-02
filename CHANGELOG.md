@@ -227,6 +227,16 @@
   `RDPMacDeadKeys` reads dead keys from the Mac's layout.
   `RDPRemoteDisplayViewport(frame:view:)` maps a view's points onto the
   desktop it shows on whole screen pixels.
+- `RDPKitAppKit` also holds the video side of a macOS client, from RDPClient
+  with RDPeek's container layer:
+  - `RDPRemoteDesktopVideoView` shows decoded frames through an
+    `AVSampleBufferDisplayLayer`. It flushes on a format change and shows the
+    last frame again when the layer fails. `videoLayout` places and clips the
+    video, for chosen monitors, and `sourceRect` crops each frame.
+  - `RDPFramePresentationClock` paces frames to the window's display link,
+    which runs only while a frame waits (`requestFrame()`), and publishes the
+    screen's timing as `RDPFramePacingState`.
+  - `RDPFramePresentationBuffer` holds the one frame waiting for it.
 - `RDPScrollWheelAccumulator.events(deltaX:deltaY:isPrecise:at:)` takes a
   scroll as AppKit reports it, a line a notch of 120 rotation units and a
   precise scroll's point 10, with the horizontal axis negated for RDP.

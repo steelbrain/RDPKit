@@ -91,7 +91,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
     private let sidebarContentView = NSView()
     private let sidebarStack = NSStackView()
     private let detailView = RDPRemoteSessionAppKitDetailView()
-    private let frameClockView = RDPFramePresentationClockNSView()
+    private let frameClockView = RDPFramePresentationClock()
     private var sidebarWidthConstraint: NSLayoutConstraint?
     private var detailMinimumWidthConstraint: NSLayoutConstraint?
 
@@ -277,6 +277,12 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
 
         frameClockView.translatesAutoresizingMaskIntoConstraints = false
         frameClockView.isHidden = true
+        frameClockView.onFrame = { [weak self] displayLink in
+            self?.displayLinkFrameArrived(displayLink)
+        }
+        frameClockView.onTimingChange = { [weak self] nextState in
+            self?.updateFramePacing(nextState)
+        }
 
         rootStack.addArrangedSubview(sidebarScrollView)
         rootStack.addArrangedSubview(detailView)
@@ -568,15 +574,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
     }
 
     private func updateFrameClock() {
-        frameClockView.configure(
-            isEnabled: framePresentationClockEnabled,
-            onFrame: { [weak self] displayLink in
-                self?.displayLinkFrameArrived(displayLink)
-            },
-            onTimingChange: { [weak self] nextState in
-                self?.updateFramePacing(nextState)
-            }
-        )
+        frameClockView.isEnabled = framePresentationClockEnabled
     }
 
     private func startDiagnosticsLoop() {
@@ -1081,7 +1079,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
     @discardableResult
     private func presentDecodedFrame(_ presentation: RDPDecodedFramePresentation) -> Bool {
         // The first frame shows at once; later ones wait for the display's next refresh.
-        guard hasPresentedFrame, frameClockView.schedulePresentation() else {
+        guard hasPresentedFrame, frameClockView.requestFrame() else {
             return applyFramePresentation(presentation)
         }
 

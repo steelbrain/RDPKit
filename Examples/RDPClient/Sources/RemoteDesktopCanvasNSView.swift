@@ -3,7 +3,7 @@ import RDPKit
 import RDPKitAppKit
 
 final class RemoteDesktopCanvasNSView: NSView {
-    let displayView = RemoteDesktopSampleBufferNSView()
+    let displayView = RDPRemoteDesktopVideoView()
     private let inputView = RDPRemoteInputView()
     private let progressIndicator = NSProgressIndicator()
     private let emptyStack = NSStackView()

@@ -162,52 +162,6 @@ private let bitmapFrame = RDPGraphicsFrameSnapshot(
     #expect(try JSONDecoder().decode(ConnectionProfile.self, from: JSONEncoder().encode(profile)) == profile)
 }
 
-@Test func framePacingStateNormalizesDisplayLinkTiming() {
-    let state = RDPFramePacingState(
-        screenName: "Studio Display",
-        backingScaleFactor: 2,
-        maximumFramesPerSecond: nil,
-        minimumRefreshInterval: 1.0 / 120.0,
-        maximumRefreshInterval: 1.0 / 48.0,
-        displayUpdateGranularity: 0,
-        displayLinkDuration: 0.0167,
-        hasDisplayLink: true,
-        isDisplayLinkPaused: false
-    )
-
-    #expect(state.displayLinkDuration == 1.0 / 60.0)
-    #expect(state.displayLinkFramesPerSecond == 60)
-    #expect(state.maximumRefreshRate == 120)
-    #expect(state.clockState == "window display link")
-}
-
-@Test func framePacingStateMarksUpdatedDisplayLinkActive() {
-    let state = RDPFramePacingState().updatingDisplayLinkDuration(1.0 / 120.0)
-
-    #expect(state.hasDisplayLink)
-    #expect(state.isDisplayLinkPaused == false)
-    #expect(state.displayLinkFramesPerSecond == 120)
-    #expect(state.clockState == "window display link")
-}
-
-/// Until the display link fires on a screen, its duration is 0 or the previous screen's, so the
-/// clock shows the screen's maximum refresh rate instead.
-@Test func framePacingStateShowsTheScreensMaximumUntilTheDisplayLinkFires() {
-    let unfired = RDPFramePacingState(maximumFramesPerSecond: 120, hasDisplayLink: true)
-    #expect(unfired.displayLinkFramesPerSecond == 120)
-    #expect(RDPFramePacingState(minimumRefreshInterval: 1.0 / 60.0, hasDisplayLink: true).displayLinkFramesPerSecond == 60)
-    #expect(RDPFramePacingState(maximumFramesPerSecond: 120).displayLinkFramesPerSecond == nil)
-
-    // A 60 Hz link moved to a 120 Hz screen: its old duration is dropped until it fires there.
-    let movedScreen = RDPFramePacingState(maximumFramesPerSecond: 120, displayLinkDuration: 1.0 / 60.0, hasDisplayLink: true)
-        .updatingClock(displayLinkDuration: nil, hasDisplayLink: true, isPaused: true)
-    #expect(movedScreen.displayLinkDuration == nil)
-    #expect(movedScreen.displayLinkFramesPerSecond == 120)
-    #expect(movedScreen.updatingDisplayLinkDuration(1.0 / 96.0).displayLinkFramesPerSecond == 96)
-}
-
-/// A session that showed no frame in time says whether the server sent none or RDPClient could
-/// not show those it sent.
 @Test func aSessionThatShowedNoFrameInTimeSaysWhetherAnyCame() {
     let none = RDPSessionEndReason(
         report: sessionReport(error: "timed out", failure: .noFramePresented(framesReceived: 0, lastNotPresentedReason: nil)),

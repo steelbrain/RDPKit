@@ -1,5 +1,6 @@
 import AppKit
 import RDPKit
+import RDPKitAppKit
 
 struct RDPRemoteSessionAppKitStatus {
     var text: String
@@ -62,7 +63,7 @@ struct RDPAppKitNoticeState {
 }
 
 final class RDPRemoteSessionAppKitDetailView: NSView {
-    let displayView: RemoteDesktopSampleBufferNSView
+    let displayView: RDPRemoteDesktopVideoView
     var onToggleControls: (() -> Void)?
     var onConnect: (() -> Void)?
     var onCancel: (() -> Void)?

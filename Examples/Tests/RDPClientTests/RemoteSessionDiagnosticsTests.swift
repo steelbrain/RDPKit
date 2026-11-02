@@ -1,6 +1,7 @@
 import Foundation
 @testable import RDPClient
 import RDPKit
+import RDPKitAppKit
 import Testing
 
 @Test func viewerMetricsSummaryFallsOnceTrafficStops() {

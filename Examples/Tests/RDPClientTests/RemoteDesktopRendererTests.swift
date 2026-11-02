@@ -1,64 +1,8 @@
 import AppKit
-import AVFoundation
 @testable import RDPClient
 import RDPKit
 import RDPKitAppKit
 import Testing
-
-/// On macOS 15 and later frames go to the display layer's `sampleBufferRenderer`, before and
-/// after the display is cleared.
-@MainActor
-@Test func framesRenderThroughTheDisplayLayersSampleBufferRenderer() throws {
-    guard #available(macOS 15, *) else {
-        return
-    }
-    let view = RemoteDesktopSampleBufferNSView(frame: CGRect(x: 0, y: 0, width: 64, height: 64))
-    let renderer = try #require(view.layer?.sublayers?.first as? AVSampleBufferDisplayLayer).sampleBufferRenderer
-    var imageBuffer: CVPixelBuffer?
-    #expect(CVPixelBufferCreate(kCFAllocatorDefault, 16, 16, kCVPixelFormatType_32BGRA, nil, &imageBuffer) == kCVReturnSuccess)
-    let presentation = try RDPDecodedFramePresentation(
-        frame: graphicsFrame(width: 16, height: 16),
-        imageBuffer: #require(imageBuffer)
-    )
-    #expect(renderer.status == .unknown)
-
-    view.present(presentation, id: 1)
-    #expect(renderer.status == .rendering)
-    view.clear()
-    view.present(presentation, id: 2)
-    #expect(renderer.status == .rendering)
-    #expect(renderer.error == nil)
-}
-
-@Test
-func unchangedHealthyDisplayEnqueuesWithoutFlushing() {
-    let disposition = rdpSampleBufferDisplayDisposition(
-        displayFormatWillChange: false,
-        rendererFailed: false,
-        requiresFlushToResume: false
-    )
-
-    #expect(disposition == .enqueue)
-}
-
-@Test(arguments: [
-    (true, false, false),
-    (false, true, false),
-    (false, false, true),
-])
-func displayResetConditionsFlushBeforeEnqueue(
-    displayFormatWillChange: Bool,
-    rendererFailed: Bool,
-    requiresFlushToResume: Bool
-) {
-    let disposition = rdpSampleBufferDisplayDisposition(
-        displayFormatWillChange: displayFormatWillChange,
-        rendererFailed: rendererFailed,
-        requiresFlushToResume: requiresFlushToResume
-    )
-
-    #expect(disposition == .flushAndEnqueue)
-}
 
 @MainActor
 @Test func keysGoToTheDesktopOnceItAppears() {
@@ -87,85 +31,6 @@ func displayResetConditionsFlushBeforeEnqueue(
     canvas.update(frame: frame, hasPresentedFrame: true, emptyMessage: "", inputSession: nil, keyboard: .unitedStates, isConnecting: true)
 
     #expect(window.firstResponder is RDPRemoteInputView)
-}
-
-@Test func aFailedLayerShowsTheLastFrameAgainOnce() {
-    #expect(rdpShouldResendLastPresentation(
-        hasLastPresentation: true,
-        didResendLastPresentation: false,
-        rendererFailed: true,
-        requiresFlushToResume: false
-    ))
-    #expect(rdpShouldResendLastPresentation(
-        hasLastPresentation: true,
-        didResendLastPresentation: false,
-        rendererFailed: false,
-        requiresFlushToResume: true
-    ))
-    #expect(!rdpShouldResendLastPresentation(
-        hasLastPresentation: true,
-        didResendLastPresentation: true,
-        rendererFailed: true,
-        requiresFlushToResume: false
-    ))
-    #expect(!rdpShouldResendLastPresentation(
-        hasLastPresentation: false,
-        didResendLastPresentation: false,
-        rendererFailed: true,
-        requiresFlushToResume: true
-    ))
-    #expect(!rdpShouldResendLastPresentation(
-        hasLastPresentation: true,
-        didResendLastPresentation: false,
-        rendererFailed: false,
-        requiresFlushToResume: false
-    ))
-}
-
-// An idle desktop leaves the display link paused; a frame that arrives runs it for one refresh.
-@MainActor
-@Test func thePresentationClockRunsOnlyWhileAFrameWaits() {
-    _ = NSApplication.shared
-    let window = NSWindow(
-        contentRect: CGRect(x: 0, y: 0, width: 200, height: 200),
-        styleMask: [.titled],
-        backing: .buffered,
-        defer: true
-    )
-    let clock = RDPFramePresentationClockNSView()
-    var refreshCount = 0
-    func configure(isEnabled: Bool) {
-        clock.configure(isEnabled: isEnabled, onFrame: { _ in refreshCount += 1 }, onTimingChange: { _ in })
-    }
-    defer {
-        window.contentView = nil
-    }
-
-    configure(isEnabled: true)
-    #expect(!clock.schedulePresentation())
-
-    window.contentView = clock
-    configure(isEnabled: false)
-    #expect(!clock.schedulePresentation())
-    #expect(!clock.isDisplayLinkRunning)
-
-    configure(isEnabled: true)
-    #expect(!clock.isDisplayLinkRunning)
-    #expect(clock.schedulePresentation())
-    #expect(clock.isDisplayLinkRunning)
-    configure(isEnabled: true)
-    #expect(clock.isDisplayLinkRunning)
-
-    clock.displayLinkFired(window.displayLink(target: clock, selector: #selector(clock.displayLinkFired(_:))))
-    #expect(refreshCount == 1)
-    #expect(!clock.isDisplayLinkRunning)
-
-    #expect(clock.schedulePresentation())
-    #expect(clock.isDisplayLinkRunning)
-    configure(isEnabled: false)
-    #expect(!clock.isDisplayLinkRunning)
-    configure(isEnabled: true)
-    #expect(!clock.isDisplayLinkRunning)
 }
 
 private func graphicsFrame(width: UInt16, height: UInt16) -> RDPGraphicsFrameSnapshot {

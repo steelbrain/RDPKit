@@ -1,17 +1,20 @@
+#if os(macOS)
 import AppKit
 
-struct RDPFramePacingState: Equatable, Sendable {
-    var screenName: String
-    var backingScaleFactor: CGFloat?
-    var maximumFramesPerSecond: Int?
-    var minimumRefreshInterval: TimeInterval?
-    var maximumRefreshInterval: TimeInterval?
-    var displayUpdateGranularity: TimeInterval?
-    var displayLinkDuration: TimeInterval?
-    var hasDisplayLink: Bool
-    var isDisplayLinkPaused: Bool
+/// The screen a session's window is on and the display clock pacing its frames, for
+/// diagnostics: what `RDPFramePresentationClock` publishes.
+public struct RDPFramePacingState: Equatable, Sendable {
+    public var screenName: String
+    public var backingScaleFactor: CGFloat?
+    public var maximumFramesPerSecond: Int?
+    public var minimumRefreshInterval: TimeInterval?
+    public var maximumRefreshInterval: TimeInterval?
+    public var displayUpdateGranularity: TimeInterval?
+    public var displayLinkDuration: TimeInterval?
+    public var hasDisplayLink: Bool
+    public var isDisplayLinkPaused: Bool
 
-    init(
+    public init(
         screenName: String = "No window",
         backingScaleFactor: CGFloat? = nil,
         maximumFramesPerSecond: Int? = nil,
@@ -35,7 +38,7 @@ struct RDPFramePacingState: Equatable, Sendable {
 
     /// The display link's rate once it has fired on this screen. Until then its duration is 0
     /// or the previous screen's, and the screen's maximum refresh rate stands in.
-    var displayLinkFramesPerSecond: Double? {
+    public var displayLinkFramesPerSecond: Double? {
         guard let displayLinkDuration,
               displayLinkDuration > 0
         else {
@@ -44,7 +47,7 @@ struct RDPFramePacingState: Equatable, Sendable {
         return 1 / displayLinkDuration
     }
 
-    var maximumRefreshRate: Double? {
+    public var maximumRefreshRate: Double? {
         if let maximumFramesPerSecond {
             return Double(maximumFramesPerSecond)
         }
@@ -56,14 +59,14 @@ struct RDPFramePacingState: Equatable, Sendable {
         return 1 / minimumRefreshInterval
     }
 
-    var clockState: String {
+    public var clockState: String {
         guard hasDisplayLink else {
             return "not attached"
         }
         return isDisplayLinkPaused ? "paused" : "window display link"
     }
 
-    func updatingDisplayLinkDuration(_ duration: TimeInterval) -> RDPFramePacingState {
+    public func updatingDisplayLinkDuration(_ duration: TimeInterval) -> RDPFramePacingState {
         var copy = self
         copy.displayLinkDuration = Self.normalizedDisplayLinkDuration(duration)
         copy.hasDisplayLink = true
@@ -73,7 +76,7 @@ struct RDPFramePacingState: Equatable, Sendable {
 
     /// The same screen with the clock's state now, without reading the screen again.
     /// `displayLinkDuration` is nil until the display link has fired on this screen.
-    func updatingClock(displayLinkDuration: TimeInterval?, hasDisplayLink: Bool, isPaused: Bool) -> RDPFramePacingState {
+    public func updatingClock(displayLinkDuration: TimeInterval?, hasDisplayLink: Bool, isPaused: Bool) -> RDPFramePacingState {
         var copy = self
         copy.displayLinkDuration = Self.normalizedDisplayLinkDuration(displayLinkDuration)
         copy.hasDisplayLink = hasDisplayLink
@@ -100,7 +103,7 @@ struct RDPFramePacingState: Equatable, Sendable {
 extension RDPFramePacingState {
     /// `displayLinkDuration` is nil until the display link has fired on the window's screen.
     @MainActor
-    static func current(
+    public static func current(
         window: NSWindow?,
         displayLinkDuration: TimeInterval?,
         hasDisplayLink: Bool,
@@ -131,3 +134,4 @@ extension RDPFramePacingState {
         )
     }
 }
+#endif

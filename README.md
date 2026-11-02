@@ -269,6 +269,9 @@ let report = client.run(
 - Connect-time desktop and device scale factors and physical size, for servers
   without display control
 - HiDPI-aware display scale models for Apple clients
+- `RDPKitAppKit`'s `RDPRemoteDesktopVideoView`, which shows decoded frames on
+  macOS and recovers a failed display layer, and `RDPFramePresentationClock`,
+  which paces them to the display's refresh without waking an idle main thread
 - Showing one monitor of a multi-monitor desktop: `RDPRemoteDisplayViewport`
   maps input within a `sourceRect` such as an `RDPRemoteMonitor`'s, and
   `RDPFrameSampleBufferFactory.sourceRect` crops the picture to it
@@ -403,7 +406,8 @@ starting point.
 Package.swift                         SwiftPM library manifest
 Sources/RDPKit/                       Reusable RDP protocol, transport, media,
                                       input, clipboard, audio, and metrics code
-Sources/RDPKitAppKit/                 macOS input view and keyboard mapping
+Sources/RDPKitAppKit/                 macOS input and video views, frame clock,
+                                      and keyboard mapping
 Sources/RDPKitTesting/                In-memory server stand-ins for app tests
 Tests/RDPKitTests/                    Unit and mock-server integration tests
 Tests/RDPKitAppKitTests/              Input view and keyboard mapping tests
