@@ -34,7 +34,7 @@ import Testing
     #expect(layouts.keyframeRequestLayout() == nil)
 
     let server = [RDPRemoteMonitor(rect: RDPFrameRect(left: 0, top: 0, right: 1920, bottom: 1080), isPrimary: true)]
-    layouts.noteResetGraphics(monitors: server, issues: [])
+    layouts.noteResetGraphics(outputRect: nil, monitors: server, issues: [])
     let atConnectScale = try RDPMonitorLayout(
         remoteMonitors: server,
         scaleFactors: RDPDisplayScaleFactors(desktopScaleFactor: 200, deviceScaleFactor: 100)
@@ -47,13 +47,28 @@ import Testing
 
     // The server answered with a desktop of its own choosing, which stays.
     let answered = [RDPRemoteMonitor(rect: RDPFrameRect(left: 0, top: 0, right: 2400, bottom: 1350), isPrimary: true)]
-    layouts.noteResetGraphics(monitors: answered, issues: [])
+    layouts.noteResetGraphics(outputRect: nil, monitors: answered, issues: [])
     #expect(layouts.keyframeRequestLayout() == (try RDPMonitorLayout(
         remoteMonitors: answered,
         scaleFactors: RDPDisplayScaleFactors(desktopScaleFactor: 150, deviceScaleFactor: 140)
     )))
 
-    layouts.noteResetGraphics(monitors: [RDPRemoteMonitor(rect: RDPFrameRect(left: 0, top: 0, right: 1279, bottom: 720), isPrimary: true)], issues: [])
+    layouts.noteResetGraphics(outputRect: nil, monitors: [RDPRemoteMonitor(rect: RDPFrameRect(left: 0, top: 0, right: 1279, bottom: 720), isPrimary: true)], issues: [])
+    #expect(layouts.keyframeRequestLayout() == nil)
+}
+
+/// A server that lists no monitors has a desktop of its graphics output's size; one whose
+/// monitors RDPKit all left out gets no request.
+@Test func keyframeRequestLayoutTakesTheOutputOfAServerWithNoMonitors() throws {
+    let layouts = RDPDisplayLayoutRecord(connectLayout: .singlePrimary(width: 1280, height: 720, desktopScaleFactor: 200))
+    let output = RDPFrameRect(left: 0, top: 0, right: 1920, bottom: 1080)
+    layouts.noteResetGraphics(outputRect: output, monitors: [], issues: [])
+    #expect(layouts.keyframeRequestLayout() == (try RDPMonitorLayout(
+        remoteMonitors: [RDPRemoteMonitor(rect: output, isPrimary: true)],
+        scaleFactors: RDPDisplayScaleFactors(desktopScaleFactor: 200, deviceScaleFactor: 100)
+    )))
+
+    layouts.noteResetGraphics(outputRect: output, monitors: [], issues: .clipped)
     #expect(layouts.keyframeRequestLayout() == nil)
 }
 
@@ -65,7 +80,7 @@ import Testing
     let primary = RDPRemoteMonitor(rect: RDPFrameRect(left: 1280, top: 0, right: 3200, bottom: 1080), isPrimary: true)
     let left = RDPRemoteMonitor(rect: RDPFrameRect(left: 0, top: 56, right: 1280, bottom: 1080), isPrimary: false, index: 1)
     // The connect layout asked for one monitor, so the server's two have scales of their own.
-    layouts.noteResetGraphics(monitors: [primary, left], issues: [])
+    layouts.noteResetGraphics(outputRect: nil, monitors: [primary, left], issues: [])
     #expect(layouts.keyframeRequestLayout() == nil)
 
     let sent = try RDPMonitorLayout(monitors: [
@@ -74,17 +89,17 @@ import Testing
     ])
     layouts.noteSent(sent)
     // The server lists the monitors asked for in an order of its own.
-    layouts.noteResetGraphics(monitors: [left, primary], issues: [])
+    layouts.noteResetGraphics(outputRect: nil, monitors: [left, primary], issues: [])
     #expect(layouts.keyframeRequestLayout() == sent)
 
     // A monitor moved, or another primary, is not the layout asked for.
     let moved = RDPRemoteMonitor(rect: RDPFrameRect(left: 0, top: 0, right: 1280, bottom: 1024), isPrimary: false, index: 1)
-    layouts.noteResetGraphics(monitors: [primary, moved], issues: [])
+    layouts.noteResetGraphics(outputRect: nil, monitors: [primary, moved], issues: [])
     #expect(layouts.keyframeRequestLayout() == nil)
     var otherPrimary = [primary, left]
     otherPrimary[0].isPrimary = false
     otherPrimary[1].isPrimary = true
-    layouts.noteResetGraphics(monitors: otherPrimary, issues: [])
+    layouts.noteResetGraphics(outputRect: nil, monitors: otherPrimary, issues: [])
     #expect(layouts.keyframeRequestLayout() == nil)
 }
 
@@ -137,6 +152,49 @@ func videoThatIsNotShownAsksForAKeyframe(displayControlOpensLate: Bool) throws {
         },
         onGraphicsFrame: { _ in
             throw RDPGraphicsFrameNotPresented(reason: "awaiting a keyframe")
+        }
+    )
+
+    #expect(run.clientPackets.contains { $0.range(of: layoutData) != nil })
+    #expect(run.report.rdpKeyframeRequestCount == 1)
+}
+
+/// A ResetGraphics may list no monitors ([MS-RDPEGFX] 2.2.2.14): the session then asks for a
+/// keyframe with one monitor of the graphics output's size.
+@Test func aServerWithNoMonitorsIsAskedForAKeyframeAtItsOutputSize() throws {
+    let displayControl = try displayControlPackets()
+    let firstFrame = try KRdpCapture.events()[39...].map { try #require($0.bytes) }
+    var reset = Data()
+    for value: UInt32 in [1920, 1080, 0] {
+        reset.appendLittleEndianUInt32(value)
+    }
+    // The PDU is always 340 bytes, its unused monitor slots padding.
+    reset.append(Data(count: 340 - 8 - reset.count))
+    let video = KRdpCapture.graphicsPacket(
+        graphicsMessage(commandID: RDPGFXCommandID.resetGraphics, payload: reset)
+            + KRdpCapture.startFrame(id: 900) + KRdpCapture.avc420Update() + KRdpCapture.endFrame(id: 900)
+    )
+    let layout = try RDPMonitorLayout(
+        remoteMonitors: [RDPRemoteMonitor(rect: RDPFrameRect(left: 0, top: 0, right: 1920, bottom: 1080), isPrimary: true)],
+        scaleFactors: RDPDisplayScaleFactors(desktopScaleFactor: 100, deviceScaleFactor: 100)
+    )
+    let layoutData = RDPDynamicVirtualChannelDataPDU(
+        channelID: 2,
+        payload: RDPDisplayControlMonitorLayoutPDU(monitors: layout.monitors).encoded()
+    ).encoded()
+    let run = try KRdpCapture.run(
+        prefix: 39,
+        appending: [displayControl.channel, displayControl.caps] + firstFrame + [video],
+        frameCaptureLimit: nil,
+        onTrailingClientPacket: { channel, packet in
+            if packet.range(of: layoutData) != nil {
+                KRdpCapture.endConnection(channel, .close)
+            }
+        },
+        onGraphicsFrame: { frame in
+            if frame.frameID == 900 {
+                throw RDPGraphicsFrameNotPresented(reason: "awaiting a keyframe")
+            }
         }
     )
 

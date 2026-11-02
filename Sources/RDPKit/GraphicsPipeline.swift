@@ -159,7 +159,11 @@ extension RDPClientConnection {
         case RDPGFXCommandID.endFrame:
             return try RDPGFXEndFramePDU.parse(from: message).frameID
         case RDPGFXCommandID.resetGraphics:
-            displayLayouts.noteResetGraphics(monitors: compositor.monitors, issues: compositor.monitorLayoutIssues)
+            displayLayouts.noteResetGraphics(
+                outputRect: compositor.outputRect(),
+                monitors: compositor.monitors,
+                issues: compositor.monitorLayoutIssues
+            )
         default:
             break
         }

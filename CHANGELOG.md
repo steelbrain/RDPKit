@@ -112,11 +112,13 @@
   session sends `RDPDisplayControlSession.requestKeyframe()`'s layout, which
   keeps the server's desktop as it is: the layout last sent while it is
   unanswered, otherwise that layout again when the server shows the monitors
-  it asked for, or the server's one monitor at the scale last sent. Several
-  monitors laid out otherwise get no request: the server never says their
-  scales, and asking for any could change them. It sends
-  at most one every 3 seconds and 3 until video decodes again, holds one until
-  Display Control is handed out, and `rdpKeyframeRequestCount` counts them.
+  it asked for, or the server's one monitor at the scale last sent; a server
+  that lists no monitors, as MS-RDPEGFX allows, has one of its graphics
+  output's size. Several monitors laid out otherwise get no request: the
+  server never says their scales, and asking for any could change them. It
+  sends at most one every 3 seconds and 3 until video decodes again, holds one
+  until Display Control is handed out, and `rdpKeyframeRequestCount` counts
+  them.
   Windows 11 answered with a ResetGraphics and an IDR 0.23 s later, the
   desktop unchanged (observed live).
 - `RDPDisplayControlSession.isLastSentLayoutPending` says whether the layout

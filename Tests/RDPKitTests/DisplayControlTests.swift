@@ -753,7 +753,7 @@ private func outboundDisplayControlPayloads(_ channel: EmbeddedChannel) throws -
 
     #expect(try session.send(.singlePrimary(width: 1920, height: 1080)))
     #expect(session.isLastSentLayoutPending)
-    layouts.noteResetGraphics(monitors: [], issues: [])
+    layouts.noteResetGraphics(outputRect: nil, monitors: [], issues: [])
     #expect(session.isLastSentLayoutPending == false)
     #expect(session.graphicsResetCount == 1)
 
@@ -824,7 +824,7 @@ private func outboundDisplayControlPayloads(_ channel: EmbeddedChannel) throws -
     let session = makeSession()
     #expect(session.serverMonitors.isEmpty)
     let serverMonitors = [RDPRemoteMonitor(rect: RDPFrameRect(left: 0, top: 0, right: 1280, bottom: 720), isPrimary: true)]
-    layouts.noteResetGraphics(monitors: serverMonitors, issues: .clipped)
+    layouts.noteResetGraphics(outputRect: nil, monitors: serverMonitors, issues: .clipped)
     #expect(session.serverMonitors == serverMonitors)
     #expect(session.serverMonitorLayoutIssues == .clipped)
     let sentLayout = try RDPMonitorLayout(monitors: [

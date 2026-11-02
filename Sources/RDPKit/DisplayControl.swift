@@ -593,6 +593,7 @@ final class RDPDisplayLayoutRecord: @unchecked Sendable {
     private var resetCount: UInt32 = 0
     private var monitors: [RDPRemoteMonitor] = []
     private var monitorLayoutIssues: RDPRemoteMonitorLayoutIssues = []
+    private var outputRect: RDPFrameRect?
 
     init(connectLayout: RDPMonitorLayout) {
         self.connectLayout = connectLayout
@@ -627,13 +628,23 @@ final class RDPDisplayLayoutRecord: @unchecked Sendable {
     /// last sent while the server has not answered it. Otherwise the layout last sent, or the
     /// connect layout, when the server's monitors are the ones it asked for, so each keeps the
     /// scale it asked for; or the server's one monitor at the scale that layout asked for its
-    /// primary monitor. nil without monitors, for several monitors other than the ones last
+    /// primary monitor. A ResetGraphics that lists no monitors, as [MS-RDPEGFX] 2.2.2.14 allows
+    /// (it bounds monitorCount only from above), has a desktop of the graphics output's size,
+    /// one monitor. nil before any ResetGraphics, for several monitors other than the ones last
     /// asked for, whose scales the server never says and a guess could change, or when Display
     /// Control cannot ask for them exactly, such as for a monitor of odd width.
     func keyframeRequestLayout() -> RDPMonitorLayout? {
-        let (sent, isPending, monitors) = lock.withLock { (sentLayout, isSentLayoutPending, self.monitors) }
+        let (sent, isPending, listed, issues, outputRect) = lock.withLock {
+            (sentLayout, isSentLayoutPending, self.monitors, monitorLayoutIssues, self.outputRect)
+        }
         if isPending, let sent {
             return sent
+        }
+        // No issues: the server listed none, rather than RDPKit leaving them all out.
+        let monitors = if listed.isEmpty, issues.isEmpty, let outputRect {
+            [RDPRemoteMonitor(rect: outputRect, isPrimary: true)]
+        } else {
+            listed
         }
         let asked = sent ?? connectLayout
         let primary = asked.monitors.first { $0.flags & RDPDisplayControlMonitorFlags.primary != 0 } ?? asked.monitors.first
@@ -650,9 +661,10 @@ final class RDPDisplayLayoutRecord: @unchecked Sendable {
         return server.monitors.count == 1 ? server : nil
     }
 
-    /// Records a ResetGraphics and the monitors it laid out.
-    func noteResetGraphics(monitors: [RDPRemoteMonitor], issues: RDPRemoteMonitorLayoutIssues) {
+    /// Records a ResetGraphics, its graphics output and the monitors it laid out.
+    func noteResetGraphics(outputRect: RDPFrameRect?, monitors: [RDPRemoteMonitor], issues: RDPRemoteMonitorLayoutIssues) {
         lock.withLock {
+            self.outputRect = outputRect
             self.monitors = monitors
             monitorLayoutIssues = issues
             resetCount &+= 1
@@ -821,7 +833,8 @@ public final class RDPDisplayControlSession: Sendable {
     /// Asks the server for a keyframe with a layout that keeps its desktop as it is:
     /// ``lastSentLayout`` while ``isLastSentLayoutPending``. Otherwise ``lastSentLayout``, or
     /// ``connectLayout``, when ``serverMonitors`` are the monitors it asked for, or the server's
-    /// one monitor at the scale it asked for its primary monitor. Unlike ``resendLayout()``, it
+    /// one monitor at the scale it asked for its primary monitor; a server that lists no
+    /// monitors has one of its graphics output's size. Unlike ``resendLayout()``, it
     /// never asks again for a layout the server has since replaced, such as after the user
     /// changed its resolution there. Returns false when there is no such layout, as without
     /// monitors, for several monitors other than the ones asked for, whose scales the server
