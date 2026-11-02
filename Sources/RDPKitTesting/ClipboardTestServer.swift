@@ -4,12 +4,61 @@ import NIOEmbedded
 import RDPKit
 
 /// The server's end of a clipboard channel, in memory, to test an application's clipboard code
-/// against a real `RDPClipboardSession`: the server copies text or files, empties or restarts
-/// its clipboard, answers the session's requests, file downloads included, and pastes the
-/// client's text. Each server message is handled on a thread of the server's own, the session's
-/// thread, which calls the handlers as `RDPSessionClient.run` does, a remote copy with its
-/// number. A server action returns at once; `settle()` waits until what it set off is done.
+/// against a real `RDPClipboardSession`: the server copies text, files or other formats, empties
+/// or restarts its clipboard, answers the session's requests, file downloads included, as told,
+/// records the client's copies, and pastes the client's text or files. Each server message is
+/// handled on a thread of the server's own, the session's thread, which calls the handlers as
+/// `RDPSessionClient.run` does, a remote copy with its number. A server action returns at once;
+/// `settle()` waits until what it set off is done, and `isStepping` holds the server's messages
+/// for the test to hand over one at a time.
 public final class RDPClipboardTestServer: @unchecked Sendable {
+    /// A format a server copy offers: its ID, the name of a registered format, such as
+    /// "HTML Format", and the data the server answers a request for it with.
+    public struct Format: Equatable, Sendable {
+        public var id: UInt32
+        public var name: String?
+        public var data: Data
+
+        public init(id: UInt32, name: String? = nil, data: Data) {
+            self.id = id
+            self.name = name
+            self.data = data
+        }
+    }
+
+    /// A copy the client published, as its Format List announced it.
+    public enum ClientCopy: Equatable, Sendable {
+        /// An empty clipboard, which joining the clipboard and withdrawing a copy announce.
+        case empty
+        case text
+        case files
+        /// Formats with neither text nor files, such as HTML or an image alone.
+        case other
+    }
+
+    /// A request of the session's for a file of the server's copy: its size, or a range of it.
+    public struct FileRequest: Equatable, Sendable {
+        public var fileIndex: Int
+        public var isSizeRequest: Bool
+        public var position: UInt64
+        public var byteCount: Int
+    }
+
+    /// How the server answers a file request.
+    public enum FileRequestAnswer: Equatable, Sendable {
+        /// In full.
+        case answer
+        /// With a failure, which a download throws as `RDPClipboardDownloadError.refused`.
+        case fail
+        /// A range with at most this many bytes, 0 for none, which a download throws as
+        /// `RDPClipboardDownloadError.incomplete` when it ends before the file does; a size in
+        /// full.
+        case truncate(to: Int)
+        /// Not yet: `answerHeldFileRequests(_:)` answers it later, after the download timed out
+        /// or another began, say.
+        case hold
+    }
+
     /// The session, which `onClipboardReady` got too.
     public let session: RDPClipboardSession
     private let channel: NIOAsyncTestingChannel
@@ -17,9 +66,13 @@ public final class RDPClipboardTestServer: @unchecked Sendable {
     private let thread = DispatchQueue(label: "RDPClipboardTestServer")
     private let lock = NSLock()
     private var end = RDPClipboardServerEnd()
+    private var fileRequestAnswerStorage: @Sendable (FileRequest) -> FileRequestAnswer = { _ in .answer }
     private var outstandingWork = 0
+    private var isSteppingStorage = false
+    private var heldMessages: [Data] = []
     private var settleWaiters: [CheckedContinuation<Void, Never>] = []
     private var pasteWaiters: [CheckedContinuation<String?, Never>] = []
+    private var filePasteWaiters: [CheckedContinuation<[RDPClipboardLocalFile]?, Never>] = []
 
     /// Starts the clipboard session as a server does, and returns once `onClipboardReady` has
     /// run. As in a session `run` makes, it fetches every format of a remote copy when
@@ -77,6 +130,21 @@ public final class RDPClipboardTestServer: @unchecked Sendable {
         send(lock.withLock { end.formatList(announcing: .files(files)) })
     }
 
+    /// Copies `formats` on the server, such as an image (CF_DIB, 8) or "HTML Format", which the
+    /// session fetches when `onClipboardContent` is set.
+    public func copyFormats(_ formats: [Format]) {
+        let formats = formats.map { RDPClipboardServerEnd.Format(formatID: $0.id, formatName: $0.name, data: $0.data) }
+        send(lock.withLock { end.formatList(announcing: .formats(formats)) })
+    }
+
+    /// Whether the server answers the session's requests for a copy's formats with a failure,
+    /// which the session reports to `onClipboardRemoteCopyUnavailable` with `isEmpty` false;
+    /// false by default.
+    public var failsFormatDataRequests: Bool {
+        get { lock.withLock { end.failsFormatDataRequests } }
+        set { lock.withLock { end.failsFormatDataRequests = newValue } }
+    }
+
     /// Empties the server's clipboard, as Windows 11 announces it.
     public func emptyClipboard() {
         send(lock.withLock { end.formatList(announcing: .empty) })
@@ -88,11 +156,20 @@ public final class RDPClipboardTestServer: @unchecked Sendable {
         send(RDPClipboardServerEnd.monitorReady)
     }
 
-    /// Whether the server answers file requests; true by default. Unanswered, a download
-    /// waits for its request timeout, which `advanceTime(by:)` passes.
-    public var answersFileRequests: Bool {
-        get { lock.withLock { end.answersFileRequests } }
-        set { lock.withLock { end.answersFileRequests = newValue } }
+    /// How the server answers each file request the session sends, in full by default. Called
+    /// on the session's thread as the request comes, under the server's lock, so it must not
+    /// call the server. A request held waits for `answerHeldFileRequests(_:)`, or else for the
+    /// download's request timeout, which `advanceTime(by:)` passes.
+    public var fileRequestAnswer: @Sendable (FileRequest) -> FileRequestAnswer {
+        get { lock.withLock { fileRequestAnswerStorage } }
+        set {
+            lock.withLock {
+                fileRequestAnswerStorage = newValue
+                end.fileAnswer = { request in
+                    newValue(FileRequest(request)).serverEndAnswer
+                }
+            }
+        }
     }
 
     /// The file requests, for sizes and ranges, the session has sent.
@@ -100,13 +177,58 @@ public final class RDPClipboardTestServer: @unchecked Sendable {
         lock.withLock { end.fileRequestCount }
     }
 
+    /// The file requests held for `answerHeldFileRequests(_:)`.
+    public var heldFileRequestCount: Int {
+        lock.withLock { end.heldFileRequestCount }
+    }
+
+    /// Answers the file requests held so far as `answer` says, each about the copy it asked
+    /// about; `.hold` keeps them.
+    public func answerHeldFileRequests(_ answer: FileRequestAnswer = .answer) {
+        let answers = lock.withLock { end.answerHeldFileRequests(answer.serverEndAnswer) }
+        for answer in answers {
+            send(answer)
+        }
+    }
+
+    /// The copies the client has published, empty ones included, in the order their Format
+    /// Lists reached the server: joining the clipboard announces an empty one first.
+    public var clientCopies: [ClientCopy] {
+        lock.withLock { end.clientCopies.map(ClientCopy.init) }
+    }
+
     /// Pastes on the server: the text of the client's copy, once what is under way has settled;
-    /// nil when the client offers no text, which it answers with a failure.
+    /// nil when the client offers no text, which it answers with a failure. One paste at a time.
     public func pasteText() async -> String? {
         await settle()
         return await withCheckedContinuation { continuation in
-            lock.withLock { pasteWaiters.append(continuation) }
-            send(RDPClipboardServerEnd.textRequest)
+            let request = lock.withLock {
+                pasteWaiters.append(continuation)
+                return end.textRequest()
+            }
+            send(request)
+        }
+    }
+
+    /// Pastes the client's files on the server, once what is under way has settled: reads its
+    /// file list, then each file through the session's file contents answers, a size and then
+    /// ranges of 4096 bytes, a folder's size 0 as the session answers it. Nil when the client's last copy offers no files, or the client fails a
+    /// request. One paste at a time.
+    public func pasteFiles() async -> [RDPClipboardLocalFile]? {
+        await settle()
+        return await withCheckedContinuation { continuation in
+            let request = lock.withLock {
+                let request = end.fileListRequest()
+                if request != nil {
+                    filePasteWaiters.append(continuation)
+                }
+                return request
+            }
+            guard let request else {
+                continuation.resume(returning: nil)
+                return
+            }
+            send(request)
         }
     }
 
@@ -120,9 +242,63 @@ public final class RDPClipboardTestServer: @unchecked Sendable {
         try? await channel.close()
     }
 
+    /// While on, each message the server sends, a server action's or an answer to the session,
+    /// waits, in order, until `step()` hands it to the session, so a test can do its own work
+    /// between a Format List and its data, say. Turned off, the server hands over what waits.
+    /// `settle()` does not wait for a message held, nor a paste for its answer.
+    public var isStepping: Bool {
+        get { lock.withLock { isSteppingStorage } }
+        set {
+            lock.withLock {
+                isSteppingStorage = newValue
+                guard !newValue else {
+                    return
+                }
+                for message in heldMessages {
+                    performLocked(receiving(message))
+                }
+                heldMessages = []
+            }
+        }
+    }
+
+    /// The messages `isStepping` holds.
+    public var heldMessageCount: Int {
+        lock.withLock { heldMessages.count }
+    }
+
+    /// Hands the next message `isStepping` holds to the session; false when none waits.
+    @discardableResult
+    public func step() -> Bool {
+        lock.withLock {
+            guard !heldMessages.isEmpty else {
+                return false
+            }
+            performLocked(receiving(heldMessages.removeFirst()))
+            return true
+        }
+    }
+
+    /// Whether nothing the server set off is under way, as when `settle()` returns.
+    public var isSettled: Bool {
+        lock.withLock { outstandingWork == 0 }
+    }
+
     /// Waits until every server message sent so far, and the answers and handlers they set
     /// off, are done. A handler that hands work to another thread, such as the main one, is
-    /// done once it returns.
+    /// done once it returns; work it hands the main queue may set off more on the server, so
+    /// a test settles both until neither has any left:
+    ///
+    /// ```swift
+    /// func settleWithMainQueue(_ server: RDPClipboardTestServer) async {
+    ///     repeat {
+    ///         await server.settle()
+    ///         await withCheckedContinuation { continuation in
+    ///             DispatchQueue.main.async { continuation.resume() }
+    ///         }
+    ///     } while !server.isSettled
+    /// }
+    /// ```
     public func settle() async {
         await withCheckedContinuation { continuation in
             let isIdle = lock.withLock {
@@ -138,9 +314,20 @@ public final class RDPClipboardTestServer: @unchecked Sendable {
         }
     }
 
-    /// Handles `message` from the server on the session's thread.
+    /// Handles `message` from the server on the session's thread, in the order sent, unless
+    /// `isStepping` holds it.
     private func send(_ message: Data) {
-        perform { [self] in
+        lock.withLock {
+            if isSteppingStorage {
+                heldMessages.append(message)
+            } else {
+                performLocked(receiving(message))
+            }
+        }
+    }
+
+    private func receiving(_ message: Data) -> @Sendable () -> Void {
+        { [self] in
             let event = try? session.receive(serverMessage: message)
             handlers.deliver(event, from: session)
         }
@@ -152,7 +339,8 @@ public final class RDPClipboardTestServer: @unchecked Sendable {
         for answer in outcome?.answers ?? [] {
             send(answer)
         }
-        if case let .text(text) = outcome?.reply {
+        switch outcome?.reply {
+        case let .text(text):
             let waiters = lock.withLock {
                 defer { pasteWaiters = [] }
                 return pasteWaiters
@@ -160,6 +348,16 @@ public final class RDPClipboardTestServer: @unchecked Sendable {
             for waiter in waiters {
                 waiter.resume(returning: text)
             }
+        case let .files(files):
+            let waiters = lock.withLock {
+                defer { filePasteWaiters = [] }
+                return filePasteWaiters
+            }
+            for waiter in waiters {
+                waiter.resume(returning: files)
+            }
+        case nil:
+            break
         }
     }
 
@@ -170,7 +368,12 @@ public final class RDPClipboardTestServer: @unchecked Sendable {
     }
 
     private func perform(_ work: @escaping @Sendable () -> Void) {
-        lock.withLock { outstandingWork += 1 }
+        lock.withLock { performLocked(work) }
+    }
+
+    /// Callers hold `lock`, so work runs in the order it was counted.
+    private func performLocked(_ work: @escaping @Sendable () -> Void) {
+        outstandingWork += 1
         thread.async { [self] in
             work()
             let waiters = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
@@ -195,5 +398,44 @@ private final class Relay: @unchecked Sendable {
     var server: RDPClipboardTestServer? {
         get { lock.withLock { storedServer } }
         set { lock.withLock { storedServer = newValue } }
+    }
+}
+
+extension RDPClipboardTestServer.FileRequest {
+    init(_ request: RDPClipboardServerEnd.FileRequest) {
+        fileIndex = request.fileIndex
+        isSizeRequest = request.isSizeRequest
+        position = request.position
+        byteCount = request.byteCount
+    }
+}
+
+extension RDPClipboardTestServer.FileRequestAnswer {
+    var serverEndAnswer: RDPClipboardServerEnd.FileAnswer {
+        switch self {
+        case .answer:
+            .answer
+        case .fail:
+            .fail
+        case let .truncate(byteCount):
+            .truncate(to: byteCount)
+        case .hold:
+            .hold
+        }
+    }
+}
+
+extension RDPClipboardTestServer.ClientCopy {
+    init(_ copy: RDPClipboardServerEnd.ClientCopy) {
+        switch copy {
+        case .empty:
+            self = .empty
+        case .text:
+            self = .text
+        case .files:
+            self = .files
+        case .other:
+            self = .other
+        }
     }
 }

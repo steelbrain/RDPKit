@@ -56,7 +56,7 @@ func clipboardTestServerAnswersDownloads() async throws {
     // A size and a range for the first file, a size and four ranges for the second.
     #expect(server.fileRequestCount == 7)
 
-    server.answersFileRequests = false
+    server.fileRequestAnswer = { _ in .hold }
     let stalled = Task {
         try await server.session.downloadRemoteFiles(
             list.downloadPlan(),
@@ -71,7 +71,7 @@ func clipboardTestServerAnswersDownloads() async throws {
     await server.advanceTime(by: 120)
     await #expect(throws: RDPClipboardDownloadError.timedOut) { try await stalled.value }
 
-    server.answersFileRequests = true
+    server.fileRequestAnswer = { _ in .answer }
     await server.endSession()
     await #expect(throws: RDPClipboardDownloadError.sessionEnded) {
         try await server.session.downloadRemoteFiles(
@@ -140,3 +140,205 @@ func clipboardTestServerDeliversTheEventTurningFetchingOnQueued() async throws {
     await server.settle()
     #expect(unavailable.value == [false])
 }
+
+/// The server answers each file request as the test says: with a failure, a range cut short or
+/// empty, or later, once the download timed out or while it still waits.
+@Test(.timeLimit(.minutes(1)))
+func clipboardTestServerAnswersFileRequestsAsTold() async throws {
+    let lists = Locked<[(RDPClipboardFileGroupDescriptorW, Int)]>([])
+    let server = try await RDPClipboardTestServer(
+        onClipboardFileGroupDescriptor: { list, copyNumber in lists.withLock { $0.append((list, copyNumber)) } }
+    )
+    let contents = Data((0 ..< 100).map { UInt8($0) })
+    server.copyFiles([RDPClipboardLocalFile(fileName: "a.bin", contents: contents)])
+    await server.settle()
+    let (list, copyNumber) = try #require(lists.value.last)
+    @Sendable func download() async throws -> Data? {
+        let written = Locked<Data?>(nil)
+        _ = try await server.session.downloadRemoteFiles(
+            list.downloadPlan(),
+            copyNumber: copyNumber,
+            into: URL(fileURLWithPath: "/downloads"),
+            writeFile: { data, _ in written.withLock { $0 = data } }
+        )
+        return written.value
+    }
+
+    let requests = Locked<[RDPClipboardTestServer.FileRequest]>([])
+    server.fileRequestAnswer = { request in
+        requests.withLock { $0.append(request) }
+        return request.isSizeRequest ? .answer : .fail
+    }
+    await #expect(throws: RDPClipboardDownloadError.refused) { try await download() }
+    #expect(requests.value.map(\.isSizeRequest) == [true, false])
+    #expect(requests.value.last?.fileIndex == 0)
+    #expect(requests.value.last?.position == 0)
+    #expect(requests.value.last?.byteCount == 100)
+
+    // Short ranges are asked again from where they stopped; an empty one ends the download.
+    server.fileRequestAnswer = { $0.isSizeRequest ? .answer : .truncate(to: 40) }
+    #expect(try await download() == contents)
+    server.fileRequestAnswer = { $0.isSizeRequest ? .answer : .truncate(to: 0) }
+    await #expect(throws: RDPClipboardDownloadError.incomplete) { try await download() }
+
+    // Answered after the download timed out, the request changes nothing.
+    server.fileRequestAnswer = { _ in .hold }
+    let timedOut = Task { try await download() }
+    while server.heldFileRequestCount == 0 {
+        try await Task.sleep(for: .milliseconds(5))
+    }
+    await server.advanceTime(by: 120)
+    await #expect(throws: RDPClipboardDownloadError.timedOut) { try await timedOut.value }
+    server.answerHeldFileRequests(.hold)
+    #expect(server.heldFileRequestCount == 1)
+    server.answerHeldFileRequests()
+    #expect(server.heldFileRequestCount == 0)
+
+    // Answered while the download still waits, it goes on.
+    let waiting = Task { try await download() }
+    while server.heldFileRequestCount == 0 {
+        try await Task.sleep(for: .milliseconds(5))
+    }
+    server.fileRequestAnswer = { _ in .answer }
+    server.answerHeldFileRequests()
+    #expect(try await waiting.value == contents)
+}
+
+/// The server records each copy the client publishes, and pastes the client's files through
+/// the session's own file contents answers.
+@Test(.timeLimit(.minutes(1)))
+func clipboardTestServerRecordsTheClientsCopiesAndPastesItsFiles() async throws {
+    let server = try await RDPClipboardTestServer()
+    #expect(server.clientCopies == [.empty])
+    #expect(await server.pasteFiles() == nil)
+
+    let large = Data((0 ..< 10_000).map { UInt8(truncatingIfNeeded: $0 &* 31) })
+    server.session.publishLocalFiles([
+        RDPClipboardLocalFile(fileName: "Folder", contents: Data(), fileAttributes: RDPClipboardFileAttributes.directory),
+        RDPClipboardLocalFile(fileName: "Folder\\notes.txt", contents: Data("notes".utf8)),
+        RDPClipboardLocalFile(fileName: "empty.txt", contents: Data()),
+        RDPClipboardLocalFile(fileName: "large.bin", contents: large),
+    ])
+    let pasted = try #require(await server.pasteFiles())
+    #expect(pasted.map(\.descriptor.fileName) == ["Folder", "Folder\\notes.txt", "empty.txt", "large.bin"])
+    #expect(pasted.map(\.contents) == [Data(), Data("notes".utf8), Data(), large])
+
+    server.session.publishLocalUnicodeText("text")
+    server.session.publishLocalContent(RDPClipboardContent(html: "<b>bold</b>"))
+    server.session.withdrawLocalCopy()
+    await server.settle()
+    #expect(server.clientCopies == [.empty, .files, .text, .other, .empty])
+    #expect(await server.pasteFiles() == nil)
+
+    // A file shorter than its descriptor says runs out of bytes, and the paste fails.
+    let hello = Data("hello".utf8)
+    var descriptor = RDPClipboardLocalFile(fileName: "short.txt", contents: hello).descriptor
+    descriptor.fileSize = 10
+    server.session.publishLocalFiles([RDPClipboardLocalFile(descriptor: descriptor, contents: hello)])
+    #expect(await server.pasteFiles() == nil)
+}
+
+/// A server copy offers any formats, which the session fetches by name, and a server that
+/// fails format data requests leaves its copy unavailable.
+@Test(.timeLimit(.minutes(1)))
+func clipboardTestServerCopiesOtherFormatsAndFailsRequestsWhenTold() async throws {
+    let contents = Locked<[RDPClipboardContent]>([])
+    let unavailable = Locked<[Bool]>([])
+    let server = try await RDPClipboardTestServer(
+        onClipboardContent: { content, _ in contents.withLock { $0.append(content) } },
+        onClipboardRemoteCopyUnavailable: { isEmpty, _ in unavailable.withLock { $0.append(isEmpty) } }
+    )
+    let richText = Data("{\\rtf1 bold}".utf8)
+
+    server.copyFormats([
+        .init(id: 8, data: Data([1, 2, 3])),
+        .init(id: 0xC0B1, name: "Rich Text Format", data: richText),
+    ])
+    await server.settle()
+    #expect(contents.value == [RDPClipboardContent(richText: richText, bitmap: Data([1, 2, 3]))])
+
+    server.failsFormatDataRequests = true
+    server.copyText("refused")
+    await server.settle()
+    #expect(unavailable.value == [false])
+    #expect(contents.value.count == 1)
+}
+
+/// While stepping, the server's messages wait for the test, so the client can publish between
+/// a Format List and its data, which the session then drops, and a paste can find its copy
+/// replaced.
+@Test(.timeLimit(.minutes(1)))
+func clipboardTestServerStepsThroughItsMessages() async throws {
+    let texts = Locked<[String]>([])
+    let server = try await RDPClipboardTestServer(
+        onClipboardText: { text, _ in texts.withLock { $0.append(text) } }
+    )
+
+    server.isStepping = true
+    server.copyText("remote")
+    #expect(server.heldMessageCount == 1)
+    #expect(server.step())
+    await server.settle()
+    #expect(server.session.isAwaitingRemoteCopy)
+    // The text, which waits.
+    #expect(server.heldMessageCount == 1)
+    server.session.publishLocalUnicodeText("local")
+    while server.step() {
+        await server.settle()
+    }
+    #expect(!server.step())
+    #expect(texts.value.isEmpty)
+    #expect(server.clientCopies == [.empty, .text])
+
+    server.copyText("released")
+    #expect(server.heldMessageCount == 1)
+    server.isStepping = false
+    await server.settle()
+    #expect(texts.value == ["released"])
+
+    server.session.publishLocalFiles([RDPClipboardLocalFile(fileName: "a.txt", contents: Data([1]))])
+    await server.settle()
+    server.isStepping = true
+    let paste = Task { await server.pasteFiles() }
+    while server.heldMessageCount == 0 {
+        try await Task.sleep(for: .milliseconds(5))
+    }
+    server.session.publishLocalUnicodeText("replaced")
+    server.isStepping = false
+    #expect(await paste.value == nil)
+}
+
+/// What a handler hands the main queue, here a server action, is settled too by settling both
+/// until neither has work left, as `settle()` shows.
+@Test(.timeLimit(.minutes(1)))
+func clipboardTestServerSettlesWithTheMainQueue() async throws {
+    let box = Locked<RDPClipboardTestServer?>(nil)
+    let recorded = Locked<[String]>([])
+    let server = try await RDPClipboardTestServer(
+        onClipboardText: { text, _ in
+            DispatchQueue.main.async {
+                recorded.withLock { $0.append(text) }
+                if text == "first" {
+                    box.value?.copyText("second")
+                }
+            }
+        }
+    )
+    box.withLock { $0 = server }
+    defer { box.withLock { $0 = nil } }
+
+    server.copyText("first")
+    await settleWithMainQueue(server)
+    #expect(recorded.value == ["first", "second"])
+    #expect(server.isSettled)
+}
+
+private func settleWithMainQueue(_ server: RDPClipboardTestServer) async {
+    repeat {
+        await server.settle()
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async { continuation.resume() }
+        }
+    } while !server.isSettled
+}
+

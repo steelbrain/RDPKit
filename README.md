@@ -368,8 +368,10 @@ let report = client.run(
 
 - `RDPKitTesting`'s `RDPClipboardTestServer`, the server's end of a clipboard
   channel in memory, to test an app's clipboard code against a real
-  `RDPClipboardSession`: it copies text or files, empties or restarts its
-  clipboard, answers downloads, and pastes the client's text
+  `RDPClipboardSession`. It copies text, files or other formats, empties or
+  restarts its clipboard, and answers downloads in full, refused, cut short or
+  late. It records the client's copies and pastes the client's text or files,
+  and can hold its messages for a test to step through.
 - Mock server tests for graphics, clipboard, audio, security, Windows, and KRdp
   compatibility flows
 - First-frame capture tooling with configurable geometry, settle windows, and

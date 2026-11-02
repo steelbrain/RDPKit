@@ -202,10 +202,21 @@
 - `RDPConnectionReport.usedLegacyRSAKeyExchange` says whether the TLS
   handshake offered only RSA key exchange, which has no forward secrecy.
 - The `RDPKitTesting` library holds `RDPClipboardTestServer`, the server's
-  end of a clipboard channel in memory, so an app's tests drive its clipboard
-  code against a real `RDPClipboardSession`: the server copies text or files,
-  empties or restarts its clipboard, answers downloads or leaves them to time
-  out, and pastes the client's text, and the handlers run as `run` calls them.
+  end of a clipboard channel in memory. An app's tests drive their clipboard
+  code with it against a real `RDPClipboardSession`, and the handlers run as
+  `run` calls them. The server can:
+  - copy text, files, or other formats (`copyFormats(_:)`), and empty or
+    restart its clipboard;
+  - fail format data requests;
+  - answer each file request (`fileRequestAnswer`) in full, with a failure,
+    cut short, or later (`.hold`, then `answerHeldFileRequests(_:)`);
+  - record the client's copies in order (`clientCopies`), and paste the
+    client's text or files (`pasteFiles()`).
+
+  With `isStepping` on, the server's messages wait until `step()` hands each
+  one to the session. `isSettled` is true once nothing the server set off is
+  still under way, and `settle()`'s documentation shows how to wait for
+  handlers that hand work on to the main queue.
 - `RDPConnectionReport.presentedFrameCount` counts the frames the
   `onGraphicsFrame` handler showed, where `rdpGraphicsFirstFrame` is the first
   that came, shown or not.
