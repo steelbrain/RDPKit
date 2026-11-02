@@ -791,12 +791,6 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                 }
             }
             let didPresentFrame = OSAllocatedUnfairLock(initialState: false)
-            // Which remote copy a clipboard handler is called for, so the bridge can drop one
-            // that a publish on the main thread replaced before the copy got there.
-            let clipboardSession = OSAllocatedUnfairLock<RDPClipboardSession?>(initialState: nil)
-            let deliveredRemoteCopyNumber: @Sendable () -> Int = {
-                clipboardSession.withLock { $0?.deliveredRemoteCopyNumber } ?? 0
-            }
             let decodeQueue = RDPFrameDecodeQueue(
                 shouldCancel: {
                     cancellation.isCancelled
@@ -912,28 +906,26 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                     // thread, so nothing is fetched until the bridge applies the sharing choice;
                     // turning fetching on then fetches a copy that came in between.
                     session.fetchesRemoteCopies = false
-                    clipboardSession.withLock { $0 = session }
                     sink.apply { controller in
                         controller.clipboard.attach(session)
                         controller.render()
                     }
                 },
-                onClipboardText: { text in
-                    let copyNumber = deliveredRemoteCopyNumber()
+                // Each remote copy comes with its number, so the bridge can drop one that a
+                // publish on the main thread replaced before the copy got there.
+                onClipboardText: { text, copyNumber in
                     sink.apply { controller in
                         controller.clipboard.receiveText(text, copyNumber: copyNumber)
                         controller.render()
                     }
                 },
-                onClipboardFileGroupDescriptor: { descriptorList in
-                    let copyNumber = deliveredRemoteCopyNumber()
+                onClipboardFileGroupDescriptor: { descriptorList, copyNumber in
                     sink.apply { controller in
                         controller.clipboard.receiveFileList(descriptorList, copyNumber: copyNumber)
                         controller.render()
                     }
                 },
-                onClipboardRemoteCopyUnavailable: { isEmpty in
-                    let copyNumber = deliveredRemoteCopyNumber()
+                onClipboardRemoteCopyUnavailable: { isEmpty, copyNumber in
                     sink.apply { controller in
                         controller.clipboard.receiveRemoteCopyUnavailable(isEmpty: isEmpty, copyNumber: copyNumber)
                         controller.render()

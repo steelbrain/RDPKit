@@ -120,16 +120,17 @@ extension RDPClientConnection {
         case .ready:
             callbacks.onClipboardReady?(clipboard)
         case let .text(text):
-            callbacks.onClipboardText?(text)
+            callbacks.onClipboardText?(text, clipboard.deliveredRemoteCopyNumber)
         case let .content(content):
+            let copyNumber = clipboard.deliveredRemoteCopyNumber
             if let text = content.text {
-                callbacks.onClipboardText?(text)
+                callbacks.onClipboardText?(text, copyNumber)
             }
-            callbacks.onClipboardContent?(content)
+            callbacks.onClipboardContent?(content, copyNumber)
         case let .fileGroupDescriptor(descriptor):
-            callbacks.onClipboardFileGroupDescriptor?(descriptor)
+            callbacks.onClipboardFileGroupDescriptor?(descriptor, clipboard.deliveredRemoteCopyNumber)
         case let .remoteCopyUnavailable(isEmpty):
-            callbacks.onClipboardRemoteCopyUnavailable?(isEmpty)
+            callbacks.onClipboardRemoteCopyUnavailable?(isEmpty, clipboard.deliveredRemoteCopyNumber)
         case let .fileContents(contents):
             callbacks.onClipboardFileContents?(contents)
         case nil:

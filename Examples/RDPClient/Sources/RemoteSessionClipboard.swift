@@ -14,7 +14,7 @@ protocol RDPClipboardSending: AnyObject, Sendable {
     var fetchesRemoteCopies: Bool { get set }
     var isAwaitingRemoteCopy: Bool { get }
     /// Whether a publish since replaced, on the server, the remote copy numbered
-    /// `remoteCopyNumber`: the session's `deliveredRemoteCopyNumber` in its handler.
+    /// `remoteCopyNumber`: the `copyNumber` its handler got.
     func hasPublished(since remoteCopyNumber: Int) -> Bool
     func publishLocalUnicodeText(_ text: String?)
     func publishLocalFiles(_ files: [RDPClipboardLocalFile])

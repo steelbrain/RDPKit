@@ -38,16 +38,25 @@ public typealias RDPInputSessionHandler = @Sendable (RDPInputSession) -> Void
 /// `serverMonitors` already hold that frame's monitors.
 public typealias RDPDisplayControlSessionHandler = @Sendable (RDPDisplayControlSession) -> Void
 public typealias RDPClipboardSessionHandler = @Sendable (RDPClipboardSession) -> Void
-public typealias RDPClipboardTextHandler = @Sendable (String) -> Void
-/// Receives every format fetched of a remote copy. Setting it makes the session fetch
-/// HTML, RTF and bitmaps as well as text; `onClipboardText` still receives the text.
-public typealias RDPClipboardContentHandler = @Sendable (RDPClipboardContent) -> Void
-/// Receives the file list of a remote copy of files. Without it, such a copy is fetched as
-/// any other, for the text or other formats it may offer beside the files; one that offers
-/// none goes to `onClipboardRemoteCopyUnavailable`.
-public typealias RDPClipboardFileGroupDescriptorHandler = @Sendable (RDPClipboardFileGroupDescriptorW) -> Void
-/// Called for a remote copy none of which is fetched, so the copy delivered before is no
-/// longer the server's: `isEmpty` when the server's clipboard was emptied (an empty Format
+/// Receives the text of a remote copy, with the copy's number, which is higher than that of
+/// every copy, local or remote, before it: an application that hands the copy to another
+/// thread, such as the main one, checks there with `RDPClipboardSession.hasPublished(since:)`
+/// whether a publish replaced it meanwhile, and downloads a copy of files under its number
+/// (`RDPClipboardSession.downloadRemoteFiles`). The other remote-copy handlers get it too.
+public typealias RDPClipboardTextHandler = @Sendable (_ text: String, _ copyNumber: Int) -> Void
+/// Receives every format fetched of a remote copy, and its number. Setting it makes the
+/// session fetch HTML, RTF and bitmaps as well as text; `onClipboardText` still receives the
+/// text.
+public typealias RDPClipboardContentHandler = @Sendable (_ content: RDPClipboardContent, _ copyNumber: Int) -> Void
+/// Receives the file list of a remote copy of files, and its number. Without it, such a copy
+/// is fetched as any other, for the text or other formats it may offer beside the files; one
+/// that offers none goes to `onClipboardRemoteCopyUnavailable`.
+public typealias RDPClipboardFileGroupDescriptorHandler = @Sendable (
+    _ list: RDPClipboardFileGroupDescriptorW,
+    _ copyNumber: Int
+) -> Void
+/// Called, with its number, for a remote copy none of which is fetched, so the copy delivered
+/// before is no longer the server's: `isEmpty` when the server's clipboard was emptied (an empty Format
 /// List), and otherwise it holds only formats the session does not fetch, such as a bitmap
 /// without `onClipboardContent` or files without `onClipboardFileGroupDescriptor`, or every
 /// format asked for of it failed or came back empty.
@@ -57,7 +66,7 @@ public typealias RDPClipboardFileGroupDescriptorHandler = @Sendable (RDPClipboar
 /// turned back on, unless a newer copy, local or remote, replaced it first. Windows 11
 /// sends an empty Format List when its clipboard is emptied; gnome-remote-desktop 51 sends
 /// nothing then.
-public typealias RDPClipboardRemoteCopyUnavailableHandler = @Sendable (_ isEmpty: Bool) -> Void
+public typealias RDPClipboardRemoteCopyUnavailableHandler = @Sendable (_ isEmpty: Bool, _ copyNumber: Int) -> Void
 public typealias RDPClipboardFileContentsHandler = @Sendable (RDPClipboardFileContentsResponse) -> Void
 public typealias RDPAudioSampleHandler = @Sendable (RDPAudioSample) -> Void
 /// How long the sample `onAudioSample` is about to get will wait before it is heard: the

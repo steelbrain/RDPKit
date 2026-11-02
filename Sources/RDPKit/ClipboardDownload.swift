@@ -104,8 +104,8 @@ extension RDPClipboardSession {
     /// quarantine mark or place folders. `progress` is called before each request, on no
     /// particular thread.
     ///
-    /// `copyNumber` is ``deliveredRemoteCopyNumber`` read in the `onClipboardFileGroupDescriptor`
-    /// handler that got `list`. A newer copy, the server's or a publish, or turning
+    /// `copyNumber` is the one the `onClipboardFileGroupDescriptor` handler got with `list`.
+    /// A newer copy, the server's or a publish, or turning
     /// ``fetchesRemoteCopies`` off ends the download with ``RDPClipboardDownloadError/replaced``
     /// while a request waits or before the next, also before the first; one after the last
     /// answer does not, so the application checks, once the download returns, that the copy is

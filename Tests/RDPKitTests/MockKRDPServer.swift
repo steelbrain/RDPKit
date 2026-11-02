@@ -1455,7 +1455,10 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
                 write(MockKRDPFixtures.clipboardUnicodeTextRequest(), context: context)
             }
         } else if let request = try RDPClipboardFileContentsRequestPDU.parseIfPresent(from: clipboardPDU) {
-            write(MockKRDPFixtures.clipboardPacket(clipboardFileContentsResponse(for: request).encoded()), context: context)
+            // A range can span many chunks.
+            for packet in MockKRDPFixtures.clipboardPackets(clipboardFileContentsResponse(for: request).encoded()) {
+                write(packet, context: context)
+            }
             if request.flags & RDPClipboardFileContentsFlags.range != 0 {
                 releaseGraphicsHandshake(context: context)
             }

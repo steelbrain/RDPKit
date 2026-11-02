@@ -134,7 +134,8 @@ transcript keeps server PDUs in full, so store it as you would the session
 itself.
 
 The configuration also sets the keyboard the server assumes and the folders it
-can see, and `onClipboardContent` receives every format of a remote copy:
+can see, and `onClipboardContent` receives every format of a remote copy, with
+its number, which `hasPublished(since:)` and `downloadRemoteFiles` take:
 
 ```swift
 var configuration = RDPConnectionConfiguration(host: "rdp.example.com", credentials: credentials)
@@ -153,7 +154,7 @@ let report = client.run(
     onClipboardReady: { clipboard in
         clipboard.publishLocalContent(RDPClipboardContent(text: "Hello", html: "<b>Hello</b>"))
     },
-    onClipboardContent: { content in
+    onClipboardContent: { content, _ in
         print(content.text ?? "", content.html ?? "", content.bitmap.flatMap(RDPClipboardBitmap.image(fromDeviceIndependentBitmap:)) as Any)
     }
 )

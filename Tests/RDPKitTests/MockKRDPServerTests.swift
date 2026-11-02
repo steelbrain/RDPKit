@@ -2071,6 +2071,58 @@ struct MockKRDPServerTests {
 
     // MARK: Clipboard, input, display control, device redirection and audio
 
+    /// `downloadRemoteFiles` fetches a remote copy's files over the connection, a file of
+    /// several ranges too, under the number the file list's handler got; its answers never reach
+    /// `onClipboardFileContents`.
+    @Test func clientDownloadsRemoteClipboardFilesFromMockKRDPServer() throws {
+        let remoteFiles = [
+            RDPClipboardLocalFile(fileName: "notes.txt", contents: Data("hello from remote".utf8)),
+            RDPClipboardLocalFile(fileName: "large.bin", contents: Data((0 ..< 700_000).map { UInt8(truncatingIfNeeded: $0 &* 13) })),
+        ]
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let clipboard = Locked<RDPClipboardSession?>(nil)
+        let downloaded = Locked<Result<RDPClipboardDownload, Error>?>(nil)
+        let fileContentsCount = Locked(0)
+        let cancellation = RDPConnectionCancellation()
+        _ = try runMock(.init(clipboardFiles: remoteFiles), {
+            $0.clipboardEnabled = true
+            $0.graphicsFrameCaptureLimit = nil
+        }, client: {
+            RDPSessionClient().run(
+                configuration: $0,
+                onClipboardReady: { session in clipboard.withLock { $0 = session } },
+                onClipboardFileGroupDescriptor: { list, copyNumber in
+                    guard let session = clipboard.value else {
+                        return
+                    }
+                    Task {
+                        do {
+                            let download = try await session.downloadRemoteFiles(list, copyNumber: copyNumber, into: directory)
+                            downloaded.withLock { $0 = .success(download) }
+                        } catch {
+                            downloaded.withLock { $0 = .failure(error) }
+                        }
+                        cancellation.cancel()
+                    }
+                    // Ends a session whose download never ends, so the test fails rather than hangs.
+                    Thread.detachNewThread {
+                        Thread.sleep(forTimeInterval: 20)
+                        cancellation.cancel()
+                    }
+                },
+                onClipboardFileContents: { _ in fileContentsCount.withLock { $0 += 1 } },
+                cancellation: cancellation
+            )
+        })
+
+        let download = try #require(downloaded.value).get()
+        #expect(download.fileURLs.map(\.lastPathComponent) == ["notes.txt", "large.bin"])
+        #expect(try download.fileURLs.map { try Data(contentsOf: $0) } == remoteFiles.map(\.contents))
+        #expect(fileContentsCount.value == 0)
+    }
+
     @Test func clientTransfersRemoteClipboardFileFromMockKRDPServer() throws {
         let remoteFile = RDPClipboardLocalFile(
             fileName: "notes.txt",
@@ -2084,7 +2136,7 @@ struct MockKRDPServerTests {
                 configuration: $0,
                 onGraphicsFrame: { frame in observed.withLock { $0.frames.append(frame) } },
                 onClipboardReady: { session in observed.withLock { $0.clipboardSession = session } },
-                onClipboardFileGroupDescriptor: { descriptor in
+                onClipboardFileGroupDescriptor: { descriptor, _ in
                     observed.withLock { $0.fileDescriptor = descriptor }
                     observed.recordClipboardErrors { session in
                         try session.requestRemoteFileSize(streamID: 1, fileIndex: 0)
@@ -2165,22 +2217,35 @@ struct MockKRDPServerTests {
     }
 
     /// With onClipboardContent the client asks for each format of a remote copy in
-    /// turn and delivers them together; onClipboardText still gets the text.
+    /// turn and delivers them together; onClipboardText still gets the text. Both get the
+    /// copy's number, the session's `deliveredRemoteCopyNumber`.
     @Test func clientReceivesEveryFormatOfARemoteCopy() throws {
         let observed = Locked(Observed())
+        let clipboard = Locked<RDPClipboardSession?>(nil)
+        let copyNumbers = Locked<[Int]>([])
         let run = try runMock(
             .init(remoteClipboardText: "remote", remoteClipboardHTML: "<b>remote</b>"),
             { $0.clipboardEnabled = true },
             client: {
                 RDPSessionClient().run(
                     configuration: $0,
-                    onClipboardText: { text in observed.withLock { $0.clipboardTexts.append(text) } },
-                    onClipboardContent: { content in observed.withLock { $0.clipboardContents.append(content) } }
+                    onClipboardReady: { session in clipboard.withLock { $0 = session } },
+                    onClipboardText: { text, copyNumber in
+                        observed.withLock { $0.clipboardTexts.append(text) }
+                        copyNumbers.withLock { $0 += [copyNumber, clipboard.value?.deliveredRemoteCopyNumber ?? -1] }
+                    },
+                    onClipboardContent: { content, copyNumber in
+                        observed.withLock { $0.clipboardContents.append(content) }
+                        copyNumbers.withLock { $0.append(copyNumber) }
+                    }
                 )
             }
         )
 
         #expect(run.report.status == "success")
+        let copyNumber = try #require(copyNumbers.value.first)
+        #expect(copyNumber > 0)
+        #expect(copyNumbers.value == [copyNumber, copyNumber, copyNumber])
         #expect(observed.value.clipboardTexts == ["remote"])
         #expect(observed.value.clipboardContents == [RDPClipboardContent(
             text: "remote",
@@ -2202,8 +2267,8 @@ struct MockKRDPServerTests {
             client: {
                 RDPSessionClient().run(
                     configuration: $0,
-                    onClipboardText: { text in observed.withLock { $0.clipboardTexts.append(text) } },
-                    onClipboardContent: { content in observed.withLock { $0.clipboardContents.append(content) } }
+                    onClipboardText: { text, _ in observed.withLock { $0.clipboardTexts.append(text) } },
+                    onClipboardContent: { content, _ in observed.withLock { $0.clipboardContents.append(content) } }
                 )
             }
         )
@@ -2229,8 +2294,8 @@ struct MockKRDPServerTests {
             client: {
                 RDPSessionClient().run(
                     configuration: $0,
-                    onClipboardText: { text in observed.withLock { $0.clipboardTexts.append(text) } },
-                    onClipboardContent: { content in observed.withLock { $0.clipboardContents.append(content) } }
+                    onClipboardText: { text, _ in observed.withLock { $0.clipboardTexts.append(text) } },
+                    onClipboardContent: { content, _ in observed.withLock { $0.clipboardContents.append(content) } }
                 )
             }
         )
@@ -2250,7 +2315,7 @@ struct MockKRDPServerTests {
         let run = try runMock(.init(emptyRemoteClipboard: true), { $0.clipboardEnabled = true }, client: {
             RDPSessionClient().run(
                 configuration: $0,
-                onClipboardRemoteCopyUnavailable: { isEmpty in unavailable.withLock { $0.append(isEmpty) } }
+                onClipboardRemoteCopyUnavailable: { isEmpty, _ in unavailable.withLock { $0.append(isEmpty) } }
             )
         })
 
@@ -2265,6 +2330,7 @@ struct MockKRDPServerTests {
     /// session's thread, like every handler.
     @Test func clientReportsAClipboardEmptiedWhileFetchingWasOff() throws {
         let unavailable = Locked<[Bool]>([])
+        let copyNumbers = Locked<[Int]>([])
         let clipboard = Locked<(session: RDPClipboardSession, thread: Thread)?>(nil)
         let reportedWhileFetchingWasOff = Locked<Bool?>(nil)
         let reportedOnSessionThread = Locked<Bool?>(nil)
@@ -2275,8 +2341,9 @@ struct MockKRDPServerTests {
                     session.fetchesRemoteCopies = false
                     clipboard.withLock { $0 = (session, Thread.current) }
                 },
-                onClipboardRemoteCopyUnavailable: { isEmpty in
+                onClipboardRemoteCopyUnavailable: { isEmpty, copyNumber in
                     unavailable.withLock { $0.append(isEmpty) }
+                    copyNumbers.withLock { $0 += [copyNumber, clipboard.value?.session.deliveredRemoteCopyNumber ?? -1] }
                     reportedWhileFetchingWasOff.withLock { $0 = clipboard.value?.session.fetchesRemoteCopies == false }
                     reportedOnSessionThread.withLock { $0 = Thread.current === clipboard.value?.thread }
                 }
@@ -2285,6 +2352,9 @@ struct MockKRDPServerTests {
 
         #expect(run.report.status == "success")
         #expect(unavailable.value == [true])
+        let copyNumber = try #require(copyNumbers.value.first)
+        #expect(copyNumber > 0)
+        #expect(copyNumbers.value == [copyNumber, copyNumber])
         #expect(reportedWhileFetchingWasOff.value == true)
         #expect(reportedOnSessionThread.value == true)
     }
@@ -2322,7 +2392,7 @@ struct MockKRDPServerTests {
                     session.fetchesRemoteCopies = false
                     clipboard.withLock { $0 = (session, Thread.current) }
                 },
-                onClipboardRemoteCopyUnavailable: { isEmpty in
+                onClipboardRemoteCopyUnavailable: { isEmpty, _ in
                     unavailable.withLock { $0.append(isEmpty) }
                     reportedOnSessionThread.withLock { $0 = Thread.current === clipboard.value?.thread }
                     cancellation.cancel()
@@ -2404,7 +2474,7 @@ struct MockKRDPServerTests {
                         )
                     },
                     onClipboardReady: { session in clipboard.withLock { $0 = session } },
-                    onClipboardText: { text in
+                    onClipboardText: { text, _ in
                         observed.withLock { $0.clipboardTexts.append(text) }
                         // Published once the server's copy is here: the mock announces that copy
                         // right after Monitor Ready, as KRdp does, so a copy published before the

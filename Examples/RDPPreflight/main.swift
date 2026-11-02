@@ -823,7 +823,7 @@ do {
                     probeRecorder.publishClipboardText(probeClipboardText, on: session)
                 }
             },
-            onClipboardText: { text in
+            onClipboardText: { text, _ in
                 probeRecorder.recordClipboardText(text)
             }
         )

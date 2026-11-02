@@ -31,6 +31,11 @@
 - While `fetchesRemoteCopies` is off, `onClipboardRemoteCopyUnavailable` is
   called at once, with `isEmpty` true, when the server empties its
   clipboard; other copies still wait until fetching is back on.
+- The remote-copy handlers, `onClipboardText`, `onClipboardContent`,
+  `onClipboardFileGroupDescriptor` and `onClipboardRemoteCopyUnavailable`, get
+  the copy's number as a second argument, so a client no longer keeps the
+  clipboard session to read `deliveredRemoteCopyNumber` in them: write
+  `{ text, copyNumber in }`, or `{ text, _ in }`.
 - `RDPClipboardRemoteFileTransferPlanningError` has a new case,
   `fileCountLimitExceeded`, which an exhaustive `switch` handles.
 - File-contents answers to streams from

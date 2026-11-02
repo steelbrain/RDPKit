@@ -1075,9 +1075,9 @@ public final class RDPClipboardSession: @unchecked Sendable {
         }
     }
 
-    /// The number of the remote copy a clipboard handler is called for, read in that handler,
-    /// on the session's thread; outside one, that of the last copy handed over. Each copy gets
-    /// a higher number than the copies, local or remote, before it.
+    /// The number of the remote copy a clipboard handler is called for, which the handler gets
+    /// as its `copyNumber`; outside one, that of the last copy handed over. Each copy gets a
+    /// higher number than the copies, local or remote, before it.
     public var deliveredRemoteCopyNumber: Int {
         lock.withLock { deliveredCopyID }
     }
