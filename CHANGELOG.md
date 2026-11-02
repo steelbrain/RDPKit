@@ -20,6 +20,13 @@
   the 2018 CredSSP update: connect with it off, and on that failure ask the
   user before connecting again with it on. RDPClient offers Connect Anyway
   for that one connection.
+- `RDPVideoToolboxFrameDecoder` throws the new
+  `RDPVideoDecodeError.needsCompositor(_:)` for `.surfaceCopy` and `.alpha`
+  snapshots, which it took for empty video samples that stalled the surface's
+  video until a keyframe. `RDPFrameDecodeQueue` already applied them.
+- While `fetchesRemoteCopies` is off, `onClipboardRemoteCopyUnavailable` is
+  called at once, with `isEmpty` true, when the server empties its
+  clipboard; other copies still wait until fetching is back on.
 
 ### Additions
 
@@ -62,6 +69,41 @@
 - The report's `rdpKeyboardIndicators` holds the toggle keys the server last
   said are on, so a client can set Caps Lock again when it drifts.
   `RDPToggleKeyFlags` is `Encodable` and `Hashable`.
+- The report's `rdpGraphicsFailureUpdateFirstMessageIndex` and
+  `rdpGraphicsFailureUpdateMessageCount` say where a failing graphics update's
+  summaries start and how many PDUs it held, which RDPPreflight and
+  RDPClient's diagnostics show, and `RDPGFXMessageSummary.omittedListEntryCount`
+  how many entries its codec lists left out.
+
+### Security
+
+- Data a server, or anyone on the path, sends with the X.224 Connection
+  Confirm ends the connection before the TLS handshake. It was read later as
+  if TLS had protected it, so it could inject PDUs such as a Server
+  Redirection.
+- Wire transcripts and report hex zero a Server Redirection's cleartext
+  password also where another field, such as the user name, has its bytes or
+  overlaps it.
+- A RemoteFX message writes at most sixteen times its surface's pixels, as
+  other graphics updates do, gives at most 65,535 region rects, and leaves one
+  decoded tile per position; RemoteFX Progressive keeps state for at most
+  65,536 tile positions over all surfaces. One message can no longer hold
+  gigabytes of tiles or keep the session drawing for seconds.
+- A Monitor Layout PDU of more than 16 monitors is refused.
+- The copies a graphics frame holds count toward its memory bound, which
+  never passes the 1 GiB all RDPGFX surfaces may hold; copies out of a staging
+  surface expand in time linear in their points and carry at most 4,096 access
+  units a frame; and a failing update's report keeps at most 64 PDU summaries
+  of at most 1,024 list entries each.
+- At most 32 MiB of the server's shared-drive requests wait for the drive I/O
+  queue, and directory listings hold at most 64 MiB of names together, so a
+  server can no longer make the client hold its requests or listings until
+  memory runs out.
+- RDPClient deletes the saved password of an account a profile is saved off,
+  as Delete Profile does, unless another profile uses that account.
+- Remote files are numbered in linear time, so a server's file list of long
+  names that differ only near the end can no longer keep the transfer's
+  planning busy for minutes.
 
 ### Compatibility and fixes
 
@@ -86,6 +128,78 @@
   bottom-left coordinates the top edge is inside and the bottom edge outside,
   as `NSMouseInRect` counts them, so hovering or clicking the remote desktop's
   first row works without a letterbox.
+- NTLM upper-cases the user name with Windows' own table, one UTF-16 code
+  unit at a time, as read from Windows 11. A user name with µ, ı, ſ, ς,
+  Georgian letters, a character outside the BMP, or another of the 252 code
+  units where Unicode's case mapping differs, failed to sign in.
+- A dynamic virtual channel Data First shorter than a full PDU is accepted:
+  xrdp sends RDPGFX messages in 1,500-byte blocks, and its first message
+  longer than that ended the session.
+- After VideoToolbox invalidates a decompression session, as iOS does in the
+  background, a surface's video waits for a keyframe instead of decoding
+  P-frames without their references. Servers that cannot be asked for one,
+  FreeRDP shadow and KRdp, show the last picture until their next periodic
+  keyframe.
+- An HEVC stream waiting for a keyframe starts again at a BLA picture too.
+- `RDPGraphicsPathDescription` names RDPGFX 10.0 to 10.6 with each version's
+  flags.
+- RDPGFX video is no longer painted over with black or stale pixels when a
+  frame changes more than 1,024 separate areas around it, unless the video
+  itself lies in more than 1,024 pieces, or leaving it out would split the
+  changed area into more than 512.
+- NSCodec Set Surface Bits are drawn the right way up.
+- A second RDPGFX channel starts ClearCodec afresh, so its streams are no
+  longer refused as out of sequence.
+- Classic RemoteFX tiles that a later tile replaces, or that fall outside the
+  area drawn, are no longer decoded, so bad data in them no longer fails the
+  update.
+- A Set Error Info of ERRINFO_NONE clears an earlier error, so a Deactivate
+  All after it reactivates the session instead of ending it.
+- A `timeoutSeconds` of 0 or less set after the configuration's initializer
+  counts as 1 second, as the initializer counts it.
+- After a Server Redirection with no credentials configured, the reconnect
+  sends the redirection's user name and domain with its password cookie, and
+  the report names them.
+- Input sent as the server deactivates the session, and a layout sent as a
+  display control session ends, are dropped instead of written after the
+  reactivation.
+- Wire transcripts redact only the I/O channel, so a large clipboard, drive
+  or audio message is no longer partly zeroed, and their docs say which client
+  PDUs they record.
+- `shouldCancel` is polled while a clipboard reply or a shared-drive request
+  waits for room, so `run` returns cancelled instead of staying blocked.
+- Shared drives are announced from the drive I/O queue, so a folder on a
+  network volume that stopped answering no longer holds up the connection.
+- A shared-drive file opened with MAXIMUM_ALLOWED falls back to read access
+  also when it is locked in the Finder, on a read-only volume or sandbox
+  grant, or a running program.
+- A server copy announced while a Format List of the client's is unanswered,
+  an empty one included, is acknowledged but neither fetched nor reported:
+  the server takes the client's copy after it, so an app no longer replaces
+  what the user just copied, or files RDPClient is still reading, with the
+  older one, also after the server's clipboard restarts. Only the empty list
+  sent on joining cliprdr before the app's first copy, or once a server copy
+  has replaced it, does not count, so KRdp's copy at connect, sent ahead of
+  its answer to that list, is still fetched.
+- The server's next copy stops the app's earlier copy being offered also when
+  a client Format List was unanswered as the server clipboard restarted.
+- A Format Data Response whose chunk the channel layer refuses, or whose
+  cliprdr header does not parse, still answers its request, so later remote
+  copies are still fetched.
+- Without `onClipboardFileGroupDescriptor`, a remote copy of files is fetched
+  for the other formats offered with it, or reported unavailable, instead of
+  fetching a file list the app would drop.
+- RDPClient's Port field takes every TCP port; one above 8192 was dropped.
+- RDPClient connects a profile from the list with the Remember choice the
+  form shows beside its password, so the password Keychain has for it is no
+  longer deleted once signed in. Deleting one of two profiles for an account
+  no longer leaves the other signing in with the deleted one's legacy
+  password.
+- RDPClient reads a stored client license off the main thread, so a Keychain
+  prompt no longer freezes every window.
+- RDPFirstFrameCapture goes on after a frame fails to decode, until
+  `--settle-seconds` ends or, with no frame decoded, `--timeout-seconds`.
+- RDPFrameBenchmark's `--frames` takes 1 to 60, which leaves it spare frames.
 
 ## 0.6.0
 
