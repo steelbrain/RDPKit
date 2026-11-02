@@ -118,6 +118,55 @@ import VideoToolbox
     #expect(CVPixelBufferGetWidth(next.imageBuffer) == 64)
 }
 
+/// A copy within a video surface, as when Windows scrolls it, or alpha over its pixels holds no
+/// picture; rejecting one leaves the surface's AVC420 stream decoding, not waiting for a
+/// keyframe that Windows sends only when asked.
+@Test func videoToolboxFrameDecoderRejectsCopiesAndAlphaWithoutStoppingTheVideo() throws {
+    let accessUnits = try encodeH264AnnexB(frames: [(luma: 60, chroma: 128), (luma: 70, chroma: 128)])
+    let decoder = RDPVideoToolboxFrameDecoder()
+    _ = try decoder.decodeDetailed(videoFrame(surfaceID: 1, videoCodec: .h264, encodedVideoData: accessUnits[0]))
+    let region = RDPFrameRect(left: 0, top: 0, right: 16, bottom: 8)
+    let copy = RDPGraphicsFrameSnapshot(
+        frameID: nil,
+        surfaceID: 1,
+        codecID: RDPGFXCodecID.uncompressed,
+        codecName: "rdpgfx-surface-to-surface",
+        pixelFormat: RDPGFXPixelFormat.xrgb8888,
+        destinationRect: region,
+        regionRects: [region],
+        encodedVideoData: Data(),
+        contentKind: .surfaceCopy,
+        surfaceCopy: RDPGraphicsSurfaceCopy(
+            source: .surface(1),
+            destination: .surface(1),
+            blocks: [.init(source: RDPFrameRect(left: 0, top: 8, right: 16, bottom: 16), destination: region)]
+        )
+    )
+    let alpha = RDPGraphicsFrameSnapshot(
+        frameID: nil,
+        surfaceID: 1,
+        codecID: RDPGFXCodecID.alpha,
+        codecName: RDPGFXCodecID.name(for: RDPGFXCodecID.alpha),
+        pixelFormat: RDPGFXPixelFormat.xrgb8888,
+        destinationRect: region,
+        regionRects: [region],
+        encodedVideoData: Data(),
+        contentKind: .alpha,
+        decodedBitmapData: Data(repeating: 0x80, count: 16 * 8 * 4),
+        decodedBitmapBytesPerRow: 16 * 4
+    )
+
+    #expect(throws: RDPVideoDecodeError.needsCompositor(.surfaceCopy)) {
+        try decoder.decodeDetailed(copy)
+    }
+    #expect(throws: RDPVideoDecodeError.needsCompositor(.alpha)) {
+        try decoder.decodeDetailed(alpha)
+    }
+
+    let next = try decoder.decodeDetailed(videoFrame(surfaceID: 1, videoCodec: .h264, encodedVideoData: accessUnits[1]))
+    #expect(CVPixelBufferGetWidth(next.imageBuffer) == 64)
+}
+
 @Test func sequenceDecoderDecodesEncodedH264Stream() throws {
     let accessUnits = try encodeH264AnnexB(frames: [(luma: 60, chroma: 128), (luma: 60, chroma: 128)])
     let decoder = RDPVideoToolboxSequenceDecoder(codec: .h264)

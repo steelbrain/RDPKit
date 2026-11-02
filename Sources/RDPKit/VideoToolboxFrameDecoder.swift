@@ -39,7 +39,7 @@ public final class RDPVideoToolboxFrameDecoder {
     }
 
     /// Decodes `frame` into the picture it shows: the top-left `width` x `height` of the
-    /// coded picture, which can be larger.
+    /// coded picture, which can be larger. See ``decodeDetailed(_:)`` for the snapshots it takes.
     public func decode(_ frame: RDPGraphicsFrameSnapshot) throws -> CGImage {
         let ciImage = CIImage(cvImageBuffer: try decodeDetailed(frame).imageBuffer)
         let extent = ciImage.extent
@@ -53,10 +53,18 @@ public final class RDPVideoToolboxFrameDecoder {
         return image
     }
 
+    /// Decodes a `.video` or `.bitmap` snapshot. `.surfaceCopy` and `.alpha` snapshots change
+    /// pixels decoded earlier and carry no picture of their own; ``RDPFrameDecodeQueue``
+    /// applies them. Here they throw ``RDPVideoDecodeError/needsCompositor(_:)`` and leave the
+    /// surfaces' video streams as they were; the surfaces in their `deletedSurfaceIDs` are still
+    /// dropped.
     public func decodeDetailed(_ frame: RDPGraphicsFrameSnapshot) throws -> RDPVideoToolboxDecodeResult {
         discardSurfaces(frame.deletedSurfaceIDs)
         if frame.contentKind == .bitmap {
             return try bitmapDecoder.decodeDetailed(frame)
+        }
+        guard frame.contentKind == .video else {
+            throw RDPVideoDecodeError.needsCompositor(frame.contentKind)
         }
         let isAVC444 = frame.videoCodec == .h264 && frame.avc444SubframeLayout != nil
         let stream = StreamKey(surfaceID: frame.surfaceID, codec: frame.videoCodec, isAVC444: isAVC444)
@@ -661,6 +669,9 @@ public enum RDPVideoDecodeError: Error, Equatable, CustomStringConvertible {
     /// themselves, but answer the client's monitor layout sent again (`RDPDisplayControlSession`)
     /// with one.
     case awaitingKeyframe(surfaceID: UInt16)
+    /// A `.surfaceCopy` or `.alpha` snapshot holds no picture to decode; ``RDPFrameDecodeQueue``
+    /// applies it to the pixels it presents.
+    case needsCompositor(RDPGraphicsFrameContentKind)
 
     public var description: String {
         switch self {
@@ -680,6 +691,8 @@ public enum RDPVideoDecodeError: Error, Equatable, CustomStringConvertible {
             "\(operation) failed with OSStatus \(status)."
         case let .awaitingKeyframe(surfaceID):
             "Surface \(surfaceID) is waiting for a keyframe after its video failed to decode."
+        case let .needsCompositor(contentKind):
+            "\(contentKind.rawValue) snapshots hold no picture to decode; RDPFrameDecodeQueue applies them."
         }
     }
 }
