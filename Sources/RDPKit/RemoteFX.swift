@@ -59,13 +59,20 @@ private final class RDPProgressiveTileStore: @unchecked Sendable {
     }
 
     private let lock = NSLock()
+    /// The most tile positions kept, over all surfaces.
+    private let maximumTileCount: Int
     private var coefficients: [SurfaceTileKey: RDPProgressiveCoefficients] = [:]
     private var refinements: [Key: [RDPProgressiveComponentState]] = [:]
     /// Codec context IDs with refinement state, per surface, least recently used first.
     private var codecContextIDs: [UInt16: [UInt32]] = [:]
 
+    init(maximumTileCount: Int) {
+        self.maximumTileCount = maximumTileCount
+    }
+
     /// Stores a simple or first-pass tile, adding it to the surface tile's previous
-    /// coefficients when it is a difference tile, and returns the stored tile.
+    /// coefficients when it is a difference tile, and returns the stored tile. A tile at a
+    /// new position is refused once `maximumTileCount` positions are kept.
     func store(
         _ tile: RDPProgressiveCoefficients,
         isDifference: Bool,
@@ -74,6 +81,9 @@ private final class RDPProgressiveTileStore: @unchecked Sendable {
     ) throws -> RDPProgressiveCoefficients {
         lock.lock()
         defer { lock.unlock() }
+        guard coefficients[SurfaceTileKey(key)] != nil || coefficients.count < maximumTileCount else {
+            throw RDPDecodeError.invalidRDPGFXPDU
+        }
         var stored = tile
         if isDifference {
             guard let previous = coefficients[SurfaceTileKey(key)],
@@ -350,19 +360,30 @@ final class RDPRemoteFXDecoder {
     private var hasClassicContext = false
     private var classicDataBlockState: ClassicDataBlockState = .frameBegin
     private var classicRegionRects: [RDPFrameRect] = []
-    private let progressiveStore = RDPProgressiveTileStore()
+    private let progressiveStore: RDPProgressiveTileStore
     private let isCancelled: @Sendable () -> Bool
+
+    /// The progressive tile positions kept by default, over all surfaces: as many as the
+    /// surface budget holds pixels for. A position keeps about 36 KiB, its coefficients and
+    /// the refinement state of one codec context, however little of it a surface covers: a
+    /// 1x65535 surface takes 256 KiB of the budget and has 1,024 positions.
+    static let maximumProgressiveTileCount = RDPGFXSurfaceCompositor.maximumSurfaceByteCount / (64 * 64 * 4)
 
     /// `isCancelled` is checked, from any thread, before each tile: a decode that stops
     /// throws `RDPConnectionError.cancelled`.
-    init(isCancelled: @escaping @Sendable () -> Bool = { false }) {
+    init(
+        isCancelled: @escaping @Sendable () -> Bool = { false },
+        maximumProgressiveTileCount: Int = RDPRemoteFXDecoder.maximumProgressiveTileCount
+    ) {
         self.isCancelled = isCancelled
+        progressiveStore = RDPProgressiveTileStore(maximumTileCount: maximumProgressiveTileCount)
     }
 
     // MARK: - RemoteFX Progressive
 
     /// Decodes an RFX_PROGRESSIVE_BITMAP_STREAM. With `surfaceSize`, tiles outside
-    /// the surface are rejected, which bounds the tile state kept per surface.
+    /// the surface are rejected, which bounds the tile positions kept per surface. Past
+    /// `maximumProgressiveTileCount` positions over all surfaces, a tile at a new one is too.
     func decodeProgressive(
         _ data: Data,
         surfaceID: UInt16 = 0,

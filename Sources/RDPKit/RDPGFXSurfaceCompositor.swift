@@ -261,7 +261,8 @@ final class RDPGFXSurfaceCompositor {
     private let remoteFX: RDPRemoteFXDecoder
     /// The progressive tiles of each surface decoded in the current RDPGFX frame, by tile
     /// position: a region may rely on tiles an earlier WireToSurface2 of the frame sent
-    /// (MS-RDPEGFX 2.2.4.2.1.5).
+    /// (MS-RDPEGFX 2.2.4.2.1.5). The decoder keeps state at each of these positions, so they
+    /// are capped with it, at `RDPRemoteFXDecoder.maximumProgressiveTileCount`.
     private var progressiveFrameTiles: [UInt16: [Int: RDPRemoteFXDecodedTile]] = [:]
 
     /// `isCancelled` stops a RemoteFX decode between tiles, as `RDPRemoteFXDecoder` explains.

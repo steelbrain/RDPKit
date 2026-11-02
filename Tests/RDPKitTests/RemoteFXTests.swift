@@ -174,6 +174,32 @@ func rlgrDecodesSpecEncoderOutput(algorithm: RDPRemoteFXDecoder.EntropyAlgorithm
     }
 }
 
+/// A progressive tile position keeps about 36 KiB of state however little of it a surface
+/// covers: 4,096 surfaces of 1x65535 pixels fit the surface budget and have 1,024 positions
+/// each. The positions of all surfaces are capped, by default at as many as the surface
+/// budget holds pixels for.
+@Test func caprogressiveCapsTheTilePositionsItKeepsStateFor() throws {
+    let decoder = RDPRemoteFXDecoder(maximumProgressiveTileCount: 2)
+    func send(surfaceID: UInt16, yIndex: UInt16) throws {
+        _ = try decoder.decodeProgressive(
+            caprogressiveRemoteFXGrayTilesStream(tiles: [CAPROGRESSIVERemoteFXGrayTile(xIndex: 0, yIndex: yIndex)]),
+            surfaceID: surfaceID,
+            surfaceSize: (width: 1, height: 65_535)
+        )
+    }
+
+    try send(surfaceID: 1, yIndex: 0)
+    try send(surfaceID: 2, yIndex: 1_023)
+    #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
+        try send(surfaceID: 1, yIndex: 1)
+    }
+    // A position kept may be sent again, and deleting a surface frees its positions.
+    try send(surfaceID: 2, yIndex: 1_023)
+    decoder.removeProgressiveState(surfaceID: 1)
+    try send(surfaceID: 1, yIndex: 1)
+    #expect(RDPRemoteFXDecoder.maximumProgressiveTileCount == 65_536)
+}
+
 @Test func cavideoRemoteFXDecodesLargeTileSetInOrder() throws {
     let positions = (0 ..< 12).map { (x: UInt16($0 % 4), y: UInt16($0 / 4)) }
 
