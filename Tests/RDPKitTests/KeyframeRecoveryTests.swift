@@ -158,7 +158,8 @@ import Testing
     #expect(layouts.keyframeRequestLayout() == nil)
 }
 
-private func displayControlPackets() throws -> (channel: Data, caps: Data) {
+/// The server opening a Display Control channel, on dynamic channel `channelID`, and its caps.
+private func displayControlPackets(channelID: UInt8 = 2) throws -> (channel: Data, caps: Data) {
     func drdynvc(_ payload: Data) -> Data {
         mcsSendDataIndication(
             channelID: KRdpCapture.drdynvcChannelID,
@@ -170,19 +171,20 @@ private func displayControlPackets() throws -> (channel: Data, caps: Data) {
         caps.appendLittleEndianUInt32(value)
     }
     return (
-        drdynvc(Data([0x10, 0x02]) + Data("Microsoft::Windows::RDS::DisplayControl".utf8) + Data([0])),
-        drdynvc(RDPDynamicVirtualChannelDataPDU(channelID: 2, payload: caps).encoded())
+        drdynvc(Data([0x10, channelID]) + Data("Microsoft::Windows::RDS::DisplayControl".utf8) + Data([0])),
+        drdynvc(RDPDynamicVirtualChannelDataPDU(channelID: UInt32(channelID), payload: caps).encoded())
     )
 }
 
-/// KRdp's one 3840x2400 monitor, at the replay's connect scale, as the session asks for it.
-private func krdpKeyframeRequestLayout() throws -> Data {
+/// KRdp's one 3840x2400 monitor, at the replay's connect scale, as the session on dynamic
+/// channel `channelID` asks for it.
+private func krdpKeyframeRequestLayout(channelID: UInt32 = 2) throws -> Data {
     let layout = try RDPMonitorLayout(
         remoteMonitors: [RDPRemoteMonitor(rect: RDPFrameRect(left: 0, top: 0, right: 3840, bottom: 2400), isPrimary: true)],
         scaleFactors: RDPDisplayScaleFactors(desktopScaleFactor: 100, deviceScaleFactor: 100)
     )
     return RDPDynamicVirtualChannelDataPDU(
-        channelID: 2,
+        channelID: channelID,
         payload: RDPDisplayControlMonitorLayoutPDU(monitors: layout.monitors).encoded()
     ).encoded()
 }
@@ -367,6 +369,82 @@ func videoThatIsNotShownAsksForAKeyframe(displayControlOpensLate: Bool) throws {
 
     #expect(run.report.redirectionDepth == 1)
     #expect(run.clientPackets.filter { $0.range(of: layoutData) != nil }.count == 2)
+}
+
+/// A request held until Display Control opens goes out once, through the first session: a
+/// second Display Control channel the server opens after it does not send it again.
+@Test func aHeldKeyframeRequestGoesOutOnceAcrossDisplayControlSessions() throws {
+    let firstChannel = try displayControlPackets()
+    let secondChannel = try displayControlPackets(channelID: 3)
+    let firstFrame = try KRdpCapture.events()[39...].map { try #require($0.bytes) }
+    let firstLayoutData = try krdpKeyframeRequestLayout()
+    let secondLayoutData = try krdpKeyframeRequestLayout(channelID: 3)
+    let sessions = Locked(0)
+    let run = try KRdpCapture.run(
+        prefix: 39,
+        appending: firstFrame + [firstChannel.channel, firstChannel.caps, secondChannel.channel, secondChannel.caps],
+        frameCaptureLimit: nil,
+        onEnd: { channel in
+            // Time for a second request, which would go out as the second session is handed out.
+            channel.eventLoop.scheduleTask(in: .milliseconds(500)) {
+                KRdpCapture.endConnection(channel, .close)
+            }
+        },
+        onGraphicsFrame: { _ in
+            throw RDPGraphicsFrameNotPresented(reason: "awaiting a keyframe")
+        },
+        onDisplayControlReady: { _ in
+            sessions.withLock { $0 += 1 }
+        }
+    )
+
+    #expect(sessions.value == 2)
+    #expect(run.report.rdpKeyframeRequestCount == 1)
+    #expect(run.clientPackets.filter { $0.range(of: firstLayoutData) != nil }.count == 1)
+    #expect(!run.clientPackets.contains { $0.range(of: secondLayoutData) != nil })
+}
+
+/// A request held on a connection that redirects stays with it: the connection the redirection
+/// leads to, whose video shows, asks for nothing when its Display Control opens.
+@Test func aHeldKeyframeRequestDoesNotReachARedirectionsTarget() throws {
+    let displayControl = try displayControlPackets()
+    let firstFrame = try KRdpCapture.events()[39...].map { try #require($0.bytes) }
+    let layoutData = try krdpKeyframeRequestLayout()
+    let redirection = KRdpCapture.ioPacket(KRdpCapture.redirection(
+        flags: RDPServerRedirectionPDU.Flags.loadBalanceInfo.rawValue
+    ))
+    let isDisplayControlReady = Locked(false)
+    let segments = Locked(0)
+    let run = try KRdpCapture.run(
+        prefix: 39,
+        appending: firstFrame + [redirection],
+        appendingAfterReconnect: [displayControl.channel, displayControl.caps] + firstFrame,
+        frameCaptureLimit: nil,
+        onEnd: { channel in
+            guard segments.withLock({ $0 += 1; return $0 }) == 2 else {
+                return
+            }
+            // Time for a request, which would go out as Display Control is handed out.
+            channel.eventLoop.scheduleTask(in: .milliseconds(500)) {
+                KRdpCapture.endConnection(channel, .close)
+            }
+        },
+        onGraphicsFrame: { _ in
+            // The first connection has no Display Control, so its request waits for one.
+            if !isDisplayControlReady.value {
+                throw RDPGraphicsFrameNotPresented(reason: "awaiting a keyframe")
+            }
+        },
+        onDisplayControlReady: { _ in
+            isDisplayControlReady.withLock { $0 = true }
+        }
+    )
+
+    #expect(run.report.redirectionDepth == 1)
+    #expect(isDisplayControlReady.value)
+    #expect(run.report.presentedFrameCount ?? 0 > 0)
+    #expect(run.report.rdpKeyframeRequestCount == nil)
+    #expect(!run.clientPackets.contains { $0.range(of: layoutData) != nil })
 }
 
 /// Video shown before Display Control opens drops the request held for it, and a session with
