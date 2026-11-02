@@ -58,12 +58,22 @@ public final class RDPDisplayControlTestServer: @unchecked Sendable {
     /// `serverMonitors` and `serverMonitorLayoutIssues` become these, its `graphicsResetCount`
     /// goes up by one, and the layout last sent is answered. `outputRect` is the graphics
     /// output, the desktop of a server that lists no monitors.
+    ///
+    /// Returns the layout the frames after this ResetGraphics carry, as `RDPLiveSession`
+    /// delivers it to `onServerLayout`, for a test that feeds it to the app's handler.
+    @discardableResult
     public func resetGraphics(
         monitors: [RDPRemoteMonitor],
         issues: RDPRemoteMonitorLayoutIssues = [],
         outputRect: RDPFrameRect? = nil
-    ) {
-        layouts.noteResetGraphics(outputRect: outputRect, monitors: monitors, issues: issues)
+    ) -> RDPServerLayout {
+        let resetCount = layouts.noteResetGraphics(outputRect: outputRect, monitors: monitors, issues: issues)
+        return RDPServerLayout(
+            monitors: monitors,
+            monitorLayoutIssues: issues,
+            graphicsResetCount: resetCount,
+            graphicsOutputRect: outputRect
+        )
     }
 
     /// Ends the session, as a server does when it opens another Display Control channel: it

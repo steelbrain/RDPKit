@@ -19,7 +19,8 @@ func displayControlTestServerLaysOutAndEndsItsSession() async throws {
     #expect(try session.send(layout))
     #expect(session.isLastSentLayoutPending)
     let monitors = [RDPRemoteMonitor(rect: RDPFrameRect(left: 0, top: 0, right: 1920, bottom: 1080), isPrimary: true)]
-    server.resetGraphics(monitors: monitors, issues: .clipped)
+    let serverLayout = server.resetGraphics(monitors: monitors, issues: .clipped)
+    #expect(serverLayout == RDPServerLayout(monitors: monitors, monitorLayoutIssues: .clipped, graphicsResetCount: 1))
     #expect(session.serverMonitors == monitors)
     #expect(session.serverMonitorLayoutIssues == .clipped)
     #expect(session.graphicsResetCount == 1)
@@ -47,7 +48,8 @@ func displayControlTestServerKeepsItsCapabilitiesAndOutput() async throws {
     }
 
     let output = RDPFrameRect(left: 0, top: 0, right: 1600, bottom: 900)
-    server.resetGraphics(monitors: [], outputRect: output)
+    #expect(server.resetGraphics(monitors: [], outputRect: output).graphicsOutputRect == output)
+    #expect(server.resetGraphics(monitors: [], outputRect: output).graphicsResetCount == 2)
     #expect(try server.session.requestKeyframe())
     #expect(server.sentLayouts == [try RDPMonitorLayout(
         remoteMonitors: [RDPRemoteMonitor(rect: output, isPrimary: true)],

@@ -666,14 +666,21 @@ package final class RDPDisplayLayoutRecord: @unchecked Sendable {
         return server.monitors.count == 1 ? server : nil
     }
 
-    /// Records a ResetGraphics, its graphics output and the monitors it laid out.
-    package func noteResetGraphics(outputRect: RDPFrameRect?, monitors: [RDPRemoteMonitor], issues: RDPRemoteMonitorLayoutIssues) {
+    /// Records a ResetGraphics, its graphics output and the monitors it laid out, and returns
+    /// the ResetGraphics count it made.
+    @discardableResult
+    package func noteResetGraphics(
+        outputRect: RDPFrameRect?,
+        monitors: [RDPRemoteMonitor],
+        issues: RDPRemoteMonitorLayoutIssues
+    ) -> UInt32 {
         lock.withLock {
             self.outputRect = outputRect
             self.monitors = monitors
             monitorLayoutIssues = issues
             resetCount &+= 1
             isSentLayoutPending = false
+            return resetCount
         }
     }
 }
