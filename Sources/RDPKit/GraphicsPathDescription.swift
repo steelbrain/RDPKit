@@ -42,39 +42,46 @@ public enum RDPGraphicsPathDescription {
             return "graphics not confirmed"
         }
 
-        var parts: [String]
-        switch version {
-        case RDPGFXCapabilityVersion.version107:
-            parts = ["RDPGFX v10.7"]
-            if let flags, flags & RDPGFXCapabilityFlags.avcDisabled != 0 {
-                parts.append("AVC disabled")
-            } else if let flags, flags & RDPGFXCapabilityFlags.avcThinClient != 0 {
-                parts.append("AVC thin-client")
-            }
-            if let flags, flags & RDPGFXCapabilityFlags.scaledMapDisabled != 0 {
-                parts.append("scaled-map disabled")
-            }
-        case RDPGFXCapabilityVersion.version81:
-            parts = ["RDPGFX v8.1"]
-            if let flags, flags & RDPGFXCapabilityFlags.thinClient != 0 {
-                parts.append("thin-client")
-            }
-            if let flags, flags & RDPGFXCapabilityFlags.avc420Enabled != 0 {
-                parts.append("AVC420")
-            }
-        case RDPGFXCapabilityVersion.version8:
-            parts = ["RDPGFX v8"]
-            if let flags, flags & RDPGFXCapabilityFlags.thinClient != 0 {
-                parts.append("thin-client")
-            }
-        default:
-            parts = ["RDPGFX 0x\(String(format: "%08x", version))"]
+        typealias Flags = RDPGFXCapabilityFlags
+        let name = versionName(version) ?? "0x\(String(format: "%08x", version))"
+        var parts = ["RDPGFX \(name)"]
+        // Flags the version does not define are ignored, as RDPGFXCapabilitySet.flags ignores them.
+        let definedFlags = (flags ?? 0) & (RDPGFXCapabilitySet.definedFlags(for: version) ?? 0)
+        if definedFlags & Flags.thinClient != 0 {
+            parts.append("thin-client")
+        }
+        if definedFlags & Flags.avc420Enabled != 0 {
+            parts.append("AVC420")
+        }
+        if definedFlags & Flags.avcDisabled != 0 {
+            parts.append("AVC disabled")
+        } else if definedFlags & Flags.avcThinClient != 0 {
+            parts.append("AVC thin-client")
+        }
+        if definedFlags & Flags.scaledMapDisabled != 0 {
+            parts.append("scaled-map disabled")
         }
 
         if let flags {
             parts.append("flags=0x\(String(format: "%08x", flags))")
         }
         return parts.joined(separator: " ")
+    }
+
+    private static func versionName(_ version: UInt32) -> String? {
+        switch version {
+        case RDPGFXCapabilityVersion.version8: "v8"
+        case RDPGFXCapabilityVersion.version81: "v8.1"
+        case RDPGFXCapabilityVersion.version10: "v10.0"
+        case RDPGFXCapabilityVersion.version101: "v10.1"
+        case RDPGFXCapabilityVersion.version102: "v10.2"
+        case RDPGFXCapabilityVersion.version103: "v10.3"
+        case RDPGFXCapabilityVersion.version104: "v10.4"
+        case RDPGFXCapabilityVersion.version105: "v10.5"
+        case RDPGFXCapabilityVersion.version106: "v10.6"
+        case RDPGFXCapabilityVersion.version107: "v10.7"
+        default: nil
+        }
     }
 
     private static func frameDescription(_ frame: RDPGraphicsFrameSnapshot) -> String {

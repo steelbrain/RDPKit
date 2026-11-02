@@ -367,6 +367,29 @@ func connectionConfigurationKeepsAValidClientName(given: String, clientName: Str
     #expect(description == "RDPGFX v10.7 AVC thin-client flags=0x00000042 -> avc444v2/H.264")
 }
 
+/// A server whose newest RDPGFX version is below 10.7 confirms an older 10.x set; its flags read
+/// as that version defines them (MS-RDPEGFX 2.2.3).
+@Test(arguments: [
+    (RDPGFXCapabilityVersion.version106, 0x20, "RDPGFX v10.6 AVC disabled flags=0x00000020"),
+    (RDPGFXCapabilityVersion.version104, 0x42, "RDPGFX v10.4 AVC thin-client flags=0x00000042"),
+    (RDPGFXCapabilityVersion.version103, 0x40, "RDPGFX v10.3 AVC thin-client flags=0x00000040"),
+    (RDPGFXCapabilityVersion.version10, 0x22, "RDPGFX v10.0 AVC disabled flags=0x00000022"),
+    (RDPGFXCapabilityVersion.version101, nil, "RDPGFX v10.1"),
+    // 10.2 defines no AVC_THINCLIENT, and only 10.7 SCALEDMAP_DISABLE.
+    (RDPGFXCapabilityVersion.version102, 0x40, "RDPGFX v10.2 flags=0x00000040"),
+    (RDPGFXCapabilityVersion.version105, 0x80, "RDPGFX v10.5 flags=0x00000080"),
+] as [(UInt32, UInt32?, String)])
+func graphicsPathDescriptionNamesEachVersion10Confirm(version: UInt32, flags: UInt32?, expected: String) {
+    let description = RDPGraphicsPathDescription.describe(
+        selectedCapabilityVersion: version,
+        selectedCapabilityFlags: flags,
+        firstFrame: nil,
+        updateMessages: nil
+    )
+
+    #expect(description == expected)
+}
+
 @Test func graphicsPathDescriptionNamesCaprogressiveUpdatePath() throws {
     var payload = Data()
     payload.appendLittleEndianUInt16(0)

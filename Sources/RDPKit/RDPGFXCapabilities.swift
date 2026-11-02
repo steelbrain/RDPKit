@@ -165,7 +165,7 @@ struct RDPGFXCapabilitySet: Equatable, Sendable {
         return definedFlags(for: version) == nil ? nil : 4
     }
 
-    private static func definedFlags(for version: UInt32) -> UInt32? {
+    static func definedFlags(for version: UInt32) -> UInt32? {
         typealias Flags = RDPGFXCapabilityFlags
         switch version {
         case RDPGFXCapabilityVersion.version8:
