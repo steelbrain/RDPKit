@@ -115,15 +115,20 @@
   summaries start and how many PDUs it held, which RDPPreflight and
   RDPClient's diagnostics show, and `RDPGFXMessageSummary.omittedListEntryCount`
   how many entries its codec lists left out.
-- `RDPClipboardSession.downloadRemoteFiles(_:copyNumber:into:limits:progress:writeFile:)`
-  downloads the files of a remote copy: a size request per file, then ranges,
-  asking again for the rest of a range the server answers short, up to
-  `RDPClipboardDownloadLimits` (32 MiB, 1000 files, 512 KiB ranges, two
-  minutes per request). It ends with an `RDPClipboardDownloadError` once a
-  newer copy replaces the one downloading, the connection closes, or the
-  server refuses, stalls or sends short, and with `CancellationError` when its
-  task is cancelled. `writeFile` lets an app set a quarantine mark. RDPClient
-  downloads through it.
+- `RDPClipboardFileGroupDescriptorW.downloadPlan(limits:)` plans the download
+  of a remote copy's files within `RDPClipboardDownloadLimits` (32 MiB, 1000
+  files, 512 KiB ranges, two minutes per request): the files under the names
+  they get, whether folders are left out, entries or names that carry them,
+  and the declared total, so an app can refuse a copy or name its first file
+  before it makes a folder. `RDPClipboardSession.downloadRemoteFiles(_:copyNumber:into:progress:writeFile:)`
+  follows the plan: a size request per file, then ranges, asking again for the
+  rest of a range the server answers short. It ends with an
+  `RDPClipboardDownloadError` once a newer copy replaces the one downloading,
+  the connection closes, or the server refuses, stalls or sends short, and
+  with `CancellationError` when its task is cancelled, writing nothing more.
+  It awaits `progress`, so reports arrive in order and none after it returns,
+  also through a hop to the main actor. `writeFile` lets an app set a
+  quarantine mark. RDPClient downloads through it.
 - `RDPClipboardFileGroupDescriptorW.remoteFileTransferFiles` takes a
   `maximumFileCount`.
 - `RDPConnectionReport.credentialsVerifiedBeforeActivation` says whether the

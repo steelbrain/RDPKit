@@ -27,11 +27,10 @@ protocol RDPClipboardSending: AnyObject, Sendable {
     @discardableResult
     func publishLocalFiles(_ files: [RDPClipboardLocalFile], forCopy copyNumber: Int) -> Bool
     func downloadRemoteFiles(
-        _ list: RDPClipboardFileGroupDescriptorW,
+        _ plan: RDPClipboardDownloadPlan,
         copyNumber: Int,
         into directory: URL,
-        limits: RDPClipboardDownloadLimits,
-        progress: (@Sendable (RDPClipboardDownloadProgress) -> Void)?,
+        progress: (@Sendable (RDPClipboardDownloadProgress) async -> Void)?,
         writeFile: @Sendable (Data, URL) throws -> Void
     ) async throws -> RDPClipboardDownload
 }
@@ -245,13 +244,10 @@ final class RDPRemoteSessionClipboard {
         guard let session else {
             return
         }
-        let files: [RDPClipboardRemoteFileTransferFile]
+        let plan: RDPClipboardDownloadPlan
         let directory: URL
         do {
-            files = try descriptorList.remoteFileTransferFiles(
-                maximumTotalByteCount: remoteFileDownloadLimits.maximumTotalByteCount,
-                maximumFileCount: remoteFileDownloadLimits.maximumFileCount
-            )
+            plan = try descriptorList.downloadPlan(limits: remoteFileDownloadLimits)
             directory = try makeDownloadDirectory()
         } catch let error as RDPClipboardRemoteFileTransferPlanningError {
             message = planningMessage(for: error)
@@ -261,19 +257,17 @@ final class RDPRemoteSessionClipboard {
             return
         }
         let id = UUID()
-        let showProgress: @Sendable (RDPClipboardDownloadProgress) -> Void = { [weak self] progress in
-            Task { @MainActor [self] in
-                self?.showDownloadProgress(progress, of: id)
-            }
+        // Awaited, so the reports reach this thread in order, and before the download's end.
+        let showProgress: @Sendable (RDPClipboardDownloadProgress) async -> Void = { [weak self] progress in
+            await self?.showDownloadProgress(progress, of: id)
         }
         let task = Task { [weak self] in
             let outcome: Result<RDPClipboardDownload, Error>
             do {
                 outcome = try .success(await session.downloadRemoteFiles(
-                    descriptorList,
+                    plan,
                     copyNumber: copyNumber,
                     into: directory,
-                    limits: remoteFileDownloadLimits,
                     progress: showProgress,
                     writeFile: { data, fileURL in
                         try data.write(to: fileURL, options: .atomic)
@@ -289,8 +283,8 @@ final class RDPRemoteSessionClipboard {
         showDownloadProgress(
             RDPClipboardDownloadProgress(
                 fileOffset: 0,
-                fileCount: files.count,
-                fileName: files[0].fileName,
+                fileCount: plan.files.count,
+                fileName: plan.files[0].fileName,
                 receivedByteCount: 0,
                 fileByteCount: nil
             ),
@@ -463,7 +457,8 @@ final class RDPRemoteSessionClipboard {
         try fileURL.setResourceValues(values)
     }
 
-    /// Says which file of download `id` is coming, while it is the download under way.
+    /// Says which file of download `id` is coming, while it is the download under way: one a
+    /// newer copy discarded can report once more before its task sees it is cancelled.
     private func showDownloadProgress(_ progress: RDPClipboardDownloadProgress, of id: UUID) {
         guard fileDownload?.id == id else {
             return

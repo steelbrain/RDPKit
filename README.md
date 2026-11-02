@@ -258,11 +258,12 @@ let report = client.run(
 - `deliveredRemoteCopyNumber` and `hasPublished(since:)` let a client that
   applies remote copies on another thread drop one its own publish replaced on
   the way.
-- Remote file downloads: `RDPClipboardSession.downloadRemoteFiles` fetches a
-  remote copy's files into a folder, asking again for the rest of a range the
-  server answers short, within `RDPClipboardDownloadLimits` (32 MiB, 1000
-  files, two minutes per request by default), and ends once a newer copy
-  replaces the one downloading or the connection closes.
+- Remote file downloads: `downloadPlan(limits:)` plans a remote copy's files
+  within `RDPClipboardDownloadLimits` (32 MiB, 1000 files, two minutes per
+  request by default), and `RDPClipboardSession.downloadRemoteFiles` fetches
+  them into a folder, asking again for the rest of a range the server answers
+  short, and ends once a newer copy replaces the one downloading or the
+  connection closes.
 - File contents requests and responses, for an app that makes its own: they
   have no timeout, so to give one up, ignore answers for its stream ID and use
   a new one, below `RDPClipboardSession.firstDownloadStreamID`, for the next

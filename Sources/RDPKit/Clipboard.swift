@@ -994,7 +994,7 @@ public final class RDPClipboardSession: @unchecked Sendable {
     /// publish until a server copy the session takes retires it. A restart of the server's
     /// clipboard leaves it as it is, as it leaves the local content.
     private var isOfferingPublishedCopy = false
-    /// The requests of ``downloadRemoteFiles(_:copyNumber:into:limits:progress:writeFile:)``
+    /// The requests of ``downloadRemoteFiles(_:copyNumber:into:progress:writeFile:)``
     /// that wait for an answer, by stream.
     private var fileContentsWaiters: [UInt32: RDPClipboardFileContentsWaiter] = [:]
     private var lastDownloadStreamID = UInt32.max
@@ -1509,7 +1509,7 @@ public final class RDPClipboardSession: @unchecked Sendable {
         formatDataRequests += requests.map { RDPClipboardFormatDataRequestSlot(copyID: remoteCopyID, response: $0) }
     }
 
-    /// The first stream ID ``downloadRemoteFiles(_:copyNumber:into:limits:progress:writeFile:)``
+    /// The first stream ID ``downloadRemoteFiles(_:copyNumber:into:progress:writeFile:)``
     /// uses; the answers to streams from it up never reach `onClipboardFileContents`, so an
     /// application's own requests use streams below it.
     public static let firstDownloadStreamID: UInt32 = 0x8000_0000

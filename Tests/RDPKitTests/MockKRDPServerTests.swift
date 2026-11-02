@@ -2290,7 +2290,7 @@ struct MockKRDPServerTests {
                     }
                     Task {
                         do {
-                            let download = try await session.downloadRemoteFiles(list, copyNumber: copyNumber, into: directory)
+                            let download = try await session.downloadRemoteFiles(list.downloadPlan(), copyNumber: copyNumber, into: directory)
                             downloaded.withLock { $0 = .success(download) }
                         } catch {
                             downloaded.withLock { $0 = .failure(error) }

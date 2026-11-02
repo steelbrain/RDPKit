@@ -7,7 +7,7 @@ import Testing
 private final class RecordedDownload: @unchecked Sendable {
     let copyNumber: Int
     let directory: URL
-    let progress: (@Sendable (RDPClipboardDownloadProgress) -> Void)?
+    let progress: (@Sendable (RDPClipboardDownloadProgress) async -> Void)?
     /// The bridge's task that waits for it, once the test has looked it up.
     @MainActor var bridgeTask: Task<Void, Never>?
     private let lock = NSLock()
@@ -15,7 +15,7 @@ private final class RecordedDownload: @unchecked Sendable {
     private var outcome: Result<[Data], Error>?
     private var cancelled = false
 
-    init(copyNumber: Int, directory: URL, progress: (@Sendable (RDPClipboardDownloadProgress) -> Void)?) {
+    init(copyNumber: Int, directory: URL, progress: (@Sendable (RDPClipboardDownloadProgress) async -> Void)?) {
         self.copyNumber = copyNumber
         self.directory = directory
         self.progress = progress
@@ -153,27 +153,22 @@ private final class RecordedClipboard: RDPClipboardSending, @unchecked Sendable 
     /// Writes the files with `writeFile`, as RDPClipboardSession does, once the test finishes
     /// the download with their contents.
     func downloadRemoteFiles(
-        _ list: RDPClipboardFileGroupDescriptorW,
+        _ plan: RDPClipboardDownloadPlan,
         copyNumber: Int,
         into directory: URL,
-        limits: RDPClipboardDownloadLimits,
-        progress: (@Sendable (RDPClipboardDownloadProgress) -> Void)?,
+        progress: (@Sendable (RDPClipboardDownloadProgress) async -> Void)?,
         writeFile: @Sendable (Data, URL) throws -> Void
     ) async throws -> RDPClipboardDownload {
         let download = RecordedDownload(copyNumber: copyNumber, directory: directory, progress: progress)
         lock.withLock { recordedDownloads.append(download) }
         let contents = try await download.contents()
-        let files = try list.remoteFileTransferFiles(
-            maximumTotalByteCount: limits.maximumTotalByteCount,
-            maximumFileCount: limits.maximumFileCount
-        )
         var fileURLs: [URL] = []
-        for (file, data) in zip(files, contents) {
+        for (file, data) in zip(plan.files, contents) {
             let fileURL = directory.appendingPathComponent(file.fileName, isDirectory: false)
             try writeFile(data, fileURL)
             fileURLs.append(fileURL)
         }
-        return RDPClipboardDownload(fileURLs: fileURLs, leavesOutFolders: list.descriptors.contains(where: \.isDirectory))
+        return RDPClipboardDownload(fileURLs: fileURLs, leavesOutFolders: plan.leavesOutFolders)
     }
 }
 
@@ -666,14 +661,14 @@ private func failRemoteFileDownload(with error: Error, from session: RecordedCli
     try await waitUntil { session.downloads.count == 1 }
     let download = try #require(session.downloads.last)
 
-    download.progress?(RDPClipboardDownloadProgress(
+    await download.progress?(RDPClipboardDownloadProgress(
         fileOffset: 1,
         fileCount: 3,
         fileName: "b.txt",
         receivedByteCount: 0,
         fileByteCount: nil
     ))
-    try await waitUntil { clipboard.statusMessage == "Downloading remote files: 2 of 3." }
+    // The report is on the main thread once the download's await of it returns.
     #expect(clipboard.statusMessage == "Downloading remote files: 2 of 3.")
     download.finish(with: [Data("a".utf8), Data("b".utf8), Data("c".utf8)])
     await task.value
@@ -682,9 +677,8 @@ private func failRemoteFileDownload(with error: Error, from session: RecordedCli
     defer { try? FileManager.default.removeItem(at: download.directory) }
     #expect(fileURLs.map(\.lastPathComponent) == ["a.txt", "b.txt", "c.txt"])
     #expect(try fileURLs.map { try Data(contentsOf: $0) } == [Data("a".utf8), Data("b".utf8), Data("c".utf8)])
-    // Progress of a finished download, late on the main thread, changes nothing.
-    download.progress?(RDPClipboardDownloadProgress(fileOffset: 2, fileCount: 3, fileName: "c.txt", receivedByteCount: 0, fileByteCount: nil))
-    try await Task.sleep(nanoseconds: 50_000_000)
+    // A report of a download no longer under way changes nothing.
+    await download.progress?(RDPClipboardDownloadProgress(fileOffset: 2, fileCount: 3, fileName: "c.txt", receivedByteCount: 0, fileByteCount: nil))
     #expect(clipboard.statusMessage == "3 remote files copied.")
 }
 

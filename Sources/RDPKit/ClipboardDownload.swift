@@ -1,6 +1,6 @@
 import Foundation
 
-/// What ``RDPClipboardSession/downloadRemoteFiles(_:copyNumber:into:limits:progress:writeFile:)``
+/// What ``RDPClipboardSession/downloadRemoteFiles(_:copyNumber:into:progress:writeFile:)``
 /// takes on at most.
 public struct RDPClipboardDownloadLimits: Equatable, Sendable {
     /// The files' bytes together, as their size answers say.
@@ -29,7 +29,9 @@ public struct RDPClipboardDownloadLimits: Equatable, Sendable {
 }
 
 /// How far a download has come: the file being fetched, the `fileOffset`th of `fileCount`, and
-/// how much of it has arrived, of `fileByteCount` once the server has said its size.
+/// how much of it has arrived, of `fileByteCount` once the server has said its size. A download
+/// reports each file as it starts, once the server has said its size, and as each range
+/// arrives.
 public struct RDPClipboardDownloadProgress: Equatable, Sendable {
     public var fileOffset: Int
     public var fileCount: Int
@@ -43,6 +45,45 @@ public struct RDPClipboardDownloadProgress: Equatable, Sendable {
         self.fileName = fileName
         self.receivedByteCount = receivedByteCount
         self.fileByteCount = fileByteCount
+    }
+}
+
+/// A download of a remote copy's files, planned before it starts, so an application can refuse
+/// the copy or show its first file before it makes a folder for it:
+/// ``RDPClipboardFileGroupDescriptorW/downloadPlan(limits:)`` makes one, and
+/// ``RDPClipboardSession/downloadRemoteFiles(_:copyNumber:into:progress:writeFile:)`` follows it.
+public struct RDPClipboardDownloadPlan: Equatable, Sendable {
+    /// The files to download, folders left out, in the list's order, each under a name unique
+    /// in the download that the Mac accepts.
+    public let files: [RDPClipboardRemoteFileTransferFile]
+    /// Whether the list had folders, which the download leaves out: entries for folders, or
+    /// file names that carry their own, such as `Docs\a.txt`, written as their last component.
+    public let leavesOutFolders: Bool
+    /// The files' sizes as the list declares them, together; a file that declares none counts
+    /// as 0. The download checks the sizes the server answers against the limit as it goes.
+    public let declaredByteCount: UInt64
+    public let limits: RDPClipboardDownloadLimits
+}
+
+extension RDPClipboardFileGroupDescriptorW {
+    /// Plans the download of the list's files within `limits`. Throws an
+    /// ``RDPClipboardRemoteFileTransferPlanningError`` when the list holds no file, more files
+    /// than ``RDPClipboardDownloadLimits/maximumFileCount``, or declares sizes past
+    /// ``RDPClipboardDownloadLimits/maximumTotalByteCount``.
+    public func downloadPlan(limits: RDPClipboardDownloadLimits = RDPClipboardDownloadLimits()) throws -> RDPClipboardDownloadPlan {
+        let files = try remoteFileTransferFiles(
+            maximumTotalByteCount: limits.maximumTotalByteCount,
+            maximumFileCount: limits.maximumFileCount
+        )
+        let namesFolders = descriptors.contains {
+            $0.isDirectory || $0.fileName.split(whereSeparator: { $0 == "/" || $0 == "\\" }).count > 1
+        }
+        return RDPClipboardDownloadPlan(
+            files: files,
+            leavesOutFolders: namesFolders,
+            declaredByteCount: files.reduce(0) { $0 + ($1.declaredByteCount ?? 0) },
+            limits: limits
+        )
     }
 }
 
@@ -94,52 +135,48 @@ public enum RDPClipboardDownloadError: Error, Equatable, CustomStringConvertible
 }
 
 extension RDPClipboardSession {
-    /// Downloads the files of a remote copy's file list into `directory`, which must exist,
-    /// one after another: asks for each file's size, then for its bytes in ranges of
+    /// Downloads the files `plan` holds into `directory`, which must exist, one after another:
+    /// asks for each file's size, then for its bytes in ranges of
     /// ``RDPClipboardDownloadLimits/rangeByteCount``, asking again for the rest of a range the
     /// server answers short ([MS-RDPECLIP] 2.2.5.3, 2.2.5.4), and hands each file to
-    /// `writeFile` with its URL in `directory`, under the name
-    /// ``RDPClipboardFileGroupDescriptorW/remoteFileTransferFiles(maximumTotalByteCount:maximumFileCount:)``
-    /// gives it. The default writes it atomically; an application passes its own to set a
-    /// quarantine mark or place folders. `progress` is called before each request, on no
-    /// particular thread.
+    /// `writeFile` with its URL in `directory`, under the name the plan gives it. The default
+    /// writes it atomically; an application passes its own to set a quarantine mark or place
+    /// folders. The download awaits `progress` for each report, so the reports arrive in order,
+    /// and the last before the download returns, also when `progress` hops to another actor,
+    /// such as the main one.
     ///
-    /// `copyNumber` is the one the `onClipboardFileGroupDescriptor` handler got with `list`.
+    /// `copyNumber` is the one the `onClipboardFileGroupDescriptor` handler got with the list.
     /// A newer copy, the server's or a publish, or turning
     /// ``fetchesRemoteCopies`` off ends the download with ``RDPClipboardDownloadError/replaced``
     /// while a request waits or before the next, also before the first; one after the last
     /// answer does not, so the application checks, once the download returns, that the copy is
     /// still the one to paste, as it would for any copy it handles on another thread. The
     /// connection closing ends it with ``RDPClipboardDownloadError/sessionEnded``, and
-    /// cancelling the task with `CancellationError`. The answers to its requests do not reach
+    /// cancelling the task with `CancellationError`, also before a file is written: a cancelled
+    /// download writes nothing more. The answers to its requests do not reach
     /// `onClipboardFileContents`.
-    /// Planning errors are ``RDPClipboardRemoteFileTransferPlanningError``s, and an error
-    /// `writeFile` throws ends the download too. Files written before a failure stay in
-    /// `directory`.
+    /// An error `writeFile` throws ends the download too. Files written before a failure stay
+    /// in `directory`.
     public func downloadRemoteFiles(
-        _ list: RDPClipboardFileGroupDescriptorW,
+        _ plan: RDPClipboardDownloadPlan,
         copyNumber: Int,
         into directory: URL,
-        limits: RDPClipboardDownloadLimits = RDPClipboardDownloadLimits(),
-        progress: (@Sendable (RDPClipboardDownloadProgress) -> Void)? = nil,
+        progress: (@Sendable (RDPClipboardDownloadProgress) async -> Void)? = nil,
         writeFile: @Sendable (Data, URL) throws -> Void = { try $0.write(to: $1, options: .atomic) }
     ) async throws -> RDPClipboardDownload {
-        let files = try list.remoteFileTransferFiles(
-            maximumTotalByteCount: limits.maximumTotalByteCount,
-            maximumFileCount: limits.maximumFileCount
-        )
+        let limits = plan.limits
         var fileURLs: [URL] = []
         var totalByteCount: UInt64 = 0
-        for (offset, file) in files.enumerated() {
+        for (offset, file) in plan.files.enumerated() {
             let streamID = nextDownloadStreamID()
             var report = RDPClipboardDownloadProgress(
                 fileOffset: offset,
-                fileCount: files.count,
+                fileCount: plan.files.count,
                 fileName: file.fileName,
                 receivedByteCount: 0,
                 fileByteCount: nil
             )
-            progress?(report)
+            await progress?(report)
             let sizeAnswer = try await fileContents(
                 of: .size(streamID: streamID, fileIndex: file.fileIndex),
                 copyNumber: copyNumber,
@@ -158,12 +195,11 @@ extension RDPClipboardSession {
             }
             totalByteCount += byteCount
             report.fileByteCount = byteCount
+            await progress?(report)
 
             var data = Data()
             while UInt64(data.count) < byteCount {
                 let requestedByteCount = UInt32(min(UInt64(limits.rangeByteCount), byteCount - UInt64(data.count)))
-                report.receivedByteCount = UInt64(data.count)
-                progress?(report)
                 let rangeAnswer = try await fileContents(
                     of: .range(
                         streamID: streamID,
@@ -181,12 +217,16 @@ extension RDPClipboardSession {
                     throw RDPClipboardDownloadError.incomplete
                 }
                 data.append(rangeAnswer.data)
+                report.receivedByteCount = UInt64(data.count)
+                await progress?(report)
             }
             let fileURL = directory.appendingPathComponent(file.fileName, isDirectory: false)
+            try Task.checkCancellation()
             try writeFile(data, fileURL)
             fileURLs.append(fileURL)
         }
-        return RDPClipboardDownload(fileURLs: fileURLs, leavesOutFolders: list.descriptors.contains(where: \.isDirectory))
+        try Task.checkCancellation()
+        return RDPClipboardDownload(fileURLs: fileURLs, leavesOutFolders: plan.leavesOutFolders)
     }
 }
 
