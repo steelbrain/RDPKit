@@ -88,11 +88,12 @@ private func settle(_ server: RDPClipboardTestServer) async {
         .downloadProgress(RDPClipboardDownloadProgress(fileOffset: 0, fileCount: 1, fileName: "a.txt", receivedByteCount: 0, fileByteCount: nil)),
         .downloadProgress(RDPClipboardDownloadProgress(fileOffset: 1, fileCount: 4, fileName: "b.txt", receivedByteCount: 0, fileByteCount: nil)),
         .remoteFilesCopied(RDPClipboardDownload(fileURLs: [URL(fileURLWithPath: "/tmp/a.txt")], leavesOutFolders: false)),
-        .downloadFailed(.download(.timedOut)),
+        .downloadFailed(.timedOut),
+        .downloadFailed(.totalByteLimitExceeded),
         .downloadFailed(.clipboardChanged),
         .temporarySharingEnded,
     ]
-    let messages = events.map(RDPRemoteSessionClipboard.message(for:))
+    let messages = events.map { RDPRemoteSessionClipboard.message(for: $0) }
     #expect(messages == [
         "Local text synced.",
         "Local clipboard has no text.",
@@ -111,7 +112,18 @@ private func settle(_ server: RDPClipboardTestServer) async {
         "Downloading remote files: 2 of 4.",
         "Remote file copied: a.txt.",
         "Remote file transfer timed out.",
+        "Remote files exceed 32 MiB.",
         "Clipboard changed; remote files were not copied.",
         "Temporary sharing ended.",
     ])
+}
+
+/// The limits a copy went over are the bridge's own.
+@MainActor
+@Test func theClipboardStatusLineNamesTheBridgesLimits() {
+    let limits = RDPClipboardDownloadLimits(maximumTotalByteCount: 8 * 1024 * 1024, maximumFileCount: 20)
+    #expect(RDPRemoteSessionClipboard.message(for: .remoteFilesRefused(.fileCountLimitExceeded), limits: limits)
+        == "Remote clipboard has more than 20 files.")
+    #expect(RDPRemoteSessionClipboard.message(for: .downloadFailed(.totalByteLimitExceeded), limits: limits)
+        == "Remote files exceed 8 MiB.")
 }

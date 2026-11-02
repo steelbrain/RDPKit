@@ -20,8 +20,9 @@ final class RDPRemoteSessionClipboard {
             downloadRoot: downloadRoot,
             quarantineAgentName: "RDPClient"
         )
+        let limits = bridge.downloadLimits
         bridge.onEvent = { [weak self] event in
-            self?.message = Self.message(for: event)
+            self?.message = Self.message(for: event, limits: limits)
         }
     }
 
@@ -98,8 +99,11 @@ final class RDPRemoteSessionClipboard {
         bridge.receiveFileList(descriptorList, copyNumber: copyNumber)
     }
 
-    /// The status line for `event`.
-    static func message(for event: RDPPasteboardClipboard.Event) -> String {
+    /// The status line for `event`, of a bridge with `limits`.
+    static func message(
+        for event: RDPPasteboardClipboard.Event,
+        limits: RDPClipboardDownloadLimits = RDPClipboardDownloadLimits()
+    ) -> String {
         switch event {
         case .localTextShared:
             "Local text synced."
@@ -139,9 +143,9 @@ final class RDPRemoteSessionClipboard {
             case .invalidFileIndex:
                 "Remote file index is not valid."
             case .totalByteLimitExceeded:
-                "Remote files exceed 32 MiB."
+                "Remote files exceed \(mebibytes(limits.maximumTotalByteCount)) MiB."
             case .fileCountLimitExceeded:
-                "Remote clipboard has more than \(RDPClipboardDownloadLimits().maximumFileCount) files."
+                "Remote clipboard has more than \(limits.maximumFileCount) files."
             }
         case let .downloadProgress(progress):
             progress.fileCount == 1
@@ -155,14 +159,14 @@ final class RDPRemoteSessionClipboard {
             }
         case let .downloadFailed(failure):
             switch failure {
-            case .download(.timedOut):
+            case .timedOut:
                 "Remote file transfer timed out."
-            case .download(.refused), .download(.replaced), .download(.sessionEnded):
+            case .refused:
                 "Remote file transfer failed."
-            case .download(.incomplete):
+            case .incomplete:
                 "Remote file transfer was incomplete."
-            case .download(.totalByteLimitExceeded):
-                "Remote files exceed 32 MiB."
+            case .totalByteLimitExceeded:
+                "Remote files exceed \(mebibytes(limits.maximumTotalByteCount)) MiB."
             case .folderNotCreated:
                 "Remote files could not be prepared."
             case .notSaved:
@@ -177,6 +181,10 @@ final class RDPRemoteSessionClipboard {
         case .temporarySharingEnded:
             "Temporary sharing ended."
         }
+    }
+
+    private static func mebibytes(_ byteCount: UInt64) -> UInt64 {
+        byteCount / (1024 * 1024)
     }
 
     /// Holds one folder, named by a UUID, per remote file transfer.

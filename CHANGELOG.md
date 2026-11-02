@@ -278,7 +278,8 @@
   text and quarantined downloads on the pasteboard, drops what a newer copy
   replaced, sends nothing while macOS denies reading the pasteboard, and clears
   the copy it sent when the server's clipboard is emptied, also while sharing
-  is off. `onEvent` reports what happened for the app to word, and
+  is off. `onEvent` reports what happened for the app to word, with
+  `downloadLimits` to name the limits a copy went over, and
   `removeStaleDownloadDirectories(in:changedBefore:keeping:)` clears what
   earlier runs left. RDPClient now uses it.
 - `RDPConnectionReport.targetHost` and `targetPort` give `target` apart, and
