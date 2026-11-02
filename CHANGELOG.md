@@ -312,7 +312,10 @@
   - `onGraphicsFrame` decodes each frame on an `RDPFrameDecodeQueue` and
     reports one that failed as not presented;
   - `onWireReceive` coalesces wire samples, the last one sent before the end.
-  `events` gets decoded frames, failures and samples on the main queue.
+  `events` gets decoded frames, failures and samples on the main queue, and
+  with `onServerLayout` the server's layout (`RDPServerLayout`: monitors,
+  their issues, the ResetGraphics count and the output) ahead of the first
+  frame and of each frame whose layout changed, also one that fails to decode.
   `deliver(_:)` puts the app's own main-thread work in the same order, and
   `recipient(_:)` hands it to an object held weakly, such as the view
   controller, so the session's thread does not keep a closed one alive.

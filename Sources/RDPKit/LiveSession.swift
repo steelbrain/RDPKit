@@ -31,6 +31,10 @@ public final class RDPLiveSession: @unchecked Sendable {
         /// The bytes received since the last sample, at most every quarter second and once
         /// more before `onEnd`.
         public var onWireReceive: (@MainActor @Sendable (RDPWireReceiveSample) -> Void)?
+        /// The server's layout as of a frame, before that frame is decoded or fails to: with
+        /// the first frame, and with each frame whose layout differs from the one before, such
+        /// as after a ResetGraphics, even to the same monitors.
+        public var onServerLayout: (@MainActor @Sendable (RDPServerLayout) -> Void)?
         /// The session ended on its own: called on the session thread with its report, so
         /// slow work such as decoding the report's first frame stays off the main thread; hand
         /// the rest to `deliver(_:)`. Not called once the session was cancelled, by `cancel()`
@@ -41,11 +45,13 @@ public final class RDPLiveSession: @unchecked Sendable {
             onFrameDecoded: @escaping @MainActor @Sendable (RDPDecodedFramePresentation, Date, Date, RDPFrameDecodeTiming) -> Void,
             onFrameDecodeFailed: @escaping @MainActor @Sendable (Date, String) -> Void,
             onWireReceive: (@MainActor @Sendable (RDPWireReceiveSample) -> Void)? = nil,
+            onServerLayout: (@MainActor @Sendable (RDPServerLayout) -> Void)? = nil,
             onEnd: @escaping @Sendable (RDPConnectionReport) -> Void
         ) {
             self.onFrameDecoded = onFrameDecoded
             self.onFrameDecodeFailed = onFrameDecodeFailed
             self.onWireReceive = onWireReceive
+            self.onServerLayout = onServerLayout
             self.onEnd = onEnd
         }
     }
@@ -65,6 +71,7 @@ public final class RDPLiveSession: @unchecked Sendable {
     private var isDelivering = true
     private var hasStarted = false
     private var hasEnded = false
+    private var deliveredServerLayout: RDPServerLayout?
     private var endWaiters: [UUID: CheckedContinuation<Bool, Never>] = [:]
 
     /// `threadName` names the session's thread, as debuggers and crash reports show it.
@@ -202,7 +209,8 @@ public final class RDPLiveSession: @unchecked Sendable {
             }
         )
         let report = run(Run(
-            onGraphicsFrame: { frame in
+            onGraphicsFrame: { [self] frame in
+                deliverServerLayout(of: frame, to: events.onServerLayout)
                 try decodeQueue.submitAndWait(
                     frame,
                     receivedAt: Date(),
@@ -230,6 +238,27 @@ public final class RDPLiveSession: @unchecked Sendable {
             }
         }
         events.onEnd(report)
+    }
+
+    /// Delivers the frame's layout when it differs from the one delivered last, before the
+    /// frame goes to the decoder, whose result is delivered after it.
+    private func deliverServerLayout(
+        of frame: RDPGraphicsFrameSnapshot,
+        to onServerLayout: (@MainActor @Sendable (RDPServerLayout) -> Void)?
+    ) {
+        guard let onServerLayout else {
+            return
+        }
+        let layout = RDPServerLayout(frame)
+        let isNew = lock.withLock {
+            defer { deliveredServerLayout = layout }
+            return deliveredServerLayout != layout
+        }
+        if isNew {
+            deliver {
+                onServerLayout(layout)
+            }
+        }
     }
 
     private func end() {

@@ -282,3 +282,54 @@ func aLiveSessionsRecipientHoldsItsObjectWeakly() async throws {
     await drainMainQueue()
     #expect(received.value == ["first"])
 }
+
+/// The server's layout comes with the first frame and with each frame whose layout differs,
+/// before that frame's result, also one that fails to decode.
+@Test(.timeLimit(.minutes(1)))
+func aLiveSessionDeliversTheServersLayoutBeforeItsFrames() async throws {
+    let received = Received()
+    let session = RDPLiveSession()
+    let monitor = RDPRemoteMonitor(rect: RDPFrameRect(left: 0, top: 0, right: 1, bottom: 1), isPrimary: true)
+    func frame(_ id: UInt32, resets: UInt32, monitors: [RDPRemoteMonitor] = []) -> RDPGraphicsFrameSnapshot {
+        var frame = id == 4 ? undecodableVideoFrame(id: id) : bitmapFrame(id: id)
+        frame.graphicsResetCount = resets
+        frame.monitors = monitors
+        return frame
+    }
+    let frames = [
+        frame(1, resets: 0),
+        frame(2, resets: 0),
+        frame(3, resets: 1, monitors: [monitor]),
+        frame(4, resets: 2, monitors: [monitor]),
+        frame(5, resets: 2),
+    ]
+    session.start(events: RDPLiveSession.Events(
+        onFrameDecoded: { presentation, _, _, _ in
+            received.append("decoded \(presentation.frame.frameID ?? 0)")
+        },
+        onFrameDecodeFailed: { _, _ in
+            received.append("failed")
+        },
+        onServerLayout: { layout in
+            received.append("layout \(layout.graphicsResetCount) \(layout.monitors.count)")
+        },
+        onEnd: { _ in
+            session.deliver {
+                received.ended.signal()
+            }
+        }
+    )) { run in
+        for frame in frames {
+            try? run.onGraphicsFrame(frame)
+        }
+        return report(status: "success")
+    }
+
+    #expect(await wait(for: received.ended))
+    #expect(received.snapshot == [
+        "layout 0 0", "decoded 1", "decoded 2",
+        "layout 1 1", "decoded 3",
+        "layout 2 1", "failed",
+        "layout 2 0", "decoded 5",
+    ])
+}

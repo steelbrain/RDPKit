@@ -145,6 +145,41 @@ public struct RDPRemoteMonitor: Encodable, Equatable, Sendable {
     }
 }
 
+/// How the server lays out its graphics as of a frame: its monitors, what is off about them,
+/// and its ResetGraphics count, which changes each time it lays them out again.
+public struct RDPServerLayout: Equatable, Sendable {
+    /// The frame's ``RDPGraphicsFrameSnapshot/monitors``.
+    public var monitors: [RDPRemoteMonitor]
+    /// The frame's ``RDPGraphicsFrameSnapshot/monitorLayoutIssues``.
+    public var monitorLayoutIssues: RDPRemoteMonitorLayoutIssues
+    /// The frame's ``RDPGraphicsFrameSnapshot/graphicsResetCount``.
+    public var graphicsResetCount: UInt32
+    /// The frame's ``RDPGraphicsFrameSnapshot/graphicsOutputRect``, the desktop when a server
+    /// lists no monitors.
+    public var graphicsOutputRect: RDPFrameRect?
+
+    public init(
+        monitors: [RDPRemoteMonitor],
+        monitorLayoutIssues: RDPRemoteMonitorLayoutIssues = [],
+        graphicsResetCount: UInt32,
+        graphicsOutputRect: RDPFrameRect? = nil
+    ) {
+        self.monitors = monitors
+        self.monitorLayoutIssues = monitorLayoutIssues
+        self.graphicsResetCount = graphicsResetCount
+        self.graphicsOutputRect = graphicsOutputRect
+    }
+
+    public init(_ frame: RDPGraphicsFrameSnapshot) {
+        self.init(
+            monitors: frame.monitors,
+            monitorLayoutIssues: frame.monitorLayoutIssues,
+            graphicsResetCount: frame.graphicsResetCount,
+            graphicsOutputRect: frame.graphicsOutputRect
+        )
+    }
+}
+
 /// What is off about a server's monitor layout once its monitors are placed in the graphics
 /// output; empty for a layout RDPKit took as sent that covers the output with one primary
 /// monitor and no overlap.
