@@ -210,14 +210,15 @@ import Testing
 
 @Test func frameCountsStayWithinWhatASessionCaptures() throws {
     #expect(try parseArguments(["RDPPreflight", "--graphics-frames", "120"]).graphicsFrames == 120)
-    #expect(try RDPFrameBenchmark.parseArguments(["RDPFrameBenchmark", "--frames", "120"]).frames == 120)
+    // The benchmark's session asks for at least twice as many, as spares for frames it skips.
+    #expect(try RDPFrameBenchmark.parseArguments(["RDPFrameBenchmark", "--frames", "60"]).frames == 60)
 
     // RDPConnectionConfiguration would otherwise clamp the session's frame limit to 120 without a word.
     #expect(throws: RDPCommandLineError.invalidValue(option: "--graphics-frames", value: "121", expected: "1...120")) {
         try parseArguments(["RDPPreflight", "--graphics-frames", "121"])
     }
-    #expect(throws: RDPCommandLineError.invalidValue(option: "--frames", value: "500", expected: "1...120")) {
-        try RDPFrameBenchmark.parseArguments(["RDPFrameBenchmark", "--frames", "500"])
+    #expect(throws: RDPCommandLineError.invalidValue(option: "--frames", value: "61", expected: "1...60")) {
+        try RDPFrameBenchmark.parseArguments(["RDPFrameBenchmark", "--frames", "61"])
     }
 }
 

@@ -317,7 +317,7 @@ Run the diagnostic tools:
 cd Examples
 swift run RDPPreflight --host <host> --username <name> --password-env RDP_PASSWORD
 swift run RDPFirstFrameCapture --host <host> --username <name> --password-env RDP_PASSWORD --output frame.png
-swift run RDPFrameBenchmark --host <host> --username <name> --password-env RDP_PASSWORD --frames 120
+swift run RDPFrameBenchmark --host <host> --username <name> --password-env RDP_PASSWORD --frames 60
 ```
 
 The included app lets you save connections, store credentials and issued RDP

@@ -68,10 +68,14 @@ public struct RDPCommandLineArguments {
         }
     }
 
-    /// A frame count for a capture; RDPConnectionConfiguration clamps its frame limit to 1...120.
-    public mutating func graphicsFrameCount(for option: String) throws -> Int {
-        try value(for: option, expected: "1...120") { text in
-            Int(text).flatMap { (1 ... 120).contains($0) ? $0 : nil }
+    /// A frame count for a capture, within `counts`; RDPConnectionConfiguration clamps its frame
+    /// limit to 1...120.
+    public mutating func graphicsFrameCount(
+        for option: String,
+        within counts: ClosedRange<Int> = 1 ... 120
+    ) throws -> Int {
+        try value(for: option, expected: "\(counts)") { text in
+            Int(text).flatMap { counts.contains($0) ? $0 : nil }
         }
     }
 

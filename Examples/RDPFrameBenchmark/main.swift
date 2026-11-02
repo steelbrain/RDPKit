@@ -507,7 +507,9 @@ enum RDPFrameBenchmark {
             }
             switch option {
             case "--frames":
-                args.frames = try cursor.graphicsFrameCount(for: option)
+                // The session asks for at least twice as many, the rest spares for frames with
+                // nothing to decode, and RDPConnectionConfiguration clamps that to 120.
+                args.frames = try cursor.graphicsFrameCount(for: option, within: 1 ... 60)
             case "--desktop-size":
                 let size = try cursor.size(
                     for: option,
