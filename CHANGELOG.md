@@ -280,6 +280,13 @@
     link, which runs only while a frame waits (`requestFrame()`), and
     publishes the screen's timing as `RDPFramePacingState`.
     `RDPFramePresentationBuffer` holds the one frame waiting for it.
+- `RDPTrustedServerCertificates` keeps the certificates a user trusted, one
+  per host and port, by the storage identifiers an app stores. It decides
+  trust on first use: `refusal(of:port:acceptsUntrusted:)` refuses a
+  certificate nobody trusts as `.untrusted`, and one that replaced a trusted
+  certificate as `.changed` even when untrusted ones are accepted.
+  `RDPServerCertificateTrustKey(storageIdentifier:)` reads a stored key back.
+  RDPClient's store keeps only the storage.
 - `RDPConnectionConfiguration.keyboard` sets or reads the layout, type and
   subtype together as an `RDPKeyboard`, as `RDPMacKeyboardLayout.current()`
   gives it.
