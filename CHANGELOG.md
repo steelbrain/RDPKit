@@ -31,6 +31,11 @@
 - While `fetchesRemoteCopies` is off, `onClipboardRemoteCopyUnavailable` is
   called at once, with `isEmpty` true, when the server empties its
   clipboard; other copies still wait until fetching is back on.
+- `RDPClipboardRemoteFileTransferPlanningError` has a new case,
+  `fileCountLimitExceeded`, which an exhaustive `switch` handles.
+- File-contents answers to streams from
+  `RDPClipboardSession.firstDownloadStreamID` (`0x8000_0000`) up no longer
+  reach `onClipboardFileContents`: those streams are the new download's.
 
 ### Additions
 
@@ -99,6 +104,17 @@
   summaries start and how many PDUs it held, which RDPPreflight and
   RDPClient's diagnostics show, and `RDPGFXMessageSummary.omittedListEntryCount`
   how many entries its codec lists left out.
+- `RDPClipboardSession.downloadRemoteFiles(_:copyNumber:into:limits:progress:writeFile:)`
+  downloads the files of a remote copy: a size request per file, then ranges,
+  asking again for the rest of a range the server answers short, up to
+  `RDPClipboardDownloadLimits` (32 MiB, 1000 files, 512 KiB ranges, two
+  minutes per request). It ends with an `RDPClipboardDownloadError` once a
+  newer copy replaces the one downloading, the connection closes, or the
+  server refuses, stalls or sends short, and with `CancellationError` when its
+  task is cancelled. `writeFile` lets an app set a quarantine mark. RDPClient
+  downloads through it.
+- `RDPClipboardFileGroupDescriptorW.remoteFileTransferFiles` takes a
+  `maximumFileCount`.
 
 ### Security
 

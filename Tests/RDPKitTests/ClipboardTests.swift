@@ -2438,7 +2438,7 @@ private func sentFormatDataRequestIDs(_ sent: ClipboardSentMessages) throws -> [
     }
 }
 
-private func clipboardPayload(fromPackets data: Data) throws -> Data {
+func clipboardPayload(fromPackets data: Data) throws -> Data {
     var reassembler = RDPStaticVirtualChannelReassembler()
     var offset = data.startIndex
     while offset < data.endIndex {

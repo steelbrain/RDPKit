@@ -573,11 +573,18 @@ public struct RDPClipboardFileGroupDescriptorW: Equatable, Sendable {
         return data
     }
 
+    /// The files of the list to download, folders left out, each with a name unique in the
+    /// download that the Mac accepts. Throws when the files' declared sizes pass
+    /// `maximumTotalByteCount`, or there are more of them than `maximumFileCount`.
     public func remoteFileTransferFiles(
-        maximumTotalByteCount: UInt64? = nil
+        maximumTotalByteCount: UInt64? = nil,
+        maximumFileCount: Int? = nil
     ) throws -> [RDPClipboardRemoteFileTransferFile] {
         guard descriptors.isEmpty == false else {
             throw RDPClipboardRemoteFileTransferPlanningError.emptyFileList
+        }
+        if let maximumFileCount, descriptors.count(where: { !$0.isDirectory }) > maximumFileCount {
+            throw RDPClipboardRemoteFileTransferPlanningError.fileCountLimitExceeded
         }
 
         var usedFileNames = RDPClipboardUsedFileNames()
@@ -622,6 +629,7 @@ public enum RDPClipboardRemoteFileTransferPlanningError: Error, Equatable, Custo
     case containsOnlyDirectories
     case invalidFileIndex
     case totalByteLimitExceeded
+    case fileCountLimitExceeded
 
     public var description: String {
         switch self {
@@ -633,6 +641,8 @@ public enum RDPClipboardRemoteFileTransferPlanningError: Error, Equatable, Custo
             "Remote file index is not valid."
         case .totalByteLimitExceeded:
             "Remote files exceed the configured byte limit."
+        case .fileCountLimitExceeded:
+            "Remote files exceed the configured file count."
         }
     }
 }
@@ -980,6 +990,12 @@ public final class RDPClipboardSession: @unchecked Sendable {
     /// publish until a server copy the session takes retires it. A restart of the server's
     /// clipboard leaves it as it is, as it leaves the local content.
     private var isOfferingPublishedCopy = false
+    /// The requests of ``downloadRemoteFiles(_:copyNumber:into:limits:progress:writeFile:)``
+    /// that wait for an answer, by stream.
+    private var fileContentsWaiters: [UInt32: RDPClipboardFileContentsWaiter] = [:]
+    private var lastDownloadStreamID = UInt32.max
+    /// Set once the connection has closed, so no download waits for an answer again.
+    private var areDownloadsEnded = false
 
     init(
         userChannelID: UInt16,
@@ -1001,6 +1017,9 @@ public final class RDPClipboardSession: @unchecked Sendable {
         self.sentMessageHandler = sentMessageHandler
         self.pendingEventHandler = pendingEventHandler
         self.isCancelled = isCancelled
+        channel.closeFuture.whenComplete { [weak self] _ in
+            self?.endDownloads()
+        }
     }
 
     /// Whether a copy the server announces is fetched; on by default. While off, the server's
@@ -1170,6 +1189,12 @@ public final class RDPClipboardSession: @unchecked Sendable {
             return nil
         }
         if let response = try RDPClipboardFileContentsResponse.parseIfPresent(from: pdu) {
+            guard response.streamID < Self.firstDownloadStreamID else {
+                // A download's own; one no request waits for any more, given up or answered
+                // late, is dropped.
+                lock.withLock { fileContentsWaiters.removeValue(forKey: response.streamID) }?.finish(.success(response))
+                return nil
+            }
             return .fileContents(response)
         }
         let response: RDPClipboardFormatDataResponsePDU?
@@ -1399,15 +1424,94 @@ public final class RDPClipboardSession: @unchecked Sendable {
     /// have not gone out yet and the content it has received. Callers hold `lock`.
     private func replaceRemoteCopy(with requests: [RDPClipboardRequestedFormatDataResponse]) {
         remoteCopyID += 1
+        // Downloads are of an older copy now.
+        for waiter in fileContentsWaiters.values {
+            waiter.finish(.failure(RDPClipboardDownloadError.replaced))
+        }
+        fileContentsWaiters = [:]
         remoteContent = RDPClipboardContent()
         formatDataRequests = isAwaitingFormatData ? Array(formatDataRequests.prefix(1)) : []
         formatDataRequests += requests.map { RDPClipboardFormatDataRequestSlot(copyID: remoteCopyID, response: $0) }
     }
 
+    /// The first stream ID ``downloadRemoteFiles(_:copyNumber:into:limits:progress:writeFile:)``
+    /// uses; the answers to streams from it up never reach `onClipboardFileContents`, so an
+    /// application's own requests use streams below it.
+    public static let firstDownloadStreamID: UInt32 = 0x8000_0000
+
+    /// Sends `request` for a download of remote copy `copyNumber` and waits for its answer, at
+    /// most `timeout`; throws ``RDPClipboardDownloadError/replaced`` once a newer copy
+    /// replaces that one, ``RDPClipboardDownloadError/sessionEnded`` once the connection
+    /// closes, and `CancellationError` when the task is cancelled.
+    func fileContents(
+        of request: RDPClipboardFileContentsRequestPDU,
+        copyNumber: Int,
+        timeout: TimeInterval
+    ) async throws -> RDPClipboardFileContentsResponse {
+        let payload = try request.encoded()
+        let waiter = RDPClipboardFileContentsWaiter()
+        try lock.withLock {
+            try checkDownloadLocked(of: copyNumber)
+            fileContentsWaiters[request.streamID] = waiter
+        }
+        // Before the request goes out, so its answer cannot come before the timeout is set.
+        // Clamped to some 30 years, which an Int64 of nanoseconds holds.
+        let seconds = timeout.isNaN ? 0 : min(max(timeout, 0), 1_000_000_000)
+        let timeoutTask = channel.eventLoop.scheduleTask(in: .nanoseconds(Int64(seconds * 1_000_000_000))) { [weak waiter] in
+            waiter?.finish(.failure(RDPClipboardDownloadError.timedOut))
+        }
+        defer {
+            timeoutTask.cancel()
+            lock.withLock {
+                if fileContentsWaiters[request.streamID] === waiter {
+                    fileContentsWaiters[request.streamID] = nil
+                }
+            }
+        }
+        send(payload)
+        return try await withTaskCancellationHandler {
+            try await waiter.result()
+        } onCancel: {
+            waiter.finish(.failure(CancellationError()))
+        }
+    }
+
+    /// Throws ``RDPClipboardDownloadError/sessionEnded`` once the connection has closed, and
+    /// ``RDPClipboardDownloadError/replaced`` once a newer copy has replaced remote copy
+    /// `copyNumber`. Callers hold `lock`.
+    private func checkDownloadLocked(of copyNumber: Int) throws {
+        guard !areDownloadsEnded else {
+            throw RDPClipboardDownloadError.sessionEnded
+        }
+        guard remoteCopyID == copyNumber else {
+            throw RDPClipboardDownloadError.replaced
+        }
+    }
+
+    /// A stream for the next file of a download, from ``firstDownloadStreamID`` up.
+    func nextDownloadStreamID() -> UInt32 {
+        lock.withLock {
+            lastDownloadStreamID = lastDownloadStreamID == UInt32.max ? Self.firstDownloadStreamID : lastDownloadStreamID + 1
+            return lastDownloadStreamID
+        }
+    }
+
+    private func endDownloads() {
+        let waiters = lock.withLock {
+            areDownloadsEnded = true
+            defer { fileContentsWaiters = [:] }
+            return Array(fileContentsWaiters.values)
+        }
+        for waiter in waiters {
+            waiter.finish(.failure(RDPClipboardDownloadError.sessionEnded))
+        }
+    }
+
     /// Asks for the size of file `fileIndex` of the server's file list. The answer comes to
-    /// `onClipboardFileContents` with the same `streamID` (MS-RDPECLIP 2.2.5.4). Nothing
-    /// times out, and a request cannot be withdrawn: to give one up, stop waiting for its
-    /// `streamID` and send the next request under a new one, so a late answer is ignored.
+    /// `onClipboardFileContents` with the same `streamID` (MS-RDPECLIP 2.2.5.4), which must be
+    /// below ``firstDownloadStreamID``. Nothing times out, and a request cannot be withdrawn:
+    /// to give one up, stop waiting for its `streamID` and send the next request under a new
+    /// one, so a late answer is ignored.
     public func requestRemoteFileSize(streamID: UInt32, fileIndex: Int32) throws {
         try send(RDPClipboardFileContentsRequestPDU.size(streamID: streamID, fileIndex: fileIndex).encoded())
     }

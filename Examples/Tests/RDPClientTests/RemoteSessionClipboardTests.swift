@@ -3,7 +3,71 @@ import AppKit
 import RDPKit
 import Testing
 
-private final class RecordedClipboard: RDPClipboardSending {
+/// A download the bridge started, which the test finishes or fails.
+private final class RecordedDownload: @unchecked Sendable {
+    let copyNumber: Int
+    let directory: URL
+    let progress: (@Sendable (RDPClipboardDownloadProgress) -> Void)?
+    /// The bridge's task that waits for it, once the test has looked it up.
+    @MainActor var bridgeTask: Task<Void, Never>?
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<[Data], Error>?
+    private var outcome: Result<[Data], Error>?
+    private var cancelled = false
+
+    init(copyNumber: Int, directory: URL, progress: (@Sendable (RDPClipboardDownloadProgress) -> Void)?) {
+        self.copyNumber = copyNumber
+        self.directory = directory
+        self.progress = progress
+    }
+
+    var wasCancelled: Bool {
+        lock.withLock { cancelled }
+    }
+
+    /// The files' contents, once the test finishes the download.
+    func contents() async throws -> [Data] {
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                let outcome = lock.withLock {
+                    if self.outcome == nil {
+                        self.continuation = continuation
+                    }
+                    return self.outcome
+                }
+                if let outcome {
+                    continuation.resume(with: outcome)
+                }
+            }
+        } onCancel: {
+            lock.withLock { cancelled = true }
+            resume(.failure(CancellationError()))
+        }
+    }
+
+    func finish(with contents: [Data]) {
+        resume(.success(contents))
+    }
+
+    func fail(_ error: Error) {
+        resume(.failure(error))
+    }
+
+    private func resume(_ outcome: Result<[Data], Error>) {
+        let continuation = lock.withLock { () -> CheckedContinuation<[Data], Error>? in
+            guard self.outcome == nil else {
+                return nil
+            }
+            self.outcome = outcome
+            defer { self.continuation = nil }
+            return self.continuation
+        }
+        continuation?.resume(with: outcome)
+    }
+}
+
+/// Used on the main actor, but for `downloadRemoteFiles`, which records under a lock.
+private final class RecordedClipboard: RDPClipboardSending, @unchecked Sendable {
     /// Turned on, fetches `unfetchedRemoteCopy` as RDPClipboardSession does.
     var fetchesRemoteCopies = true {
         didSet {
@@ -50,15 +114,37 @@ private final class RecordedClipboard: RDPClipboardSending {
         publishedCopyNumber = lastCopyNumber
     }
 
-    var sizeRequests: [UInt32] = []
-    var rangeRequests: [(streamID: UInt32, position: UInt64, requestedByteCount: UInt32)] = []
+    private let lock = NSLock()
+    private var recordedDownloads: [RecordedDownload] = []
 
-    func requestRemoteFileSize(streamID: UInt32, fileIndex _: Int32) throws {
-        sizeRequests.append(streamID)
+    var downloads: [RecordedDownload] {
+        lock.withLock { recordedDownloads }
     }
 
-    func requestRemoteFileRange(streamID: UInt32, fileIndex _: Int32, position: UInt64, requestedByteCount: UInt32) throws {
-        rangeRequests.append((streamID, position, requestedByteCount))
+    /// Writes the files with `writeFile`, as RDPClipboardSession does, once the test finishes
+    /// the download with their contents.
+    func downloadRemoteFiles(
+        _ list: RDPClipboardFileGroupDescriptorW,
+        copyNumber: Int,
+        into directory: URL,
+        limits: RDPClipboardDownloadLimits,
+        progress: (@Sendable (RDPClipboardDownloadProgress) -> Void)?,
+        writeFile: @Sendable (Data, URL) throws -> Void
+    ) async throws -> RDPClipboardDownload {
+        let download = RecordedDownload(copyNumber: copyNumber, directory: directory, progress: progress)
+        lock.withLock { recordedDownloads.append(download) }
+        let contents = try await download.contents()
+        let files = try list.remoteFileTransferFiles(
+            maximumTotalByteCount: limits.maximumTotalByteCount,
+            maximumFileCount: limits.maximumFileCount
+        )
+        var fileURLs: [URL] = []
+        for (file, data) in zip(files, contents) {
+            let fileURL = directory.appendingPathComponent(file.fileName, isDirectory: false)
+            try writeFile(data, fileURL)
+            fileURLs.append(fileURL)
+        }
+        return RDPClipboardDownload(fileURLs: fileURLs, leavesOutFolders: list.descriptors.contains(where: \.isDirectory))
     }
 }
 
@@ -117,7 +203,7 @@ private func makePasteboard() -> NSPasteboard {
     #expect(pasteboard.string(forType: .string) == "local")
     #expect(session.publishedTexts == [nil])
     #expect(session.publishedFiles.isEmpty)
-    #expect(session.sizeRequests.isEmpty)
+    #expect(clipboard.fileDownloadTask == nil)
 
     // The pasteboard replaces the copy the server announced while sharing was off.
     clipboard.setSharingEnabled(true)
@@ -251,7 +337,7 @@ private func makePasteboard() -> NSPasteboard {
         RDPClipboardFileDescriptorW(flags: 0, fileAttributes: 0, fileSize: 1, fileName: "remote.txt"),
     ]), copyNumber: remoteFiles)
     #expect(pasteboard.string(forType: .string) == "newer local")
-    #expect(session.sizeRequests.isEmpty)
+    #expect(clipboard.fileDownloadTask == nil)
     clipboard.setSharingEnabled(false)
     #expect(session.publishedTexts == ["local", "newer local", nil])
 
@@ -394,86 +480,142 @@ private func copyFile(_ contents: Data, in directory: URL, to pasteboard: NSPast
     #expect(session.publishedFiles.map { $0.map(\.descriptor.fileName) } == [["a_b.txt"]])
 }
 
-/// Offers one remote file of `contents` and answers the size request.
+/// Offers one remote file of `contents`, named big.bin, and waits until the bridge has
+/// started downloading it.
 @MainActor
 private func startRemoteFileDownload(
     _ contents: Data,
     to clipboard: RDPRemoteSessionClipboard,
     from session: RecordedClipboard
-) throws {
+) async throws {
+    let copyNumber = session.announceRemoteCopy()
     clipboard.receiveFileList(RDPClipboardFileGroupDescriptorW(descriptors: [
         RDPClipboardFileDescriptorW(flags: 0, fileAttributes: 0, fileSize: UInt64(contents.count), fileName: "big.bin"),
-    ]), copyNumber: session.announceRemoteCopy())
-    let streamID = try #require(session.sizeRequests.last)
-    let size = UInt64(contents.count).littleEndian
-    clipboard.receiveFileContents(RDPClipboardFileContentsResponse(
-        streamID: streamID,
-        ok: true,
-        data: withUnsafeBytes(of: size) { Data($0) }
-    ))
+    ]), copyNumber: copyNumber)
+    let task = try #require(clipboard.fileDownloadTask)
+    try await waitUntil { session.downloads.last?.copyNumber == copyNumber }
+    let download = try #require(session.downloads.last)
+    #expect(download.copyNumber == copyNumber)
+    download.bridgeTask = task
 }
 
+/// Finishes the last download with `contents`, and waits until the bridge has handled it.
 @MainActor
-@Test func aRemoteFileArrivesOverRangesTheServerAnswersShort() throws {
+private func finishRemoteFileDownload(with contents: Data, from session: RecordedClipboard) async throws {
+    let download = try #require(session.downloads.last)
+    download.finish(with: [contents])
+    await download.bridgeTask?.value
+}
+
+/// Fails the last download with `error`, and waits until the bridge has handled it.
+@MainActor
+private func failRemoteFileDownload(with error: Error, from session: RecordedClipboard) async throws {
+    let download = try #require(session.downloads.last)
+    download.fail(error)
+    await download.bridgeTask?.value
+}
+
+/// Each way a download fails says why, but one a newer copy or the session's end replaced,
+/// which says so itself. Either way, its folder goes.
+@MainActor
+@Test func aFailedDownloadSaysWhy() async throws {
     let pasteboard = makePasteboard()
     defer { pasteboard.releaseGlobally() }
     let session = RecordedClipboard()
     let clipboard = RDPRemoteSessionClipboard(isSharingEnabled: true, pasteboard: pasteboard)
     clipboard.attach(session)
-    let contents = Data((0 ..< 1_500_000).map { UInt8(truncatingIfNeeded: $0 &* 31) })
-
-    try startRemoteFileDownload(contents, to: clipboard, from: session)
-    var received = 0
-    while received < contents.count {
-        let request = try #require(session.rangeRequests.last)
-        session.rangeRequests.removeAll()
-        #expect(request.position == UInt64(received))
-        #expect(request.requestedByteCount <= 512 * 1024)
-        // Each range has two minutes to arrive over a slow link.
-        clipboard.poll(now: Date().addingTimeInterval(115))
-        // Windows caps how much one answer carries.
-        let end = received + min(Int(request.requestedByteCount), 300_000)
-        clipboard.receiveFileContents(RDPClipboardFileContentsResponse(
-            streamID: request.streamID,
-            ok: true,
-            data: contents.subdata(in: received ..< end)
-        ))
-        received = end
+    struct DiskFull: Error {}
+    let failures: [(Error, String)] = [
+        (RDPClipboardDownloadError.timedOut, "Remote file transfer timed out."),
+        (RDPClipboardDownloadError.refused, "Remote file transfer failed."),
+        (RDPClipboardDownloadError.incomplete, "Remote file transfer was incomplete."),
+        (RDPClipboardDownloadError.totalByteLimitExceeded, "Remote files exceed 32 MiB."),
+        (RDPClipboardRemoteFileTransferPlanningError.fileCountLimitExceeded, "Remote clipboard has more than 1000 files."),
+        (DiskFull(), "Remote file could not be saved."),
+        (RDPClipboardDownloadError.replaced, "Downloading remote file: big.bin."),
+        (RDPClipboardDownloadError.sessionEnded, "Downloading remote file: big.bin."),
+    ]
+    for (error, message) in failures {
+        try await startRemoteFileDownload(Data("remote".utf8), to: clipboard, from: session)
+        #expect(clipboard.statusMessage == "Downloading remote file: big.bin.")
+        let directory = try #require(session.downloads.last).directory
+        try await failRemoteFileDownload(with: error, from: session)
+        #expect(clipboard.statusMessage == message)
+        #expect(clipboard.fileDownloadTask == nil)
+        #expect(FileManager.default.fileExists(atPath: directory.path) == false)
     }
+    #expect(pasteboardFileURLs(pasteboard).isEmpty)
 
-    #expect(session.rangeRequests.isEmpty)
-    let fileURL = try #require((pasteboard.readObjects(forClasses: [NSURL.self]) as? [URL])?.first)
-    defer { try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent()) }
-    #expect(try Data(contentsOf: fileURL) == contents)
+    // More files than a download takes are turned down before one starts.
+    clipboard.receiveFileList(RDPClipboardFileGroupDescriptorW(descriptors: (0 ... 1_000).map {
+        RDPClipboardFileDescriptorW(flags: 0, fileAttributes: 0, fileSize: 1, fileName: "\($0).txt")
+    }), copyNumber: session.announceRemoteCopy())
+    #expect(clipboard.fileDownloadTask == nil)
+    #expect(clipboard.statusMessage == "Remote clipboard has more than 1000 files.")
 }
 
+/// A newer remote copy of files replaces the download before it, which, ending late, leaves
+/// the newer one be.
 @MainActor
-@Test func anEmptyRangeAnswerBeforeTheEndFailsTheDownload() throws {
+@Test func aNewerRemoteFileCopyReplacesTheDownloadBeforeIt() async throws {
     let pasteboard = makePasteboard()
     defer { pasteboard.releaseGlobally() }
     let session = RecordedClipboard()
     let clipboard = RDPRemoteSessionClipboard(isSharingEnabled: true, pasteboard: pasteboard)
     clipboard.attach(session)
 
-    try startRemoteFileDownload(Data(count: 10), to: clipboard, from: session)
-    let request = try #require(session.rangeRequests.last)
-    session.rangeRequests.removeAll()
-    clipboard.receiveFileContents(RDPClipboardFileContentsResponse(streamID: request.streamID, ok: true, data: Data()))
+    try await startRemoteFileDownload(Data("older".utf8), to: clipboard, from: session)
+    let older = try #require(session.downloads.last)
+    try await startRemoteFileDownload(Data("newer".utf8), to: clipboard, from: session)
+    await older.bridgeTask?.value
+    #expect(older.wasCancelled)
+    #expect(FileManager.default.fileExists(atPath: older.directory.path) == false)
+    #expect(clipboard.statusMessage == "Downloading remote file: big.bin.")
 
-    #expect(session.rangeRequests.isEmpty)
-    #expect(clipboard.statusMessage == "Remote file transfer was incomplete.")
+    try await finishRemoteFileDownload(with: Data("newer".utf8), from: session)
+    let fileURL = try #require(pasteboardFileURLs(pasteboard).first)
+    defer { try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent()) }
+    #expect(try Data(contentsOf: fileURL) == Data("newer".utf8))
 }
 
-/// Answers the range request a download of `contents`, all asked for at once, is waiting on.
+/// The message follows the files of a download as they come, and the files land on the
+/// pasteboard quarantined, under the names the server gave them.
 @MainActor
-private func answerRangeRequest(
-    with contents: Data,
-    to clipboard: RDPRemoteSessionClipboard,
-    from session: RecordedClipboard
-) throws {
-    let request = try #require(session.rangeRequests.last)
-    session.rangeRequests.removeAll()
-    clipboard.receiveFileContents(RDPClipboardFileContentsResponse(streamID: request.streamID, ok: true, data: contents))
+@Test func aDownloadOfSeveralFilesSaysWhichIsComing() async throws {
+    let pasteboard = makePasteboard()
+    defer { pasteboard.releaseGlobally() }
+    let session = RecordedClipboard()
+    let clipboard = RDPRemoteSessionClipboard(isSharingEnabled: true, pasteboard: pasteboard)
+    clipboard.attach(session)
+    let copyNumber = session.announceRemoteCopy()
+    clipboard.receiveFileList(RDPClipboardFileGroupDescriptorW(descriptors: ["a.txt", "b.txt", "c.txt"].map {
+        RDPClipboardFileDescriptorW(flags: 0, fileAttributes: 0, fileSize: 1, fileName: $0)
+    }), copyNumber: copyNumber)
+    #expect(clipboard.statusMessage == "Downloading remote files: 1 of 3.")
+    let task = try #require(clipboard.fileDownloadTask)
+    try await waitUntil { session.downloads.count == 1 }
+    let download = try #require(session.downloads.last)
+
+    download.progress?(RDPClipboardDownloadProgress(
+        fileOffset: 1,
+        fileCount: 3,
+        fileName: "b.txt",
+        receivedByteCount: 0,
+        fileByteCount: nil
+    ))
+    try await waitUntil { clipboard.statusMessage == "Downloading remote files: 2 of 3." }
+    #expect(clipboard.statusMessage == "Downloading remote files: 2 of 3.")
+    download.finish(with: [Data("a".utf8), Data("b".utf8), Data("c".utf8)])
+    await task.value
+    #expect(clipboard.statusMessage == "3 remote files copied.")
+    let fileURLs = pasteboardFileURLs(pasteboard)
+    defer { try? FileManager.default.removeItem(at: download.directory) }
+    #expect(fileURLs.map(\.lastPathComponent) == ["a.txt", "b.txt", "c.txt"])
+    #expect(try fileURLs.map { try Data(contentsOf: $0) } == [Data("a".utf8), Data("b".utf8), Data("c".utf8)])
+    // Progress of a finished download, late on the main thread, changes nothing.
+    download.progress?(RDPClipboardDownloadProgress(fileOffset: 2, fileCount: 3, fileName: "c.txt", receivedByteCount: 0, fileByteCount: nil))
+    try await Task.sleep(nanoseconds: 50_000_000)
+    #expect(clipboard.statusMessage == "3 remote files copied.")
 }
 
 @MainActor
@@ -482,7 +624,7 @@ private func pasteboardFileURLs(_ pasteboard: NSPasteboard) -> [URL] {
 }
 
 @MainActor
-@Test func aFinishedDownloadNeverReplacesANewerCopy() throws {
+@Test func aFinishedDownloadNeverReplacesANewerCopy() async throws {
     let pasteboard = makePasteboard()
     defer { pasteboard.releaseGlobally() }
     let session = RecordedClipboard()
@@ -491,27 +633,27 @@ private func pasteboardFileURLs(_ pasteboard: NSPasteboard) -> [URL] {
     let contents = Data("remote".utf8)
 
     // Remote text copied during the download.
-    try startRemoteFileDownload(contents, to: clipboard, from: session)
+    try await startRemoteFileDownload(contents, to: clipboard, from: session)
     clipboard.receiveText("remote text", copyNumber: session.announceRemoteCopy())
-    try answerRangeRequest(with: contents, to: clipboard, from: session)
+    try await finishRemoteFileDownload(with: contents, from: session)
     #expect(pasteboard.string(forType: .string) == "remote text")
     #expect(clipboard.statusMessage == "Remote text copied.")
 
     // A local copy the next poll has not seen yet.
-    try startRemoteFileDownload(contents, to: clipboard, from: session)
+    try await startRemoteFileDownload(contents, to: clipboard, from: session)
     pasteboard.clearContents()
     pasteboard.setString("local text", forType: .string)
-    try answerRangeRequest(with: contents, to: clipboard, from: session)
+    try await finishRemoteFileDownload(with: contents, from: session)
     #expect(pasteboard.string(forType: .string) == "local text")
     #expect(pasteboardFileURLs(pasteboard).isEmpty)
     #expect(clipboard.statusMessage == "Clipboard changed; remote files were not copied.")
 
     // A local copy the poll has published.
-    try startRemoteFileDownload(contents, to: clipboard, from: session)
+    try await startRemoteFileDownload(contents, to: clipboard, from: session)
     pasteboard.clearContents()
     pasteboard.setString("newer local text", forType: .string)
     clipboard.poll()
-    try answerRangeRequest(with: contents, to: clipboard, from: session)
+    try await finishRemoteFileDownload(with: contents, from: session)
     #expect(session.publishedTexts.last == "newer local text")
     #expect(pasteboard.string(forType: .string) == "newer local text")
     #expect(clipboard.statusMessage == "Local text synced.")
@@ -534,18 +676,18 @@ private func pasteboardFileURLs(_ pasteboard: NSPasteboard) -> [URL] {
     pasteboard.clearContents()
     pasteboard.writeObjects([localFileURL as NSURL])
     clipboard.poll()
-    try startRemoteFileDownload(contents, to: clipboard, from: session)
+    try await startRemoteFileDownload(contents, to: clipboard, from: session)
     try await Task.sleep(nanoseconds: 200_000_000)
     #expect(session.publishedFiles.isEmpty)
 
-    try answerRangeRequest(with: contents, to: clipboard, from: session)
+    try await finishRemoteFileDownload(with: contents, from: session)
     let fileURL = try #require(pasteboardFileURLs(pasteboard).first)
     defer { try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent()) }
     #expect(try Data(contentsOf: fileURL) == contents)
 }
 
 @MainActor
-@Test func aLocalCopyJustBeforeARemoteFileCopyLosesToIt() throws {
+@Test func aLocalCopyJustBeforeARemoteFileCopyLosesToIt() async throws {
     let pasteboard = makePasteboard()
     defer { pasteboard.releaseGlobally() }
     let session = RecordedClipboard()
@@ -556,11 +698,11 @@ private func pasteboardFileURLs(_ pasteboard: NSPasteboard) -> [URL] {
     // Copied within the second before the server's copy, so no poll has seen it.
     pasteboard.clearContents()
     pasteboard.setString("local text", forType: .string)
-    try startRemoteFileDownload(contents, to: clipboard, from: session)
+    try await startRemoteFileDownload(contents, to: clipboard, from: session)
     clipboard.poll()
     #expect(session.publishedTexts == [nil])
 
-    try answerRangeRequest(with: contents, to: clipboard, from: session)
+    try await finishRemoteFileDownload(with: contents, from: session)
     let fileURL = try #require(pasteboardFileURLs(pasteboard).first)
     defer { try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent()) }
     #expect(try Data(contentsOf: fileURL) == contents)
@@ -624,10 +766,10 @@ private func waitUntil(_ condition: () -> Bool) async throws {
     try await waitUntil { clipboard.statusMessage == failure }
     try Data("third".utf8).write(to: fileURL)
     let contents = Data("remote".utf8)
-    try startRemoteFileDownload(contents, to: clipboard, from: session)
+    try await startRemoteFileDownload(contents, to: clipboard, from: session)
     clipboard.syncNow()
     clipboard.startTemporarySharing()
-    try answerRangeRequest(with: contents, to: clipboard, from: session)
+    try await finishRemoteFileDownload(with: contents, from: session)
     let downloadedURL = try #require(pasteboardFileURLs(pasteboard).first)
     defer { try? FileManager.default.removeItem(at: downloadedURL.deletingLastPathComponent()) }
     #expect(try Data(contentsOf: downloadedURL) == contents)
@@ -637,7 +779,7 @@ private func waitUntil(_ condition: () -> Bool) async throws {
 /// Sync Now and another "Share for 30s" send only a change, so the server's newer copy and
 /// its download are kept.
 @MainActor
-@Test func syncingAnUnchangedPasteboardKeepsARemoteDownload() throws {
+@Test func syncingAnUnchangedPasteboardKeepsARemoteDownload() async throws {
     let pasteboard = makePasteboard()
     defer { pasteboard.releaseGlobally() }
     let session = RecordedClipboard()
@@ -651,11 +793,11 @@ private func waitUntil(_ condition: () -> Bool) async throws {
     clipboard.startTemporarySharing()
     #expect(session.publishedTexts == [nil, "local text"])
 
-    try startRemoteFileDownload(contents, to: clipboard, from: session)
+    try await startRemoteFileDownload(contents, to: clipboard, from: session)
     clipboard.syncNow()
     clipboard.startTemporarySharing()
     #expect(clipboard.isSharingEnabled)
-    try answerRangeRequest(with: contents, to: clipboard, from: session)
+    try await finishRemoteFileDownload(with: contents, from: session)
     let fileURL = try #require(pasteboardFileURLs(pasteboard).first)
     defer { try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent()) }
     #expect(try Data(contentsOf: fileURL) == contents)
@@ -672,7 +814,7 @@ private func waitUntil(_ condition: () -> Bool) async throws {
 /// A server whose clipboard is emptied, as a password manager clears a copied password, takes
 /// the copy it sent off the pasteboard too; a local copy since stays.
 @MainActor
-@Test func anEmptiedRemoteClipboardClearsOnlyTheCopyItSent() throws {
+@Test func anEmptiedRemoteClipboardClearsOnlyTheCopyItSent() async throws {
     let pasteboard = makePasteboard()
     defer { pasteboard.releaseGlobally() }
     let session = RecordedClipboard()
@@ -689,8 +831,8 @@ private func waitUntil(_ condition: () -> Bool) async throws {
     #expect(session.publishedTexts == [nil])
 
     // Downloaded files go too, at the next poll.
-    try startRemoteFileDownload(contents, to: clipboard, from: session)
-    try answerRangeRequest(with: contents, to: clipboard, from: session)
+    try await startRemoteFileDownload(contents, to: clipboard, from: session)
+    try await finishRemoteFileDownload(with: contents, from: session)
     let directory = try #require(pasteboardFileURLs(pasteboard).first).deletingLastPathComponent()
     defer { try? FileManager.default.removeItem(at: directory) }
     clipboard.receiveRemoteCopyUnavailable(isEmpty: true, copyNumber: session.announceRemoteCopy())
@@ -710,7 +852,7 @@ private func waitUntil(_ condition: () -> Bool) async throws {
 /// A remote copy this bridge takes nothing of, such as an image, is newer than the remote
 /// files still downloading, which are dropped; the pasteboard keeps what it has.
 @MainActor
-@Test func aRemoteCopyWithNoTextOrFilesEndsTheDownloadBeforeIt() throws {
+@Test func aRemoteCopyWithNoTextOrFilesEndsTheDownloadBeforeIt() async throws {
     let pasteboard = makePasteboard()
     defer { pasteboard.releaseGlobally() }
     let session = RecordedClipboard()
@@ -719,10 +861,13 @@ private func waitUntil(_ condition: () -> Bool) async throws {
     let contents = Data("remote".utf8)
 
     clipboard.receiveText("remote text", copyNumber: session.announceRemoteCopy())
-    try startRemoteFileDownload(contents, to: clipboard, from: session)
+    try await startRemoteFileDownload(contents, to: clipboard, from: session)
     clipboard.receiveRemoteCopyUnavailable(isEmpty: false, copyNumber: session.announceRemoteCopy())
     #expect(clipboard.statusMessage == "No text or files arrived from the remote copy.")
-    try answerRangeRequest(with: contents, to: clipboard, from: session)
+    // RDPKit stops downloading it.
+    await session.downloads.last?.bridgeTask?.value
+    #expect(session.downloads.last?.wasCancelled == true)
+    try await finishRemoteFileDownload(with: contents, from: session)
     #expect(pasteboardFileURLs(pasteboard).isEmpty)
     #expect(pasteboard.string(forType: .string) == "remote text")
 
@@ -733,30 +878,7 @@ private func waitUntil(_ condition: () -> Bool) async throws {
 }
 
 @MainActor
-@Test func aDownloadTheServerStopsAnsweringTimesOut() throws {
-    let pasteboard = makePasteboard()
-    defer { pasteboard.releaseGlobally() }
-    let session = RecordedClipboard()
-    let clipboard = RDPRemoteSessionClipboard(isSharingEnabled: true, pasteboard: pasteboard)
-    clipboard.attach(session)
-    let contents = Data("remote".utf8)
-    let changeCount = pasteboard.changeCount
-
-    try startRemoteFileDownload(contents, to: clipboard, from: session)
-    // A server that fetches a cloud file first can take minutes to answer.
-    clipboard.poll(now: Date().addingTimeInterval(115))
-    #expect(clipboard.statusMessage == "Downloading remote file: big.bin.")
-    clipboard.poll(now: Date().addingTimeInterval(121))
-    #expect(clipboard.statusMessage == "Remote file transfer timed out.")
-
-    // The answer that comes too late changes nothing.
-    try answerRangeRequest(with: contents, to: clipboard, from: session)
-    #expect(pasteboard.changeCount == changeCount)
-    #expect(clipboard.statusMessage == "Remote file transfer timed out.")
-}
-
-@MainActor
-@Test func downloadedFilesAreQuarantined() throws {
+@Test func downloadedFilesAreQuarantined() async throws {
     let pasteboard = makePasteboard()
     defer { pasteboard.releaseGlobally() }
     let session = RecordedClipboard()
@@ -764,8 +886,8 @@ private func waitUntil(_ condition: () -> Bool) async throws {
     clipboard.attach(session)
     let contents = Data("remote".utf8)
 
-    try startRemoteFileDownload(contents, to: clipboard, from: session)
-    try answerRangeRequest(with: contents, to: clipboard, from: session)
+    try await startRemoteFileDownload(contents, to: clipboard, from: session)
+    try await finishRemoteFileDownload(with: contents, from: session)
     let fileURL = try #require(pasteboardFileURLs(pasteboard).first)
     defer { try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent()) }
     let quarantine = try #require(try fileURL.resourceValues(forKeys: [.quarantinePropertiesKey]).quarantineProperties)
@@ -775,7 +897,7 @@ private func waitUntil(_ condition: () -> Bool) async throws {
 }
 
 @MainActor
-@Test func pastedFilesStayUntilANewDownloadReplacesThem() throws {
+@Test func pastedFilesStayUntilANewDownloadReplacesThem() async throws {
     let pasteboard = makePasteboard()
     defer { pasteboard.releaseGlobally() }
     let session = RecordedClipboard()
@@ -784,25 +906,24 @@ private func waitUntil(_ condition: () -> Bool) async throws {
     let contents = Data("remote".utf8)
     let fileManager = FileManager.default
 
-    try startRemoteFileDownload(contents, to: clipboard, from: session)
-    try answerRangeRequest(with: contents, to: clipboard, from: session)
+    try await startRemoteFileDownload(contents, to: clipboard, from: session)
+    try await finishRemoteFileDownload(with: contents, from: session)
     let firstURL = try #require(pasteboardFileURLs(pasteboard).first)
     defer { try? fileManager.removeItem(at: firstURL.deletingLastPathComponent()) }
 
     // Downloads that fail leave the files on the pasteboard pasteable.
-    try startRemoteFileDownload(contents, to: clipboard, from: session)
-    let request = try #require(session.rangeRequests.last)
-    clipboard.receiveFileContents(RDPClipboardFileContentsResponse(streamID: request.streamID, ok: false, data: Data()))
+    try await startRemoteFileDownload(contents, to: clipboard, from: session)
+    try await failRemoteFileDownload(with: RDPClipboardDownloadError.refused, from: session)
     #expect(clipboard.statusMessage == "Remote file transfer failed.")
-    try startRemoteFileDownload(contents, to: clipboard, from: session)
-    clipboard.poll(now: Date().addingTimeInterval(121))
+    try await startRemoteFileDownload(contents, to: clipboard, from: session)
+    try await failRemoteFileDownload(with: RDPClipboardDownloadError.timedOut, from: session)
     #expect(clipboard.statusMessage == "Remote file transfer timed out.")
     #expect(pasteboardFileURLs(pasteboard) == [firstURL])
     #expect(try Data(contentsOf: firstURL) == contents)
 
     // One that finishes replaces them.
-    try startRemoteFileDownload(contents, to: clipboard, from: session)
-    try answerRangeRequest(with: contents, to: clipboard, from: session)
+    try await startRemoteFileDownload(contents, to: clipboard, from: session)
+    try await finishRemoteFileDownload(with: contents, from: session)
     let secondURL = try #require(pasteboardFileURLs(pasteboard).first)
     defer { try? fileManager.removeItem(at: secondURL.deletingLastPathComponent()) }
     #expect(secondURL != firstURL)
@@ -811,7 +932,7 @@ private func waitUntil(_ condition: () -> Bool) async throws {
 
 /// Downloaded files go at the poll after a newer copy replaces them, not when the window closes.
 @MainActor
-@Test func pastedFilesAreRemovedOnceANewerCopyReplacesThem() throws {
+@Test func pastedFilesAreRemovedOnceANewerCopyReplacesThem() async throws {
     let pasteboard = makePasteboard()
     defer { pasteboard.releaseGlobally() }
     let session = RecordedClipboard()
@@ -821,16 +942,16 @@ private func waitUntil(_ condition: () -> Bool) async throws {
     let fileManager = FileManager.default
     var directories: [URL] = []
     defer { directories.forEach { try? fileManager.removeItem(at: $0) } }
-    func downloadedDirectory() throws -> URL {
-        try startRemoteFileDownload(contents, to: clipboard, from: session)
-        try answerRangeRequest(with: contents, to: clipboard, from: session)
+    func downloadedDirectory() async throws -> URL {
+        try await startRemoteFileDownload(contents, to: clipboard, from: session)
+        try await finishRemoteFileDownload(with: contents, from: session)
         let directory = try #require(pasteboardFileURLs(pasteboard).first).deletingLastPathComponent()
         directories.append(directory)
         return directory
     }
 
     // Copying the downloaded file again keeps it.
-    var directory = try downloadedDirectory()
+    var directory = try await downloadedDirectory()
     let fileURL = directory.appendingPathComponent("big.bin")
     pasteboard.clearContents()
     pasteboard.writeObjects([fileURL as NSURL])
@@ -842,13 +963,13 @@ private func waitUntil(_ condition: () -> Bool) async throws {
     clipboard.poll()
     #expect(fileManager.fileExists(atPath: directory.path) == false)
 
-    directory = try downloadedDirectory()
+    directory = try await downloadedDirectory()
     clipboard.receiveText("remote text", copyNumber: session.announceRemoteCopy())
     clipboard.poll()
     #expect(fileManager.fileExists(atPath: directory.path) == false)
 
     // Also with sharing turned off since.
-    directory = try downloadedDirectory()
+    directory = try await downloadedDirectory()
     clipboard.setSharingEnabled(false)
     pasteboard.clearContents()
     pasteboard.setString("private text", forType: .string)
@@ -857,7 +978,7 @@ private func waitUntil(_ condition: () -> Bool) async throws {
 }
 
 @MainActor
-@Test func closingRemovesDownloadedFilesOnceOffThePasteboard() throws {
+@Test func closingRemovesDownloadedFilesOnceOffThePasteboard() async throws {
     let pasteboard = makePasteboard()
     defer { pasteboard.releaseGlobally() }
     let session = RecordedClipboard()
@@ -865,8 +986,8 @@ private func waitUntil(_ condition: () -> Bool) async throws {
     clipboard.attach(session)
     let contents = Data("remote".utf8)
 
-    try startRemoteFileDownload(contents, to: clipboard, from: session)
-    try answerRangeRequest(with: contents, to: clipboard, from: session)
+    try await startRemoteFileDownload(contents, to: clipboard, from: session)
+    try await finishRemoteFileDownload(with: contents, from: session)
     let fileURL = try #require(pasteboardFileURLs(pasteboard).first)
     defer { try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent()) }
 

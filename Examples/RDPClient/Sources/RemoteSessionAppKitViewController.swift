@@ -932,12 +932,6 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                         controller.render()
                     }
                 },
-                onClipboardFileContents: { response in
-                    sink.apply { controller in
-                        controller.clipboard.receiveFileContents(response)
-                        controller.render()
-                    }
-                },
                 onClipboardRemoteCopyUnavailable: { isEmpty in
                     let copyNumber = deliveredRemoteCopyNumber()
                     sink.apply { controller in

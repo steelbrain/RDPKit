@@ -2,19 +2,14 @@ import AppKit
 import RDPKit
 
 private let maximumClipboardFileBytes = 32 * 1024 * 1024
-/// The most asked for in one FILECONTENTS_RANGE request; servers may send less anyway.
-/// Half a MiB arrives within the timeout down to about 4 KB/s, and costs a round trip per
-/// range: 64 for the 32 MiB limit.
-private let maximumFileRangeByteCount: UInt64 = 512 * 1024
-/// How long a file contents request may go unanswered before the transfer fails: long
-/// enough for a range on a slow link, or a server that fetches a cloud file first.
-private let fileContentsRequestTimeout: TimeInterval = 120
+/// What a remote copy of files may hold: RDPKit's defaults, 32 MiB and 1000 files.
+private let remoteFileDownloadLimits = RDPClipboardDownloadLimits()
 /// Age at which a download folder an earlier run left is removed at launch. A newer one
 /// may belong to another copy of the app that is still downloading.
 private let staleDownloadDirectoryAge: TimeInterval = 60 * 60
 
 /// Where the clipboard bridge sends: the session's `RDPClipboardSession`.
-protocol RDPClipboardSending: AnyObject {
+protocol RDPClipboardSending: AnyObject, Sendable {
     /// Off while sharing is off, so the server's copies are not even fetched. Turned on, it
     /// fetches a copy the server announced while it was off, unless a publish replaced it.
     var fetchesRemoteCopies: Bool { get set }
@@ -24,8 +19,14 @@ protocol RDPClipboardSending: AnyObject {
     func hasPublished(since remoteCopyNumber: Int) -> Bool
     func publishLocalUnicodeText(_ text: String?)
     func publishLocalFiles(_ files: [RDPClipboardLocalFile])
-    func requestRemoteFileSize(streamID: UInt32, fileIndex: Int32) throws
-    func requestRemoteFileRange(streamID: UInt32, fileIndex: Int32, position: UInt64, requestedByteCount: UInt32) throws
+    func downloadRemoteFiles(
+        _ list: RDPClipboardFileGroupDescriptorW,
+        copyNumber: Int,
+        into directory: URL,
+        limits: RDPClipboardDownloadLimits,
+        progress: (@Sendable (RDPClipboardDownloadProgress) -> Void)?,
+        writeFile: @Sendable (Data, URL) throws -> Void
+    ) async throws -> RDPClipboardDownload
 }
 
 extension RDPClipboardSession: RDPClipboardSending {}
@@ -49,13 +50,12 @@ final class RDPRemoteSessionClipboard {
     private var localFileRead: Task<Void, Never>?
     private var temporarySharingExpiresAt: Date?
     private var timerTick = Date()
-    private var fileTransfer: RemoteFileTransfer?
+    private var fileDownload: FileDownload?
     /// The last download put on the pasteboard, kept while the pasteboard may list its files.
     private var pastedDownload: PastedDownload?
     /// The pasteboard's change count once a remote copy was put on it: while it is unchanged,
     /// the pasteboard holds what came from the server.
     private var remoteCopyChangeCount: Int?
-    private var nextStreamID: UInt32 = 1
 
     init(isSharingEnabled: Bool, pasteboard: NSPasteboard = .general) {
         self.isSharingEnabled = isSharingEnabled
@@ -173,14 +173,9 @@ final class RDPRemoteSessionClipboard {
         message = "Temporary sharing enabled."
     }
 
-    /// Called once a second: fails a file transfer the server stopped answering, removes
-    /// a download a newer copy replaced, ends temporary sharing and publishes local
-    /// pasteboard changes.
+    /// Called once a second: removes a download a newer copy replaced, ends temporary sharing
+    /// and publishes local pasteboard changes.
     func poll(now: Date = Date()) {
-        if let fileTransfer, now.timeIntervalSince(fileTransfer.requestedAt) >= fileContentsRequestTimeout {
-            // A late answer no longer matches a transfer, so it is dropped.
-            failFileTransfer(fileTransfer, message: "Remote file transfer timed out.")
-        }
         if let pastedDownload, pasteboard.changeCount != pastedDownload.pasteboardChangeCount {
             removePastedDownloadUnlessOnPasteboard()
         }
@@ -250,65 +245,65 @@ final class RDPRemoteSessionClipboard {
         pasteboardChangeCount = pasteboard.changeCount
         localCopyIsUnsent = false
         serverHoldsLocalCopy = false
+        guard let session else {
+            return
+        }
+        let files: [RDPClipboardRemoteFileTransferFile]
+        let directory: URL
         do {
-            let files = try descriptorList.remoteFileTransferFiles(
-                maximumTotalByteCount: UInt64(maximumClipboardFileBytes)
+            files = try descriptorList.remoteFileTransferFiles(
+                maximumTotalByteCount: remoteFileDownloadLimits.maximumTotalByteCount,
+                maximumFileCount: remoteFileDownloadLimits.maximumFileCount
             )
-            requestFileSize(RemoteFileTransfer(
-                files: files,
-                streamID: makeStreamID(),
-                downloadDirectory: try makeDownloadDirectory(),
-                pasteboardChangeCount: pasteboardChangeCount
-            ))
+            directory = try makeDownloadDirectory()
         } catch let error as RDPClipboardRemoteFileTransferPlanningError {
             message = planningMessage(for: error)
+            return
         } catch {
             message = "Remote files could not be prepared."
+            return
         }
+        let id = UUID()
+        let showProgress: @Sendable (RDPClipboardDownloadProgress) -> Void = { [weak self] progress in
+            Task { @MainActor [self] in
+                self?.showDownloadProgress(progress, of: id)
+            }
+        }
+        let task = Task { [weak self] in
+            let outcome: Result<RDPClipboardDownload, Error>
+            do {
+                outcome = try .success(await session.downloadRemoteFiles(
+                    descriptorList,
+                    copyNumber: copyNumber,
+                    into: directory,
+                    limits: remoteFileDownloadLimits,
+                    progress: showProgress,
+                    writeFile: { data, fileURL in
+                        try data.write(to: fileURL, options: .atomic)
+                        try Self.quarantine(fileURL)
+                    }
+                ))
+            } catch {
+                outcome = .failure(error)
+            }
+            self?.finishFileDownload(id, with: outcome, in: directory)
+        }
+        fileDownload = FileDownload(id: id, task: task, directory: directory, pasteboardChangeCount: pasteboardChangeCount)
+        showDownloadProgress(
+            RDPClipboardDownloadProgress(
+                fileOffset: 0,
+                fileCount: files.count,
+                fileName: files[0].fileName,
+                receivedByteCount: 0,
+                fileByteCount: nil
+            ),
+            of: id
+        )
     }
 
-    func receiveFileContents(_ response: RDPClipboardFileContentsResponse) {
-        guard isSharingEnabled,
-              var transfer = fileTransfer,
-              transfer.streamID == response.streamID
-        else {
-            return
-        }
-        // Taken out so the received bytes are appended in place.
-        fileTransfer = nil
-        guard response.ok else {
-            failFileTransfer(transfer, message: "Remote file transfer failed.")
-            return
-        }
-
-        guard transfer.expectedByteCount != nil else {
-            do {
-                let byteCount = try response.decodedFileSize()
-                guard byteCount <= UInt64(maximumClipboardFileBytes),
-                      transfer.totalExpectedByteCount <= UInt64(maximumClipboardFileBytes) - byteCount
-                else {
-                    failFileTransfer(transfer, message: "Remote files exceed 32 MiB.")
-                    return
-                }
-                transfer.expectedByteCount = byteCount
-                transfer.totalExpectedByteCount += byteCount
-                continueFileTransfer(transfer)
-            } catch {
-                failFileTransfer(transfer, message: "Remote file size request failed.")
-            }
-            return
-        }
-
-        // [MS-RDPECLIP] 2.2.5.4 does not promise all of a range in one answer, and servers send
-        // less, so the rest is asked for again. Nothing before the end, or more than asked, fails.
-        guard response.data.isEmpty == false,
-              response.data.count <= Int(transfer.requestedByteCount)
-        else {
-            failFileTransfer(transfer, message: "Remote file transfer was incomplete.")
-            return
-        }
-        transfer.receivedData.append(response.data)
-        continueFileTransfer(transfer)
+    /// The download under way, for tests to wait on.
+    var fileDownloadTask: Task<Void, Never>? {
+        fileDownload?.task
     }
 
     /// Whether no publish has replaced remote copy `copyNumber` on the server. One the session
@@ -476,63 +471,6 @@ final class RDPRemoteSessionClipboard {
         return files.isEmpty ? .empty : .files(files)
     }
 
-    /// Asks for the next range of the current file, or saves it once all of it has arrived.
-    private func continueFileTransfer(_ transfer: RemoteFileTransfer) {
-        guard let currentFile = transfer.currentFile,
-              let expectedByteCount = transfer.expectedByteCount
-        else {
-            failFileTransfer(transfer, message: "Remote file transfer failed.")
-            return
-        }
-        let receivedByteCount = UInt64(transfer.receivedData.count)
-        guard receivedByteCount < expectedByteCount else {
-            saveCurrentFile(currentFile, of: transfer)
-            return
-        }
-        guard let session else {
-            failFileTransfer(transfer, message: "Clipboard is not ready.")
-            return
-        }
-
-        var transfer = transfer
-        transfer.requestedByteCount = UInt32(min(maximumFileRangeByteCount, expectedByteCount - receivedByteCount))
-        transfer.requestedAt = Date()
-        fileTransfer = transfer
-        do {
-            try session.requestRemoteFileRange(
-                streamID: transfer.streamID,
-                fileIndex: currentFile.fileIndex,
-                position: receivedByteCount,
-                requestedByteCount: transfer.requestedByteCount
-            )
-        } catch {
-            failFileTransfer(transfer, message: "Remote file request failed.")
-        }
-    }
-
-    private func saveCurrentFile(_ currentFile: RDPClipboardRemoteFileTransferFile, of transfer: RemoteFileTransfer) {
-        do {
-            var nextTransfer = transfer
-            let fileURL = transfer.downloadDirectory.appendingPathComponent(currentFile.fileName, isDirectory: false)
-            try transfer.receivedData.write(to: fileURL, options: .atomic)
-            try Self.quarantine(fileURL)
-            nextTransfer.downloadedFileURLs.append(fileURL)
-
-            guard nextTransfer.currentFileOffset + 1 < nextTransfer.files.count else {
-                finishFileTransfer(nextTransfer)
-                return
-            }
-
-            nextTransfer.currentFileOffset += 1
-            nextTransfer.streamID = makeStreamID()
-            nextTransfer.expectedByteCount = nil
-            nextTransfer.receivedData = Data()
-            requestFileSize(nextTransfer)
-        } catch {
-            failFileTransfer(transfer, message: "Remote file could not be saved.")
-        }
-    }
-
     /// Marks a file the server sent as downloaded, so Gatekeeper checks it before it is
     /// opened, as it checks a browser download. Copies pasted from it keep the mark.
     nonisolated private static func quarantine(_ fileURL: URL) throws {
@@ -545,72 +483,99 @@ final class RDPRemoteSessionClipboard {
         try fileURL.setResourceValues(values)
     }
 
-    private func requestFileSize(_ transfer: RemoteFileTransfer) {
-        guard let session,
-              let currentFile = transfer.currentFile
-        else {
-            failFileTransfer(transfer, message: "Clipboard is not ready.")
+    /// Says which file of download `id` is coming, while it is the download under way.
+    private func showDownloadProgress(_ progress: RDPClipboardDownloadProgress, of id: UUID) {
+        guard fileDownload?.id == id else {
             return
         }
-
-        var transfer = transfer
-        transfer.requestedAt = Date()
-        fileTransfer = transfer
-        do {
-            try session.requestRemoteFileSize(
-                streamID: transfer.streamID,
-                fileIndex: currentFile.fileIndex
-            )
-            message = transfer.files.count == 1
-                ? "Downloading remote file: \(currentFile.fileName)."
-                : "Downloading remote files: \(transfer.currentFileOffset + 1) of \(transfer.files.count)."
-        } catch {
-            failFileTransfer(transfer, message: "Remote file request failed.")
-        }
+        message = progress.fileCount == 1
+            ? "Downloading remote file: \(progress.fileName)."
+            : "Downloading remote files: \(progress.fileOffset + 1) of \(progress.fileCount)."
     }
 
-    private func finishFileTransfer(_ transfer: RemoteFileTransfer) {
+    /// Puts the files of download `id` on the pasteboard, unless a newer copy replaced them, or
+    /// says why it failed. One a newer copy discarded leaves nothing behind.
+    private func finishFileDownload(_ id: UUID, with outcome: Result<RDPClipboardDownload, Error>, in directory: URL) {
+        guard let fileDownload, fileDownload.id == id else {
+            try? FileManager.default.removeItem(at: directory)
+            return
+        }
+        let download: RDPClipboardDownload
+        switch outcome {
+        case let .success(value):
+            download = value
+        case let .failure(error):
+            failFileDownload(message: downloadFailureMessage(for: error))
+            return
+        }
         // Something copied since the download began is newer than these files.
-        guard pasteboard.changeCount == transfer.pasteboardChangeCount else {
-            failFileTransfer(transfer, message: "Clipboard changed; remote files were not copied.")
+        guard pasteboard.changeCount == fileDownload.pasteboardChangeCount else {
+            failFileDownload(message: "Clipboard changed; remote files were not copied.")
             return
         }
         cancelLocalFileRead()
         pasteboard.clearContents()
-        guard pasteboard.writeObjects(transfer.downloadedFileURLs.map { $0 as NSURL }) else {
-            failFileTransfer(transfer, message: "Remote files could not be copied.")
+        guard pasteboard.writeObjects(download.fileURLs.map { $0 as NSURL }) else {
+            failFileDownload(message: "Remote files could not be copied.")
             return
         }
 
         pasteboardChangeCount = pasteboard.changeCount
         remoteCopyChangeCount = pasteboardChangeCount
-        fileTransfer = nil
+        self.fileDownload = nil
         // The files these replaced on the pasteboard can go.
         if let pastedDownload {
             try? FileManager.default.removeItem(at: pastedDownload.directory)
         }
-        pastedDownload = PastedDownload(directory: transfer.downloadDirectory, pasteboardChangeCount: pasteboardChangeCount)
-        if transfer.downloadedFileURLs.count == 1,
-           let fileName = transfer.files.first?.fileName
-        {
-            message = "Remote file copied: \(fileName)."
+        pastedDownload = PastedDownload(directory: directory, pasteboardChangeCount: pasteboardChangeCount)
+        if download.fileURLs.count == 1, let fileURL = download.fileURLs.first {
+            message = "Remote file copied: \(fileURL.lastPathComponent)."
         } else {
-            message = "\(transfer.downloadedFileURLs.count) remote files copied."
+            message = "\(download.fileURLs.count) remote files copied."
         }
     }
 
-    private func failFileTransfer(_ transfer: RemoteFileTransfer, message: String) {
-        try? FileManager.default.removeItem(at: transfer.downloadDirectory)
-        fileTransfer = nil
-        self.message = message
+    /// Ends the download under way, its files removed, saying why; nil says nothing.
+    private func failFileDownload(message: String?) {
+        discardFileTransfer()
+        if let message {
+            self.message = message
+        }
     }
 
     private func discardFileTransfer() {
-        guard let fileTransfer else {
+        guard let fileDownload else {
             return
         }
-        try? FileManager.default.removeItem(at: fileTransfer.downloadDirectory)
-        self.fileTransfer = nil
+        fileDownload.task.cancel()
+        try? FileManager.default.removeItem(at: fileDownload.directory)
+        self.fileDownload = nil
+    }
+
+    /// Why a download failed, or nil when there is nothing to say: a newer copy, or the
+    /// session ending, replaced it, and says so itself.
+    private func downloadFailureMessage(for error: Error) -> String? {
+        switch error {
+        case let error as RDPClipboardDownloadError:
+            switch error {
+            case .replaced, .sessionEnded:
+                nil
+            case .timedOut:
+                "Remote file transfer timed out."
+            case .refused:
+                "Remote file transfer failed."
+            case .incomplete:
+                "Remote file transfer was incomplete."
+            case .totalByteLimitExceeded:
+                "Remote files exceed 32 MiB."
+            }
+        case let error as RDPClipboardRemoteFileTransferPlanningError:
+            planningMessage(for: error)
+        case is CancellationError:
+            nil
+        default:
+            "Remote file could not be saved."
+        }
     }
 
     /// Removes the last pasted download once nothing can paste it any more.
@@ -676,12 +641,6 @@ final class RDPRemoteSessionClipboard {
         }
     }
 
-    private func makeStreamID() -> UInt32 {
-        let streamID = nextStreamID
-        nextStreamID = streamID == UInt32.max ? 1 : streamID + 1
-        return streamID
-    }
-
     private func planningMessage(for error: RDPClipboardRemoteFileTransferPlanningError) -> String {
         switch error {
         case .emptyFileList:
@@ -692,6 +651,8 @@ final class RDPRemoteSessionClipboard {
             "Remote file index is not valid."
         case .totalByteLimitExceeded:
             "Remote files exceed 32 MiB."
+        case .fileCountLimitExceeded:
+            "Remote clipboard has more than \(remoteFileDownloadLimits.maximumFileCount) files."
         }
     }
 }
@@ -710,35 +671,11 @@ private struct PastedDownload {
     var pasteboardChangeCount: Int
 }
 
-private struct RemoteFileTransfer: Equatable {
-    var files: [RDPClipboardRemoteFileTransferFile]
-    var currentFileOffset = 0
-    var streamID: UInt32
-    /// Nil until the server answers the size request.
-    var expectedByteCount: UInt64?
-    var receivedData = Data()
-    var requestedByteCount: UInt32 = 0
-    var totalExpectedByteCount: UInt64 = 0
-    var downloadedFileURLs: [URL] = []
-    var downloadDirectory: URL
-    /// The pasteboard's change count when the transfer began; any other means a newer copy.
-    var pasteboardChangeCount: Int
-    /// When the request now unanswered went out.
-    var requestedAt = Date()
-
-    init(
-        files: [RDPClipboardRemoteFileTransferFile],
-        streamID: UInt32,
-        downloadDirectory: URL,
-        pasteboardChangeCount: Int
-    ) {
-        self.files = files
-        self.streamID = streamID
-        self.downloadDirectory = downloadDirectory
-        self.pasteboardChangeCount = pasteboardChangeCount
-    }
-
-    var currentFile: RDPClipboardRemoteFileTransferFile? {
-        files.indices.contains(currentFileOffset) ? files[currentFileOffset] : nil
-    }
+/// A remote copy of files RDPKit is downloading into `directory`.
+private struct FileDownload {
+    let id: UUID
+    let task: Task<Void, Never>
+    let directory: URL
+    /// The pasteboard's change count when the download began; any other means a newer copy.
+    let pasteboardChangeCount: Int
 }
