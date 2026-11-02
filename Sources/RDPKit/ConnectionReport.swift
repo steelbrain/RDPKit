@@ -18,6 +18,15 @@ public struct RDPConnectionReport: Encodable, Equatable, Sendable {
     /// The host:port this connection went to: after a Server Redirection, the
     /// one the redirection named.
     public var target: String
+    /// `target`'s host: after a Server Redirection, the one it named, or the configured host
+    /// when it named only a routing token, as a load balancer's can.
+    public var targetHost: String
+    /// `target`'s port: the configured one, which a Server Redirection keeps.
+    public var targetPort: UInt16
+    /// Whether a Server Redirection named `targetHost`: false for the configured server, and
+    /// after redirections that named only a routing token, which lead to the configured host
+    /// again, so the session went on with the server the user chose.
+    public var redirectionNamedHost: Bool
     /// How many Server Redirections led to `target` ([MS-RDPBCGR] 3.1.5.2): 0
     /// for the configured server, at most 2. Above 0, the configured server
     /// took the logon and handed the session on, so a failure here is the
@@ -213,6 +222,9 @@ public struct RDPConnectionReport: Encodable, Equatable, Sendable {
         status: String,
         stage: String,
         target: String,
+        targetHost: String? = nil,
+        targetPort: UInt16? = nil,
+        redirectionNamedHost: Bool = false,
         redirectionDepth: Int = 0,
         username: String? = nil,
         domain: String? = nil,
@@ -326,6 +338,12 @@ public struct RDPConnectionReport: Encodable, Equatable, Sendable {
         self.status = status
         self.stage = stage
         self.target = target
+        // A target RDPKit did not make is read as RDPKit makes them: host:port.
+        let separator = target.lastIndex(of: ":")
+        let parsedPort = separator.flatMap { UInt16(target[target.index(after: $0)...]) }
+        self.targetHost = targetHost ?? (parsedPort == nil ? target : separator.map { String(target[..<$0]) } ?? target)
+        self.targetPort = targetPort ?? parsedPort ?? 3389
+        self.redirectionNamedHost = redirectionNamedHost
         self.redirectionDepth = redirectionDepth
         self.username = username
         self.domain = domain

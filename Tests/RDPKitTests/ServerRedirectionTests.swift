@@ -634,3 +634,41 @@ extension RDPServerRedirectionPDU {
         return try parseIfPresent(from: indication)
     }
 }
+
+/// A redirection that names a host goes there, and a later one naming only a routing token
+/// keeps it; one that names only a routing token keeps the configured host and port.
+@Test func redirectionSaysWhetherItNamedTheHost() throws {
+    let configuration = RDPConnectionConfiguration(host: "broker.example", port: 3390)
+    var tokenOnly = RDPServerRedirectionPDU(channelID: 1003, sessionID: 7, flags: [.loadBalanceInfo])
+    tokenOnly.loadBalanceInfo = Data("Cookie: msts=1\r\n".utf8)
+    let viaToken = try #require(configuration.redirected(by: tokenOnly))
+    #expect([viaToken.host, viaToken.target] == ["broker.example", "broker.example:3390"])
+    #expect(!viaToken.redirectionNamedHost)
+
+    var named = RDPServerRedirectionPDU(channelID: 1003, sessionID: 7, flags: [.targetNetAddress])
+    named.targetNetAddress = "192.0.2.10"
+    let viaName = try #require(viaToken.redirected(by: named))
+    #expect([viaName.host, viaName.target] == ["192.0.2.10", "192.0.2.10:3390"])
+    #expect(viaName.redirectionNamedHost)
+    #expect(try #require(viaName.redirected(by: tokenOnly)).redirectionNamedHost)
+}
+
+/// A report RDPKit did not make reads its host and port from `target`, the last colon apart.
+@Test func aReportReadsItsTargetsHostAndPort() {
+    func report(_ target: String) -> RDPConnectionReport {
+        RDPConnectionReport(
+            status: "success",
+            stage: "done",
+            target: target,
+            passwordConfigured: false,
+            requestedProtocols: [],
+            requestHex: "",
+            warnings: []
+        )
+    }
+    #expect([report("host.example:3390").targetHost, "\(report("host.example:3390").targetPort)"] == ["host.example", "3390"])
+    #expect([report("2001:db8::1:3389").targetHost, "\(report("2001:db8::1:3389").targetPort)"] == ["2001:db8::1", "3389"])
+    #expect([report("host.example").targetHost, "\(report("host.example").targetPort)"] == ["host.example", "3389"])
+    #expect(report("host.example:99999").targetHost == "host.example:99999")
+    #expect(!report("host.example:3390").redirectionNamedHost)
+}

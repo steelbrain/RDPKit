@@ -268,6 +268,9 @@
   `rdpGraphicsFirstFrame` is the first that came, shown or not, and
   `runPresentedFrameCount` those of the whole run, so a run that showed a
   desktop before a Server Redirection's target failed still says so.
+- `RDPConnectionReport.targetHost` and `targetPort` give `target` apart, and
+  `redirectionNamedHost` says whether a Server Redirection named that host,
+  rather than only a routing token that leads to the configured host again.
 - `RDPKeyboard` is a keyboard as a client announces it, layout, type and
   subtype, and `character(for:shift:capsLock:)` says what Windows types for a
   scancode with it, from tables Windows 11 reported for every layout a Mac

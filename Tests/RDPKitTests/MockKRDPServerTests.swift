@@ -139,6 +139,9 @@ struct MockKRDPServerTests {
         #expect(run.report.failure == .tlsKeyUsageIncorrect)
         #expect(run.report.redirectionDepth == 1)
         #expect(run.connectionCount == 2)
+        // The redirection named only a routing token: the same host and port again.
+        #expect(!run.report.redirectionNamedHost)
+        #expect("\(run.report.targetHost):\(run.report.targetPort)" == run.report.target)
     }
 
     /// Cancelling from onCertificate rejects the server before any credential is
@@ -973,6 +976,9 @@ struct MockKRDPServerTests {
             #expect(report.connectionStage == .negotiation)
             #expect(report.redirectionDepth == 1)
             #expect(report.target.hasPrefix("127.0.0.1:"))
+            // The redirection named the address, the host typed in "localhost".
+            #expect(report.targetHost == "127.0.0.1")
+            #expect(report.redirectionNamedHost)
             #expect(report.failure == error.failure)
             #expect(report.error == error.description)
         }

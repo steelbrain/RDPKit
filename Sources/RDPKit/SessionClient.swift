@@ -21,6 +21,8 @@ public struct RDPSessionClient: Sendable {
             status: "dry-run",
             stage: "x224-rdp-negotiation-request",
             target: configuration.target,
+            targetHost: configuration.host,
+            targetPort: configuration.port,
             username: configuration.credentials?.username,
             domain: configuration.credentials?.domain,
             passwordConfigured: configuration.credentials != nil,
@@ -217,6 +219,7 @@ extension RDPConnectionConfiguration {
         }
         var redirected = self
         redirected.host = redirection.targetHost ?? host
+        redirected.redirectionNamedHost = redirectionNamedHost || redirection.targetHost != nil
         redirected.redirectionRoutingToken = redirection.routingToken
         redirected.redirectionSessionID = redirection.sessionID
         // The password field is an opaque cookie for the Client Info PDU, not a
