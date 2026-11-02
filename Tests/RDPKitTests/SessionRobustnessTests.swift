@@ -655,16 +655,33 @@ func chattyServerStillMissesTheMilestoneDeadline(prefix: Int, frameCaptureLimit:
 }
 
 /// Once a live session shows frames it waits for the next one indefinitely,
-/// through silence or other traffic, until the guard cancels it.
+/// through silence or other traffic, until it is cancelled well past its timeout.
 @Test(arguments: [false, true])
 func liveSessionWaitsIndefinitelyAfterItsFirstFrame(chatty: Bool) throws {
+    // Counted from the first frame: under a parallel test run the replay can take longer than
+    // a guard counted from the start to reach it, every milestone still within the timeout.
+    let cancellation = RDPConnectionCancellation()
+    let shownFrames = Locked(0)
     let run = try KRdpCapture.run(
         frameCaptureLimit: nil,
         timeoutSeconds: 1,
-        guardSeconds: 3,
-        onEnd: chatty ? KRdpCapture.repeatedly(KRdpCapture.pointerHidden, every: .milliseconds(200)) : nil
+        onEnd: chatty ? KRdpCapture.repeatedly(KRdpCapture.pointerHidden, every: .milliseconds(200)) : nil,
+        onGraphicsFrame: { _ in
+            let isFirst = shownFrames.withLock {
+                $0 += 1
+                return $0 == 1
+            }
+            if isFirst {
+                Thread.detachNewThread {
+                    Thread.sleep(forTimeInterval: 2.5)
+                    cancellation.cancel()
+                }
+            }
+        },
+        cancellation: cancellation
     )
 
+    #expect(shownFrames.value > 0)
     #expect(run.report.rdpGraphicsFirstFrame != nil)
     #expect(run.report.error == "cancelled")
 }
