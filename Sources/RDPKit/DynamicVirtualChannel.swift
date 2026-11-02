@@ -375,11 +375,12 @@ struct RDPDynamicVirtualChannelDataFirstPDU: Equatable, Sendable {
         let channelID = try cursor.readDynamicVirtualChannelID(lengthCode: header.channelIDLength)
         let totalLength = try cursor.readDynamicVirtualChannelLength(lengthCode: header.sp)
         let payload = cursor.readRemainingData()
-        guard UInt32(payload.count) == dynamicVirtualChannelDataFirstPayloadLength(
-            channelIDLengthCode: header.channelIDLength,
-            lengthCode: header.sp,
-            totalLength: totalLength
-        ) else {
+        // In [MS-RDPEDYC] 2.2.3.1 the first block fills the PDU or holds the whole message,
+        // but xrdp sends RDPGFX messages in 1500-byte blocks (xrdp_egfx_send_data), so a
+        // shorter one is taken too; the Data PDUs behind it complete the message.
+        guard UInt32(payload.count) <= totalLength,
+              data.count <= RDPDynamicVirtualChannelDataPDU.maximumPacketByteCount
+        else {
             throw RDPDecodeError.invalidDynamicVirtualChannelPDU
         }
 

@@ -309,10 +309,21 @@ import Testing
     }
 }
 
-@Test func rejectsDynamicVirtualChannelDataFirstPayloadShorterThanExpectedLength() {
+/// xrdp sends a first block shorter than the PDU allows; Data PDUs complete the message.
+@Test func acceptsDynamicVirtualChannelDataFirstPayloadShorterThanItsPDUAllows() throws {
+    let pdu = try #require(try RDPDynamicVirtualChannelDataFirstPDU.parseIfPresent(
+        from: Data([0x20, 0x01, 0x03, 0xAA, 0xBB])
+    ))
+
+    #expect(pdu.channelID == 1)
+    #expect(pdu.totalLength == 3)
+    #expect(pdu.payload == Data([0xAA, 0xBB]))
+}
+
+@Test func rejectsDynamicVirtualChannelDataFirstLargerThanAPDU() {
     #expect(throws: RDPDecodeError.invalidDynamicVirtualChannelPDU) {
         try RDPDynamicVirtualChannelDataFirstPDU.parseIfPresent(
-            from: Data([0x20, 0x01, 0x03, 0xAA, 0xBB])
+            from: Data([0x24, 0x01, 0xD0, 0x07]) + Data(repeating: 0, count: 1_597)
         )
     }
 }

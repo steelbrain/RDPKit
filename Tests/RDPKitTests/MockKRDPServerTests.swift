@@ -1442,6 +1442,39 @@ struct MockKRDPServerTests {
         #expect(report.error == nil)
     }
 
+    /// xrdp sends RDPGFX messages in a DVC Data First shorter than the PDU allows and Data
+    /// PDUs as short; the client reassembles the message instead of ending the session.
+    @Test func clientReassemblesGraphicsFromAShortDataFirst() throws {
+        let report = try runMock(.init(graphicsBehavior: .sendBitmapCompositionFrameInShortDataFirst)).report
+
+        #expect(report.status == "success")
+        #expect(report.rdpGraphicsFirstFrame?.frameID == 2)
+        #expect(report.rdpGraphicsFirstFrame?.codecName == "surface-bgra")
+        #expect(report.rdpGraphicsFirstFrame?.destinationRect == RDPFrameRect(left: 10, top: 20, right: 14, bottom: 24))
+        #expect(report.error == nil)
+    }
+
+    /// xrdp's layout for an RDPGFX message longer than a PDU (xrdp_egfx_send_data): a 1500-byte
+    /// Data First, then Data PDUs carrying 1500 bytes each. Each pixel checked came in another PDU.
+    @Test func clientReassemblesGraphicsInXRDPBlocks() throws {
+        let report = try runMock(.init(graphicsBehavior: .sendUncompressedFrameInXRDPBlocks), client: {
+            RDPSessionClient().run(configuration: $0, onGraphicsFrame: { _ in })
+        }).report
+
+        let frame = try #require(report.rdpGraphicsFirstFrame)
+        let bitmapData = try #require(frame.decodedBitmapData)
+
+        #expect(report.status == "success")
+        #expect(frame.frameID == 14)
+        #expect(frame.codecName == "surface-bgra")
+        #expect(frame.destinationRect == RDPFrameRect(left: 0, top: 0, right: 32, bottom: 32))
+        #expect(frame.decodedBitmapBytesPerRow == 128)
+        #expect(pixel(atX: 0, y: 0, data: bitmapData, bytesPerRow: 128) == [0x00, 0x00, 0x5A, 0xFF])
+        #expect(pixel(atX: 20, y: 15, data: bitmapData, bytesPerRow: 128) == [0xF4, 0x01, 0x5A, 0xFF])
+        #expect(pixel(atX: 31, y: 31, data: bitmapData, bytesPerRow: 128) == [0xFF, 0x03, 0x5A, 0xFF])
+        #expect(report.error == nil)
+    }
+
     @Test func clientDecodesClearCodecBandsFrameFromMockServer() throws {
         let observed = Locked(Observed())
         let report = try runMock(.init(graphicsBehavior: .sendClearCodecBandsFrame), client: {

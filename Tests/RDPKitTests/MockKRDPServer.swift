@@ -146,6 +146,14 @@ enum MockKRDPGraphicsBehavior: Equatable {
     case sendFragmentedCompressedCapsConfirmFirstFrame
     case stallAfterFragmentedCapsConfirm
     case sendFragmentedBitmapCompositionFrame
+    /// The bitmap composition frame in a 37-byte DVC Data First payload, with Data PDUs
+    /// carrying 37 bytes each as `sendFragmentedBitmapCompositionFrame` does: xrdp sends
+    /// RDPGFX messages in blocks of 1500 bytes, short of what a PDU holds.
+    case sendBitmapCompositionFrameInShortDataFirst
+    /// A frame of over 1596 bytes in xrdp's layout (xrdp_egfx_send_data): a 1500-byte DVC
+    /// Data First payload, short of the 1596 bytes [MS-RDPEDYC] 2.2.3.1 puts in that PDU,
+    /// and Data PDUs carrying 1500 bytes each.
+    case sendUncompressedFrameInXRDPBlocks
     case sendClearCodecBandsFrame
     case sendCAVideoRemoteFXFrame
     case sendCAProgressiveFrame
@@ -2420,6 +2428,14 @@ private enum MockKRDPFixtures {
             ]
         case .sendFragmentedBitmapCompositionFrame:
             fragmentedGraphicsDynamicPackets(zgfxMultipart(bitmapCompositionFrameMessages()))
+        case .sendBitmapCompositionFrameInShortDataFirst:
+            fragmentedGraphicsDynamicPackets(segmentedGraphicsData(bitmapCompositionFrameMessages()), firstPayloadCount: 37)
+        case .sendUncompressedFrameInXRDPBlocks:
+            fragmentedGraphicsDynamicPackets(
+                segmentedGraphicsData(uncompressedFrameMessages()),
+                firstPayloadCount: 1500,
+                dataPayloadCount: 1500
+            )
         case .sendClearCodecBandsFrame:
             [graphicsDynamicPacket(segmentedGraphicsData(clearCodecBandsFrameMessages()))]
         case .sendCAVideoRemoteFXFrame:
@@ -2827,6 +2843,21 @@ private enum MockKRDPFixtures {
                 ])
             )
             + endFrameMessage(frameID: 2)
+    }
+
+    /// A 32x32 uncompressed bitmap of 4,096 bytes; each pixel's blue and green bytes hold its index.
+    static func uncompressedFrameMessages() -> Data {
+        let pixels = Data((0 ..< 32 * 32).flatMap { [UInt8(truncatingIfNeeded: $0), UInt8($0 >> 8), 0x5A, 0x00] })
+        return createSurfaceMessage(width: 32, height: 32)
+            + mapSurfaceToOutputMessage(surfaceID: 1, x: 0, y: 0)
+            + startFrameMessage(frameID: 14)
+            + wireToSurfaceMessage(
+                surfaceID: 1,
+                codecID: RDPGFXCodecID.uncompressed,
+                destinationRect: RDPGFXRect16(left: 0, top: 0, right: 32, bottom: 32),
+                bitmapData: pixels
+            )
+            + endFrameMessage(frameID: 14)
     }
 
     static func clearCodecBandsFrameMessages() -> Data {
@@ -3292,8 +3323,12 @@ private enum MockKRDPFixtures {
         return staticVirtualChannelPacket(payload)
     }
 
-    private static func fragmentedGraphicsDynamicPackets(_ payload: Data) -> [Data] {
-        let firstPayloadCount = Int(dynamicVirtualChannelDataFirstPayloadLength(
+    private static func fragmentedGraphicsDynamicPackets(
+        _ payload: Data,
+        firstPayloadCount: Int? = nil,
+        dataPayloadCount: Int = 37
+    ) -> [Data] {
+        let firstPayloadCount = firstPayloadCount ?? Int(dynamicVirtualChannelDataFirstPayloadLength(
             channelIDLengthCode: dynamicVirtualChannelIDLengthCode(MockKRDPConstants.graphicsDynamicChannelID),
             lengthCode: 1,
             totalLength: UInt32(payload.count)
@@ -3311,7 +3346,7 @@ private enum MockKRDPFixtures {
 
         var offset = firstPayloadCount
         while offset < payload.count {
-            let count = min(37, payload.count - offset)
+            let count = min(dataPayloadCount, payload.count - offset)
             packets.append(dynamicPacket(
                 payload.subdata(in: offset ..< offset + count),
                 channelID: MockKRDPConstants.graphicsDynamicChannelID
