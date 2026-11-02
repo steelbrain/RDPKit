@@ -976,9 +976,10 @@ public final class RDPClipboardSession: @unchecked Sendable {
     private var hasAnsweredMonitorReady = false
     /// Format Lists sent that the server has not answered with a Format List Response.
     private var unansweredFormatListCount = 0
-    /// Whether a publish has sent a Format List since the last Monitor Ready, beside the one
-    /// that answered it.
-    private var hasPublishedSinceMonitorReady = false
+    /// Whether the local content is a copy the application published, empty or not: from that
+    /// publish until a server copy the session takes retires it. A restart of the server's
+    /// clipboard leaves it as it is, as it leaves the local content.
+    private var isOfferingPublishedCopy = false
 
     init(
         userChannelID: UInt16,
@@ -1085,9 +1086,11 @@ public final class RDPClipboardSession: @unchecked Sendable {
     /// published is offered until the next publish, or until the server announces a copy of
     /// its own, which replaces it there. A copy the server announced before it took this one,
     /// crossing it on the way, is older: it is neither fetched nor reported, even when
-    /// `content` is empty. The one exception is a copy that crosses the empty clipboard that
-    /// joining cliprdr announces when nothing was published before `onClipboardReady`: that
-    /// is the server's copy at connect, which KRdp sends ahead of its answer, and is fetched.
+    /// `content` is empty, and also when the server's clipboard restarted and the copy crossed
+    /// the list announcing `content` again. The one exception is a copy that crosses the empty
+    /// clipboard joining cliprdr announces while nothing published is offered, before the
+    /// first publish or once a server copy has replaced the last: that is the server's copy at
+    /// connect, which KRdp sends ahead of its answer, and is fetched.
     public func publishLocalContent(_ content: RDPClipboardContent) {
         publish(content.isEmpty ? .empty : .content(content))
     }
@@ -1129,7 +1132,6 @@ public final class RDPClipboardSession: @unchecked Sendable {
                 formatDataRequests = []
                 isAwaitingFormatData = false
                 unansweredFormatListCount = 0
-                hasPublishedSinceMonitorReady = false
             }
             respondToMonitorReady()
             return .ready
@@ -1360,19 +1362,22 @@ public final class RDPClipboardSession: @unchecked Sendable {
             // server sent this one before it took ours, and ours is the one it keeps. This copy
             // is then older than the local one, and is neither fetched nor reported, so the
             // application does not put it in place of what the user copied since, empty or not.
-            // Only the empty list that answered Monitor Ready does not count: it is no copy of
-            // the user's, just nothing published yet, and KRdp (its Clipboard.cpp) sends its
-            // copy when our Capabilities come, ahead of its answer to that list, so that copy
-            // is fetched. gnome-remote-desktop 51 was seen to keep its clipboard for that list.
+            // Only the empty list that answered Monitor Ready while nothing the application
+            // published is offered does not count: it is no copy of the user's, and KRdp (its
+            // Clipboard.cpp) sends its copy when our Capabilities come, ahead of its answer to
+            // that list, so that copy is fetched. gnome-remote-desktop 51 was seen to keep its
+            // clipboard for that list on joining. A publish of nothing, such as files still being
+            // read, is the user's copy until a server copy retires it, so the empty list that
+            // answers a restart of the server's clipboard carries it, and counts.
             // Decided under the lock that numbers the copy, so a publish on another thread comes
             // before, and this copy crossed it, or after, and retires it: never in between, where
             // the older copy would get a number above the publish's.
-            let isOlderThanLocalCopy = unansweredFormatListCount > 0
-                && (localContent != .empty || hasPublishedSinceMonitorReady)
+            let isOlderThanLocalCopy = unansweredFormatListCount > 0 && isOfferingPublishedCopy
             guard !isOlderThanLocalCopy else {
                 return false
             }
             localContent = .empty
+            isOfferingPublishedCopy = false
             // Checked under the lock that queues the requests, so turning fetching off
             // on another thread cannot come between the check and the queueing.
             replaceRemoteCopy(with: isFetchingRemoteCopies ? requests : [])
@@ -1524,10 +1529,10 @@ public final class RDPClipboardSession: @unchecked Sendable {
         replaceRemoteCopy(with: [])
         publishedCopyID = remoteCopyID
         localContent = content
+        isOfferingPublishedCopy = true
         // A copy announced while fetching was off is no longer on the server to fetch.
         unfetchedRemoteCopyRequests = nil
         if hasAnsweredMonitorReady {
-            hasPublishedSinceMonitorReady = true
             sendFormatList(for: content)
         }
     }

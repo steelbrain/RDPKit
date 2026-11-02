@@ -1290,6 +1290,58 @@ private final class ClipboardPublishRace: @unchecked Sendable {
     _ = try channel.finish()
 }
 
+/// A publish of nothing, as RDPClient makes for files it is still reading, is the user's copy
+/// until a server copy replaces it, across a restart of the server's clipboard too: a server
+/// copy crossing the empty list that answers the restart is older. Once a server copy has
+/// replaced the publish, that empty list is no copy of the user's, and a copy crossing it is
+/// fetched.
+@Test func clipboardSessionKeepsAnEmptyPublishTheUsersCopyAcrossAServerClipboardRestart() throws {
+    let channel = EmbeddedChannel()
+    let sent = ClipboardSentMessages()
+    let session = RDPClipboardSession(
+        userChannelID: 1006,
+        staticChannelID: 1007,
+        channel: channel,
+        sentMessageHandler: sent.record
+    )
+    let textCopy = RDPClipboardFormatListPDU(entries: [
+        RDPClipboardFormatListEntry(formatID: RDPClipboardFormatID.unicodeText),
+    ]).encoded()
+    let emptyCopy = RDPClipboardFormatListPDU(entries: []).encoded()
+    let monitorReady = RDPClipboardPDU(messageType: RDPClipboardMessageType.monitorReady)
+    func receive(_ data: Data) throws -> RDPClipboardEvent? {
+        try session.receive(RDPClipboardPDU.parse(from: data))
+    }
+
+    _ = try receive(RDPClipboardCapabilitiesPDU().encoded())
+    _ = try session.receive(monitorReady)
+    _ = try session.receive(serverFormatListResponse)
+    session.publishLocalUnicodeText(nil)
+    _ = try session.receive(serverFormatListResponse)
+
+    // The server's clipboard restarts while the files are read, and its copy crosses the
+    // empty list that answers the restart.
+    _ = try session.receive(monitorReady)
+    #expect(try receive(textCopy) == nil)
+    #expect(!session.isAwaitingRemoteCopy)
+    #expect(try sentFormatDataRequestIDs(sent).isEmpty)
+    #expect(try receive(emptyCopy) == nil)
+    #expect(session.hasPublished(since: session.deliveredRemoteCopyNumber))
+    _ = try session.receive(serverFormatListResponse)
+
+    // The server's next copy replaces the publish; after another restart, a copy crossing
+    // the empty list that answers it is the server's.
+    _ = try receive(textCopy)
+    #expect(try receive(RDPClipboardFormatDataResponsePDU.unicodeText("remote").encoded()) == .text("remote"))
+    _ = try session.receive(monitorReady)
+    _ = try receive(textCopy)
+    #expect(session.isAwaitingRemoteCopy)
+    #expect(try receive(RDPClipboardFormatDataResponsePDU.unicodeText("restarted").encoded()) == .text("restarted"))
+    #expect(!session.hasPublished(since: session.deliveredRemoteCopyNumber))
+    #expect(try sentFormatDataRequestIDs(sent) == [13, 13])
+    _ = try channel.finish()
+}
+
 /// A publish made while the session handles a server Format List, from another thread say,
 /// comes before it decides whether that copy crossed a local one, or after it numbers the copy:
 /// never in between, where the older server copy got a number above the publish's and was
