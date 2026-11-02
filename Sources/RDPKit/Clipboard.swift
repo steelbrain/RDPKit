@@ -1144,27 +1144,7 @@ public final class RDPClipboardSession: @unchecked Sendable {
             from: pdu,
             useLongFormatNames: usesLongFormatNames
         ) {
-            // The list makes the server the clipboard owner (MS-RDPECLIP 1.3.2.2.1), so the local
-            // copy is no longer offered: the server cannot read what the user has since copied
-            // over. The server handles PDUs in order, so while a list of ours is unanswered, the
-            // server sent this one before it took ours, and ours is the one it keeps. This copy
-            // is then older than the local one, and is neither fetched nor reported, so the
-            // application does not put it in place of what the user copied since, empty or not.
-            // Only the empty list that answered Monitor Ready does not count: it is no copy of
-            // the user's, just nothing published yet, and KRdp (its Clipboard.cpp) sends its
-            // copy when our Capabilities come, ahead of its answer to that list, so that copy
-            // is fetched. gnome-remote-desktop 51 was seen to keep its clipboard for that list.
-            let isOlderThanLocalCopy = lock.withLock {
-                let isOlder = unansweredFormatListCount > 0 && (localContent != .empty || hasPublishedSinceMonitorReady)
-                if !isOlder {
-                    localContent = .empty
-                }
-                return isOlder
-            }
             sendFormatListResponse(ok: true)
-            guard !isOlderThanLocalCopy else {
-                return nil
-            }
             let requests: [RDPClipboardRequestedFormatDataResponse] =
                 if requestsFileLists, let formatID = formatList.fileGroupDescriptorWFormatID {
                     [.fileGroupDescriptorW(formatID: formatID)]
@@ -1369,10 +1349,30 @@ public final class RDPClipboardSession: @unchecked Sendable {
     /// Starts fetching a remote copy: its requests replace those of an older copy that
     /// have not gone out yet. While fetching is off, nothing is requested, and the copy
     /// waits for fetching to be turned back on, unless it is the server's clipboard emptied.
-    /// Returns whether the caller reports the copy now, as one nothing is fetched of.
-    /// `isEmpty` tells whether the Format List had no formats at all.
+    /// A copy older than the local one is dropped instead. Returns whether the caller reports
+    /// the copy now, as one nothing is fetched of. `isEmpty` tells whether the Format List had
+    /// no formats at all.
     func requestRemoteCopy(_ requests: [RDPClipboardRequestedFormatDataResponse], isEmpty: Bool) -> Bool {
         let reportsCopy = lock.withLock {
+            // The list makes the server the clipboard owner (MS-RDPECLIP 1.3.2.2.1), so the local
+            // copy is no longer offered: the server cannot read what the user has since copied
+            // over. The server handles PDUs in order, so while a list of ours is unanswered, the
+            // server sent this one before it took ours, and ours is the one it keeps. This copy
+            // is then older than the local one, and is neither fetched nor reported, so the
+            // application does not put it in place of what the user copied since, empty or not.
+            // Only the empty list that answered Monitor Ready does not count: it is no copy of
+            // the user's, just nothing published yet, and KRdp (its Clipboard.cpp) sends its
+            // copy when our Capabilities come, ahead of its answer to that list, so that copy
+            // is fetched. gnome-remote-desktop 51 was seen to keep its clipboard for that list.
+            // Decided under the lock that numbers the copy, so a publish on another thread comes
+            // before, and this copy crossed it, or after, and retires it: never in between, where
+            // the older copy would get a number above the publish's.
+            let isOlderThanLocalCopy = unansweredFormatListCount > 0
+                && (localContent != .empty || hasPublishedSinceMonitorReady)
+            guard !isOlderThanLocalCopy else {
+                return false
+            }
+            localContent = .empty
             // Checked under the lock that queues the requests, so turning fetching off
             // on another thread cannot come between the check and the queueing.
             replaceRemoteCopy(with: isFetchingRemoteCopies ? requests : [])

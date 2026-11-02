@@ -1290,6 +1290,41 @@ private final class ClipboardPublishRace: @unchecked Sendable {
     _ = try channel.finish()
 }
 
+/// A publish made while the session handles a server Format List, from another thread say,
+/// comes before it decides whether that copy crossed a local one, or after it numbers the copy:
+/// never in between, where the older server copy got a number above the publish's and was
+/// handed over.
+@Test func clipboardSessionNumbersNoCrossedServerCopyAboveAPublishMadeWhileHandlingIt() throws {
+    let channel = EmbeddedChannel()
+    let sent = ClipboardSentMessages()
+    let race = ClipboardPublishRace()
+    let session = RDPClipboardSession(userChannelID: 1006, staticChannelID: 1007, channel: channel) { summary, packets in
+        sent.record(summary, packets)
+        // The user copies on the client as the session answers the server's list: the one point
+        // of the handling a test can reach, where a publish used to come between the decision
+        // and the copy's number, which took the lock apart.
+        guard summary.typeName == "clipboard-format-list-response", race.start() else {
+            return
+        }
+        race.session?.publishLocalUnicodeText("local")
+    }
+    race.session = session
+    let textCopy = RDPClipboardFormatListPDU(entries: [
+        RDPClipboardFormatListEntry(formatID: RDPClipboardFormatID.unicodeText),
+    ]).encoded()
+
+    _ = try session.receive(RDPClipboardPDU.parse(from: RDPClipboardCapabilitiesPDU().encoded()))
+    _ = try session.receive(RDPClipboardPDU(messageType: RDPClipboardMessageType.monitorReady))
+    _ = try session.receive(serverFormatListResponse)
+    #expect(try session.receive(RDPClipboardPDU.parse(from: textCopy)) == nil)
+    #expect(!session.isAwaitingRemoteCopy)
+    #expect(try sentFormatDataRequestIDs(sent).isEmpty)
+    #expect(try session.receive(RDPClipboardPDU.parse(from: RDPClipboardFormatDataResponsePDU.unicodeText("old").encoded()))
+        == nil)
+    #expect(session.hasPublished(since: session.deliveredRemoteCopyNumber))
+    _ = try channel.finish()
+}
+
 @Test func clipboardSessionRequestsAnnouncedTextAndDropsUnsolicitedResponses() throws {
     let channel = EmbeddedChannel()
     let sent = ClipboardSentMessages()
