@@ -113,6 +113,19 @@ enum FirstFrameCaptureError: Error, CustomStringConvertible {
     }
 }
 
+/// Ends `onGraphicsFrame` for a captured frame by how it decoded. A frame that failed to decode
+/// is not shown, but the session goes on, so a later frame can still decode: until
+/// `--settle-seconds` ends or, while no frame has decoded, until `--timeout-seconds` passes, as
+/// RDPKit waits that long for a live session's first frame shown. The last failure is reported
+/// when no frame decodes. Video that failed waits for a keyframe, which this tool does not ask
+/// for. A cancelled decode ends the session.
+func finishCapturedFrame(_ completion: RDPFrameDecodeCompletion) throws {
+    if case let .failed(errorDescription) = completion {
+        throw RDPGraphicsFrameNotPresented(reason: errorDescription)
+    }
+    try completion.requireDecoded()
+}
+
 /// Collects results from the decode queue's thread; the main thread reads them after the session.
 final class LatestDecodedFrameRecorder<Value>: @unchecked Sendable {
     struct Snapshot {

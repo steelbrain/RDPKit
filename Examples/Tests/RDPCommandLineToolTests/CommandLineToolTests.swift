@@ -70,6 +70,19 @@ import Testing
         + "(stopped at rdp-graphics-dynamic-channel); last decode failure: bad frame")
 }
 
+/// One frame that fails to decode leaves the session running for the rest of the settle window:
+/// any other error the handler throws ends the session.
+@Test func firstFrameCaptureGoesOnAfterAFrameFailsToDecode() throws {
+    try finishCapturedFrame(.decoded)
+
+    #expect(throws: RDPGraphicsFrameNotPresented.self) {
+        try finishCapturedFrame(.failed(errorDescription: "awaiting a keyframe"))
+    }
+    #expect(throws: RDPFrameDecodeQueueError.cancelled) {
+        try finishCapturedFrame(.cancelled)
+    }
+}
+
 @Test func firstFrameCaptureCanOverrideSettleWindow() throws {
     let options = try FirstFrameCaptureOptions.parse([
         "RDPFirstFrameCapture",

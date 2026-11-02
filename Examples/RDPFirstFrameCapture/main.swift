@@ -56,11 +56,11 @@ private enum FirstFrameCapture {
                     // Freeze the transcript the moment video frames start flowing:
                     // it captures the whole negotiation up to, but not past, here.
                     wireTranscript?.stop()
-                    try decodeQueue.submitAndWait(
+                    try finishCapturedFrame(decodeQueue.submitAndWait(
                         frame,
                         receivedAt: Date(),
                         shouldContinue: { cancellation.isCancelled == false }
-                    ).requireDecoded()
+                    ))
                 },
                 wireTranscript: wireTranscript,
                 cancellation: cancellation
