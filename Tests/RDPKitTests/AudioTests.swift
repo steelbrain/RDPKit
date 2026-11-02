@@ -509,6 +509,40 @@ import Testing
     #expect(player.statusMessage == "Ready.")
 }
 
+/// A new output device or sample rate leaves the engine playing nothing, so the player starts
+/// over and the next sample connects it afresh (live: the queue drained again after a change
+/// of the output's sample rate on macOS 27.0.1).
+@MainActor
+@Test func audioPlayerStartsOverAfterTheOutputConfigurationChanges() throws {
+    let player = RDPAudioPlayer()
+    let sample = RDPAudioSample(
+        format: try RDPAudioFormat(
+            formatTag: RDPAudioFormatTag.pcm,
+            channelCount: 2,
+            samplesPerSecond: 44100,
+            averageBytesPerSecond: 176_400,
+            blockAlign: 4,
+            bitsPerSample: 16
+        ),
+        timestamp: 0,
+        blockNo: 0,
+        data: Data(count: 882 * 4),
+        receivedAt: Date()
+    )
+    // Without an output device the engine does not start, but the format is set either way.
+    _ = try? player.enqueue(sample)
+    #expect(player.statusMessage == "Playing PCM 44100 Hz stereo.")
+
+    NotificationCenter.default.post(name: .AVAudioEngineConfigurationChange, object: AVAudioEngine())
+    RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+    #expect(player.statusMessage == "Playing PCM 44100 Hz stereo.")
+
+    NotificationCenter.default.post(name: .AVAudioEngineConfigurationChange, object: player.engine)
+    RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+    #expect(player.statusMessage == "Ready.")
+    #expect(player.playbackDelay == .zero)
+}
+
 @MainActor
 @Test func audioPlayerRejectsUnsupportedFormatsBeforeStartingEngine() throws {
     let player = RDPAudioPlayer()

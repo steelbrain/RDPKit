@@ -69,6 +69,9 @@
   once it is.
 - RDPClient saves a password only when the server checked it, with Network
   Level Authentication or RDSTLS.
+- `RDPAudioPlayer` keeps playing after the output device or its sample rate
+  changes. The engine stopped, and starting it again played nothing: the
+  queue never drained and later audio was dropped.
 - `RDPRemoteDisplayViewport` maps an AppKit view's top pixel row: with
   bottom-left coordinates the top edge is inside and the bottom edge outside,
   as `NSMouseInRect` counts them, so hovering or clicking the remote desktop's

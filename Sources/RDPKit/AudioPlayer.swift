@@ -17,10 +17,31 @@ public final class RDPAudioPlayer {
     /// Advanced on every stop so completions of discarded buffers leave the new queue count alone.
     private var queueGeneration = 0
     private let maximumQueuedSeconds: Double
+    /// Removed when the player goes; read only there and where it is set.
+    private nonisolated(unsafe) var configurationObserver: (any NSObjectProtocol)?
 
     public init(maximumQueuedSeconds: Double = 0.75) {
         self.maximumQueuedSeconds = max(0, maximumQueuedSeconds)
         engine.attach(player)
+        // A new output device or sample rate stops the engine, and starting it again plays
+        // nothing: the queue never drained and every later sample was dropped (seen on macOS
+        // 27.0.1, changing the output's sample rate mid-stream). The next sample connects the
+        // player afresh instead.
+        configurationObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: engine,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.reset()
+            }
+        }
+    }
+
+    deinit {
+        if let configurationObserver {
+            NotificationCenter.default.removeObserver(configurationObserver)
+        }
     }
 
     /// How long a sample enqueued now waits before it is heard: the audio queued ahead of
