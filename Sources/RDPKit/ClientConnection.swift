@@ -124,7 +124,9 @@ final class RDPClientConnection {
     var primaryFramesCaptured = 0
     let pointerState = RDPRemotePointerState()
 
-    init(configuration: RDPConnectionConfiguration, callbacks: RDPSessionCallbacks) {
+    /// `presentedFramesBefore` is the run's earlier connections' `runPresentedFrameCount`,
+    /// which this connection's report goes on counting.
+    init(configuration: RDPConnectionConfiguration, callbacks: RDPSessionCallbacks, presentedFramesBefore: Int? = nil) {
         var configuration = configuration
         // Clamped as the configuration's initializer clamps it, since it can be set after it:
         // with 0 or less every deadline has passed before the connection starts.
@@ -157,6 +159,7 @@ final class RDPClientConnection {
         if configuration.omitsStoredClientLicense {
             report.rdpStoredClientLicenseRejected = true
         }
+        report.runPresentedFrameCount = presentedFramesBefore
         callbacks.liveReport?.follow(reportStorage)
     }
 

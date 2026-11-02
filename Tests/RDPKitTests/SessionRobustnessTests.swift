@@ -1382,3 +1382,34 @@ func theLiveReportSaysWhenTheNextConnectAttemptStarts() throws {
     #expect(final.value?.connectAttempt == 1)
     #expect(final.value?.nextConnectAttemptDate == nil)
 }
+
+/// The run's count of frames shown goes on across a Server Redirection: a target that shows
+/// none still ends a run that showed a desktop before it.
+@Test func aRedirectionsReportCountsTheFramesTheRunShowedBeforeIt() throws {
+    let firstFrame = try KRdpCapture.events()[39...].map { try #require($0.bytes) }
+    let redirection = KRdpCapture.ioPacket(KRdpCapture.redirection(
+        flags: RDPServerRedirectionPDU.Flags.loadBalanceInfo.rawValue
+    ))
+    let handled = Locked(0)
+    let liveReport = RDPLiveConnectionReport()
+    let run = try KRdpCapture.run(
+        prefix: 39,
+        appending: firstFrame + [redirection],
+        appendingAfterReconnect: firstFrame,
+        frameCaptureLimit: nil,
+        timeoutSeconds: 2,
+        onGraphicsFrame: { _ in
+            if handled.withLock({ $0 += 1; return $0 }) > 1 {
+                throw RDPGraphicsFrameNotPresented(reason: "awaiting a keyframe")
+            }
+        },
+        liveReport: liveReport
+    )
+
+    #expect(handled.value >= 2)
+    #expect(run.report.redirectionDepth == 1)
+    #expect(run.report.presentedFrameCount == nil)
+    #expect(run.report.runPresentedFrameCount == 1)
+    #expect(liveReport.snapshot?.runPresentedFrameCount == 1)
+    #expect(run.report.failure == .noFramePresented(framesReceived: handled.value - 1, lastNotPresentedReason: "awaiting a keyframe"))
+}

@@ -459,6 +459,7 @@ extension RDPClientConnection {
                 try callbacks.onGraphicsFrame?(frame)
                 presented = true
                 report.presentedFrameCount = (report.presentedFrameCount ?? 0) + 1
+                report.runPresentedFrameCount = (report.runPresentedFrameCount ?? 0) + 1
                 if frame.contentKind == .video {
                     videoFrameWasPresented()
                 }

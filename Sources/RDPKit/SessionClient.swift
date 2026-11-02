@@ -153,8 +153,13 @@ public struct RDPSessionClient: Sendable {
         // key exchange.
         var startConfiguration = initialConfiguration
         var configuration = startConfiguration
+        var presentedFrames: Int?
         while true {
-            let connection = RDPClientConnection(configuration: configuration, callbacks: callbacks)
+            let connection = RDPClientConnection(
+                configuration: configuration,
+                callbacks: callbacks,
+                presentedFramesBefore: presentedFrames
+            )
             let negotiated: Bool
             do {
                 negotiated = try connection.negotiate()
@@ -165,6 +170,7 @@ public struct RDPSessionClient: Sendable {
                 return connection.finishReport()
             }
             let report = connection.runSession()
+            presentedFrames = report.runPresentedFrameCount
             // A run cancelled during the redirect or the license retry returns the session that ran.
             guard !callbacks.isCancelled else {
                 return report

@@ -180,10 +180,15 @@ public struct RDPConnectionReport: Encodable, Equatable, Sendable {
     public var rdpKeyframeRequestCount: Int?
     public var rdpGraphicsFrames: [RDPGraphicsFrameSnapshot]?
     public var rdpGraphicsFirstFrame: RDPGraphicsFrameSnapshot?
-    /// The frames the `onGraphicsFrame` handler showed: it returned without throwing
-    /// `RDPGraphicsFrameNotPresented`. Nil until it shows one; `rdpGraphicsFirstFrame` is the
-    /// first that came, shown or not.
+    /// The frames the `onGraphicsFrame` handler showed on this connection: it returned without
+    /// throwing `RDPGraphicsFrameNotPresented`. Nil until it shows one; `rdpGraphicsFirstFrame`
+    /// is the first that came, shown or not.
     public var presentedFrameCount: Int?
+    /// The frames the handler showed over the whole run: `presentedFrameCount` and those of the
+    /// connections before this one, such as the one whose Server Redirection led here. Nil
+    /// until one is shown. Whether the run showed a desktop, for an app telling a session that
+    /// ended from one that never got that far, as after a redirection's target fails.
+    public var runPresentedFrameCount: Int?
     public var rdpRemoteTerminationErrorInfo: UInt32?
     public var rdpRemoteTerminationErrorInfoName: String?
     public var rdpRemoteTerminationDisconnectReason: UInt8?
@@ -299,6 +304,7 @@ public struct RDPConnectionReport: Encodable, Equatable, Sendable {
         rdpGraphicsFrames: [RDPGraphicsFrameSnapshot]? = nil,
         rdpGraphicsFirstFrame: RDPGraphicsFrameSnapshot? = nil,
         presentedFrameCount: Int? = nil,
+        runPresentedFrameCount: Int? = nil,
         rdpRemoteTerminationErrorInfo: UInt32? = nil,
         rdpRemoteTerminationErrorInfoName: String? = nil,
         rdpRemoteTerminationDisconnectReason: UInt8? = nil,
@@ -411,6 +417,7 @@ public struct RDPConnectionReport: Encodable, Equatable, Sendable {
         self.rdpGraphicsFrames = rdpGraphicsFrames
         self.rdpGraphicsFirstFrame = rdpGraphicsFirstFrame ?? rdpGraphicsFrames?.first
         self.presentedFrameCount = presentedFrameCount
+        self.runPresentedFrameCount = runPresentedFrameCount
         self.rdpRemoteTerminationErrorInfo = rdpRemoteTerminationErrorInfo
         self.rdpRemoteTerminationErrorInfoName = rdpRemoteTerminationErrorInfoName
         self.rdpRemoteTerminationDisconnectReason = rdpRemoteTerminationDisconnectReason
@@ -529,8 +536,10 @@ public enum RDPConnectionFailure: Encodable, Equatable, Sendable {
     /// `RDPConnectionConfiguration.timeoutSeconds`: the `onGraphicsFrame` handler got
     /// `framesReceived` frames and threw `RDPGraphicsFrameNotPresented` for each, the last
     /// with `lastNotPresentedReason`; with none, the server sent no frame, or did not set up its
-    /// graphics. Connecting again can bring the desktop; a session that showed a frame never
-    /// ends this way. A run that captures frames
+    /// graphics. Connecting again can bring the desktop; a connection that showed a frame
+    /// never ends this way, though the one a Server Redirection leads to can after the one
+    /// before showed frames, which `RDPConnectionReport.runPresentedFrameCount` counts. A run
+    /// that captures frames
     /// (`RDPConnectionConfiguration.graphicsFrameCaptureLimit`) times out with `timedOut`.
     case noFramePresented(framesReceived: Int, lastNotPresentedReason: String?)
 }

@@ -264,8 +264,10 @@
   session as a server that replaces its channel does, and `sentLayouts`
   records what the session sent.
 - `RDPConnectionReport.presentedFrameCount` counts the frames the
-  `onGraphicsFrame` handler showed, where `rdpGraphicsFirstFrame` is the first
-  that came, shown or not.
+  `onGraphicsFrame` handler showed on the connection, where
+  `rdpGraphicsFirstFrame` is the first that came, shown or not, and
+  `runPresentedFrameCount` those of the whole run, so a run that showed a
+  desktop before a Server Redirection's target failed still says so.
 - `RDPKeyboard` is a keyboard as a client announces it, layout, type and
   subtype, and `character(for:shift:capsLock:)` says what Windows types for a
   scancode with it, from tables Windows 11 reported for every layout a Mac
