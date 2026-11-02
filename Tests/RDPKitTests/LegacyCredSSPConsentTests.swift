@@ -6,6 +6,7 @@ import Testing
 @Test func legacyCredSSPIsAllowedOnlyForTheConnectionTheUserAgreedTo() throws {
     let serverA = try RDPConnectionTarget(host: "a.example", port: 3389)
     let serverB = try RDPConnectionTarget(host: "b.example", port: 3389)
+    let serverAOnAnotherPort = try RDPConnectionTarget(host: "a.example", port: 3390)
     var consent = RDPLegacyCredSSPConsent()
 
     #expect(consent.connect(to: serverA) == false)
@@ -37,6 +38,11 @@ import Testing
     consent.connectionEnded(serverA, failure: .legacyCredSSPVersion(version: 2), redirectionDepth: 0)
     #expect(consent.allow() == true)
     #expect(consent.connect(to: serverB) == false)
+    #expect(consent.connect(to: serverA) == false)
+    // The same host on another port is another server.
+    consent.connectionEnded(serverA, failure: .legacyCredSSPVersion(version: 2), redirectionDepth: 0)
+    #expect(consent.allow() == true)
+    #expect(consent.connect(to: serverAOnAnotherPort) == false)
     #expect(consent.connect(to: serverA) == false)
 
     // A redirection target is not the server typed in, so it is not offered.
@@ -90,6 +96,12 @@ import Testing
     consent.reset()
     #expect(consent.allowedTarget == nil)
     #expect(consent.connect(to: server) == false)
+
+    // Agreed to for the report's port, not for the same host on the default one.
+    consent.connectionEnded(report: report)
+    let allowedAgain = consent.allow()
+    #expect(allowedAgain)
+    #expect(try consent.connect(to: RDPConnectionTarget(host: "a.example", port: 3389)) == false)
 
     // A report without a host to name offers nothing.
     report.targetHost = " "
