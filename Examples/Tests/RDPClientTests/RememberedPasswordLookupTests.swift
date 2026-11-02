@@ -294,3 +294,43 @@ private func answer(
     let ticked = try answer(nil, asked: choice("", remember: false), current: choice("", remember: true))
     #expect(ticked.choice == choice("", remember: true))
 }
+
+/// A profile saved with Remember off whose account Keychain still has a password for, as after
+/// Connect with Remember ticked but no Save. Connecting it from the list, the manager's form
+/// fills the password in and ticks Remember; the draft carries both, so the session window
+/// keeps the password saved rather than deleting it once signed in.
+@Test func aDraftCarriesTheRememberChoiceMadeWithItsPassword() throws {
+    var profile = ConnectionProfile(
+        id: UUID(),
+        host: "desktop.example",
+        port: 3389,
+        username: "anees",
+        domain: "",
+        desktopWidth: 1920,
+        desktopHeight: 1080,
+        hideCertificateWarnings: false,
+        timeoutSeconds: 10,
+        graphicsCapabilityProfile: .automatic,
+        clipboardSharingEnabled: true,
+        audioPlaybackEnabled: false,
+        rememberPassword: false,
+        updatedAt: Date()
+    )
+    let saved = try RememberedPasswordAnswer(key: key(username: "anees"), result: .success("secret"))
+    let form = try answer("secret", asked: choice("", remember: false)).choice
+
+    let formChoice = form.connecting(profile, fromFormShowing: try key(username: "anees"))
+    let draft = try RDPConnectionDraft(profile: profile, choice: formChoice, answer: saved)
+    #expect(draft.password == "secret")
+    #expect(draft.rememberPassword)
+    let window = try answer("secret", asked: choice(draft.password, remember: draft.rememberPassword), keepsEnteredPassword: true)
+    #expect(window.choice == choice("secret", remember: true))
+
+    // While the form shows another account, the window looks the profile's password up itself.
+    profile.rememberPassword = true
+    let otherChoice = choice("bob's", remember: false).connecting(profile, fromFormShowing: try key(username: "bob"))
+    #expect(otherChoice == choice("", remember: true))
+    let lookingUp = try RDPConnectionDraft(profile: profile, choice: otherChoice, answer: nil)
+    #expect(lookingUp.password.isEmpty)
+    #expect(lookingUp.rememberPassword)
+}

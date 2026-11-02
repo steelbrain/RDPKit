@@ -25,6 +25,55 @@ struct RDPConnectionDraft: Equatable, Sendable {
     }
 }
 
+extension RDPConnectionDraft {
+    /// A draft to connect with `profile`, carrying `choice`: the password and Remember choice of
+    /// a form that shows `profile`'s account, or no password and the profile's own choice. The
+    /// session window keeps the two, so the Remember choice must be the one made with that
+    /// password: one the form ticked as Keychain filled the password in, not the profile's.
+    init(profile: ConnectionProfile, choice: RememberedPasswordChoice, answer: RememberedPasswordAnswer?) throws {
+        // Without Keychain's answer, the session window looks up a remembered password the form
+        // does not have, and checks the credentials once it has it.
+        let windowLooksUpPassword = answer == nil && choice.password.isEmpty && choice.rememberPassword
+            && KeychainCredentialKey(identity: profile.identity) != nil
+        if !windowLooksUpPassword {
+            _ = try RDPCredentials.validated(
+                username: profile.username,
+                domain: profile.domain,
+                password: choice.password
+            )
+        }
+
+        self.init(
+            host: profile.host,
+            port: profile.port,
+            username: profile.username,
+            domain: profile.domain,
+            password: choice.password,
+            desktopWidth: profile.desktopWidth,
+            desktopHeight: profile.desktopHeight,
+            hideCertificateWarnings: profile.hideCertificateWarnings,
+            timeoutSeconds: profile.timeoutSeconds,
+            graphicsCapabilityProfile: profile.graphicsCapabilityProfile,
+            clipboardSharingEnabled: profile.clipboardSharingEnabled,
+            audioPlaybackEnabled: profile.audioPlaybackEnabled,
+            rememberPassword: choice.rememberPassword,
+            passwordAnswer: answer
+        )
+    }
+}
+
+extension RememberedPasswordChoice {
+    /// The choice to connect with saved `profile` from a form that has this one and shows
+    /// `formKey`'s account. While that is another account, the form's password is not the
+    /// profile's: there is none, with the profile's own Remember choice.
+    func connecting(_ profile: ConnectionProfile, fromFormShowing formKey: KeychainCredentialKey?) -> Self {
+        guard formKey != KeychainCredentialKey(identity: profile.identity) else {
+            return self
+        }
+        return RememberedPasswordChoice(password: "", rememberPassword: profile.rememberPassword)
+    }
+}
+
 @MainActor
 final class RDPConnectionLaunchStore: ObservableObject {
     let sessionCommands = RDPSessionCommandCenter()

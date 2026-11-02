@@ -221,14 +221,15 @@ struct ConnectionManagerView: View {
         }
         do {
             let profile = try makeConnectionProfile()
-            let draft = try makeConnectionDraft(from: profile, password: password, answer: answer(for: profile))
+            let draft = try RDPConnectionDraft(profile: profile, choice: passwordChoice, answer: answer(for: profile))
             openSession(draft)
         } catch {
             formError = String(describing: error)
         }
     }
 
-    /// Connects with a saved profile, shown in the form, as `connect()` does. While the form
+    /// Connects with a saved profile, shown in the form, as `connect()` does: with the form's
+    /// password and Remember choice, which Keychain's answer may have filled in. While the form
     /// shows another account, its password is not the profile's, and the session window looks
     /// the profile's up itself.
     private func connect(_ profile: ConnectionProfile) {
@@ -237,14 +238,13 @@ struct ConnectionManagerView: View {
             applySelectedProfile(id: profile.id)
         }
         let key = KeychainCredentialKey(identity: profile.identity)
-        let formShowsAccount = key == credentialKey
-        if formShowsAccount, let key, passwordLookup.join(key, answered: { _ in connect(profile) }) {
+        if key == credentialKey, let key, passwordLookup.join(key, answered: { _ in connect(profile) }) {
             return
         }
         do {
-            let draft = try makeConnectionDraft(
-                from: profile,
-                password: formShowsAccount ? password : "",
+            let draft = try RDPConnectionDraft(
+                profile: profile,
+                choice: passwordChoice.connecting(profile, fromFormShowing: credentialKey),
                 answer: answer(for: profile)
             )
             openSession(draft)
@@ -367,41 +367,6 @@ struct ConnectionManagerView: View {
         default:
             savedProfilesWarning = "\(list.unreadableCount) saved connections could not be read. They stay saved as they are."
         }
-    }
-
-    private func makeConnectionDraft(
-        from profile: ConnectionProfile,
-        password: String,
-        answer: RememberedPasswordAnswer?
-    ) throws -> RDPConnectionDraft {
-        // Without Keychain's answer, the session window looks up a remembered password the form
-        // does not have, and checks the credentials once it has it.
-        let windowLooksUpPassword = answer == nil && password.isEmpty && profile.rememberPassword
-            && KeychainCredentialKey(identity: profile.identity) != nil
-        if !windowLooksUpPassword {
-            _ = try RDPCredentials.validated(
-                username: profile.username,
-                domain: profile.domain,
-                password: password
-            )
-        }
-
-        return RDPConnectionDraft(
-            host: profile.host,
-            port: profile.port,
-            username: profile.username,
-            domain: profile.domain,
-            password: password,
-            desktopWidth: profile.desktopWidth,
-            desktopHeight: profile.desktopHeight,
-            hideCertificateWarnings: profile.hideCertificateWarnings,
-            timeoutSeconds: profile.timeoutSeconds,
-            graphicsCapabilityProfile: profile.graphicsCapabilityProfile,
-            clipboardSharingEnabled: profile.clipboardSharingEnabled,
-            audioPlaybackEnabled: profile.audioPlaybackEnabled,
-            rememberPassword: profile.rememberPassword,
-            passwordAnswer: answer
-        )
     }
 
     private func makeConnectionProfile() throws -> ConnectionProfile {
