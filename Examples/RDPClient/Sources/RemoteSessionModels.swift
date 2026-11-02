@@ -241,39 +241,6 @@ struct RDPSessionEndReason: Equatable {
     }
 }
 
-/// The target whose certificate refused ECDHE. Reconnecting to it uses RSA key exchange from the
-/// start; connecting to any other target forgets it, so that target gets ECDHE's forward secrecy.
-struct RDPLegacyKeyExchangeFallback: Equatable {
-    private(set) var target: RDPConnectionTarget?
-
-    /// Returns whether a connection to `target` uses RSA key exchange.
-    mutating func connect(to target: RDPConnectionTarget) -> Bool {
-        if self.target != target {
-            self.target = nil
-        }
-        return self.target != nil
-    }
-
-    /// Whether a connection to `target` that ended with `failure` is to connect again with RSA
-    /// key exchange: once, after the certificate refused ECDHE. RSA key exchange needs only the
-    /// keyEncipherment such a certificate allows, and RDPKit never reports this failure with it
-    /// on. The handshake failed before the certificate was checked, so no credential was sent;
-    /// unless a Server Redirection led there (`redirectionDepth` above 0): then `target`, which
-    /// already took the sign-in, is not the server that refused ECDHE, so nothing is retried.
-    mutating func shouldRetry(
-        _ target: RDPConnectionTarget,
-        after failure: RDPConnectionFailure?,
-        redirectionDepth: Int,
-        usedRSAKeyExchange: Bool
-    ) -> Bool {
-        guard failure == .tlsKeyUsageIncorrect, redirectionDepth == 0, !usedRSAKeyExchange else {
-            return false
-        }
-        self.target = target
-        return true
-    }
-}
-
 /// The Keychain change to make once the session is ready. A server that selected neither Network
 /// Level Authentication (CredSSP) nor RDSTLS activates the session whatever the password, and asks
 /// for one on its own logon screen when it is wrong, so `request` saves no password it did not

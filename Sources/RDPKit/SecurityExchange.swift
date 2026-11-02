@@ -16,9 +16,10 @@ extension RDPClientConnection {
         }
         let tls = try transport.startTLS(
             serverHostname: sniHostname(for: configuration.host),
-            legacyRSAKeyExchange: configuration.legacyRSAKeyExchange
+            legacyRSAKeyExchange: configuration.offersOnlyRSAKeyExchange
         )
         report.tlsProtocol = tlsVersionName(tls.version)
+        report.usedLegacyRSAKeyExchange = configuration.offersOnlyRSAKeyExchange
         let certificate = try inspectPeerCertificates(
             tls.certificates,
             host: configuration.host,

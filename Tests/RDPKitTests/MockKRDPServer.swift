@@ -80,6 +80,8 @@ final class MockKRDPServer: LoopbackTestServer {
         /// The first connection whose presented license the rejecting licensing behaviors turn
         /// down; earlier ones take it.
         var firstConnectionRejectingStoredClientLicense = 1
+        /// The connection `redirectFirstConnection` redirects.
+        var redirectedConnection = 1
         /// The Set Error Info code `serverLicenseRequestEndingOnStoredClientLicense` ends with.
         var storedClientLicenseEndingErrorInfo: UInt32 = 0x0000_0105
         /// Whether the server selects RDSTLS when a reconnect asks for it; if not, it selects
@@ -106,6 +108,9 @@ final class MockKRDPServer: LoopbackTestServer {
         var requireBitmapCodecsCapability = false
         /// Serve a certificate whose key usage allows keyEncipherment but not digitalSignature.
         var keyEnciphermentOnlyCertificate = false
+        /// The first connection `keyEnciphermentOnlyCertificate` applies to; earlier ones get
+        /// the usual certificate.
+        var firstKeyEnciphermentOnlyConnection = 1
         /// The CredSSP version the server answers with; below 5 it proves the TLS key the
         /// pre-2018 way, with the raw public key ([MS-CSSP] 3.1.5).
         var credSSPVersion = 6
@@ -121,9 +126,8 @@ final class MockKRDPServer: LoopbackTestServer {
     }
 
     init(_ options: Options = Options()) throws {
-        let tlsContext = try NIOSSLContext(configuration: MockKRDPTLS.configuration(
-            keyEnciphermentOnly: options.keyEnciphermentOnlyCertificate
-        ))
+        let tlsContext = try NIOSSLContext(configuration: MockKRDPTLS.configuration())
+        let keyEnciphermentOnlyTLSContext = try NIOSSLContext(configuration: MockKRDPTLS.configuration(keyEnciphermentOnly: true))
         let transcript = Locked(MockKRDPServerTranscript())
         let connections = Locked(0)
         self.transcript = transcript
@@ -132,6 +136,7 @@ final class MockKRDPServer: LoopbackTestServer {
             MockKRDPServerHandler(
                 options: options,
                 tlsContext: tlsContext,
+                keyEnciphermentOnlyTLSContext: keyEnciphermentOnlyTLSContext,
                 transcript: transcript,
                 connections: connections
             )
@@ -843,7 +848,8 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
     }
 
     private let options: MockKRDPServer.Options
-    private let tlsContext: NIOSSLContext
+    private let usualTLSContext: NIOSSLContext
+    private let keyEnciphermentOnlyTLSContext: NIOSSLContext
     private let transcript: Locked<MockKRDPServerTranscript>
     private let connections: Locked<Int>
     private var connectionIndex = 0
@@ -858,11 +864,13 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
     init(
         options: MockKRDPServer.Options,
         tlsContext: NIOSSLContext,
+        keyEnciphermentOnlyTLSContext: NIOSSLContext,
         transcript: Locked<MockKRDPServerTranscript>,
         connections: Locked<Int>
     ) {
         self.options = options
-        self.tlsContext = tlsContext
+        usualTLSContext = tlsContext
+        self.keyEnciphermentOnlyTLSContext = keyEnciphermentOnlyTLSContext
         self.transcript = transcript
         self.connections = connections
     }
@@ -1126,6 +1134,13 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
         }
     }
 
+    /// The certificate this connection serves.
+    private var tlsContext: NIOSSLContext {
+        options.keyEnciphermentOnlyCertificate && connectionIndex >= options.firstKeyEnciphermentOnlyConnection
+            ? keyEnciphermentOnlyTLSContext
+            : usualTLSContext
+    }
+
     private func answerConnectionRequest(context: ChannelHandlerContext) throws {
         if selectsRDSTLS {
             write(MockKRDPFixtures.x224ConnectionConfirm(selectedProtocols: .rdSTLS), context: context)
@@ -1274,7 +1289,7 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
 
     private func answerGraphicsCapsAdvertise(_ packet: Data, context: ChannelHandlerContext) throws {
         let staticPayload = try MockKRDPFixtures.staticVirtualChannelPayload(from: packet)
-        if options.redirectionBehavior == .redirectFirstConnection, connectionIndex == 1 {
+        if options.redirectionBehavior == .redirectFirstConnection, connectionIndex == options.redirectedConnection {
             write(MockKRDPFixtures.serverRedirection(
                 username: options.redirectionUsername,
                 domain: options.redirectionDomain,

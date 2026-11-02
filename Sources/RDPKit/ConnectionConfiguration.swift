@@ -1,5 +1,23 @@
 import Foundation
 
+/// When a connection's TLS handshake offers only TLS 1.2 RSA key exchange cipher suites, which
+/// need only the keyEncipherment a server's certificate may limit itself to. RSA key exchange
+/// has no forward secrecy: whoever later gets the server's private key can read a recorded
+/// session.
+public enum RDPLegacyRSAKeyExchange: String, Equatable, Sendable {
+    /// Never: a certificate that refuses ECDHE ends the connection with
+    /// ``RDPConnectionFailure/tlsKeyUsageIncorrect``.
+    case never
+    /// After a certificate refused ECDHE: the run connects again once, offering only RSA key
+    /// exchange for the rest of it, Server Redirections included. The handshake failed before
+    /// any credential was sent. A Server Redirection's target that refuses ECDHE ends the run
+    /// with ``RDPConnectionFailure/tlsKeyUsageIncorrect`` instead: the application did not
+    /// choose that server. ``RDPConnectionReport/usedLegacyRSAKeyExchange`` says when it was used.
+    case fallback
+    /// From the start.
+    case always
+}
+
 public struct RDPConnectionConfiguration: Sendable, Equatable {
     public var host: String
     public var port: UInt16
@@ -68,11 +86,10 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
     /// An OEM-dependent value; 0 for most keyboards.
     public var keyboardSubType: UInt32
     public var keyboardFunctionKeyCount: UInt32
-    /// Offers only TLS 1.2 RSA key exchange cipher suites. Some servers' RSA certificates
-    /// allow keyEncipherment but not the digitalSignature that ECDHE key exchange needs, and
-    /// the handshake with them fails with `KEY_USAGE_BIT_INCORRECT`. RSA key exchange has no
-    /// forward secrecy, so set this only to retry after that failure.
-    public var legacyRSAKeyExchange: Bool
+    /// When TLS offers only RSA key exchange; `.never` by default. Some servers' RSA
+    /// certificates allow keyEncipherment but not the digitalSignature that ECDHE key exchange
+    /// needs, and the handshake with them fails with `KEY_USAGE_BIT_INCORRECT`.
+    public var legacyRSAKeyExchange: RDPLegacyRSAKeyExchange
     /// Accepts a server that answers Network Level Authentication with CredSSP version 2, 3
     /// or 4. Those versions prove the TLS key by sealing the certificate's raw public key
     /// ([MS-CSSP] 3.1.5), so whoever presented the certificate gets data of its choosing
@@ -105,6 +122,14 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
     /// Set when the run connects again after the server's licensing failed with the stored
     /// license: neither `storedClientLicense` nor the provider's is presented.
     var omitsStoredClientLicense = false
+    /// Set when the run connects again after the server's certificate refused ECDHE, with
+    /// `legacyRSAKeyExchange` at `.fallback`.
+    var fellBackToRSAKeyExchange = false
+
+    /// Whether TLS offers only RSA key exchange.
+    var offersOnlyRSAKeyExchange: Bool {
+        legacyRSAKeyExchange == .always || fellBackToRSAKeyExchange
+    }
 
     public init(
         host: String,
@@ -131,7 +156,7 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
         keyboardType: RDPKeyboardType = .ibmEnhanced,
         keyboardSubType: UInt32 = 0,
         keyboardFunctionKeyCount: UInt32 = 12,
-        legacyRSAKeyExchange: Bool = false,
+        legacyRSAKeyExchange: RDPLegacyRSAKeyExchange = .never,
         legacyCredSSP: Bool = false,
         sharedDrives: [RDPSharedDrive] = [],
         clientName: String = "RDPKIT"
@@ -194,7 +219,7 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
         keyboardType: RDPKeyboardType = .ibmEnhanced,
         keyboardSubType: UInt32 = 0,
         keyboardFunctionKeyCount: UInt32 = 12,
-        legacyRSAKeyExchange: Bool = false,
+        legacyRSAKeyExchange: RDPLegacyRSAKeyExchange = .never,
         legacyCredSSP: Bool = false,
         sharedDrives: [RDPSharedDrive] = [],
         clientName: String = "RDPKIT"

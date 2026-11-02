@@ -104,7 +104,8 @@ print(report.status)
 
 When a run fails, `report.failure` says why without matching text, for example
 `.credSSP(status: .logonFailure)`, `.connect(error:)` with the errno and its
-category, `.tlsKeyUsageIncorrect` (retry with `legacyRSAKeyExchange`), or
+category, `.tlsKeyUsageIncorrect` (`legacyRSAKeyExchange: .fallback` retries
+within the run), or
 `.legacyCredSSPVersion(version:)`: the server answered Network Level
 Authentication with a CredSSP version from before the CVE-2018-0886 fix, and
 no credential was sent. Ask the user, and retry with `legacyCredSSP` only if
@@ -188,9 +189,9 @@ let report = client.run(
 ### Session
 
 - TPKT and X.224 connection negotiation
-- TLS upgrade through SwiftNIO SSL, with an opt-in RSA key exchange mode
-  (`legacyRSAKeyExchange`) for servers whose certificate lacks
-  digitalSignature
+- TLS upgrade through SwiftNIO SSL, with opt-in RSA key exchange
+  (`legacyRSAKeyExchange`, from the start or as a fallback) for servers whose
+  certificate lacks digitalSignature
 - CredSSP with NTLM Network Level Authentication and Early User Authorization;
   CredSSP versions 2 to 4 only with `legacyCredSSP`
 - MCS connect, channel join, static virtual channels, and dynamic virtual

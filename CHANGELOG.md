@@ -39,6 +39,13 @@
   again, so a client that decides on another thread fetches nothing the
   restarted server announces before it has decided again. A client that turned
   fetching off sets it again in `onClipboardReady`, as on the first start.
+- `RDPConnectionConfiguration.legacyRSAKeyExchange` is an
+  `RDPLegacyRSAKeyExchange`: `.never` (the default), `.fallback` or
+  `.always`, which is what `true` was. With `.fallback` a certificate that
+  refuses ECDHE gets a second connection within the run, offering only RSA key
+  exchange, before any credential is sent; a Server Redirection's target that
+  refuses it still ends the run with `tlsKeyUsageIncorrect`. RDPClient falls
+  back this way in place of its own retry.
 - The remote-copy handlers, `onClipboardText`, `onClipboardContent`,
   `onClipboardFileGroupDescriptor` and `onClipboardRemoteCopyUnavailable`, get
   the copy's number as a second argument, so a client no longer keeps the
@@ -178,6 +185,8 @@
   it, so a license the server no longer takes does not fail every connection
   until the application drops it. `RDPConnectionReport.rdpStoredClientLicenseRejected`
   says so; a license the server issues then reaches `onClientLicenseIssued`.
+- `RDPConnectionReport.usedLegacyRSAKeyExchange` says whether the TLS
+  handshake offered only RSA key exchange, which has no forward secrecy.
 
 ### Security
 

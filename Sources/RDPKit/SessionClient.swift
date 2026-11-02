@@ -142,13 +142,17 @@ public struct RDPSessionClient: Sendable {
     }
 
     /// Connects, following up to two server redirections ([MS-RDPBCGR] 3.1.5.2), and connects
-    /// again once without the stored client license when the server's licensing fails with it.
+    /// again once without the stored client license when the server's licensing fails with it,
+    /// and once with RSA key exchange when its certificate refuses ECDHE, if allowed.
     private func session(
         configuration initialConfiguration: RDPConnectionConfiguration,
         callbacks: RDPSessionCallbacks,
         onConnectionError: (RDPClientConnection, Error) throws -> RDPConnectionReport
     ) rethrows -> RDPConnectionReport {
-        var configuration = initialConfiguration
+        // What the run starts over with: as the application connected, but for a fallback to RSA
+        // key exchange.
+        var startConfiguration = initialConfiguration
+        var configuration = startConfiguration
         while true {
             let connection = RDPClientConnection(configuration: configuration, callbacks: callbacks)
             let negotiated: Bool
@@ -170,8 +174,19 @@ public struct RDPSessionClient: Sendable {
             // redirection's one-time credentials are not used again; the omission carries through
             // a redirection, and nothing is presented to fail a second time.
             if connection.storedClientLicenseWasRejected {
-                configuration = initialConfiguration
+                configuration = startConfiguration
                 configuration.omitsStoredClientLicense = true
+                continue
+            }
+            // A certificate that allows keyEncipherment but not the digitalSignature ECDHE needs;
+            // the handshake failed before any credential was sent. Offering only RSA key exchange,
+            // the client reports no such failure, so this happens once.
+            if report.failure == .tlsKeyUsageIncorrect,
+               configuration.legacyRSAKeyExchange == .fallback,
+               configuration.redirectionDepth == 0
+            {
+                configuration.fellBackToRSAKeyExchange = true
+                startConfiguration.fellBackToRSAKeyExchange = true
                 continue
             }
             guard let redirection = connection.redirection,

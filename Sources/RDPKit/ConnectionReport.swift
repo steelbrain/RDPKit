@@ -45,6 +45,10 @@ public struct RDPConnectionReport: Encodable, Equatable, Sendable {
     public var credentialsVerifiedBeforeActivation: Bool?
     public var failureCode: UInt32?
     public var tlsProtocol: String?
+    /// Whether the TLS handshake offered only RSA key exchange, which has no forward secrecy:
+    /// `RDPConnectionConfiguration.legacyRSAKeyExchange` is `.always`, or `.fallback` and the
+    /// certificate of the server first connected to refused ECDHE. Nil until a handshake completes.
+    public var usedLegacyRSAKeyExchange: Bool?
     public var certificateTrusted: Bool?
     public var certificateSHA256: String?
     public var earlyUserAuthorizationResult: UInt32?
@@ -201,6 +205,7 @@ public struct RDPConnectionReport: Encodable, Equatable, Sendable {
         credentialsVerifiedBeforeActivation: Bool? = nil,
         failureCode: UInt32? = nil,
         tlsProtocol: String? = nil,
+        usedLegacyRSAKeyExchange: Bool? = nil,
         certificateTrusted: Bool? = nil,
         certificateSHA256: String? = nil,
         earlyUserAuthorizationResult: UInt32? = nil,
@@ -311,6 +316,7 @@ public struct RDPConnectionReport: Encodable, Equatable, Sendable {
         self.credentialsVerifiedBeforeActivation = credentialsVerifiedBeforeActivation
         self.failureCode = failureCode
         self.tlsProtocol = tlsProtocol
+        self.usedLegacyRSAKeyExchange = usedLegacyRSAKeyExchange
         self.certificateTrusted = certificateTrusted
         self.certificateSHA256 = certificateSHA256
         self.earlyUserAuthorizationResult = earlyUserAuthorizationResult
@@ -443,8 +449,9 @@ public enum RDPConnectionFailure: Encodable, Equatable, Sendable {
     case tls
     /// The server's RSA certificate does not allow digitalSignature, so the
     /// TLS handshake refuses ECDHE key exchange (KEY_USAGE_BIT_INCORRECT). No
-    /// credential was sent yet; connecting again with
-    /// `RDPConnectionConfiguration.legacyRSAKeyExchange` set can succeed.
+    /// credential was sent yet. `RDPConnectionConfiguration.legacyRSAKeyExchange` at
+    /// `.fallback` connects again with RSA key exchange within the run, but for a Server
+    /// Redirection's target, and `.always` offers it from the start.
     case tlsKeyUsageIncorrect
     /// The server answered Network Level Authentication with this CredSSP version, below
     /// 5, whose proof of the TLS key is the encryption oracle of CVE-2018-0886, and RDPKit

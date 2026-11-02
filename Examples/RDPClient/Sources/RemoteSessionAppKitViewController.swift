@@ -75,9 +75,6 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
     private var certificateTrustedByApp = false
     private var certificateRefusal: CertificateRefusal?
     private var certificateTrustMessage: String?
-    private var legacyKeyExchangeFallback = RDPLegacyKeyExchangeFallback()
-    /// Whether the connection shown uses RSA key exchange, as its target's certificate refused ECDHE.
-    private var usesLegacyRSAKeyExchange = false
     private var legacyCredSSPConsent = RDPLegacyCredSSPConsent()
     /// Whether the connection shown allows CredSSP below version 5, as the user agreed to.
     private var usesLegacyCredSSP = false
@@ -676,7 +673,6 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         certificateTrustedByApp = false
         certificateRefusal = nil
         certificateTrustMessage = nil
-        usesLegacyRSAKeyExchange = false
         usesLegacyCredSSP = false
         // Connecting saves, keeps or removes a saved password, so it waits for Keychain's answer
         // about the form's account: the lookup's, never a read of its own, as a read under way
@@ -698,7 +694,6 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
             render()
             return
         }
-        usesLegacyRSAKeyExchange = legacyKeyExchangeFallback.connect(to: target)
         usesLegacyCredSSP = legacyCredSSPConsent.connect(to: target)
 
         let trimmedUsername = username.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -756,7 +751,9 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
             keyboardLayout: keyboard.layout,
             keyboardType: keyboard.type,
             keyboardSubType: keyboard.subType,
-            legacyRSAKeyExchange: usesLegacyRSAKeyExchange,
+            // A certificate that refuses ECDHE gets a second connection with RSA key exchange,
+            // before any credential is sent.
+            legacyRSAKeyExchange: .fallback,
             legacyCredSSP: usesLegacyCredSSP,
             // The Mac's name, as servers list clients; RDPKit cuts it to 15 characters.
             clientName: SCDynamicStoreCopyComputerName(nil, nil) as String? ?? "RDPKIT"
@@ -1008,15 +1005,6 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                 ? nil
                 : nextReport.rdpGraphicsFirstFrame.map(decodeReportFirstFrame)
             sink.apply { controller in
-                if controller.legacyKeyExchangeFallback.shouldRetry(
-                    target,
-                    after: nextReport.failure,
-                    redirectionDepth: nextReport.redirectionDepth,
-                    usedRSAKeyExchange: configuration.legacyRSAKeyExchange
-                ) {
-                    controller.beginConnection()
-                    return
-                }
                 if let finalWireReceiveSample {
                     controller.renderMetricsStore.recordWireReceive(finalWireReceiveSample)
                 }
@@ -1215,6 +1203,11 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
     /// The session's report: the one `run` returned, or the live one while it runs.
     private var currentReport: RDPConnectionReport? {
         report ?? liveReport?.snapshot
+    }
+
+    /// Whether the connection shown uses RSA key exchange, as its server's certificate refused ECDHE.
+    private var usesLegacyRSAKeyExchange: Bool {
+        currentReport?.usedLegacyRSAKeyExchange == true
     }
 
     @discardableResult

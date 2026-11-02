@@ -206,41 +206,6 @@ private let bitmapFrame = RDPGraphicsFrameSnapshot(
     #expect(movedScreen.updatingDisplayLinkDuration(1.0 / 96.0).displayLinkFramesPerSecond == 96)
 }
 
-@Test func rsaKeyExchangeStaysWithTheTargetWhoseCertificateRefusedECDHE() throws {
-    let serverA = try RDPConnectionTarget(host: "a.example", port: 3389)
-    let serverB = try RDPConnectionTarget(host: "b.example", port: 3389)
-    let serverAOtherPort = try RDPConnectionTarget(host: "a.example", port: 3390)
-    var fallback = RDPLegacyKeyExchangeFallback()
-
-    #expect(fallback.connect(to: serverA) == false)
-    #expect(fallback.shouldRetry(serverA, after: .tls, redirectionDepth: 0, usedRSAKeyExchange: false) == false)
-    #expect(fallback.shouldRetry(serverA, after: nil, redirectionDepth: 0, usedRSAKeyExchange: false) == false)
-    #expect(fallback.connect(to: serverA) == false)
-
-    #expect(fallback.shouldRetry(serverA, after: .tlsKeyUsageIncorrect, redirectionDepth: 0, usedRSAKeyExchange: false) == true)
-    #expect(fallback.connect(to: serverA) == true)
-    // Once only: a connection that already used RSA key exchange is not retried.
-    #expect(fallback.shouldRetry(serverA, after: .tlsKeyUsageIncorrect, redirectionDepth: 0, usedRSAKeyExchange: true) == false)
-    // Reconnecting to the same target keeps it.
-    #expect(fallback.connect(to: serverA) == true)
-    #expect(fallback.target == serverA)
-
-    // Another target gets ECDHE, and the fallback is gone for a later connection to the first.
-    #expect(fallback.connect(to: serverB) == false)
-    #expect(fallback.target == nil)
-    #expect(fallback.connect(to: serverA) == false)
-
-    // The port is part of the target.
-    #expect(fallback.shouldRetry(serverA, after: .tlsKeyUsageIncorrect, redirectionDepth: 0, usedRSAKeyExchange: false) == true)
-    #expect(fallback.connect(to: serverAOtherPort) == false)
-
-    // A redirection target that refuses ECDHE is not the server typed in, which already took the
-    // sign-in, so that server is not retried with RSA key exchange.
-    #expect(fallback.connect(to: serverB) == false)
-    #expect(fallback.shouldRetry(serverB, after: .tlsKeyUsageIncorrect, redirectionDepth: 1, usedRSAKeyExchange: false) == false)
-    #expect(fallback.connect(to: serverB) == false)
-}
-
 /// Connect without the old CredSSP; refused for it, ask; agreed to, connect once with it.
 @Test func legacyCredSSPIsAllowedOnlyForTheConnectionTheUserAgreedTo() throws {
     let serverA = try RDPConnectionTarget(host: "a.example", port: 3389)

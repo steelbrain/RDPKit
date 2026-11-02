@@ -63,21 +63,82 @@ struct MockKRDPServerTests {
 
     /// BoringSSL refuses ECDHE with a certificate that does not allow digitalSignature.
     @Test func clientExplainsKeyUsageHandshakeFailure() throws {
-        let report = try runMock(.init(keyEnciphermentOnlyCertificate: true)).report
+        let run = try runMock(.init(keyEnciphermentOnlyCertificate: true))
+        let report = run.report
 
         #expect(report.status == "failure")
         #expect(report.stage == "tls-handshake")
         #expect(report.error?.contains("KEY_USAGE_BIT_INCORRECT") == true)
         #expect(report.error?.contains("legacyRSAKeyExchange") == true)
         #expect(report.failure == .tlsKeyUsageIncorrect)
+        #expect(report.usedLegacyRSAKeyExchange == nil)
+        #expect(run.connectionCount == 1)
     }
 
     @Test func clientConnectsWithLegacyRSAKeyExchangeToKeyEnciphermentOnlyCertificate() throws {
-        let report = try runMock(.init(keyEnciphermentOnlyCertificate: true), { $0.legacyRSAKeyExchange = true }).report
+        let run = try runMock(.init(keyEnciphermentOnlyCertificate: true), { $0.legacyRSAKeyExchange = .always })
 
-        #expect(report.status == "success")
-        #expect(report.tlsProtocol == "tls1.2")
-        #expect(report.rdpGraphicsFirstFrame != nil)
+        #expect(run.report.status == "success")
+        #expect(run.report.tlsProtocol == "tls1.2")
+        #expect(run.report.rdpGraphicsFirstFrame != nil)
+        #expect(run.report.usedLegacyRSAKeyExchange == true)
+        #expect(run.connectionCount == 1)
+    }
+
+    /// With the fallback allowed, a certificate that refuses ECDHE gets a second connection
+    /// offering only RSA key exchange, and so does the redirection that follows; a certificate
+    /// that allows ECDHE gets it.
+    @Test func clientFallsBackToRSAKeyExchangeOnceACertificateRefusesECDHE() throws {
+        let liveReport = RDPLiveConnectionReport()
+        let fallback = try runMock(
+            .init(redirectionBehavior: .redirectFirstConnection, redirectedConnection: 2, keyEnciphermentOnlyCertificate: true),
+            { $0.legacyRSAKeyExchange = .fallback },
+            client: { RDPSessionClient().run(configuration: $0, liveReport: liveReport) }
+        )
+        #expect(fallback.report.status == "success", "\(fallback.report.error ?? "")")
+        #expect(fallback.connectionCount == 3)
+        #expect(fallback.report.redirectionDepth == 1)
+        #expect(fallback.report.usedLegacyRSAKeyExchange == true)
+        #expect(liveReport.snapshot == fallback.report)
+
+        let ecdhe = try runMock(.init(), { $0.legacyRSAKeyExchange = .fallback })
+        #expect(ecdhe.report.status == "success")
+        #expect(ecdhe.connectionCount == 1)
+        #expect(ecdhe.report.usedLegacyRSAKeyExchange == false)
+    }
+
+    /// A run that starts over without a rejected stored license keeps the RSA key exchange it fell
+    /// back to.
+    @Test func clientKeepsRSAKeyExchangeWhenItStartsOverWithoutALicense() throws {
+        let run = try runMock(
+            .init(licensingBehavior: .serverLicenseRequestRejectingStoredClientLicense, keyEnciphermentOnlyCertificate: true),
+            {
+                $0.legacyRSAKeyExchange = .fallback
+                $0.storedClientLicense = mockStoredClientLicense
+            }
+        )
+
+        #expect(run.report.status == "success", "\(run.report.error ?? "")")
+        #expect(run.connectionCount == 3)
+        #expect(run.report.usedLegacyRSAKeyExchange == true)
+        #expect(run.report.rdpStoredClientLicenseRejected == true)
+    }
+
+    /// A Server Redirection's target that refuses ECDHE ends the run: the application did not
+    /// choose that server.
+    @Test func clientKeepsECDHEForARedirectionTarget() throws {
+        let run = try runMock(
+            .init(
+                redirectionBehavior: .redirectFirstConnection,
+                keyEnciphermentOnlyCertificate: true,
+                firstKeyEnciphermentOnlyConnection: 2
+            ),
+            { $0.legacyRSAKeyExchange = .fallback }
+        )
+
+        #expect(run.report.failure == .tlsKeyUsageIncorrect)
+        #expect(run.report.redirectionDepth == 1)
+        #expect(run.connectionCount == 2)
     }
 
     /// Cancelling from onCertificate rejects the server before any credential is

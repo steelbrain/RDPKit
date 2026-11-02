@@ -755,7 +755,7 @@ final class RDPTransport {
             if !legacyRSAKeyExchange, String(describing: error).contains("KEY_USAGE_BIT_INCORRECT") {
                 throw RDPConnectionError.tls(
                     "the server's certificate does not allow ECDHE key exchange (KEY_USAGE_BIT_INCORRECT); "
-                        + "legacyRSAKeyExchange allows RSA key exchange",
+                        + "legacyRSAKeyExchange .fallback or .always allows RSA key exchange",
                     failure: .tlsKeyUsageIncorrect
                 )
             }
