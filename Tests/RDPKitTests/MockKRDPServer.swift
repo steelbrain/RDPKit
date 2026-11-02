@@ -91,6 +91,9 @@ final class MockKRDPServer: LoopbackTestServer {
         var remoteClipboardHTML: String?
         /// Announce an empty clipboard: a Format List with no formats.
         var emptyRemoteClipboard = false
+        /// Announce a copy of a bitmap alone, which a client without onClipboardContent does
+        /// not fetch.
+        var bitmapRemoteClipboard = false
         /// Answer the request for `remoteClipboardText` with a response the client cannot read.
         var brokenRemoteClipboardText: MockKRDPBrokenClipboardResponse?
         var audioEnabled = false
@@ -1286,7 +1289,7 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
 
     private var clipboardEnabled: Bool {
         options.clipboardFiles.isEmpty == false || options.remoteClipboardText != nil || options.remoteClipboardHTML != nil
-            || options.emptyRemoteClipboard
+            || options.emptyRemoteClipboard || options.bitmapRemoteClipboard
     }
 
     /// A reconnect after a `redirectLikeGnomeHandover` redirection.
@@ -1530,7 +1533,8 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
                 MockKRDPFixtures.clipboardFormatList(
                     includeFiles: options.clipboardFiles.isEmpty == false,
                     includeText: options.remoteClipboardText != nil,
-                    includeHTML: options.remoteClipboardHTML != nil
+                    includeHTML: options.remoteClipboardHTML != nil,
+                    includeBitmap: options.bitmapRemoteClipboard
                 ),
                 context: context
             )
@@ -2232,7 +2236,12 @@ private enum MockKRDPFixtures {
         clipboardPacket(RDPClipboardCapabilitiesPDU().encoded())
     }
 
-    static func clipboardFormatList(includeFiles: Bool = true, includeText: Bool = false, includeHTML: Bool = false) -> Data {
+    static func clipboardFormatList(
+        includeFiles: Bool = true,
+        includeText: Bool = false,
+        includeHTML: Bool = false,
+        includeBitmap: Bool = false
+    ) -> Data {
         var entries: [RDPClipboardFormatListEntry] = []
         if includeText {
             entries.append(RDPClipboardFormatListEntry(formatID: RDPClipboardFormatID.unicodeText))
@@ -2242,6 +2251,9 @@ private enum MockKRDPFixtures {
                 formatID: MockKRDPConstants.remoteHTMLFormatID,
                 formatName: RDPClipboardRegisteredFormatName.html
             ))
+        }
+        if includeBitmap {
+            entries.append(RDPClipboardFormatListEntry(formatID: RDPClipboardFormatID.dib))
         }
         if includeFiles {
             entries.append(contentsOf: [

@@ -2259,22 +2259,53 @@ struct MockKRDPServerTests {
         #expect(!run.transcript.clientClipboardMessages.map(\.typeName).contains("clipboard-format-data-request"))
     }
 
-    /// A client that turns fetching off in onClipboardReady and back on from another thread,
-    /// as RDPClient does from its main thread, hears of a clipboard emptied in between. The
-    /// report comes on the session's thread, like every handler, though no more traffic does.
+    /// A client that turns fetching off in onClipboardReady, as RDPClient does until its
+    /// clipboard bridge attaches on the main thread, still hears at once of a clipboard emptied
+    /// meanwhile, which brings nothing of the server's clipboard. The report comes on the
+    /// session's thread, like every handler.
     @Test func clientReportsAClipboardEmptiedWhileFetchingWasOff() throws {
+        let unavailable = Locked<[Bool]>([])
+        let clipboard = Locked<(session: RDPClipboardSession, thread: Thread)?>(nil)
+        let reportedWhileFetchingWasOff = Locked<Bool?>(nil)
+        let reportedOnSessionThread = Locked<Bool?>(nil)
+        let run = try runMock(.init(emptyRemoteClipboard: true), { $0.clipboardEnabled = true }, client: {
+            RDPSessionClient().run(
+                configuration: $0,
+                onClipboardReady: { session in
+                    session.fetchesRemoteCopies = false
+                    clipboard.withLock { $0 = (session, Thread.current) }
+                },
+                onClipboardRemoteCopyUnavailable: { isEmpty in
+                    unavailable.withLock { $0.append(isEmpty) }
+                    reportedWhileFetchingWasOff.withLock { $0 = clipboard.value?.session.fetchesRemoteCopies == false }
+                    reportedOnSessionThread.withLock { $0 = Thread.current === clipboard.value?.thread }
+                }
+            )
+        })
+
+        #expect(run.report.status == "success")
+        #expect(unavailable.value == [true])
+        #expect(reportedWhileFetchingWasOff.value == true)
+        #expect(reportedOnSessionThread.value == true)
+    }
+
+    /// A client that turns fetching off in onClipboardReady and back on from another thread,
+    /// as RDPClient does from its main thread, hears of a copy it fetches nothing of that came
+    /// in between. The report comes on the session's thread, like every handler, though no
+    /// more traffic does.
+    @Test func clientReportsACopyItFetchesNothingOfThatCameWhileFetchingWasOff() throws {
         let unavailable = Locked<[Bool]>([])
         let clipboard = Locked<(session: RDPClipboardSession, thread: Thread)?>(nil)
         let reportedOnSessionThread = Locked<Bool?>(nil)
         let cancellation = RDPConnectionCancellation()
-        _ = try runMock(.init(emptyRemoteClipboard: true), {
+        _ = try runMock(.init(bitmapRemoteClipboard: true), {
             $0.clipboardEnabled = true
             $0.graphicsFrameCaptureLimit = nil
         }, client: {
             RDPSessionClient().run(
                 configuration: $0,
                 onGraphicsFrame: { _ in
-                    // The empty Format List came before the frame.
+                    // The bitmap's Format List came before the frame.
                     guard let session = clipboard.value?.session, !session.fetchesRemoteCopies else {
                         return
                     }
@@ -2300,7 +2331,7 @@ struct MockKRDPServerTests {
             )
         })
 
-        #expect(unavailable.value == [true])
+        #expect(unavailable.value == [false])
         #expect(reportedOnSessionThread.value == true)
     }
 

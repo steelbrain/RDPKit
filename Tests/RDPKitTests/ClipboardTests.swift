@@ -1538,10 +1538,11 @@ private final class ClipboardPublishRace: @unchecked Sendable {
         #expect(try session.receive(RDPClipboardPDU.parse(from: emptyCopy)) == .remoteCopyUnavailable(isEmpty: true))
         #expect(try session.receive(RDPClipboardPDU.parse(from: RDPClipboardFormatDataResponsePDU.unicodeText("old").encoded())) == nil)
 
-        // While fetching is off, nothing of the server's clipboard reaches the application.
+        // While fetching is off, nothing of the server's clipboard reaches the application, but
+        // its clipboard emptied, which brings nothing of it, does.
         session.fetchesRemoteCopies = false
-        #expect(try session.receive(RDPClipboardPDU.parse(from: emptyCopy)) == nil)
         #expect(try session.receive(RDPClipboardPDU.parse(from: customCopy)) == nil)
+        #expect(try session.receive(RDPClipboardPDU.parse(from: emptyCopy)) == .remoteCopyUnavailable(isEmpty: true))
 
         #expect(try sentFormatDataRequestIDs(sent) == (requestsRichFormats ? [8, 13] : [13]))
         #expect(sent.summaries.filter { $0.typeName == "clipboard-format-list-response" }.allSatisfy {
@@ -1771,8 +1772,9 @@ private final class ClipboardPublishRace: @unchecked Sendable {
     _ = try channel.finish()
 }
 
-/// A copy with nothing to fetch, announced while fetching was off, is reported once fetching
-/// is turned back on, as on arrival, unless a newer copy, local or remote, replaced it first.
+/// A copy of only formats the session does not fetch, announced while fetching was off, is
+/// reported once fetching is turned back on, as on arrival, unless a newer copy, local or
+/// remote, replaced it first.
 @Test func clipboardSessionReportsAnUnavailableCopyAnnouncedWhileFetchingWasOff() throws {
     let channel = EmbeddedChannel()
     let wakes = Locked(0)
@@ -1782,7 +1784,6 @@ private final class ClipboardPublishRace: @unchecked Sendable {
         channel: channel,
         pendingEventHandler: { wakes.withLock { $0 += 1 } }
     )
-    let emptyCopy = RDPClipboardFormatListPDU(entries: []).encoded()
     // Without onClipboardContent a bitmap is not fetched.
     let bitmapCopy = RDPClipboardFormatListPDU(entries: [
         RDPClipboardFormatListEntry(formatID: RDPClipboardFormatID.dib),
@@ -1799,18 +1800,16 @@ private final class ClipboardPublishRace: @unchecked Sendable {
     _ = try session.receive(RDPClipboardPDU.parse(from: RDPClipboardCapabilitiesPDU().encoded()))
     _ = try session.receive(RDPClipboardPDU(messageType: RDPClipboardMessageType.monitorReady))
     _ = try session.receive(serverFormatListResponse)
-    try announceWhileOff(emptyCopy)
-    #expect(wakes.value == 1)
-    #expect(session.takePendingEvent() == .remoteCopyUnavailable(isEmpty: true))
-    #expect(session.takePendingEvent() == nil)
     try announceWhileOff(bitmapCopy)
+    #expect(wakes.value == 1)
     #expect(session.takePendingEvent() == .remoteCopyUnavailable(isEmpty: false))
+    #expect(session.takePendingEvent() == nil)
 
-    try announceWhileOff(emptyCopy)
+    try announceWhileOff(bitmapCopy)
     session.publishLocalUnicodeText("local")
     #expect(session.takePendingEvent() == nil)
     _ = try session.receive(serverFormatListResponse)
-    try announceWhileOff(emptyCopy)
+    try announceWhileOff(bitmapCopy)
     _ = try session.receive(RDPClipboardPDU.parse(from: textCopy))
     #expect(session.takePendingEvent() == nil)
 
@@ -1818,7 +1817,48 @@ private final class ClipboardPublishRace: @unchecked Sendable {
     try announceWhileOff(textCopy)
     #expect(session.isAwaitingRemoteCopy)
     #expect(session.takePendingEvent() == nil)
-    #expect(wakes.value == 4)
+    #expect(wakes.value == 3)
+    _ = try channel.finish()
+}
+
+/// The server's clipboard emptied is reported while fetching is off too, when it comes:
+/// nothing of the server's clipboard comes with it, and the application learns that the copy
+/// it has is no longer the server's. Turning fetching back on reports it no more.
+@Test func clipboardSessionReportsAClipboardEmptiedWhileFetchingIsOff() throws {
+    let channel = EmbeddedChannel()
+    let sent = ClipboardSentMessages()
+    let wakes = Locked(0)
+    let session = RDPClipboardSession(
+        userChannelID: 1006,
+        staticChannelID: 1007,
+        channel: channel,
+        sentMessageHandler: sent.record,
+        pendingEventHandler: { wakes.withLock { $0 += 1 } }
+    )
+    let emptyCopy = RDPClipboardFormatListPDU(entries: []).encoded()
+    let textCopy = RDPClipboardFormatListPDU(entries: [
+        RDPClipboardFormatListEntry(formatID: RDPClipboardFormatID.unicodeText),
+    ]).encoded()
+
+    _ = try session.receive(RDPClipboardPDU.parse(from: RDPClipboardCapabilitiesPDU().encoded()))
+    _ = try session.receive(RDPClipboardPDU(messageType: RDPClipboardMessageType.monitorReady))
+    _ = try session.receive(serverFormatListResponse)
+    _ = try session.receive(RDPClipboardPDU.parse(from: textCopy))
+    #expect(try session.receive(RDPClipboardPDU.parse(from: RDPClipboardFormatDataResponsePDU.unicodeText("secret").encoded()))
+        == .text("secret"))
+    let text = session.deliveredRemoteCopyNumber
+
+    session.fetchesRemoteCopies = false
+    #expect(try session.receive(RDPClipboardPDU.parse(from: textCopy)) == nil)
+    #expect(try session.receive(RDPClipboardPDU.parse(from: emptyCopy)) == .remoteCopyUnavailable(isEmpty: true))
+    #expect(session.deliveredRemoteCopyNumber > text)
+    #expect(!session.hasPublished(since: session.deliveredRemoteCopyNumber))
+
+    session.fetchesRemoteCopies = true
+    #expect(wakes.value == 0)
+    #expect(session.takePendingEvent() == nil)
+    #expect(!session.isAwaitingRemoteCopy)
+    #expect(try sentFormatDataRequestIDs(sent) == [RDPClipboardFormatID.unicodeText])
     _ = try channel.finish()
 }
 
@@ -1832,6 +1872,10 @@ private final class ClipboardPublishRace: @unchecked Sendable {
         RDPClipboardFormatListEntry(formatID: RDPClipboardFormatID.unicodeText),
     ]).encoded()
     let emptyCopy = RDPClipboardFormatListPDU(entries: []).encoded()
+    // Without onClipboardContent a bitmap is not fetched.
+    let bitmapCopy = RDPClipboardFormatListPDU(entries: [
+        RDPClipboardFormatListEntry(formatID: RDPClipboardFormatID.dib),
+    ]).encoded()
 
     _ = try session.receive(RDPClipboardPDU.parse(from: RDPClipboardCapabilitiesPDU().encoded()))
     _ = try session.receive(RDPClipboardPDU(messageType: RDPClipboardMessageType.monitorReady))
@@ -1854,9 +1898,9 @@ private final class ClipboardPublishRace: @unchecked Sendable {
 
     // A copy reported once fetching is back on, then published over before it got anywhere.
     session.fetchesRemoteCopies = false
-    _ = try session.receive(RDPClipboardPDU.parse(from: emptyCopy))
+    _ = try session.receive(RDPClipboardPDU.parse(from: bitmapCopy))
     session.fetchesRemoteCopies = true
-    #expect(session.takePendingEvent() == .remoteCopyUnavailable(isEmpty: true))
+    #expect(session.takePendingEvent() == .remoteCopyUnavailable(isEmpty: false))
     let pending = session.deliveredRemoteCopyNumber
     #expect(pending > emptied)
     #expect(!session.hasPublished(since: pending))
