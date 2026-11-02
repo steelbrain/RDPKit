@@ -320,8 +320,8 @@ public enum RDPMonitorLayoutError: Error, Equatable, CustomStringConvertible, Se
 /// group. A monitor's left and top are pixels from the primary monitor's top-left, so one left
 /// of or above it has negative ones.
 public struct RDPMonitorLayout: Equatable, Sendable {
-    /// The most Client Monitor Data and ResetGraphics hold ([MS-RDPBCGR] 2.2.1.3.6,
-    /// [MS-RDPEGFX] 2.2.2.14).
+    /// The most Client Monitor Data, a Monitor Layout PDU and ResetGraphics hold
+    /// ([MS-RDPBCGR] 2.2.1.3.6, 2.2.12.1, [MS-RDPEGFX] 2.2.2.14).
     static let maximumMonitorCount = 16
     /// The widest and tallest graphics output ResetGraphics describes ([MS-RDPEGFX] 2.2.2.14).
     static let maximumDesktopDimension = 32766

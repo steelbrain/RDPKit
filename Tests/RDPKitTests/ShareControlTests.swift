@@ -316,6 +316,30 @@ import Testing
     #expect(pdu.monitorLayout?.boundingBoxLayout.issues == .uncoveredOutput)
 }
 
+/// MS-RDPBCGR 2.2.12.1: at most 16 monitors. The PDU has room for 818, whose arrangement
+/// would take the session minutes to check.
+@Test func shareDataRejectsMonitorLayoutOfMoreThan16Monitors() throws {
+    func monitorLayout(count: Int32) -> Data {
+        var payload = Data()
+        payload.appendLittleEndianUInt32(UInt32(count))
+        for index in 0 ..< count {
+            payload.append(RDPMonitorDefinition(
+                left: index * 100,
+                top: 0,
+                right: index * 100 + 99,
+                bottom: 99,
+                flags: index == 0 ? RDPMonitorDefinition.primary : 0
+            ).encoded())
+        }
+        return shareDataPacket(type: 0x37, pduSource: 0, payload: payload)
+    }
+
+    #expect(try RDPShareDataPDU.parseIfPresent(fromTPKT: monitorLayout(count: 16))?.monitorLayout?.count == 16)
+    #expect(throws: RDPDecodeError.invalidShareDataHeader) {
+        try RDPShareDataPDU.parseIfPresent(fromTPKT: monitorLayout(count: 17))
+    }
+}
+
 @Test func shareDataParsesAutoReconnectStatusPDU() throws {
     let pdu = try #require(try RDPShareDataPDU.parseIfPresent(fromTPKT: shareDataPacket(
         type: 0x32,

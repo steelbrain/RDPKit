@@ -646,7 +646,11 @@ struct RDPShareDataPDU: Equatable, Sendable {
             throw RDPDecodeError.invalidShareDataHeader
         }
         let monitorCount = payload.littleEndianUInt32(at: 0)
-        guard monitorCount == UInt32((payload.count - 4) / 20) else {
+        // At most 16 monitors ([MS-RDPBCGR] 2.2.12.1). The PDU has room for 818, and checking
+        // how they are arranged takes time cubic in their count.
+        guard monitorCount == UInt32((payload.count - 4) / 20),
+              Int(monitorCount) <= RDPMonitorLayout.maximumMonitorCount
+        else {
             throw RDPDecodeError.invalidShareDataHeader
         }
     }
