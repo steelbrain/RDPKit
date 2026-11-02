@@ -506,13 +506,24 @@ import Testing
     #expect(RDPCredSSPNTLMContext.ntowfV2(password: "Password", username: "User", domain: "Domain")
         == Data(rdpHexString: "0c868a403bfd7a93a3001ef22ef02e3f"))
 
-    // Windows upper-cases code point by code point, so "ß" is not expanded to "SS".
+    // Windows upper-cases per UTF-16 code unit, so "ß" is not expanded to "SS".
     let ntHash = RDPCredSSPNTLMContext.md4(utf16LittleEndian("Password"))
     let expected = Data(HMAC<Insecure.MD5>.authenticationCode(
         for: utf16LittleEndian("STRAßEDomain"),
         using: SymmetricKey(data: ntHash)
     ))
     #expect(RDPCredSSPNTLMContext.ntowfV2(password: "Password", username: "straße", domain: "Domain") == expected)
+}
+
+/// Windows upper-cases per UTF-16 code unit, and a surrogate has no case mapping, so
+/// Deseret small long I (U+10428) stays as it is instead of becoming U+10400.
+@Test func ntlmNTOWFv2KeepsCharactersOutsideTheBMP() {
+    let ntHash = RDPCredSSPNTLMContext.md4(utf16LittleEndian("Password"))
+    let expected = Data(HMAC<Insecure.MD5>.authenticationCode(
+        for: utf16LittleEndian("\u{10428}USERDomain"),
+        using: SymmetricKey(data: ntHash)
+    ))
+    #expect(RDPCredSSPNTLMContext.ntowfV2(password: "Password", username: "\u{10428}user", domain: "Domain") == expected)
 }
 
 @Test func credSSPTSRequestParsesAuthInfoPubKeyAndNonce() throws {
