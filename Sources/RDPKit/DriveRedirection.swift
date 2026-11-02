@@ -55,6 +55,7 @@ enum RDPNTStatus {
     static let objectNameCollision: UInt32 = 0xC000_0035
     static let objectPathNotFound: UInt32 = 0xC000_003A
     static let diskFull: UInt32 = 0xC000_007F
+    static let insufficientResources: UInt32 = 0xC000_009A
     static let mediaWriteProtected: UInt32 = 0xC000_00A2
     static let fileIsADirectory: UInt32 = 0xC000_00BA
     static let notSupported: UInt32 = 0xC000_00BB

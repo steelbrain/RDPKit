@@ -42,6 +42,11 @@ final class RDPSharedDriveDevice: @unchecked Sendable {
     static let maximumOpenFileCount = 4096
     /// No file name is longer ([MS-FSCC] 2.1.5.2), so neither is a search pattern that names one.
     static let maximumSearchPatternLength = 255
+    /// What the directory listings of a drive's handles may hold together, counted as
+    /// `listingByteCount(of:)` does. A handle keeps the listing of its directory query until
+    /// the query ends, so without a bound a server could make the client hold a copy of a
+    /// large directory for each of the handles it may open.
+    static let maximumListingByteCount = 64 * 1024 * 1024
 
     let deviceID: UInt32
     let drive: RDPSharedDrive
@@ -50,11 +55,20 @@ final class RDPSharedDriveDevice: @unchecked Sendable {
     private var openFiles: [UInt32: RDPSharedDriveOpenFile] = [:]
     private var nextFileID: UInt32 = 1
     private let descriptorBudget: RDPSharedDriveDescriptorBudget
+    private let listingByteLimit: Int
+    /// What the listings of `openFiles` hold, in `listingByteCount(of:)` bytes.
+    private var listingByteCount = 0
 
-    init(deviceID: UInt32, drive: RDPSharedDrive, descriptorBudget: RDPSharedDriveDescriptorBudget = .shared) {
+    init(
+        deviceID: UInt32,
+        drive: RDPSharedDrive,
+        descriptorBudget: RDPSharedDriveDescriptorBudget = .shared,
+        listingByteLimit: Int = maximumListingByteCount
+    ) {
         self.deviceID = deviceID
         self.drive = drive
         self.descriptorBudget = descriptorBudget
+        self.listingByteLimit = listingByteLimit
     }
 
     /// The session's end closes the server's handles, deleting what they had pending, as
@@ -310,6 +324,7 @@ final class RDPSharedDriveDevice: @unchecked Sendable {
 
     /// Closes a handle's descriptor and deletes its entry if a delete is pending.
     private func release(_ file: RDPSharedDriveOpenFile) {
+        listingByteCount -= file.listingByteCount
         if let descriptor = file.descriptor {
             Darwin.close(descriptor)
             descriptorBudget.release()
@@ -628,7 +643,15 @@ final class RDPSharedDriveDevice: @unchecked Sendable {
                 .map(\.precomposedStringWithCanonicalMapping)
                 .filter(Self.isValidName)
                 .sorted { $0.caseInsensitiveCompare($1) == .orderedAscending }
-            file.listing = ([".", ".."] + names).filter { Self.matches($0, pattern: pattern) }
+            let listing = ([".", ".."] + names).filter { Self.matches($0, pattern: pattern) }
+            // Counted in place of the handle's own listing, which it replaces.
+            let byteCount = Self.listingByteCount(of: listing)
+            guard listingByteCount - file.listingByteCount + byteCount <= listingByteLimit else {
+                throw RDPDriveFailure(status: RDPNTStatus.insufficientResources)
+            }
+            listingByteCount += byteCount - file.listingByteCount
+            file.listing = listing
+            file.listingByteCount = byteCount
             file.listingIndex = 0
         }
         defer {
@@ -647,9 +670,19 @@ final class RDPSharedDriveDevice: @unchecked Sendable {
             }
             return lengthPrefixed(entry)
         }
+        // The names are let go at the end; an empty listing still answers the queries after it.
+        listingByteCount -= file.listingByteCount
+        file.listing = []
+        file.listingByteCount = 0
         // [MS-FSA] 2.1.5.6.3: no match at all is STATUS_NO_SUCH_FILE, the end of one is
         // STATUS_NO_MORE_FILES. Either reply is Length 0 and Padding.
         throw RDPDriveFailure(status: initialQuery && listing.isEmpty ? RDPNTStatus.noSuchFile : RDPNTStatus.noMoreFiles)
+    }
+
+    /// What `listing` holds against `listingByteLimit`: each name's UTF-8 bytes and the
+    /// array slot that holds it.
+    private static func listingByteCount(of listing: [String]) -> Int {
+        listing.reduce(0) { $0 + $1.utf8.count + MemoryLayout<String>.stride }
     }
 
     private func directoryEntryInformation(_ name: String, in directory: String) -> RDPDriveFileInformation? {
@@ -923,6 +956,8 @@ struct RDPSharedDriveOpenFile {
     /// The names of the current directory query, from its first request on.
     var listing: [String]?
     var listingIndex = 0
+    /// What `listing` counts in its device's `listingByteCount`.
+    var listingByteCount = 0
 
     init(path: String, entryIdentity: RDPFileIdentity, targetPath: String, targetIdentity: RDPFileIdentity, isDirectory: Bool) {
         self.path = path

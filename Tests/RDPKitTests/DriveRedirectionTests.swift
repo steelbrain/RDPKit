@@ -246,6 +246,31 @@ import Testing
     #expect(drive.queryDirectory(root.fileID, initialQuery: false, path: "").body == Data(count: 5))
 }
 
+/// Each handle keeps its query's listing, so the listings count together against a bound: a
+/// server that opens many handles on a large directory cannot make the client hold a copy
+/// per handle.
+@Test func driveBoundsTheDirectoryListingsItsHandlesHold() throws {
+    // `.`, `..` and ten 11-byte names, each counted with its 16-byte array slot: 305 bytes.
+    let drive = try TemporaryDrive(listingByteLimit: 700)
+    for index in 0 ..< 10 {
+        try Data().write(to: drive.root.appendingPathComponent("name-\(index)0.txt"))
+    }
+    let handles = (0 ..< 3).map { _ in drive.create("", disposition: RDPDriveCreateDisposition.open).fileID }
+
+    #expect(drive.queryDirectory(handles[0], initialQuery: true, path: "\\*").status == RDPNTStatus.success)
+    #expect(drive.queryDirectory(handles[1], initialQuery: true, path: "\\*").status == RDPNTStatus.success)
+    #expect(drive.queryDirectory(handles[2], initialQuery: true, path: "\\*").status == RDPNTStatus.insufficientResources)
+    // A new query replaces the handle's own listing.
+    #expect(drive.queryDirectory(handles[1], initialQuery: true, path: "\\*").status == RDPNTStatus.success)
+    // A listing read to its end is let go, and a closed handle's.
+    #expect(drive.listing(handles[1], pattern: "\\*").count == 12)
+    #expect(drive.queryDirectory(handles[1], initialQuery: false, path: "").status == RDPNTStatus.noMoreFiles)
+    #expect(drive.queryDirectory(handles[2], initialQuery: true, path: "\\*").status == RDPNTStatus.success)
+    #expect(drive.queryDirectory(handles[1], initialQuery: true, path: "\\*").status == RDPNTStatus.insufficientResources)
+    #expect(drive.close(handles[0]).status == RDPNTStatus.success)
+    #expect(drive.queryDirectory(handles[1], initialQuery: true, path: "\\*").status == RDPNTStatus.success)
+}
+
 @Test func driveReportsFileAttributesAndSizes() throws {
     let drive = try TemporaryDrive()
     try Data(count: 10).write(to: drive.root.appendingPathComponent(".dotfile"))
@@ -931,14 +956,18 @@ private final class TemporaryDrive {
     let root: URL
     let device: RDPSharedDriveDevice
 
-    init(descriptorBudget: RDPSharedDriveDescriptorBudget = RDPSharedDriveDescriptorBudget(maximumCount: 64)) throws {
+    init(
+        descriptorBudget: RDPSharedDriveDescriptorBudget = RDPSharedDriveDescriptorBudget(maximumCount: 64),
+        listingByteLimit: Int = RDPSharedDriveDevice.maximumListingByteCount
+    ) throws {
         base = FileManager.default.temporaryDirectory.appendingPathComponent("rdpkit-drive-\(UUID().uuidString)")
         root = base.appendingPathComponent("shared", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         device = RDPSharedDriveDevice(
             deviceID: 1,
             drive: RDPSharedDrive(name: "Shared", url: root),
-            descriptorBudget: descriptorBudget
+            descriptorBudget: descriptorBudget,
+            listingByteLimit: listingByteLimit
         )
         device.resolveRoot()
     }
