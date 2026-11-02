@@ -30,6 +30,14 @@ public enum RDPWireLayer: String, Codable, Equatable, Sendable {
 /// credentials and an auto-reconnect cookie (the Client Info PDU) and, for replay
 /// purposes, the client side is only needed as an ordering barrier — not
 /// asserted byte-for-byte.
+///
+/// Only the client application PDUs the connection sends itself are recorded:
+/// the connection sequence, licensing, auto-detect, reactivation, frame
+/// acknowledgements, drdynvc control and RDPGFX messages. What the clipboard,
+/// audio, device redirection, input and display control sessions send, and the
+/// Disconnect Provider Ultimatum that ends the session, are not, so such a
+/// client packet has no barrier. A transcript meant for replay is recorded with
+/// the clipboard, audio and shared drives off and no input or layout sent.
 public struct RDPWireEvent: Codable, Equatable, Sendable {
     public var sequence: Int
     public var direction: RDPWireDirection
@@ -72,8 +80,9 @@ public struct RDPWireEvent: Codable, Equatable, Sendable {
 /// names. Store and share it as you would the session itself. The secrets a
 /// server sends in the clear are zeroed in ``events``: a Server Redirection
 /// PDU's Password field and a Save Session Info PDU's auto-reconnect cookie.
-/// The client's own application PDUs, which carry its credentials and
-/// auto-reconnect cookie, are recorded by length only.
+/// The application PDUs the client's connection sends, which carry its
+/// credentials and auto-reconnect cookie, are recorded by length only; those
+/// its channel sessions send are not recorded (see ``RDPWireEvent``).
 public final class RDPWireTranscript: @unchecked Sendable {
     private struct Record {
         var direction: RDPWireDirection
