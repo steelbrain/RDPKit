@@ -347,6 +347,35 @@ public struct RDPMonitorLayout: Equatable, Sendable {
         self.monitors = monitors
     }
 
+    /// The layout of the server's monitors, such as a frame's
+    /// ``RDPGraphicsFrameSnapshot/monitors`` or the report's
+    /// ``RDPConnectionReport/rdpMonitorLayout``, each at `scaleFactors`: their left and top
+    /// become pixels from the primary monitor's top-left. Sending it asks the server to keep
+    /// its monitors as they are. Throws ``RDPMonitorLayoutError`` for monitors that are not
+    /// one valid layout, such as ones with no primary, or a monitor of an odd width, which
+    /// Display Control cannot ask for.
+    public init(remoteMonitors: [RDPRemoteMonitor], scaleFactors: RDPDisplayScaleFactors) throws {
+        guard !remoteMonitors.isEmpty else {
+            throw RDPMonitorLayoutError.noMonitors
+        }
+        let primaryMonitors = remoteMonitors.filter(\.isPrimary)
+        guard primaryMonitors.count == 1 else {
+            throw RDPMonitorLayoutError.primaryMonitorCount(primaryMonitors.count)
+        }
+        let origin = primaryMonitors[0].rect
+        try self.init(monitors: remoteMonitors.map { monitor in
+            RDPDisplayControlMonitorLayout(
+                flags: monitor.isPrimary ? RDPDisplayControlMonitorFlags.primary : 0,
+                left: Int32(monitor.rect.left) - Int32(origin.left),
+                top: Int32(monitor.rect.top) - Int32(origin.top),
+                width: UInt32(monitor.rect.width),
+                height: UInt32(monitor.rect.height),
+                desktopScaleFactor: scaleFactors.desktopScaleFactor,
+                deviceScaleFactor: scaleFactors.deviceScaleFactor
+            )
+        })
+    }
+
     /// One primary monitor, its size and scale factors moved into range as
     /// ``RDPDisplayControlMonitorLayout/singlePrimary(width:height:desktopScaleFactor:deviceScaleFactor:)``
     /// moves them.
@@ -402,7 +431,7 @@ public struct RDPMonitorLayout: Equatable, Sendable {
     /// at a corner, as [MS-RDPEDISP] 3.1.5.2 counts touching. That section asks only that each
     /// monitor touch another, and Windows 11 applies separate groups through Display Control,
     /// but a connection drops them (``RDPConnectionConfiguration/monitorLayout``).
-    var formsOneGroup: Bool {
+    public var formsOneGroup: Bool {
         let rectangles = monitors.map(RDPDisplayControlMonitorRect.init)
         var reached: Set<Int> = [0]
         var unvisited = [0]

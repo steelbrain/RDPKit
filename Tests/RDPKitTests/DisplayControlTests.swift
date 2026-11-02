@@ -724,3 +724,39 @@ private func outboundDisplayControlPayloads(_ channel: EmbeddedChannel) throws -
     #expect(sentMonitors == [connectLayout.monitors, sentLayout.monitors, sentLayout.monitors])
     _ = try channel.finish()
 }
+
+/// A 1280x1024 monitor left of a 1920x1080 primary 56 pixels lower: the server's monitors are
+/// where they are in the graphics output, which starts at the leftmost and topmost monitor.
+@Test func monitorLayoutComesFromTheServersMonitors() throws {
+    let layout = try RDPMonitorLayout(monitors: [
+        .singlePrimary(width: 1920, height: 1080, desktopScaleFactor: 150, deviceScaleFactor: 140),
+        RDPDisplayControlMonitorLayout(left: -1280, top: -56, width: 1280, height: 1024, desktopScaleFactor: 150, deviceScaleFactor: 140),
+    ])
+    let remoteMonitors = layout.monitors.map(RDPMonitorDefinition.init).boundingBoxMonitors
+
+    #expect(remoteMonitors == [
+        RDPRemoteMonitor(rect: RDPFrameRect(left: 1280, top: 56, right: 3200, bottom: 1136), isPrimary: true),
+        RDPRemoteMonitor(rect: RDPFrameRect(left: 0, top: 0, right: 1280, bottom: 1024), isPrimary: false),
+    ])
+    #expect(try RDPMonitorLayout(
+        remoteMonitors: remoteMonitors,
+        scaleFactors: RDPDisplayScaleFactors(desktopScaleFactor: 150, deviceScaleFactor: 140)
+    ) == layout)
+}
+
+@Test func monitorLayoutRefusesServerMonitorsDisplayControlCannotAskFor() {
+    let scale = RDPDisplayScaleFactors(desktopScaleFactor: 100, deviceScaleFactor: 100)
+    let primary = RDPRemoteMonitor(rect: RDPFrameRect(left: 0, top: 0, right: 1920, bottom: 1080), isPrimary: true)
+    let secondary = RDPRemoteMonitor(rect: RDPFrameRect(left: 1920, top: 0, right: 3200, bottom: 1024), isPrimary: false)
+    let oddWidth = RDPRemoteMonitor(rect: RDPFrameRect(left: 1920, top: 0, right: 3201, bottom: 1024), isPrimary: false)
+
+    #expect(throws: RDPMonitorLayoutError.noMonitors) {
+        try RDPMonitorLayout(remoteMonitors: [], scaleFactors: scale)
+    }
+    #expect(throws: RDPMonitorLayoutError.primaryMonitorCount(0)) {
+        try RDPMonitorLayout(remoteMonitors: [secondary], scaleFactors: scale)
+    }
+    #expect(throws: RDPMonitorLayoutError.invalidWidth(monitor: 1)) {
+        try RDPMonitorLayout(remoteMonitors: [primary, oddWidth], scaleFactors: scale)
+    }
+}
