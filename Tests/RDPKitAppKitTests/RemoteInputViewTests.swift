@@ -25,17 +25,17 @@ import Testing
     #expect(control.isDown(in: []) == false)
 }
 
-@Test func releasingTheLastSideOfAModifierWithoutSideBitsReleasesBothSides() throws {
+/// A side reads as down from its own bit only; a keyboard with no side bits says no side.
+@Test func modifierKeysReadTheirOwnSideBit() throws {
     let leftShift = try #require(RDPMacModifierKey(keyCode: UInt16(kVK_Shift)))
     let rightShift = try #require(RDPMacModifierKey(keyCode: UInt16(kVK_RightShift)))
-    let bothPressed: (RDPKeyboardScancode) -> Bool = { _ in true }
+    let onlyRightDown = NSEvent.ModifierFlags(rawValue: NSEvent.ModifierFlags.shift.rawValue | 0x4)
 
-    // With no side bits, releasing one Shift leaves .shift set, so nothing tells which side it was.
-    #expect(leftShift.changes(in: .shift, isPressed: bothPressed).isEmpty)
-    let release = rightShift.changes(in: [], isPressed: bothPressed)
-    #expect(release.map(\.scancode) == [RDPKeyboardScancode(code: 0x36), RDPKeyboardScancode(code: 0x2A)])
-    #expect(release.allSatisfy { $0.isDown == false })
-    #expect(leftShift.changes(in: .shift) { _ in false }.map(\.scancode) == [RDPKeyboardScancode(code: 0x2A)])
+    #expect(rightShift.isSideDown(in: onlyRightDown))
+    #expect(leftShift.isSideDown(in: onlyRightDown) == false)
+    #expect(leftShift.isSideDown(in: .shift) == false)
+    // A stale side bit without the flag is no press.
+    #expect(rightShift.isSideDown(in: NSEvent.ModifierFlags(rawValue: 0x4)) == false)
 }
 
 @Test func commandSendsWindowsKeyOnlyWithAnotherKeyOrAsATap() {
@@ -485,61 +485,77 @@ private func windowsTypes(
     }
 }
 
-/// A Control shortcut goes as the scancode of the key the Mac types its letter on, so the
-/// Windows layout announced has to type the same letter there. These Mac layouts were mapped by
-/// that comparison (2026-11-01); each letter key of theirs must type its letter on Windows too.
+/// Command and Control chords go as the keys' scancodes, which the server reads with the
+/// announced layout, so each Latin letter an Apple layout types has to sit on the key where the
+/// announced Windows layout types it, or ⌃Z arrives as Ctrl+Y. A Windows key counts when it
+/// types the letter, or its capital with Shift, as Turkish Q's I key types "ı" and "I". Every
+/// layout installed on this Mac is checked, with its keyboard type; the layouts mapped by this
+/// comparison (2026-11-01) must be among them.
 @MainActor
-@Test func macLayoutsAnnounceAWindowsLayoutWithTheirLettersInPlace() throws {
-    let names = [
-        "ABC-AZERTY", "ABC-QWERTZ", "Albanian", "FinnishExtended", "German-DIN-2137", "Hungarian-QWERTY",
-        "Kabyle-AZERTY", "Latvian", "Lithuanian", "Lithuanian-LST1582", "Romanian", "Slovenian-QWERTZ",
-        "Turkish-Standard",
-    ]
-    let letterKeys: [(keyCode: Int, scancode: UInt16)] = [
-        (kVK_ANSI_A, 0x1E), (kVK_ANSI_B, 0x30), (kVK_ANSI_C, 0x2E), (kVK_ANSI_D, 0x20), (kVK_ANSI_E, 0x12),
-        (kVK_ANSI_F, 0x21), (kVK_ANSI_G, 0x22), (kVK_ANSI_H, 0x23), (kVK_ANSI_I, 0x17), (kVK_ANSI_J, 0x24),
-        (kVK_ANSI_K, 0x25), (kVK_ANSI_L, 0x26), (kVK_ANSI_M, 0x32), (kVK_ANSI_N, 0x31), (kVK_ANSI_O, 0x18),
-        (kVK_ANSI_P, 0x19), (kVK_ANSI_Q, 0x10), (kVK_ANSI_R, 0x13), (kVK_ANSI_S, 0x1F), (kVK_ANSI_T, 0x14),
-        (kVK_ANSI_U, 0x16), (kVK_ANSI_V, 0x2F), (kVK_ANSI_W, 0x11), (kVK_ANSI_X, 0x2D), (kVK_ANSI_Y, 0x15),
-        (kVK_ANSI_Z, 0x2C),
-    ]
+@Test func installedAppleLayoutsAnnounceAWindowsLayoutWithTheirLettersOnTheSameKeys() throws {
     let filter = [kTISPropertyInputSourceType as String: kTISTypeKeyboardLayout as String] as CFDictionary
-    let sources = (TISCreateInputSourceList(filter, true)?.takeRetainedValue() as? [TISInputSource]) ?? []
-    var layoutData: [String: Data] = [:]
+    let sources = try #require(TISCreateInputSourceList(filter, true)?.takeRetainedValue() as? [TISInputSource])
+    let prefix = "com.apple.keylayout."
+    var letterCounts: [String: Int] = [:]
     for source in sources {
-        guard let identifier = TISGetInputSourceProperty(source, kTISPropertyInputSourceID),
-              let data = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData)
+        guard let identifier = TISGetInputSourceProperty(source, kTISPropertyInputSourceID).map({
+                  Unmanaged<CFString>.fromOpaque($0).takeUnretainedValue() as String
+              }),
+              identifier.hasPrefix(prefix)
         else {
             continue
         }
-        layoutData[Unmanaged<CFString>.fromOpaque(identifier).takeUnretainedValue() as String] =
-            Unmanaged<CFData>.fromOpaque(data).takeUnretainedValue() as Data
-    }
-
-    for name in names {
-        let identifier = "com.apple.keylayout." + name
-        let data = try #require(layoutData[identifier], "\(name) is not installed")
-        let windows = RDPKeyboard(layout: RDPMacKeyboardLayout.windowsLayout(forInputSourceID: identifier))
-        #expect(windows.hasCharacterTable, "\(name)")
-        for key in letterKeys {
-            let macCharacter = data.withUnsafeBytes { bytes -> String? in
-                guard let layout = bytes.baseAddress?.assumingMemoryBound(to: UCKeyboardLayout.self) else {
-                    return nil
-                }
-                var deadKeyState: UInt32 = 0
-                var length = 0
-                var characters = [UniChar](repeating: 0, count: 4)
-                let status = UCKeyTranslate(
-                    layout, UInt16(key.keyCode), UInt16(kUCKeyActionDown), 0, UInt32(LMGetKbdType()),
-                    OptionBits(kUCKeyTranslateNoDeadKeysBit), &deadKeyState, 4, &length, &characters
-                )
-                return status == noErr ? String(utf16CodeUnits: characters, count: length) : nil
+        let name = String(identifier.dropFirst(prefix.count))
+        let keyboard = RDPKeyboard(layout: RDPMacKeyboardLayout.windowsLayout(forInputSourceID: identifier))
+        #expect(keyboard.hasCharacterTable, "\(name)")
+        var letterCount = 0
+        var misplacedLetters: [String] = []
+        // The ANSI character keys and the ISO key left of "1" (with Return, Tab and Space).
+        for keyCode in 0 ... UInt16(kVK_ANSI_Grave) {
+            guard let letter = RDPMacDeadKeys.output(keyCode: keyCode, modifierFlags: [], in: source),
+                  letter.count == 1, letter.unicodeScalars.allSatisfy({ ("a" ... "z").contains($0) }),
+                  let scancode = RDPMacKeyboardMapping.scancode(forKeyCode: keyCode)
+            else {
+                continue
             }
-            let windowsCharacter = windows.character(for: RDPKeyboardScancode(code: key.scancode), shift: false, capsLock: false)
-            #expect(windowsCharacter.map(String.init) == macCharacter, "\(name), key code \(key.keyCode)")
+            letterCount += 1
+            let unshifted = keyboard.character(for: scancode, shift: false, capsLock: false)
+            let shifted = keyboard.character(for: scancode, shift: true, capsLock: false)
+            if unshifted.map(String.init) != letter, shifted.map(String.init) != letter.uppercased() {
+                misplacedLetters.append(letter)
+            }
+        }
+        letterCounts[name] = letterCount
+        let announced = String(format: "0x%08X", keyboard.layout.rawValue)
+        if layoutsWhoseLettersNoTableMatches.contains(name) {
+            #expect(misplacedLetters != [], "\(name) now matches \(announced); take it off the list")
+        } else {
+            #expect(misplacedLetters.sorted() == [], "\(name) is announced as \(announced)")
         }
     }
+    // Not vacuous: the layouts were found and their letters read. macOS installs over 200 Apple
+    // layouts, and a list of only the enabled ones would leave most of them unchecked.
+    #expect(
+        letterCounts.count >= 100,
+        "Read only \(letterCounts.count) Apple layouts; TISCreateInputSourceList should list every installed one"
+    )
+    #expect(letterCounts["US"] == 26, "Found \(letterCounts.count) Apple layouts")
+    for name in [
+        "ABC-AZERTY", "ABC-QWERTZ", "Albanian", "FinnishExtended", "German-DIN-2137", "Hungarian-QWERTY",
+        "Kabyle-AZERTY", "Latvian", "Lithuanian", "Lithuanian-LST1582", "Romanian", "Slovenian-QWERTZ",
+        "Turkish-Standard",
+    ] {
+        #expect(letterCounts[name] != nil, "\(name) is not installed")
+    }
 }
+
+/// Apple layouts whose letters no captured Windows table places as they do.
+private let layoutsWhoseLettersNoTableMatches: Set<String> = [
+    // Windows has no such layout.
+    "Anjal", "Colemak", "Croatian", "Italian", "Serbian-Latin", "Slovenian", "Tibetan-Wylie",
+    // Turkish F – Legacy, which has Q, W and X where Windows' Turkish F does not.
+    "Turkish",
+]
 
 /// Only a Japanese input source that types with US English gets Windows' Japanese layout: as
 /// a 106/109-key keyboard on a JIS keyboard, and as a 101-key one, which types what US types,
@@ -1278,7 +1294,9 @@ private let rightOptionFlags = NSEvent.ModifierFlags(rawValue: NSEvent.ModifierF
     let view = RDPRemoteInputView()
     view.inputSession = input
     view.isDeadKey = { keyCode, flags in Int(keyCode) == kVK_ANSI_E && flags.contains(.option) }
-    view.uncomposedOutput = { keyCode, flags in Int(keyCode) == kVK_ANSI_E && flags.contains(.option) ? "" : nil }
+    view.uncomposedOutput = { keyCode, flags in
+        Int(keyCode) == kVK_ANSI_E ? (flags.contains(.option) ? "" : "e") : nil
+    }
     view.composedOutput = { keyCode, flags, deadKeyCode, deadKeyFlags in
         Int(keyCode) == kVK_ANSI_E && flags.isEmpty && Int(deadKeyCode) == kVK_ANSI_E && deadKeyFlags.contains(.option)
             ? "é" : nil
@@ -1532,6 +1550,49 @@ private let rightOptionFlags = NSEvent.ModifierFlags(rawValue: NSEvent.ModifierF
     view.mouseDragged(with: try event(.leftMouseDragged, at: CGPoint(x: 180, y: 50)))
     view.mouseDragged(with: try event(.leftMouseDragged, at: CGPoint(x: 10, y: -20)))
     #expect(input.events == [.pointerMove(x: 99, y: 50), .pointerMove(x: 0, y: 99)])
+}
+
+/// A point mapping maps in place of the frame, so a view showing part of the desktop maps
+/// through what it shows; without one the frame maps again.
+@MainActor
+@Test func aPointMappingMapsInPlaceOfTheFrame() throws {
+    let input = RecordedInput()
+    let view = RDPRemoteInputView()
+    view.inputSession = input
+    view.frame = CGRect(x: 0, y: 0, width: 200, height: 100)
+    view.rdpFrame = RDPFrameMetadata(RDPGraphicsFrameSnapshot(
+        frameID: nil,
+        surfaceID: 0,
+        codecID: 0,
+        codecName: "test",
+        pixelFormat: 0,
+        destinationRect: RDPFrameRect(left: 0, top: 0, right: 200, bottom: 100),
+        regionRects: [],
+        encodedVideoData: Data()
+    ))
+    let move = try #require(NSEvent.mouseEvent(
+        with: .mouseMoved,
+        location: CGPoint(x: 100, y: 50),
+        modifierFlags: [],
+        timestamp: 0,
+        windowNumber: 0,
+        context: nil,
+        eventNumber: 0,
+        clickCount: 1,
+        pressure: 1
+    ))
+
+    view.mouseMoved(with: move)
+    view.pointMapping = RDPRemoteDisplayViewport(
+        remotePixelSize: CGSize(width: 400, height: 200),
+        bounds: view.bounds,
+        coordinateOrigin: .bottomLeft
+    )
+    view.mouseMoved(with: move)
+    view.pointMapping = nil
+    view.mouseMoved(with: move)
+
+    #expect(input.events == [.pointerMove(x: 100, y: 50), .pointerMove(x: 200, y: 100), .pointerMove(x: 100, y: 50)])
 }
 
 /// Command or right Option pressed while Shift, Control, left Option or a mouse button is down

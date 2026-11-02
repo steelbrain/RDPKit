@@ -19,18 +19,35 @@ extension RDPInputSession: RDPInputEventSending {}
 ///   needs;
 /// - Command goes as the Windows key, held back until another key, button or wheel event goes
 ///   with it, or sent as a tap when released alone; right Option is held back likewise;
-/// - modifiers are reconciled with each event's flags, and held keys and buttons are released
-///   when the view loses focus, its window resigns key or a menu opens;
-/// - the toggle keys are synchronized when the view gains focus ([MS-RDPBCGR] 2.2.8.1.1.3.1.1.5).
+/// - modifiers are reconciled with each event's flags, pressed from their own side bits and
+///   released when the flags show them up, and held keys and buttons are released when the view
+///   loses focus, its window resigns key or a menu opens, with no session too;
+/// - a button goes up only if the server saw it go down, and a drag past the shown desktop
+///   stops on its edge;
+/// - the toggle keys are synchronized when the view gains focus ([MS-RDPBCGR] 2.2.8.1.1.3.1.1.5),
+///   and again when an event shows a Caps Lock change the view missed.
 ///
 /// Set `rdpFrame` to the latest frame, so points map onto the desktop as the view, filling its
-/// window, shows it, `keyboard` to what the session announced, and `inputSession` once the
-/// session has one. The view does not hide the Mac's cursor.
+/// window, shows it, or `pointMapping` for a view that shows part of it; `keyboard` to what the
+/// session announced; and `inputSession` once the session has one. `claimsCommandShortcuts`
+/// gives ⌘ and ⌃ chords to the server ahead of the menus. The view does not hide the Mac's
+/// cursor.
 public final class RDPRemoteInputView: NSView {
-    /// The latest frame, whose desktop the view's points map onto; no point maps without one.
+    /// The latest frame, whose whole desktop the view's points map onto as the view, filling
+    /// its window, shows it (`RDPRemoteDisplayViewport(frame:view:)`), unless `pointMapping`
+    /// is set. No point maps without either.
     public var rdpFrame: RDPFrameMetadata?
+    /// Maps the view's points onto the desktop in place of `rdpFrame`, for a view that shows
+    /// part of it, such as chosen monitors, so pointer events land where the video shows them.
+    /// A change releases nothing: keys and buttons are still down on the Mac, and the next event
+    /// maps through the new mapping.
+    public var pointMapping: (any RDPRemotePointMapping)?
     /// The keyboard the session announced; it decides which keys can go as scancodes.
     public var keyboard = RDPKeyboard.unitedStates
+    /// Whether ⌘ and ⌃ chords on keys with a scancode go to the server before the menu bar's
+    /// key equivalents can take them, while the view is first responder with a session. Off,
+    /// the menus get them first and the server gets those they leave.
+    public var claimsCommandShortcuts = false
     /// Whether the Mac's layout makes a key a dead key with these modifiers; tests replace it.
     var isDeadKey: @MainActor (UInt16, NSEvent.ModifierFlags) -> Bool = RDPMacDeadKeys.isDeadKey(keyCode:modifierFlags:)
     /// What the Mac's layout types for a key with no dead key pending; tests replace it.
@@ -60,7 +77,8 @@ public final class RDPRemoteInputView: NSView {
     /// A dead key went to the server as an Alt chord, so macOS composes the next key with its accent.
     private var followsChordedDeadKey = false
     /// A dead key typed right after one that went as a chord. macOS may spend it on that one's
-    /// accent, which the server never asked for, so the next key is composed with it here.
+    /// accent, which the server never asked for, so the next key, if a character key, is composed
+    /// with it here.
     private var deadKeyAfterChordedDeadKey: (keyCode: UInt16, modifierFlags: NSEvent.ModifierFlags)?
     /// The toggle-key state the server was last synchronized with.
     private var synchronizedToggleFlags: RDPToggleKeyFlags?
@@ -70,6 +88,16 @@ public final class RDPRemoteInputView: NSView {
     /// types the text, including what its dead keys compose; the Mac's text never goes.
     private var isUnicodeInputSupported: Bool {
         inputSession?.supportsUnicodeInput ?? true
+    }
+
+    /// A view released while still in its window was never told to stop observing it. The
+    /// notification observers go with the view, but the key-up monitor must be removed.
+    deinit {
+        MainActor.assumeIsolated {
+            if let commandKeyUpMonitor {
+                NSEvent.removeMonitor(commandKeyUpMonitor)
+            }
+        }
     }
 
     override public var acceptsFirstResponder: Bool {
@@ -137,24 +165,29 @@ public final class RDPRemoteInputView: NSView {
 
     override public func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
+        syncModifierKeys(forButtonDown: event)
         sendPointerButton(.left, isDown: true, event: event)
     }
 
     override public func mouseUp(with event: NSEvent) {
+        releaseModifiers(missingFrom: event.modifierFlags)
         sendPointerButton(.left, isDown: false, event: event)
     }
 
     override public func rightMouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
+        syncModifierKeys(forButtonDown: event)
         sendPointerButton(.right, isDown: true, event: event)
     }
 
     override public func rightMouseUp(with event: NSEvent) {
+        releaseModifiers(missingFrom: event.modifierFlags)
         sendPointerButton(.right, isDown: false, event: event)
     }
 
     override public func otherMouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
+        syncModifierKeys(forButtonDown: event)
         guard let button = pointerButton(for: event) else {
             return
         }
@@ -162,6 +195,7 @@ public final class RDPRemoteInputView: NSView {
     }
 
     override public func otherMouseUp(with event: NSEvent) {
+        releaseModifiers(missingFrom: event.modifierFlags)
         guard let button = pointerButton(for: event) else {
             return
         }
@@ -182,13 +216,37 @@ public final class RDPRemoteInputView: NSView {
         guard events.isEmpty == false else {
             return
         }
+        // Held-back keys go down first, as they do ahead of a click, so Alt-scroll and
+        // Command-scroll reach the server as Alt and Windows with the wheel.
         let move = RDPMacScrollWheel.pointerMove(to: point, inputState: &inputState)
         sendInput(deferredModifierKeys.flush(&inputState) + move + events)
     }
 
+    override public func performKeyEquivalent(with event: NSEvent) -> Bool {
+        // With `claimsCommandShortcuts`, ⌘/⌃ chords belong to the remote session while the
+        // user controls it, so they are claimed here before the menu bar's key equivalents.
+        guard claimsCommandShortcuts,
+              inputSession != nil,
+              window?.firstResponder === self,
+              event.type == .keyDown,
+              event.modifierFlags.intersection([.command, .control]).isEmpty == false,
+              let scancode = RDPMacKeyboardMapping.scancode(forKeyCode: event.keyCode)
+        else {
+            // A chord the remote never sees, such as one on a key with no
+            // scancode that a menu may take, must not leave the release of
+            // Command or right Option to tap the Windows key or Alt there.
+            if event.modifierFlags.isDisjoint(with: [.command, .control]) == false {
+                deferredModifierKeys.noteChordedElsewhere()
+            }
+            return false
+        }
+        syncModifierKeys(with: event)
+        sendKeyboardScancode(scancode, isReleased: false)
+        return true
+    }
+
     override public func keyDown(with event: NSEvent) {
-        releaseModifiers(missingFrom: event.modifierFlags)
-        synchronizeToggleKeysIfChanged(event.modifierFlags)
+        syncModifierKeys(with: event)
         let isComposedByChordedDeadKey = followsChordedDeadKey && event.isARepeat == false
         followsChordedDeadKey = false
         let deadKey = event.isARepeat ? nil : deadKeyAfterChordedDeadKey
@@ -200,7 +258,7 @@ public final class RDPRemoteInputView: NSView {
                 afterChordedDeadKey: event.characters,
                 uncomposed: uncomposedOutput(event.keyCode, event.modifierFlags)
             )
-        } else if let deadKey {
+        } else if let deadKey, RDPMacKeyboardMapping.isCharacterKey(uncomposed: uncomposedOutput(event.keyCode, event.modifierFlags)) {
             composedOutput(event.keyCode, event.modifierFlags, deadKey.keyCode, deadKey.modifierFlags) ?? event.characters
         } else {
             event.characters
@@ -223,7 +281,7 @@ public final class RDPRemoteInputView: NSView {
            ) || isUnicodeInputSupported == false
         {
             // A dead key's accent ahead of Return or Tab, unless that dead key went as a chord;
-            // text never goes with Command or Control.
+            // a repeat types it no more, and text never goes with Command or Control.
             if isUnicodeInputSupported, event.isARepeat == false, isComposedByChordedDeadKey == false,
                event.modifierFlags.isDisjoint(with: [.command, .control]),
                let text = RDPMacKeyboardMapping.deadKeyText(aheadOf: characters)
@@ -232,9 +290,7 @@ public final class RDPRemoteInputView: NSView {
             }
             sendKeyboardScancode(scancode, isReleased: false)
             // A dead key that went as a chord, as left Option-E goes as Alt-E.
-            if characters?.isEmpty == true, isDeadKey(event.keyCode, event.modifierFlags) {
-                followsChordedDeadKey = true
-            }
+            followsChordedDeadKey = characters?.isEmpty == true && isDeadKey(event.keyCode, event.modifierFlags)
             return
         }
         guard event.modifierFlags.isDisjoint(with: [.command, .control]), isUnicodeInputSupported else {
@@ -263,37 +319,28 @@ public final class RDPRemoteInputView: NSView {
     }
 
     override public func flagsChanged(with event: NSEvent) {
+        var events: [RDPSlowPathInputEvent] = []
         if Int(event.keyCode) == kVK_CapsLock {
-            synchronizeToggleKeys(event.modifierFlags)
+            events += toggleKeySynchronizationEvents(event.modifierFlags)
         } else if let modifier = RDPMacModifierKey(keyCode: event.keyCode) {
-            sendChanges(of: modifier, in: event.modifierFlags)
-        }
-        // After the change itself, so that Command released alone still sends its deferred tap.
-        releaseModifiers(missingFrom: event.modifierFlags)
-    }
-
-    private func sendChanges(of modifier: RDPMacModifierKey, in modifierFlags: NSEvent.ModifierFlags) {
-        let changes = modifier.changes(in: modifierFlags) {
-            inputState.isScancodePressed($0) || deferredModifierKeys.isHeld($0)
-        }
-        for change in changes {
-            if RDPMacDeferredModifierKeys.isDeferred(change.scancode, holdsBackAlt: isUnicodeInputSupported),
-               inputState.isScancodePressed(change.scancode) == false
-            {
-                if change.isDown {
-                    deferredModifierKeys.press(change.scancode, inputState: inputState)
-                } else {
-                    sendInput(deferredModifierKeys.release(change.scancode))
+            // The key code names the side that changed, so on keyboards that
+            // report no side bits the side-independent flag tells its state.
+            let isDown = modifier.isDown(in: event.modifierFlags)
+            if isDown != isModifierPressed(modifier.scancode) {
+                // Before a press, a modifier whose release the view missed goes up, so that
+                // Command or right Option pressed after it is not taken for part of a chord.
+                if isDown {
+                    events += modifierReleaseEvents(missingFrom: event.modifierFlags)
                 }
-            } else if change.isDown {
-                sendInput(
-                    deferredModifierKeys.flushWindowsKeys(&inputState)
-                        + [inputState.keyboard(scancode: change.scancode, isReleased: false)]
-                )
-            } else {
-                sendKeyboardScancode(change.scancode, isReleased: true)
+                events += modifierEvents(modifier.scancode, isDown: isDown)
             }
         }
+        // After the change itself, so that Command or right Option released
+        // alone still sends its deferred tap. Once the shared flag clears,
+        // this also releases the other side of a keyboard that reports no
+        // side bits.
+        events += modifierSyncEvents(for: event.modifierFlags)
+        sendInput(events)
     }
 
     private func startObservingWindow() {
@@ -312,8 +359,6 @@ public final class RDPRemoteInputView: NSView {
             name: NSWindow.didBecomeKeyNotification,
             object: window
         )
-        // A menu tracking the mouse or keyboard takes the key-ups of keys held meanwhile, which
-        // would stay down on the server.
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(menuDidBeginTracking(_:)),
@@ -346,6 +391,11 @@ public final class RDPRemoteInputView: NSView {
         releasePressedInputs()
     }
 
+    /// A menu, such as the menu bar or the ⋯ menu, takes the keyboard while it tracks without the
+    /// window resigning key, so the key-ups of keys held as it opens go to the menu. They are
+    /// released as on focus loss, and the next key, click or modifier presses the modifiers still
+    /// held. With no session, nothing is sent, but the keys are no longer tracked as held, so the
+    /// next session's attach does not press them there.
     @objc private func menuDidBeginTracking(_: Notification) {
         releasePressedInputs()
     }
@@ -356,25 +406,6 @@ public final class RDPRemoteInputView: NSView {
         }
     }
 
-    /// MS-RDPBCGR 2.2.8.1.1.3.1.1.5: on focus gain, send the toggle-key state followed by the
-    /// keys still held, since the server's state may have changed while focus was elsewhere.
-    private func synchronizeToggleKeys(_ modifierFlags: NSEvent.ModifierFlags) {
-        let toggleFlags = RDPMacKeyboardMapping.toggleFlags(for: modifierFlags)
-        synchronizedToggleFlags = toggleFlags
-        sendInput(inputState.synchronizationEvents(toggleFlags: toggleFlags))
-    }
-
-    /// A Caps Lock toggle the view never saw, such as one made while a menu was open, leaves the
-    /// server's Caps Lock stale, and the letters it shifts go as scancodes, so a key or click
-    /// whose flags show another toggle-key state synchronizes it first.
-    private func synchronizeToggleKeysIfChanged(_ modifierFlags: NSEvent.ModifierFlags) {
-        if let synchronizedToggleFlags,
-           synchronizedToggleFlags != RDPMacKeyboardMapping.toggleFlags(for: modifierFlags)
-        {
-            synchronizeToggleKeys(modifierFlags)
-        }
-    }
-
     private func forwardCommandKeyUp(_ event: NSEvent) {
         guard event.modifierFlags.contains(.command),
               event.window === window,
@@ -382,44 +413,150 @@ public final class RDPRemoteInputView: NSView {
         else {
             return
         }
+        // The key went to the server, or a shortcut the system took, such as ⌘⌥D, used it;
+        // either way releasing Command or right Option is no tap.
         deferredModifierKeys.noteChordedElsewhere()
         keyUp(with: event)
     }
 
-    /// AppKit does not deliver every modifier release to the view, for example one made while a menu
-    /// is open, so a modifier the server still holds is released by the next event that shows it up.
+    /// Reconciles every modifier key with the event's flags, so a modifier
+    /// transition the view never saw (window was not key at the time) cannot
+    /// leave the remote state inverted. A key the flags show up is released;
+    /// a key is pressed only when its own side bit shows it down, since a
+    /// keyboard that reports no side bits does not say which side is held.
+    private func modifierSyncEvents(for modifierFlags: NSEvent.ModifierFlags) -> [RDPSlowPathInputEvent] {
+        modifierReleaseEvents(missingFrom: modifierFlags) + modifierPressEvents(for: modifierFlags)
+    }
+
+    /// AppKit does not deliver every modifier release to the view, for
+    /// example one made while a menu is open or while another app such as
+    /// Spotlight has the keyboard, so every event releases the modifiers its
+    /// flags show up. Only key-down, button-down and modifier events press
+    /// the ones they show held: those are input the user aims at the remote.
     private func releaseModifiers(missingFrom modifierFlags: NSEvent.ModifierFlags) {
-        var events: [RDPSlowPathInputEvent] = []
-        for modifier in RDPMacModifierKey.all where modifier.isDown(in: modifierFlags) == false {
-            if inputState.isScancodePressed(modifier.scancode) {
-                events.append(inputState.keyboard(scancode: modifier.scancode, isReleased: true))
-            }
-            // A held-back key whose release went elsewhere never reached the server.
-            deferredModifierKeys.discard(modifier.scancode)
-        }
+        let events = modifierReleaseEvents(missingFrom: modifierFlags)
         if events.isEmpty == false {
             sendInput(events)
         }
     }
 
+    private func modifierReleaseEvents(missingFrom modifierFlags: NSEvent.ModifierFlags) -> [RDPSlowPathInputEvent] {
+        RDPMacModifierKey.all.compactMap { modifier in
+            let scancode = modifier.scancode
+            guard modifier.isDown(in: modifierFlags) == false else {
+                return nil
+            }
+            // A held-back Windows key or right Alt whose release the view
+            // missed never reached the server, so it is dropped without a tap.
+            deferredModifierKeys.discard(scancode)
+            return inputState.isScancodePressed(scancode) ? inputState.keyboard(scancode: scancode, isReleased: true) : nil
+        }
+    }
+
+    private func modifierPressEvents(for modifierFlags: NSEvent.ModifierFlags) -> [RDPSlowPathInputEvent] {
+        RDPMacModifierKey.all.flatMap { modifier -> [RDPSlowPathInputEvent] in
+            let scancode = modifier.scancode
+            guard isModifierPressed(scancode) == false, modifier.isSideDown(in: modifierFlags) else {
+                return []
+            }
+            let events = modifierEvents(scancode, isDown: true)
+            // Command or right Option found held, not seen going down, may be
+            // left over from a Cmd-Tab into this window; releasing it alone is
+            // no tap.
+            if deferredModifierKeys.isHeld(scancode) {
+                deferredModifierKeys.noteChordedElsewhere()
+            }
+            return events
+        }
+    }
+
+    private func isModifierPressed(_ scancode: RDPKeyboardScancode) -> Bool {
+        inputState.isScancodePressed(scancode) || deferredModifierKeys.isHeld(scancode)
+    }
+
+    /// The events that press or release a modifier. A Windows key not yet on the server is held
+    /// back by `deferredModifierKeys`, and so is right Alt while the server takes Unicode input;
+    /// any other press sends the held-back Windows keys down first. Right Alt stays held back,
+    /// since Shift-Option types characters too, but releasing it is no longer a tap.
+    private func modifierEvents(_ scancode: RDPKeyboardScancode, isDown: Bool) -> [RDPSlowPathInputEvent] {
+        if RDPMacDeferredModifierKeys.isDeferred(scancode, holdsBackAlt: isUnicodeInputSupported),
+           inputState.isScancodePressed(scancode) == false
+        {
+            if isDown {
+                deferredModifierKeys.press(scancode, inputState: inputState)
+                return []
+            }
+            return deferredModifierKeys.release(scancode)
+        }
+        if isDown {
+            return deferredModifierKeys.flushWindowsKeys(&inputState) + [inputState.keyboard(scancode: scancode, isReleased: false)]
+        }
+        return [inputState.keyboard(scancode: scancode, isReleased: true)]
+    }
+
+    /// A Caps Lock toggle the view never saw, such as one made while a menu was open, leaves the
+    /// server's Caps Lock stale, and the letters it shifts go as scancodes, so the toggle-key
+    /// state is synchronized first when the event's differs.
+    private func syncModifierKeys(with event: NSEvent) {
+        sendInput(staleToggleKeyEvents(event.modifierFlags) + modifierSyncEvents(for: event.modifierFlags))
+    }
+
+    /// A Command-click on a window in the background reaches the view without making the window
+    /// key, so the release of a modifier held for it goes to another app. Such a click only
+    /// releases the modifiers its flags show up; it presses none. Caps Lock is the Mac's either
+    /// way, so a stale one is synchronized all the same.
+    private func syncModifierKeys(forButtonDown event: NSEvent) {
+        guard window?.isKeyWindow == true else {
+            sendInput(staleToggleKeyEvents(event.modifierFlags) + modifierReleaseEvents(missingFrom: event.modifierFlags))
+            return
+        }
+        syncModifierKeys(with: event)
+    }
+
+    private func staleToggleKeyEvents(_ modifierFlags: NSEvent.ModifierFlags) -> [RDPSlowPathInputEvent] {
+        guard let synchronizedToggleFlags,
+              synchronizedToggleFlags != RDPMacKeyboardMapping.toggleFlags(for: modifierFlags)
+        else {
+            return []
+        }
+        return toggleKeySynchronizationEvents(modifierFlags)
+    }
+
+    /// MS-RDPBCGR 2.2.8.1.1.3.1.1.5: on focus gain, send the toggle-key state followed by the
+    /// keys still held, since the server's state may have changed while focus was elsewhere.
+    private func synchronizeToggleKeys(_ modifierFlags: NSEvent.ModifierFlags) {
+        sendInput(toggleKeySynchronizationEvents(modifierFlags))
+    }
+
+    private func toggleKeySynchronizationEvents(_ modifierFlags: NSEvent.ModifierFlags) -> [RDPSlowPathInputEvent] {
+        let toggleFlags = RDPMacKeyboardMapping.toggleFlags(for: modifierFlags)
+        synchronizedToggleFlags = toggleFlags
+        return inputState.synchronizationEvents(toggleFlags: toggleFlags)
+    }
+
+    /// A drag that leaves the shown area holds the pointer on its nearest shown pixel, so a drag
+    /// still reaches the desktop's edge; a plain move there sends nothing.
     private func sendPointerMove(_ event: NSEvent, isDragging: Bool = false) {
         releaseModifiers(missingFrom: event.modifierFlags)
-        guard let point = remotePoint(from: event, clampingToDesktop: isDragging) else {
+        guard let point = remotePoint(from: event, clampingToShownArea: isDragging) else {
             return
         }
         sendInput([inputState.pointerMove(to: point)])
     }
 
+    /// A press off the shown area goes nowhere. A release goes only for a button the server
+    /// saw go down, so a press dropped in a gap never sends a stray release; off the shown area
+    /// it goes at the nearest shown pixel, where the drag that led there stopped.
     private func sendPointerButton(_ button: RDPPointerButton, isDown: Bool, event: NSEvent) {
-        releaseModifiers(missingFrom: event.modifierFlags)
-        if isDown {
-            synchronizeToggleKeysIfChanged(event.modifierFlags)
-        }
-        guard let inputEvent = inputState.pointerButton(button, isDown: isDown, at: remotePoint(from: event)) else {
+        guard isDown || inputState.isPointerButtonPressed(button) else {
             return
         }
-        let heldKeyEvents = isDown ? deferredModifierKeys.flush(&inputState) : []
-        sendInput(heldKeyEvents + [inputEvent])
+        let point = remotePoint(from: event, clampingToShownArea: isDown == false)
+        guard let inputEvent = inputState.pointerButton(button, isDown: isDown, at: point) else {
+            return
+        }
+        let deferredKeyEvents = isDown ? deferredModifierKeys.flush(&inputState) : []
+        sendInput(deferredKeyEvents + [inputEvent])
     }
 
     private func pointerButton(for event: NSEvent) -> RDPPointerButton? {
@@ -436,18 +573,19 @@ public final class RDPRemoteInputView: NSView {
     }
 
     private func sendKeyboardScancode(_ scancode: RDPKeyboardScancode, isReleased: Bool) {
-        let heldKeyEvents = isReleased ? [] : deferredModifierKeys.flush(&inputState)
-        sendInput(heldKeyEvents + [inputState.keyboard(scancode: scancode, isReleased: isReleased)])
+        let deferredKeyEvents = isReleased ? [] : deferredModifierKeys.flush(&inputState)
+        sendInput(deferredKeyEvents + [inputState.keyboard(scancode: scancode, isReleased: isReleased)])
     }
 
     /// Every send goes through here, not `inputSession?.send(...)`, so that its events are built,
     /// and the key and button state updated, with no session too: the optional chain skips both,
-    /// which left a key released with no session pressed for the next session.
+    /// which left a modifier the view saw released pressed for the next session.
     private func sendInput(_ events: [RDPSlowPathInputEvent]) {
         inputSession?.send(events)
     }
 
-    /// A key still held back never reached the server, so nothing is sent for it.
+    /// A Windows key or right Alt still held back never reached the server, so nothing is sent
+    /// for it.
     private func releasePressedInputs() {
         deferredModifierKeys.reset()
         followsChordedDeadKey = false
@@ -455,15 +593,16 @@ public final class RDPRemoteInputView: NSView {
         sendInput(inputState.releasePressedInputs())
     }
 
-    /// `clampingToDesktop` moves a point outside the desktop, such as a drag's past the
-    /// letterbox, onto the desktop's nearest edge.
-    private func remotePoint(from event: NSEvent, clampingToDesktop: Bool = false) -> RDPRemotePoint? {
-        guard let rdpFrame else {
+    /// `clampingToShownArea` moves a point off the shown area, such as a drag's past the
+    /// letterbox or into a gap between chosen displays, onto the nearest shown pixel.
+    private func remotePoint(from event: NSEvent, clampingToShownArea: Bool = false) -> RDPRemotePoint? {
+        guard let mapping = pointMapping ?? rdpFrame.map({ RDPRemoteDisplayViewport(frame: $0, view: self) }) else {
             return nil
         }
-        let viewport = RDPRemoteDisplayViewport(frame: rdpFrame, view: self)
         let localPoint = convert(event.locationInWindow, from: nil)
-        return clampingToDesktop ? viewport.nearestRemotePoint(from: localPoint) : viewport.remotePoint(from: localPoint)
+        return clampingToShownArea
+            ? mapping.nearestRemotePoint(to: localPoint)
+            : mapping.remotePoint(at: localPoint)
     }
 }
 #endif

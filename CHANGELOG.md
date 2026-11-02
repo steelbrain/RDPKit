@@ -210,9 +210,15 @@
   among them, so a client sends a character as its scancode only where the
   server types the same one. `Scripts/generate-windows-keyboard-layout-tables.py`
   and `Scripts/capture-windows-keyboard-layouts.ps1` capture them again.
-- The `RDPKitAppKit` library, for macOS, holds RDPClient's input view as
-  `RDPRemoteInputView`, which sends the Mac's keyboard, mouse and scroll input
-  to an `RDPInputSession`, and the keyboard handling behind it, public:
+- The `RDPKitAppKit` library, for macOS, holds `RDPRemoteInputView`, which
+  sends the Mac's keyboard, mouse and scroll input to an `RDPInputSession`:
+  RDPClient's input view with RDPeek's refinements. Modifiers found held are
+  pressed from their own side bits, a click on a background window presses
+  none, a button goes up only if the server saw it go down, and a release off
+  the shown desktop goes at its nearest pixel. `pointMapping` takes an
+  `RDPRemotePointMapping` for a view that shows part of the desktop, and
+  `claimsCommandShortcuts` gives ⌘ and ⌃ chords to the server ahead of the
+  menus. The keyboard handling behind the view is public too:
   `RDPMacKeyboardLayout` maps the Mac's input source to the `RDPKeyboard` to
   announce (`current()`), Japanese keyboards included;
   `RDPMacKeyboardMapping` turns key codes into scancodes or Unicode;

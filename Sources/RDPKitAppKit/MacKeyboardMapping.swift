@@ -51,10 +51,9 @@ public struct RDPMacDeferredModifierKeys: Sendable {
         heldScancodes.contains(scancode)
     }
 
-    /// Keys held back together are a chord, and so is a key pressed while a modifier or a mouse
-    /// button is down on the server, as Command-click sends Win, Shift goes at once and a drag
-    /// holds the button: releasing it sends nothing, rather than a Win or Alt tap with that key
-    /// still down, or after it, such as Shift-Command with Shift let go first.
+    /// Keys held back together are a chord, and so is a key pressed while a modifier or a button
+    /// is already down on the server: Win that a Command-click sent, Shift, or a button held for
+    /// a drag. Releasing it then sends nothing, rather than a Win or Alt tap with that still down.
     public mutating func press(_ scancode: RDPKeyboardScancode, inputState: RDPInputStateTracker) {
         guard heldScancodes.contains(scancode) == false else {
             return
@@ -68,7 +67,8 @@ public struct RDPMacDeferredModifierKeys: Sendable {
         heldScancodes.append(scancode)
     }
 
-    /// Sends the held keys down, ahead of another key, button or wheel event.
+    /// Sends the held keys down, in the order they were pressed, ahead of another key, button
+    /// or wheel event.
     public mutating func flush(_ inputState: inout RDPInputStateTracker) -> [RDPSlowPathInputEvent] {
         defer {
             reset()
@@ -85,9 +85,9 @@ public struct RDPMacDeferredModifierKeys: Sendable {
         return windowsKeys.map { inputState.keyboard(scancode: $0, isReleased: false) }
     }
 
-    /// Another key was used with the held keys but never reached the server as a scancode: it
-    /// was seen only as its key-up, for example a menu shortcut, or it went as the character
-    /// Option typed. Releasing them then sends nothing.
+    /// The held keys were used in a chord the server never sees with them, so releasing them
+    /// sends nothing: a key seen only as its key-up, such as a menu shortcut, a character Option
+    /// typed, or a key found held when the view never saw it go down.
     public mutating func noteChordedElsewhere() {
         isChordedElsewhere = heldScancodes.isEmpty == false
     }
@@ -130,25 +130,15 @@ public struct RDPMacModifierKey: Sendable {
     private static let rightOption: UInt = 0x0000_0040
     private static let rightControl: UInt = 0x0000_2000
 
-    private static let leftShiftScancode = RDPKeyboardScancode(code: 0x2A)
-    private static let rightShiftScancode = RDPKeyboardScancode(code: 0x36)
-    private static let leftControlScancode = RDPKeyboardScancode(code: 0x1D)
-    private static let rightControlScancode = RDPKeyboardScancode(code: 0x1D, isExtended: true)
-    private static let leftOptionScancode = RDPKeyboardScancode(code: 0x38)
-    private static let rightOptionScancode = RDPKeyboardScancode(code: 0x38, isExtended: true)
-    private static let leftCommandScancode = RDPKeyboardScancode(code: 0x5B, isExtended: true)
-    private static let rightCommandScancode = RDPKeyboardScancode(code: 0x5C, isExtended: true)
-
     public static let all = [
         kVK_Shift, kVK_RightShift, kVK_Control, kVK_RightControl,
         kVK_Option, kVK_RightOption, kVK_Command, kVK_RightCommand,
     ].compactMap { RDPMacModifierKey(keyCode: UInt16($0)) }
 
-    public static let altScancodes = [leftOptionScancode, rightOptionScancode]
+    /// Left and right Alt, which the Option keys go as.
+    public static let altScancodes = [RDPKeyboardScancode(code: 0x38), RDPKeyboardScancode(code: 0x38, isExtended: true)]
 
     public let scancode: RDPKeyboardScancode
-    /// The other side's key, which shares `flag`.
-    private let pairScancode: RDPKeyboardScancode
     private let flag: NSEvent.ModifierFlags
     private let deviceMask: UInt
     private let pairDeviceMask: UInt
@@ -156,51 +146,31 @@ public struct RDPMacModifierKey: Sendable {
     public init?(keyCode: UInt16) {
         switch Int(keyCode) {
         case kVK_Shift:
-            self.init(Self.leftShiftScancode, Self.rightShiftScancode, .shift, Self.leftShift, Self.rightShift)
+            self.init(0x2A, flag: .shift, deviceMask: Self.leftShift, pair: Self.rightShift)
         case kVK_RightShift:
-            self.init(Self.rightShiftScancode, Self.leftShiftScancode, .shift, Self.rightShift, Self.leftShift)
+            self.init(0x36, flag: .shift, deviceMask: Self.rightShift, pair: Self.leftShift)
         case kVK_Control:
-            self.init(Self.leftControlScancode, Self.rightControlScancode, .control, Self.leftControl, Self.rightControl)
+            self.init(0x1D, flag: .control, deviceMask: Self.leftControl, pair: Self.rightControl)
         case kVK_RightControl:
-            self.init(Self.rightControlScancode, Self.leftControlScancode, .control, Self.rightControl, Self.leftControl)
+            self.init(0x1D, isExtended: true, flag: .control, deviceMask: Self.rightControl, pair: Self.leftControl)
         case kVK_Option:
-            self.init(Self.leftOptionScancode, Self.rightOptionScancode, .option, Self.leftOption, Self.rightOption)
+            self.init(0x38, flag: .option, deviceMask: Self.leftOption, pair: Self.rightOption)
         case kVK_RightOption:
-            self.init(Self.rightOptionScancode, Self.leftOptionScancode, .option, Self.rightOption, Self.leftOption)
+            self.init(0x38, isExtended: true, flag: .option, deviceMask: Self.rightOption, pair: Self.leftOption)
         case kVK_Command:
-            self.init(Self.leftCommandScancode, Self.rightCommandScancode, .command, Self.leftCommand, Self.rightCommand)
+            self.init(0x5B, isExtended: true, flag: .command, deviceMask: Self.leftCommand, pair: Self.rightCommand)
         case kVK_RightCommand:
-            self.init(Self.rightCommandScancode, Self.leftCommandScancode, .command, Self.rightCommand, Self.leftCommand)
+            self.init(0x5C, isExtended: true, flag: .command, deviceMask: Self.rightCommand, pair: Self.leftCommand)
         default:
             return nil
         }
     }
 
-    private init(
-        _ scancode: RDPKeyboardScancode,
-        _ pairScancode: RDPKeyboardScancode,
-        _ flag: NSEvent.ModifierFlags,
-        _ deviceMask: UInt,
-        _ pairSideMask: UInt
-    ) {
-        self.scancode = scancode
-        self.pairScancode = pairScancode
+    private init(_ code: UInt16, isExtended: Bool = false, flag: NSEvent.ModifierFlags, deviceMask: UInt, pair: UInt) {
+        scancode = RDPKeyboardScancode(code: code, isExtended: isExtended)
         self.flag = flag
         self.deviceMask = deviceMask
-        pairDeviceMask = deviceMask | pairSideMask
-    }
-
-    /// The key changes that bring the server in line with `modifierFlags`. Keyboards without side
-    /// bits clear `flag` only once both sides are up, so both sides are released then.
-    public func changes(
-        in modifierFlags: NSEvent.ModifierFlags,
-        isPressed: (RDPKeyboardScancode) -> Bool
-    ) -> [(scancode: RDPKeyboardScancode, isDown: Bool)] {
-        guard modifierFlags.contains(flag) else {
-            return [scancode, pairScancode].filter(isPressed).map { ($0, false) }
-        }
-        let isDown = isDown(in: modifierFlags)
-        return isDown == isPressed(scancode) ? [] : [(scancode, isDown)]
+        pairDeviceMask = deviceMask | pair
     }
 
     /// Reads this key's own side bit so left and right modifiers track independently, falling
@@ -211,6 +181,12 @@ public struct RDPMacModifierKey: Sendable {
             return rawValue & deviceMask != 0
         }
         return modifierFlags.contains(flag)
+    }
+
+    /// Whether this key's own side bit, not only the side-independent flag, shows it down: a
+    /// keyboard that reports no side bits does not say which side is held.
+    public func isSideDown(in modifierFlags: NSEvent.ModifierFlags) -> Bool {
+        modifierFlags.contains(flag) && modifierFlags.rawValue & deviceMask != 0
     }
 }
 
@@ -281,7 +257,8 @@ public enum RDPMacKeyboardMapping {
     /// "´\u{1B}", and after "^" on German, keypad Enter is "^\u{03}". Those keys go as their
     /// scancodes, so the text has to go ahead of them. Nil unless `characters` is printable text
     /// followed by exactly one control character; AppKit gives Delete, the arrows and the other
-    /// function keys characters of its own, with no text ahead.
+    /// function keys characters of its own, with no text ahead. Whether
+    /// `charactersIgnoringModifiers` also keeps the accent is not something to rely on.
     public static func deadKeyText(aheadOf characters: String?) -> String? {
         guard let scalars = characters?.unicodeScalars, let last = scalars.last, isControl(last) else {
             return nil
@@ -295,10 +272,16 @@ public enum RDPMacKeyboardMapping {
     /// key with its accent ("a" as "á"), which the server never asked for. `uncomposed` is what
     /// the key types with no dead key pending; a control or function key keeps its own.
     public static func characters(afterChordedDeadKey characters: String?, uncomposed: String?) -> String? {
-        guard let uncomposed, uncomposed.isEmpty || isPrintable(uncomposed) else {
-            return characters
-        }
-        return uncomposed
+        isCharacterKey(uncomposed: uncomposed) ? uncomposed : characters
+    }
+
+    /// Whether a key types text, or nothing (a dead key), with no dead key pending: `uncomposed`
+    /// is what it types then. A control or function key types a control character, and after a
+    /// dead key the Mac layout puts the accent ahead of it ("´\u{1C}" for Left Arrow), where
+    /// AppKit gives the key its own characters with no text ahead.
+    public static func isCharacterKey(uncomposed: String?) -> Bool {
+        // Nothing, which a dead key types, has no control characters either.
+        uncomposed.map(isPrintable) ?? false
     }
 
     /// No control characters and none of AppKit's function-key characters.
@@ -380,8 +363,8 @@ public enum RDPMacKeyboardMapping {
         // macOS reports the ISO key left of "1" as kVK_ISO_Section; it occupies the grave key's position.
         kVK_ISO_Section: 0x29,
         kVK_JIS_Yen: 0x7D, kVK_JIS_Underscore: 0x73,
-        // 0x7E is the ABNT2 keypad's extra key, which types nothing on most layouts: the layout
-        // check sends the comma as Unicode unless the server's layout types it there.
+        // 0x7E is the PC keypad comma, which most Windows layouts type nothing with; no table has
+        // the key, so "," goes as Unicode.
         kVK_JIS_KeypadComma: 0x7E,
         // PC keypads have no "="; the main "=" key's scancode types it only on some layouts
         // (German has a dead key there), so the layout check decides.
