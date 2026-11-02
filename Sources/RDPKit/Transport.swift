@@ -162,6 +162,9 @@ final class RDPTransportReader: ChannelDuplexHandler, RemovableChannelHandler {
     private var waiter: EventLoopPromise<Data>?
     private var handshake: EventLoopPromise<Void>?
     private(set) var failure: Error?
+    /// The first bytes the server sent, at most `firstReceivedByteLimit`.
+    private(set) var firstReceivedBytes = Data()
+    private static let firstReceivedByteLimit = 16
     private var readPending = false
     /// Whether `wake` came while nothing waited, so the next wait ends at once.
     private var isWoken = false
@@ -258,6 +261,13 @@ final class RDPTransportReader: ChannelDuplexHandler, RemovableChannelHandler {
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
         var bytes = unwrapInboundIn(data)
+        let missingFirstByteCount = Self.firstReceivedByteLimit - firstReceivedBytes.count
+        if missingFirstByteCount > 0, let first = bytes.getBytes(
+            at: bytes.readerIndex,
+            length: min(missingFirstByteCount, bytes.readableBytes)
+        ) {
+            firstReceivedBytes += first
+        }
         if received == nil {
             received = bytes
         } else {
@@ -401,6 +411,12 @@ final class RDPTransport {
     deinit {
         cancellationRegistration?.cancel()
         channel.close(promise: nil)
+    }
+
+    /// The first bytes the server sent, at most 16, such as another protocol's greeting.
+    func firstReceivedBytes() -> Data {
+        let reader = reader
+        return (try? channel.eventLoop.submit { reader.value.firstReceivedBytes }.wait()) ?? Data()
     }
 
     /// Connects with Happy Eyeballs over every resolved address, bounded by

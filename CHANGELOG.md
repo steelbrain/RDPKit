@@ -46,6 +46,22 @@
   exchange, before any credential is sent; a Server Redirection's target that
   refuses it still ends the run with `tlsKeyUsageIncorrect`. RDPClient falls
   back this way in place of its own retry.
+- Two new `RDPConnectionFailure` cases, which an exhaustive `switch` handles,
+  replace guesses from the stage:
+  - `noConnectionConfirm(reason:)`: the server answered the connection request
+    with no X.224 Connection Confirm. In place of `connectionClosed`,
+    `connectionLost`, `timedOut` and `protocolViolation` at the negotiation
+    stage. `RDPNoConnectionConfirmReason` says what came instead: a close, a
+    reset, nothing, or `unexpectedReply(firstBytes:)`, the first 16 bytes of
+    another protocol's reply, such as an SSH banner. Only that last one means
+    another service for sure; a close or silence can also be a host at its
+    connection limit or a firewall.
+  - `credSSPClosedAfterCredentials`: the server closed or reset the
+    connection during Network Level Authentication after the client's NTLM
+    AUTHENTICATE proved its credentials, before answering them, with no
+    NTSTATUS, as a CredSSP version 2 server rejects a sign-in. The credentials
+    may be wrong. A close before the AUTHENTICATE is still `connectionClosed`
+    or `connectionLost`, and one after the server answered them a plain close.
 - A live session that activates but shows no frame within the timeout ends
   with the new `RDPConnectionFailure.noFramePresented(framesReceived:lastNotPresentedReason:)`,
   which an exhaustive `switch` handles: in place of `graphicsFrameHandler`

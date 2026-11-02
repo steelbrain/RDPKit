@@ -247,6 +247,67 @@ struct MockKRDPServerTests {
         #expect(!run.transcript.credSSPGates.contains("nonce-bound-pubkeyauth"))
     }
 
+    /// A server that closes or resets during Network Level Authentication once the client
+    /// proved its credentials, with no status, leaves them in doubt, also while the Early User
+    /// Authorization Result is awaited; one that does so before the AUTHENTICATE does not.
+    @Test(arguments: [
+        (1, false, false, RDPConnectionFailure.connectionClosed),
+        // A reset under TLS reads as a close.
+        (1, true, false, .connectionClosed),
+        (2, false, false, .credSSPClosedAfterCredentials),
+        (2, true, false, .credSSPClosedAfterCredentials),
+        (3, false, false, .credSSPClosedAfterCredentials),
+        (3, false, true, .credSSPClosedAfterCredentials),
+    ])
+    func clientTellsACloseAfterItsCredentialsApart(message: Int, resets: Bool, earlyUserAuth: Bool, failure: RDPConnectionFailure) throws {
+        let run = try runMock(.init(
+            securityProtocol: earlyUserAuth
+                ? .credSSPWithEarlyUserAuth(credentials: mockCredentials, authorizationResult: .success)
+                : .credSSP(credentials: mockCredentials),
+            credSSPClosesOnMessage: message,
+            credSSPCloseResets: resets
+        )) {
+            $0.earlyUserAuthorizationEnabled = earlyUserAuth
+        }
+
+        #expect(run.report.failure == failure)
+        #expect(run.transcript.credSSPMessages.count == message - 1)
+    }
+
+    /// A server that answered the credentials and closes later, before licensing, just closed.
+    @Test func aCloseAfterTheCredentialsWereAnsweredIsJustAClose() throws {
+        let run = try runMock(.init(
+            securityProtocol: .credSSP(credentials: mockCredentials),
+            licensingBehavior: .closeInsteadOfLicensing
+        ))
+
+        #expect(run.report.rdpClientInfoSent == true)
+        #expect(run.report.failure == .connectionClosed)
+    }
+
+    /// A server that does not answer the connection request with an X.224 Connection Confirm
+    /// says what it did instead: closed, reset, sent another protocol's greeting or another
+    /// X.224 PDU, whose first bytes come with it, or said nothing.
+    @Test(arguments: [
+        (MockKRDPForeignAnswer.close, RDPNoConnectionConfirmReason.closed),
+        (.reset, .reset),
+        (.bytes(Data("SSH-2.0-OpenSSH_9.8\r\n".utf8)), .unexpectedReply(firstBytes: Data("SSH-2.0-OpenSSH_".utf8))),
+        (
+            .bytes(Data([0x03, 0x00, 0x00, 0x0B, 0x06, 0xE0, 0x00, 0x00, 0x00, 0x00, 0x00])),
+            .unexpectedReply(firstBytes: Data([0x03, 0x00, 0x00, 0x0B, 0x06, 0xE0, 0x00, 0x00, 0x00, 0x00, 0x00]))
+        ),
+        (.silence, .timedOut),
+    ])
+    func aServerWithNoConnectionConfirmSaysWhatCameInstead(answer: MockKRDPForeignAnswer, reason: RDPNoConnectionConfirmReason) throws {
+        let run = try runMock(.init(connectionRequestAnswer: answer)) {
+            $0.timeoutSeconds = 1
+        }
+
+        #expect(run.report.failure == .noConnectionConfirm(reason: reason))
+        #expect(run.report.connectionStage == .negotiation)
+        #expect(run.report.error?.hasPrefix("server did not answer with an X.224 Connection Confirm: ") == true)
+    }
+
     @Test func clientReportsMissingCredentialsForCredSSP() throws {
         let report = try runMock(.init(securityProtocol: .credSSP(credentials: mockCredentials))) {
             $0.credentials = nil

@@ -102,6 +102,8 @@ extension RDPClientConnection {
             }
             try transport.send(request.encoded())
             if step.isComplete {
+                // The AUTHENTICATE_MESSAGE proves the password.
+                awaitsCredentialVerdict = true
                 break
             }
             let response = try receiveTSRequest()

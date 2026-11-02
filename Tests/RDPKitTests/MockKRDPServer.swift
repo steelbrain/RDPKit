@@ -116,6 +116,14 @@ final class MockKRDPServer: LoopbackTestServer {
         var credSSPVersion = 6
         /// The version of the server's pubKeyAuth TSRequest, when not `credSSPVersion`.
         var credSSPBindingVersion: Int?
+        /// The client's CredSSP message, 1 for its NEGOTIATE, 2 for its AUTHENTICATE and 3 for
+        /// its credentials, on which the server closes the connection with no answer, as a
+        /// server with no status to send does.
+        var credSSPClosesOnMessage: Int?
+        /// Whether that close resets the connection instead.
+        var credSSPCloseResets = false
+        /// How the server answers the X.224 Connection Request, when not as an RDP server.
+        var connectionRequestAnswer: MockKRDPForeignAnswer?
     }
 
     let transcript: Locked<MockKRDPServerTranscript>
@@ -142,6 +150,16 @@ final class MockKRDPServer: LoopbackTestServer {
             )
         }
     }
+}
+
+/// A server on the RDP port that is not one, or that will not take the connection.
+enum MockKRDPForeignAnswer {
+    case close
+    /// A close with SO_LINGER 0, which resets the connection.
+    case reset
+    case silence
+    /// These bytes, such as another protocol's greeting.
+    case bytes(Data)
 }
 
 enum MockKRDPSecurityProtocol {
@@ -318,6 +336,8 @@ enum MockKRDPLicensingBehavior {
     case serverLicenseRequestEndingOnStoredClientLicense
     case noLicenseServerError
     case disconnectInsteadOfLicensing
+    /// A close with no PDU where licensing would start.
+    case closeInsteadOfLicensing
 }
 
 enum MockKRDPRedirectionBehavior {
@@ -860,6 +880,7 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
     private var didReleaseGraphicsHandshake = false
     private var didReleaseGraphicsFrame = false
     private var credSSPServer: MockCredSSPServer?
+    private var credSSPMessageCount = 0
 
     init(
         options: MockKRDPServer.Options,
@@ -944,7 +965,19 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
                 count += 1
                 return count
             }
-            try answerConnectionRequest(context: context)
+            switch options.connectionRequestAnswer {
+            case .close:
+                context.close(promise: nil)
+            case .reset:
+                (context.channel as? SocketOptionProvider)?.setSoLinger(linger(l_onoff: 1, l_linger: 0))
+                    .whenComplete { _ in context.close(promise: nil) }
+            case .silence:
+                break
+            case let .bytes(bytes):
+                write(bytes, context: context)
+            case nil:
+                try answerConnectionRequest(context: context)
+            }
 
         case .credSSP, .rdSTLSAuthenticationRequest:
             throw MockKRDPServerError.invalidClientPDU
@@ -1243,6 +1276,9 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
         case .disconnectInsteadOfLicensing:
             write(MockKRDPFixtures.disconnectProviderUltimatum(), context: context)
             stage = .done
+        case .closeInsteadOfLicensing:
+            context.close(promise: nil)
+            stage = .done
         }
     }
 
@@ -1355,6 +1391,16 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
     private func handleCredSSP(_ message: Data, context: ChannelHandlerContext) throws {
         guard let credSSPServer else {
             throw MockKRDPServerError.invalidClientPDU
+        }
+        credSSPMessageCount += 1
+        if credSSPMessageCount == options.credSSPClosesOnMessage {
+            if options.credSSPCloseResets {
+                (context.channel as? SocketOptionProvider)?.setSoLinger(linger(l_onoff: 1, l_linger: 0))
+                    .whenComplete { _ in context.close(promise: nil) }
+            } else {
+                context.close(promise: nil)
+            }
+            return
         }
 
         if let response = try credSSPServer.handle(message) {

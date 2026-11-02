@@ -21,6 +21,9 @@ final class RDPClientConnection {
 
     // Security and channel connection.
     var selectedProtocols = RDPSecurityProtocols(rawValue: 0)
+    /// From the CredSSP message proving the credentials until the server's first message after
+    /// them: a close then is `credSSPClosedAfterCredentials`.
+    var awaitsCredentialVerdict = false
     var userChannelID: UInt16 = 0
     var ioChannelID: UInt16 = 0
     var messageChannelID: UInt16?
@@ -221,9 +224,14 @@ final class RDPClientConnection {
         self.transport = transport
         let request = configuration.connectionRequest
         try transport.send(request.encodedTPKT())
-        let response = try receive("X224 Connection Confirm")
-        report.responseHex = response.rdpHexString
-        let confirm = try X224ConnectionConfirm.parse(fromTPKT: response)
+        let confirm: X224ConnectionConfirm
+        do {
+            let response = try receive("X224 Connection Confirm")
+            report.responseHex = response.rdpHexString
+            confirm = try X224ConnectionConfirm.parse(fromTPKT: response)
+        } catch {
+            throw noConnectionConfirmError(error)
+        }
         report.negotiationFlags = confirm.negotiationFlags
 
         switch confirm.negotiationResult {
@@ -299,6 +307,29 @@ final class RDPClientConnection {
         return RDPConnectionError(failure, description: description, report: report)
     }
 
+    /// `error`, from the answer to the connection request, as `noConnectionConfirm` when the
+    /// server closed, reset, timed out or sent something else; a cancellation stays one.
+    private func noConnectionConfirmError(_ error: Error) -> Error {
+        let connectionError = connectionError(error)
+        let reason: RDPNoConnectionConfirmReason
+        switch connectionError.failure {
+        case .connectionClosed:
+            reason = .closed
+        case .connectionLost:
+            reason = .reset
+        case .timedOut:
+            reason = .timedOut
+        case .protocolViolation:
+            reason = .unexpectedReply(firstBytes: transport?.firstReceivedBytes() ?? Data())
+        default:
+            return error
+        }
+        return RDPConnectionError(
+            .noConnectionConfirm(reason: reason),
+            description: "server did not answer with an X.224 Connection Confirm: \(connectionError.description)"
+        )
+    }
+
     private func end(_ failure: RDPConnectionFailure, _ error: String) -> Bool {
         report.error = error
         report.failure = failure
@@ -323,7 +354,7 @@ final class RDPClientConnection {
         if callbacks.isCancelled {
             return .cancelled
         }
-        return switch error {
+        let connectionError: RDPConnectionError = switch error {
         case let error as RDPConnectionError:
             error
         case let error as RDPCredSSPError:
@@ -331,6 +362,16 @@ final class RDPClientConnection {
         default:
             .protocolViolation(String(describing: error))
         }
+        guard awaitsCredentialVerdict,
+              connectionError.failure == .connectionClosed || connectionError.failure == .connectionLost
+        else {
+            return connectionError
+        }
+        return RDPConnectionError(
+            .credSSPClosedAfterCredentials,
+            description: "server ended the connection after the CredSSP credentials without a status: "
+                + connectionError.description
+        )
     }
 
     func finishReport() -> RDPConnectionReport {
@@ -381,7 +422,12 @@ final class RDPClientConnection {
             throw RDPConnectionError.receive("not connected")
         }
         do {
-            return try transport.receive(timeout: .seconds(Int64(configuration.timeoutSeconds)))
+            let message = try transport.receive(timeout: .seconds(Int64(configuration.timeoutSeconds)))
+            // The server answered the credentials in the next layer's format.
+            if stage != .credSSP {
+                awaitsCredentialVerdict = false
+            }
+            return message
         } catch RDPTransportError.timedOut {
             throw RDPConnectionError.receive(
                 "\(description) timed out after \(configuration.timeoutSeconds) seconds",

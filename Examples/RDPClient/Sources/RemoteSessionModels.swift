@@ -87,6 +87,11 @@ struct RDPSessionEndReason: Equatable {
             ("The server has no certificate to secure the connection with.", false)
         case .negotiation:
             ("The server refused the security RDPClient offered.", false)
+        case .noConnectionConfirm(reason: .unexpectedReply):
+            ("The server did not answer as a Remote Desktop server. Check the host name and port.", false)
+        case .noConnectionConfirm:
+            ("The server stopped answering before the connection was set up. It may be at its "
+                + "connection limit, or a firewall may block Remote Desktop.", false)
         case .tls:
             ("A secure connection to the server could not be set up.", false)
         case .tlsKeyUsageIncorrect:
@@ -98,6 +103,9 @@ struct RDPSessionEndReason: Equatable {
             (credentialsMessage, true)
         case let .credSSP(status):
             message(for: status)
+        case .credSSPClosedAfterCredentials:
+            ("The server closed the connection after the sign-in without saying why. "
+                + "Check the user name and password.", true)
         case .earlyUserAuthorizationDenied:
             ("The server denied this account access.", false)
         case .rdSTLS:

@@ -448,6 +448,11 @@ public enum RDPConnectionFailure: Encodable, Equatable, Sendable {
     case connect(error: RDPSocketError)
     /// The server refused the security negotiation with RDP_NEG_FAILURE ([MS-RDPBCGR] 2.2.1.2.2).
     case negotiation(code: RDPNegotiationFailureCode)
+    /// The server did not answer the connection request with the X.224 Connection Confirm
+    /// every Remote Desktop server sends first ([MS-RDPBCGR] 2.2.1.2); `reason` says what came
+    /// instead. Another protocol's reply means another service; a close, reset or silence can
+    /// also be a host at its connection limit or a firewall that blocks Remote Desktop.
+    case noConnectionConfirm(reason: RDPNoConnectionConfirmReason)
     /// The server selected a security protocol RDPKit does not support, such
     /// as Standard RDP Security.
     case unsupportedSecurityProtocol
@@ -470,6 +475,12 @@ public enum RDPConnectionFailure: Encodable, Equatable, Sendable {
     /// The server rejected the credentials during Network Level Authentication
     /// with this NTSTATUS ([MS-CSSP] 2.2.1).
     case credSSP(status: RDPLogonStatus)
+    /// The server closed or reset the connection during Network Level Authentication after
+    /// the client proved its credentials, before answering them, and gave no NTSTATUS: a
+    /// CredSSP version 2 server, which has no errorCode to send ([MS-CSSP] 2.2.1), rejects a
+    /// sign-in this way, so the credentials may be wrong. A close before they go out is
+    /// `connectionClosed` or `connectionLost`.
+    case credSSPClosedAfterCredentials
     /// The Early User Authorization Result denied access ([MS-RDPBCGR] 2.2.10.2).
     case earlyUserAuthorizationDenied
     /// The server rejected the credentials a Server Redirection gave, during RDSTLS
@@ -509,6 +520,19 @@ public enum RDPConnectionFailure: Encodable, Equatable, Sendable {
     /// ends this way. A run that captures frames
     /// (`RDPConnectionConfiguration.graphicsFrameCaptureLimit`) times out with `timedOut`.
     case noFramePresented(framesReceived: Int, lastNotPresentedReason: String?)
+}
+
+/// What came in place of the X.224 Connection Confirm.
+public enum RDPNoConnectionConfirmReason: Encodable, Equatable, Sendable {
+    /// The server closed the connection.
+    case closed
+    /// The connection was reset or broke.
+    case reset
+    /// Nothing came within `RDPConnectionConfiguration.timeoutSeconds`.
+    case timedOut
+    /// Bytes that are not a Connection Confirm, such as another protocol's greeting: the first
+    /// 16 of them, or fewer when fewer came.
+    case unexpectedReply(firstBytes: Data)
 }
 
 /// A failed TCP connect: its errno and the kind of failure that is.
