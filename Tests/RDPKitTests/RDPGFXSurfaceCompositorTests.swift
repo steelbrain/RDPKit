@@ -618,6 +618,275 @@ import Testing
     #expect(frame.regionRects == [RDPFrameRect(left: 0, top: 0, right: 1_026, bottom: 2)])
 }
 
+/// The bounding box of a collapsed dirty list leaves out video inside it, which only the
+/// decoder holds, whether a fill or the video itself takes the list past its limit.
+@Test func compositorLeavesVideoOutOfACollapsedDirtyList() throws {
+    let compositor = RDPGFXSurfaceCompositor()
+    let clearCodec = RDPClearCodecDecoder()
+    try compositor.process(try createSurfaceMessage(surfaceID: 1, width: 1_026, height: 3), clearCodec: clearCodec)
+    try compositor.process(try mapSurfaceToOutputMessage(surfaceID: 1, x: 0, y: 0), clearCodec: clearCodec)
+    func video(_ region: RDPFrameRect) {
+        compositor.noteVideo(RDPGraphicsFrameSnapshot(
+            frameID: 1,
+            surfaceID: 1,
+            codecID: RDPGFXCodecID.avc420,
+            codecName: "avc420",
+            pixelFormat: RDPGFXPixelFormat.xrgb8888,
+            destinationRect: RDPFrameRect(left: 0, top: 0, right: 1_026, bottom: 3),
+            regionRects: [region],
+            encodedVideoData: Data([0x00, 0x00, 0x01, 0x65])
+        ))
+    }
+    func fill(_ rects: [RDPGFXRect16]) throws {
+        try compositor.process(try solidFillMessage(surfaceID: 1, color: [0x01, 0x02, 0x03, 0xFF], rects: rects), clearCodec: clearCodec)
+    }
+
+    // Video in the middle row, then 1,025 fills above and below it.
+    video(RDPFrameRect(left: 0, top: 1, right: 1_026, bottom: 2))
+    try fill(
+        (0 ..< 1_024).map { RDPGFXRect16(left: $0, top: 0, right: $0 + 1, bottom: 1) }
+            + [RDPGFXRect16(left: 1_025, top: 2, right: 1_026, bottom: 3)]
+    )
+    #expect(compositor.makeFrames(frameID: 1).map(\.regionRects) == [[
+        RDPFrameRect(left: 0, top: 0, right: 1_026, bottom: 1),
+        RDPFrameRect(left: 0, top: 2, right: 1_026, bottom: 3),
+    ]])
+
+    // 1,024 fills, then video that cuts one of them in two.
+    try fill(
+        (0 ..< 1_023).map { RDPGFXRect16(left: $0, top: 0, right: $0 + 1, bottom: 1) }
+            + [RDPGFXRect16(left: 0, top: 2, right: 1_026, bottom: 3)]
+    )
+    video(RDPFrameRect(left: 1, top: 2, right: 2, bottom: 3))
+    #expect(compositor.makeFrames(frameID: 2).map(\.regionRects) == [[
+        RDPFrameRect(left: 0, top: 0, right: 1_026, bottom: 1),
+        RDPFrameRect(left: 0, top: 2, right: 1, bottom: 3),
+        RDPFrameRect(left: 2, top: 2, right: 1_026, bottom: 3),
+    ]])
+}
+
+/// A copy that takes a dirty list past its limit leaves out video too, including the video
+/// it copies, which only the decoder holds at the destination as well.
+@Test func compositorLeavesVideoOutOfADirtyListACopyCollapses() throws {
+    let compositor = RDPGFXSurfaceCompositor()
+    let clearCodec = RDPClearCodecDecoder()
+    try compositor.process(try createSurfaceMessage(surfaceID: 1, width: 1_026, height: 4), clearCodec: clearCodec)
+    try compositor.process(try mapSurfaceToOutputMessage(surfaceID: 1, x: 0, y: 0), clearCodec: clearCodec)
+    compositor.noteVideo(RDPGraphicsFrameSnapshot(
+        frameID: 1,
+        surfaceID: 1,
+        codecID: RDPGFXCodecID.avc420,
+        codecName: "avc420",
+        pixelFormat: RDPGFXPixelFormat.xrgb8888,
+        destinationRect: RDPFrameRect(left: 0, top: 0, right: 1_026, bottom: 4),
+        regionRects: [RDPFrameRect(left: 0, top: 1, right: 1_026, bottom: 2)],
+        encodedVideoData: Data([0x00, 0x00, 0x01, 0x65])
+    ))
+    // 1,024 fills: 1,023 pixels of the top row and one of the bottom row.
+    try compositor.process(
+        try solidFillMessage(
+            surfaceID: 1,
+            color: [0x01, 0x02, 0x03, 0xFF],
+            rects: (0 ..< 1_023).map { RDPGFXRect16(left: $0, top: 0, right: $0 + 1, bottom: 1) }
+                + [RDPGFXRect16(left: 0, top: 3, right: 1, bottom: 4)]
+        ),
+        clearCodec: clearCodec
+    )
+
+    // A 2x2 block, two fills above two video pixels, copied to the bottom right: its fill
+    // row is the 1,025th rectangle, and only the decoder holds its video row there too.
+    try compositor.process(
+        try surfaceToSurfaceMessage(
+            sourceSurfaceID: 1,
+            destinationSurfaceID: 1,
+            sourceRect: RDPGFXRect16(left: 0, top: 0, right: 2, bottom: 2),
+            destinationPoints: [RDPGFXPoint16(x: 1_024, y: 2)]
+        ),
+        clearCodec: clearCodec
+    )
+
+    #expect(compositor.makeFrames(frameID: 1).map(\.regionRects) == [[
+        RDPFrameRect(left: 0, top: 0, right: 1_026, bottom: 1),
+        RDPFrameRect(left: 0, top: 2, right: 1_026, bottom: 3),
+        RDPFrameRect(left: 0, top: 3, right: 1_024, bottom: 4),
+    ]])
+}
+
+/// Cutting video out of a collapsed dirty list never takes out more than the video: a video
+/// area whose cut would leave more than 512 pieces stays in the box and is painted over, as
+/// every one inside the box was before the box left video out, and every fill around it stays
+/// dirty.
+@Test func compositorKeepsEveryFillWhenVideoCutsACollapsedDirtyListTooFinely() throws {
+    let compositor = RDPGFXSurfaceCompositor()
+    let clearCodec = RDPClearCodecDecoder()
+    try compositor.process(try createSurfaceMessage(surfaceID: 1, width: 494, height: 494), clearCodec: clearCodec)
+    try compositor.process(try mapSurfaceToOutputMessage(surfaceID: 1, x: 0, y: 0), clearCodec: clearCodec)
+    // 345 video areas of 8x8 in 26x26 cells, each at a pseudo-random point of the first 24
+    // columns and rows of its cell, so they are off any grid and the last two columns are free.
+    var seed: UInt32 = 1
+    func offset() -> UInt16 {
+        seed = seed &* 1_664_525 &+ 1_013_904_223
+        return UInt16((seed >> 16) % 17)
+    }
+    var videoAreas: [RDPFrameRect] = []
+    // 1,025 single pixels in the free columns, three in each cell.
+    var fills: [RDPGFXRect16] = []
+    for cell in 0 ..< 345 {
+        let cellLeft = UInt16(cell % 19 * 26)
+        let cellTop = UInt16(cell / 19 * 26)
+        let left: UInt16 = cellLeft + offset()
+        let top: UInt16 = cellTop + offset()
+        videoAreas.append(RDPFrameRect(left: left, top: top, right: left + 8, bottom: top + 8))
+        for index in UInt16(0) ..< 3 where fills.count < 1_025 {
+            let x: UInt16 = cellLeft + 24 + index % 2
+            let y: UInt16 = cellTop + index * 9
+            fills.append(RDPGFXRect16(left: x, top: y, right: x + 1, bottom: y + 1))
+        }
+    }
+    compositor.noteVideo(RDPGraphicsFrameSnapshot(
+        frameID: 1,
+        surfaceID: 1,
+        codecID: RDPGFXCodecID.avc420,
+        codecName: "avc420",
+        pixelFormat: RDPGFXPixelFormat.xrgb8888,
+        destinationRect: RDPFrameRect(left: 0, top: 0, right: 494, bottom: 494),
+        regionRects: videoAreas,
+        encodedVideoData: Data([0x00, 0x00, 0x01, 0x65])
+    ))
+    try compositor.process(try solidFillMessage(surfaceID: 1, color: [0x01, 0x02, 0x03, 0xFF], rects: fills), clearCodec: clearCodec)
+
+    let regions = try #require(compositor.makeFrame(frameID: 1)).regionRects
+    #expect(regions.count <= 1_024)
+    let lostFills = fills.count { fill in
+        !regions.contains { (region: RDPFrameRect) -> Bool in
+            (region.left ..< region.right).contains(fill.left) && (region.top ..< region.bottom).contains(fill.top)
+        }
+    }
+    #expect(lostFills == 0)
+    let paintedVideoAreas = videoAreas.count { area in
+        regions.contains { (region: RDPFrameRect) -> Bool in
+            (region.left ..< region.right).overlaps(area.left ..< area.right)
+                && (region.top ..< region.bottom).overlaps(area.top ..< area.bottom)
+        }
+    }
+    // The fills' box takes in 324 of the areas, which a box that left none out painted over.
+    let box = fills.dropFirst().reduce(fills[0]) {
+        RDPGFXRect16(left: min($0.left, $1.left), top: min($0.top, $1.top), right: max($0.right, $1.right), bottom: max($0.bottom, $1.bottom))
+    }
+    let videoAreasInTheBox = videoAreas.count { area in
+        (box.left ..< box.right).overlaps(area.left ..< area.right) && (box.top ..< box.bottom).overlaps(area.top ..< area.bottom)
+    }
+    #expect(videoAreasInTheBox == 324)
+    #expect(paintedVideoAreas < videoAreasInTheBox)
+}
+
+/// A dirty list collapsing beside many video areas cuts it out of its box only while that
+/// leaves at most 512 pieces, so it collapses again only hundreds of rectangles later: each
+/// collapse cuts out every video area. Cutting up to 1,024 left a list at its limit, which the
+/// next rectangle collapsed again, so a SolidFill of 65,535 pixels took minutes.
+@Test func compositorCollapsesADirtyListBesideManyVideoAreasRarely() throws {
+    let compositor = RDPGFXSurfaceCompositor()
+    let clearCodec = RDPClearCodecDecoder()
+    try compositor.process(try createSurfaceMessage(surfaceID: 1, width: 2_048, height: 2_048), clearCodec: clearCodec)
+    try compositor.process(try mapSurfaceToOutputMessage(surfaceID: 1, x: 0, y: 0), clearCodec: clearCodec)
+    // 1,024 video areas of 8x8, each at a pseudo-random point of a 32x32 cell, and a pixel
+    // beside each one in its cell's free corner.
+    var seed: UInt32 = 1
+    func offset() -> UInt16 {
+        seed = seed &* 1_664_525 &+ 1_013_904_223
+        return UInt16((seed >> 16) % 17)
+    }
+    var videoAreas: [RDPFrameRect] = []
+    var fills: [RDPGFXRect16] = []
+    for cell in 0 ..< 1_024 {
+        let cellLeft = UInt16(cell % 32 * 32)
+        let cellTop = UInt16(cell / 32 * 32)
+        let left: UInt16 = cellLeft + offset()
+        let top: UInt16 = cellTop + offset()
+        videoAreas.append(RDPFrameRect(left: left, top: top, right: left + 8, bottom: top + 8))
+        fills.append(RDPGFXRect16(left: cellLeft + 30, top: cellTop + 30, right: cellLeft + 31, bottom: cellTop + 31))
+    }
+    // Then 1,000 pixels on a diagonal outside the video's box, each one growing the dirty box.
+    fills += (UInt16(0) ..< 1_000).map { RDPGFXRect16(left: 1_030 + $0, top: 1_030 + $0, right: 1_031 + $0, bottom: 1_031 + $0) }
+    compositor.noteVideo(RDPGraphicsFrameSnapshot(
+        frameID: 1,
+        surfaceID: 1,
+        codecID: RDPGFXCodecID.avc420,
+        codecName: "avc420",
+        pixelFormat: RDPGFXPixelFormat.xrgb8888,
+        destinationRect: RDPFrameRect(left: 0, top: 0, right: 2_048, bottom: 2_048),
+        regionRects: videoAreas,
+        encodedVideoData: Data([0x00, 0x00, 0x01, 0x65])
+    ))
+
+    let started = threadCPUTime()
+    try compositor.process(try solidFillMessage(surfaceID: 1, color: [0x01, 0x02, 0x03, 0xFF], rects: fills), clearCodec: clearCodec)
+    let elapsed = threadCPUTime() - started
+    #expect(elapsed < .seconds(2), "\(elapsed)")
+    #expect(try #require(compositor.makeFrame(frameID: 1)).regionRects.count <= 1_024)
+}
+
+/// Past 1,024 video areas their list collapses into its bounding box, which takes in pixels the
+/// decoder lacks. A dirty list's box then leaves nothing out, so an update recorded inside that
+/// box before it collapsed stays dirty instead of being lost until the server draws there
+/// again; video inside the dirty box is painted over, as it was before boxes left video out.
+@Test func compositorKeepsAnUpdateInsideCollapsedVideoAreasDirty() throws {
+    let compositor = RDPGFXSurfaceCompositor()
+    let clearCodec = RDPClearCodecDecoder()
+    try compositor.process(try createSurfaceMessage(surfaceID: 1, width: 2_100, height: 8), clearCodec: clearCodec)
+    try compositor.process(try mapSurfaceToOutputMessage(surfaceID: 1, x: 0, y: 0), clearCodec: clearCodec)
+    let color: [UInt8] = [0x01, 0x02, 0x03, 0xFF]
+    // A pixel, then 1,025 video pixels around it on the top row, every other one.
+    try compositor.process(
+        try solidFillMessage(surfaceID: 1, color: color, rects: [RDPGFXRect16(left: 1, top: 0, right: 2, bottom: 1)]),
+        clearCodec: clearCodec
+    )
+    compositor.noteVideo(RDPGraphicsFrameSnapshot(
+        frameID: 1,
+        surfaceID: 1,
+        codecID: RDPGFXCodecID.avc420,
+        codecName: "avc420",
+        pixelFormat: RDPGFXPixelFormat.xrgb8888,
+        destinationRect: RDPFrameRect(left: 0, top: 0, right: 2_100, bottom: 8),
+        regionRects: (UInt16(0) ..< 1_025).map { RDPFrameRect(left: 2 * $0, top: 0, right: 2 * $0 + 1, bottom: 1) },
+        encodedVideoData: Data([0x00, 0x00, 0x01, 0x65])
+    ))
+    // 1,024 pixels on another row, which collapse the dirty list.
+    try compositor.process(
+        try solidFillMessage(
+            surfaceID: 1,
+            color: color,
+            rects: (UInt16(0) ..< 1_024).map { RDPGFXRect16(left: 2 * $0, top: 4, right: 2 * $0 + 1, bottom: 5) }
+        ),
+        clearCodec: clearCodec
+    )
+
+    let regions = try #require(compositor.makeFrame(frameID: 1)).regionRects
+    #expect(regions.contains { $0.left <= 1 && 1 < $0.right && $0.top == 0 })
+}
+
+/// Fills inside video cut its area into more pieces: a line across many strips of it cuts
+/// each one. Past 1,024 the list collapses into its bounding box, as video and copies collapse
+/// it, so each fill cuts at most that many. Unbounded, a SolidFill of a grid of lines over
+/// full-surface video cut a list of up to 262,144 pieces with each line.
+@Test func compositorBoundsTheVideoAreasFillsCut() throws {
+    let compositor = RDPGFXSurfaceCompositor()
+    let clearCodec = RDPClearCodecDecoder()
+    try compositor.process(try createSurfaceMessage(surfaceID: 1, width: 1_024, height: 1_024), clearCodec: clearCodec)
+    try compositor.process(try mapSurfaceToOutputMessage(surfaceID: 1, x: 0, y: 0), clearCodec: clearCodec)
+    compositor.noteVideo(fullSurfaceVideo(surfaceID: 1, width: 1_024, height: 1_024))
+    // Lines down every other column, which cut the video into 512 strips, then across every
+    // other row, each of which cuts every piece of those strips it crosses.
+    let fills = (UInt16(0) ..< 512).map { RDPGFXRect16(left: 2 * $0, top: 0, right: 2 * $0 + 1, bottom: 1_024) }
+        + (UInt16(0) ..< 512).map { RDPGFXRect16(left: 0, top: 2 * $0, right: 1_024, bottom: 2 * $0 + 1) }
+
+    let started = threadCPUTime()
+    try compositor.process(try solidFillMessage(surfaceID: 1, color: [0x01, 0x02, 0x03, 0xFF], rects: fills), clearCodec: clearCodec)
+    let elapsed = threadCPUTime() - started
+    #expect(elapsed < .seconds(2), "\(elapsed)")
+    #expect(try #require(compositor.makeFrame(frameID: 1)).regionRects.count <= 1_024)
+}
+
 /// An area drawn twice, or inside one already drawn, is listed once.
 @Test func compositorListsEachChangedAreaOnce() throws {
     let compositor = RDPGFXSurfaceCompositor(outputWidth: 4, outputHeight: 4)

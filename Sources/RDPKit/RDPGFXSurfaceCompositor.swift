@@ -36,8 +36,13 @@ final class RDPGFXSurfaceCompositor {
         /// Areas the decoder lacks: their pixels are changed here and not yet in a snapshot.
         var dirtyRects: [RDPGFXRect16] = []
         /// Areas whose pixels only the decoder holds: video it decoded, or pixels a copy it
-        /// made put there. This surface's own pixels there are stale.
+        /// made put there. This surface's own pixels there are stale. Past
+        /// `maximumDirtyRectCount` rectangles the list collapses into its bounding box, which
+        /// takes in areas the decoder lacks.
         var decodedRects: [RDPGFXRect16] = []
+        /// Whether `decodedRects` holds only areas the decoder alone holds: false once it, or a
+        /// list copied into it, collapsed into a box, until a write covers all it holds.
+        var decodedRectsAreExact = true
         /// Whether the decoder holds this surface: it gets the updates of a mapped surface,
         /// and of an unmapped one its copies wrote to.
         var isOnDecoder = false
@@ -178,19 +183,22 @@ final class RDPGFXSurfaceCompositor {
         /// What a copy of `rect` carries, relative to `rect`: the parts only the decoder holds,
         /// and, when the decoder holds this surface and so makes the copy itself, the parts
         /// its copy lacks.
-        func copiedState(of rect: RDPGFXRect16) -> (decoded: [RDPGFXRect16], decoderLacks: [RDPGFXRect16]?) {
+        func copiedState(of rect: RDPGFXRect16) -> RDPGFXCopiedState {
             let decoded = decodedRects.clipped(to: rect).offsetBy(dx: -Int(rect.left), dy: -Int(rect.top))
             guard isOnDecoder, !decoded.isEmpty else {
-                return (decoded, nil)
+                return (decoded, decodedRectsAreExact, nil)
             }
-            return (decoded, dirtyRects.clipped(to: rect).offsetBy(dx: -Int(rect.left), dy: -Int(rect.top)))
+            return (decoded, decodedRectsAreExact, dirtyRects.clipped(to: rect).offsetBy(dx: -Int(rect.left), dy: -Int(rect.top)))
         }
 
         /// Records an area this surface's pixels changed in, listing each pixel once: the
         /// rectangles recorded lose what `rect` covers, or `rect` loses what they cover,
         /// whichever leaves fewer rectangles. Past `maximumDirtyRectCount` rectangles a
         /// list collapses into its bounding box, which bounds it for surfaces whose
-        /// updates are held back.
+        /// updates are held back. While `decodedRects` is exact, the box of a dirty list leaves
+        /// out each of them, where this surface's pixels are stale and the decoder takes them
+        /// inside a snapshot's regions, unless the cut would leave more than half that many
+        /// rectangles; a collapsed `decodedRects` takes in other updates, which stay.
         mutating func markDirty(_ rect: RDPGFXRect16) {
             guard let rect = clipped(rect) else {
                 return
@@ -205,27 +213,51 @@ final class RDPGFXSurfaceCompositor {
                     marked = kept + pieces
                 }
             }
-            dirtyRects = marked.collapsed(beyond: Self.maximumDirtyRectCount)
-            decodedRects = decodedRects.subtracting(rect)
+            setDecodedRects(decodedRects.subtracting(rect), adding: [], addedIsExact: true)
+            dirtyRects = marked.collapsed(beyond: Self.maximumDirtyRectCount, excluding: exactDecodedRects)
         }
 
         /// Records an area video wrote last. Only the decoder holds those pixels, so this
         /// surface's must not be painted over them.
         mutating func markWrittenByVideo(_ rect: RDPGFXRect16) {
-            dirtyRects = dirtyRects.subtracting(rect).collapsed(beyond: Self.maximumDirtyRectCount)
-            decodedRects = (decodedRects.subtracting(rect) + [rect]).collapsed(beyond: Self.maximumDirtyRectCount)
+            setDecodedRects(decodedRects.subtracting(rect), adding: [rect], addedIsExact: true)
+            dirtyRects = dirtyRects.subtracting(rect).collapsed(beyond: Self.maximumDirtyRectCount, excluding: exactDecodedRects)
         }
 
         /// Records a copy into `rect`, whose `decoded` parts came from areas only the decoder
         /// holds. When the decoder makes the copy too, it lacks only `decoderLacks` of `rect`;
         /// otherwise it lacks everything but `decoded`, which neither side holds then.
-        mutating func markCopied(into rect: RDPGFXRect16, decoded: [RDPGFXRect16], decoderLacks: [RDPGFXRect16]?) {
+        /// `decodedIsExact` is false when `decoded` came from a collapsed list.
+        mutating func markCopied(
+            into rect: RDPGFXRect16,
+            decoded: [RDPGFXRect16],
+            decodedIsExact: Bool,
+            decoderLacks: [RDPGFXRect16]?
+        ) {
+            setDecodedRects(decodedRects.subtracting(rect), adding: decoded, addedIsExact: decodedIsExact)
             dirtyRects = (dirtyRects.subtracting(rect) + (decoderLacks ?? [rect].subtracting(decoded)))
-                .collapsed(beyond: Self.maximumDirtyRectCount)
-            decodedRects = (decodedRects.subtracting(rect) + decoded).collapsed(beyond: Self.maximumDirtyRectCount)
+                .collapsed(beyond: Self.maximumDirtyRectCount, excluding: exactDecodedRects)
             if decoderLacks != nil {
                 isOnDecoder = true
             }
+        }
+
+        /// What a dirty list's box may leave out: `decodedRects` while it is exact.
+        private var exactDecodedRects: [RDPGFXRect16] {
+            decodedRectsAreExact ? decodedRects : []
+        }
+
+        /// Sets `decodedRects` to what is left of it after a write, and `added`, the areas the
+        /// write left only the decoder holding. Left pieces of a collapsed list stay inexact.
+        private mutating func setDecodedRects(_ left: [RDPGFXRect16], adding added: [RDPGFXRect16], addedIsExact: Bool) {
+            let rects = left + added
+            guard rects.count <= Self.maximumDirtyRectCount else {
+                decodedRects = rects.collapsed(beyond: Self.maximumDirtyRectCount)
+                decodedRectsAreExact = false
+                return
+            }
+            decodedRectsAreExact = (left.isEmpty || decodedRectsAreExact) && addedIsExact
+            decodedRects = rects
         }
     }
 
@@ -235,6 +267,7 @@ final class RDPGFXSurfaceCompositor {
         var data: Data
         /// Like a surface's, in entry coordinates.
         var decodedRects: [RDPGFXRect16] = []
+        var decodedRectsAreExact = true
         /// When the decoder stored this entry too, the parts its copy lacks.
         var decoderLacks: [RDPGFXRect16]?
 
@@ -247,7 +280,7 @@ final class RDPGFXSurfaceCompositor {
     private var cacheSlots: [UInt16: CacheEntry] = [:]
     /// What each ClearCodec glyph holds beside its pixels, which the ClearCodec decoder keeps:
     /// as for a cache entry, in glyph coordinates.
-    private var glyphs: [UInt16: (decoded: [RDPGFXRect16], decoderLacks: [RDPGFXRect16]?)] = [:]
+    private var glyphs: [UInt16: RDPGFXCopiedState] = [:]
     private var cachedByteCount = 0
     private var evictedDecoderCacheSlots: [UInt16] = []
     private var graphicsOutputRect: RDPFrameRect?
@@ -699,6 +732,7 @@ final class RDPGFXSurfaceCompositor {
                 surface.markCopied(
                     into: written,
                     decoded: glyph?.decoded.offsetBy(dx: x, dy: y) ?? [],
+                    decodedIsExact: glyph?.decodedIsExact ?? true,
                     decoderLacks: glyph?.decoderLacks?.offsetBy(dx: x, dy: y)
                 )
             } else {
@@ -865,7 +899,7 @@ final class RDPGFXSurfaceCompositor {
         }
         // `pixels` is a snapshot of the source, so copies within one surface may overlap.
         let pixels = try source.pixels(in: pdu.sourceRect)
-        let (decoded, decoderLacks) = source.copiedState(of: pdu.sourceRect)
+        let (decoded, decodedIsExact, decoderLacks) = source.copiedState(of: pdu.sourceRect)
         let rects = try copy(
             pixels,
             width: Int(pdu.sourceRect.width),
@@ -873,6 +907,7 @@ final class RDPGFXSurfaceCompositor {
             to: pdu.destinationPoints,
             surfaceID: pdu.destinationSurfaceID,
             decoded: decoded,
+            decodedIsExact: decodedIsExact,
             decoderLacks: decoderLacks
         )
         guard decoderLacks != nil else {
@@ -916,7 +951,7 @@ final class RDPGFXSurfaceCompositor {
         else {
             throw RDPDecodeError.invalidRDPGFXPDU
         }
-        let (decoded, decoderLacks) = source.copiedState(of: pdu.sourceRect)
+        let (decoded, decodedIsExact, decoderLacks) = source.copiedState(of: pdu.sourceRect)
         if replaced?.decoderLacks != nil, decoderLacks == nil {
             evictedDecoderCacheSlots.append(pdu.cacheSlot)
         }
@@ -925,6 +960,7 @@ final class RDPGFXSurfaceCompositor {
             height: Int(pdu.sourceRect.height),
             data: pixels,
             decodedRects: decoded,
+            decodedRectsAreExact: decodedIsExact,
             decoderLacks: decoderLacks
         )
         cacheSlots[pdu.cacheSlot] = entry
@@ -952,6 +988,7 @@ final class RDPGFXSurfaceCompositor {
             to: pdu.destinationPoints,
             surfaceID: pdu.surfaceID,
             decoded: entry.decodedRects,
+            decodedIsExact: entry.decodedRectsAreExact,
             decoderLacks: entry.decoderLacks
         )
         guard entry.decoderLacks != nil else {
@@ -987,6 +1024,7 @@ final class RDPGFXSurfaceCompositor {
         to points: [RDPGFXPoint16],
         surfaceID: UInt16,
         decoded: [RDPGFXRect16],
+        decodedIsExact: Bool,
         decoderLacks: [RDPGFXRect16]?
     ) throws -> [RDPGFXRect16] {
         try modifySurface(surfaceID) { surface in
@@ -1006,6 +1044,7 @@ final class RDPGFXSurfaceCompositor {
                 surface.markCopied(
                     into: rect,
                     decoded: decoded.offsetBy(dx: x, dy: y),
+                    decodedIsExact: decodedIsExact,
                     decoderLacks: decoderLacks?.offsetBy(dx: x, dy: y)
                 )
             }
@@ -1013,6 +1052,11 @@ final class RDPGFXSurfaceCompositor {
         }
     }
 }
+
+/// What a copy carries out of its source, relative to the copied rectangle: the parts only
+/// the decoder holds, whether that list is exact, and, when the decoder makes the copy too, the
+/// parts its copy lacks.
+private typealias RDPGFXCopiedState = (decoded: [RDPGFXRect16], decodedIsExact: Bool, decoderLacks: [RDPGFXRect16]?)
 
 private extension RDPGFXRect16 {
     func contains(_ rect: RDPGFXRect16) -> Bool {
@@ -1025,21 +1069,28 @@ private extension RDPGFXRect16 {
 }
 
 private extension [RDPGFXRect16] {
-    /// These rectangles less `rect`; each one it cuts leaves up to four pieces.
+    /// These rectangles less `rect`; each one it cuts leaves up to four pieces. Built in one
+    /// array, as the lists cut here run to a thousand rectangles and most are not cut.
     func subtracting(_ rect: RDPGFXRect16) -> [RDPGFXRect16] {
-        flatMap { piece -> [RDPGFXRect16] in
+        var pieces: [RDPGFXRect16] = []
+        pieces.reserveCapacity(count + 3)
+        for piece in self {
             guard piece.intersects(rect) else {
-                return [piece]
+                pieces.append(piece)
+                continue
             }
             let top = Swift.max(piece.top, rect.top)
             let bottom = Swift.min(piece.bottom, rect.bottom)
-            return [
+            for cut in [
                 RDPGFXRect16(left: piece.left, top: piece.top, right: piece.right, bottom: top),
                 RDPGFXRect16(left: piece.left, top: bottom, right: piece.right, bottom: piece.bottom),
                 RDPGFXRect16(left: piece.left, top: top, right: Swift.min(rect.left, piece.right), bottom: bottom),
                 RDPGFXRect16(left: Swift.max(rect.right, piece.left), top: top, right: piece.right, bottom: bottom),
-            ].filter { $0.right > $0.left && $0.bottom > $0.top }
+            ] where cut.right > cut.left && cut.bottom > cut.top {
+                pieces.append(cut)
+            }
         }
+        return pieces
     }
 
     func subtracting(_ rects: [RDPGFXRect16]) -> [RDPGFXRect16] {
@@ -1096,6 +1147,21 @@ private extension [RDPGFXRect16] {
                 bottom: Swift.max(bounds.bottom, rect.bottom)
             )
         }]
+    }
+
+    /// These rectangles, or past `limit` of them their bounding box less each of `excluded`
+    /// whose cut leaves no more than half of `limit` pieces; the others stay in the box. A cut
+    /// drops what these rectangles share with `excluded`, which for a dirty list is exact
+    /// `decodedRects`: only stale pixels. Half, so that more rectangles must come before the
+    /// next collapse, each of which costs a cut per excluded rectangle.
+    func collapsed(beyond limit: Int, excluding excluded: [RDPGFXRect16]) -> [RDPGFXRect16] {
+        guard count > limit else {
+            return self
+        }
+        return excluded.reduce(collapsed(beyond: limit)) { pieces, rect in
+            let cut = pieces.subtracting(rect)
+            return cut.count <= limit / 2 ? cut : pieces
+        }
     }
 }
 
