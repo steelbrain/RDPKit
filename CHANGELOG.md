@@ -11,6 +11,13 @@
   to decode can ask for a keyframe. A client that chose its first layout from
   the monitors of frames it saw before `onDisplayControlReady` reads the
   session's `serverMonitors` instead.
+- Network Level Authentication refuses a server that answers with CredSSP
+  version 2, 3 or 4, as Windows clients do by default, with the new
+  `RDPConnectionFailure.legacyCredSSPVersion` and before sending any
+  credential. Those versions prove the TLS key by sealing the certificate's
+  raw public key, the encryption oracle of CVE-2018-0886.
+  `RDPConnectionConfiguration.legacyCredSSP` accepts them for a server without
+  the 2018 CredSSP update.
 
 ### Additions
 

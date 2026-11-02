@@ -96,6 +96,11 @@ final class MockKRDPServer: LoopbackTestServer {
         var requireBitmapCodecsCapability = false
         /// Serve a certificate whose key usage allows keyEncipherment but not digitalSignature.
         var keyEnciphermentOnlyCertificate = false
+        /// The CredSSP version the server answers with; below 5 it proves the TLS key the
+        /// pre-2018 way, with the raw public key ([MS-CSSP] 3.1.5).
+        var credSSPVersion = 6
+        /// The version of the server's pubKeyAuth TSRequest, when not `credSSPVersion`.
+        var credSSPBindingVersion: Int?
     }
 
     let transcript: Locked<MockKRDPServerTranscript>
@@ -406,6 +411,9 @@ final class MockCredSSPServer {
     }
 
     private let credentials: RDPCredentials
+    /// The TSRequest version of the CHALLENGE, and of the pubKeyAuth answer.
+    private let version: Int
+    private let bindingVersion: Int
     private let transcript: Locked<MockKRDPServerTranscript>
     private let subjectPublicKey: Data
     private let channelBindingsHash: Data
@@ -424,8 +432,15 @@ final class MockCredSSPServer {
     private var sendSequenceNumber: UInt32 = 0
     private var receiveSequenceNumber: UInt32 = 0
 
-    init(credentials: RDPCredentials, transcript: Locked<MockKRDPServerTranscript> = Locked(MockKRDPServerTranscript())) throws {
+    init(
+        credentials: RDPCredentials,
+        version: Int = 6,
+        bindingVersion: Int = 6,
+        transcript: Locked<MockKRDPServerTranscript> = Locked(MockKRDPServerTranscript())
+    ) throws {
         self.credentials = credentials
+        self.version = version
+        self.bindingVersion = bindingVersion
         self.transcript = transcript
         subjectPublicKey = try MockKRDPTLS.subjectPublicKey()
         channelBindingsHash = try MockKRDPTLS.ntlmChannelBindingsHash()
@@ -459,7 +474,7 @@ final class MockCredSSPServer {
             challenge = challengeMessage()
             stage = .authenticate
             return RDPCredSSPTSRequest(
-                version: 6,
+                version: version,
                 // Windows and FreeRDP-based servers send the raw NTLM challenge.
                 negoTokens: [challenge]
             ).encoded()
@@ -487,20 +502,26 @@ final class MockCredSSPServer {
             guard let clientPubKeyAuth = request.pubKeyAuth else {
                 throw MockKRDPServerError.invalidClientPDU
             }
-            guard try unwrap(clientPubKeyAuth) == RDPCredSSPPublicKeyBinding.clientServerHash(
-                subjectPublicKey: subjectPublicKey,
-                nonce: clientNonce
-            ) else {
-                throw MockKRDPServerError.invalidClientPDU
-            }
-            record(gate: "nonce-bound-pubkeyauth")
-            stage = .credentials
-            return try RDPCredSSPTSRequest(
-                version: 6,
-                pubKeyAuth: wrap(RDPCredSSPPublicKeyBinding.serverClientHash(
+            if request.version >= 5 {
+                guard try unwrap(clientPubKeyAuth) == RDPCredSSPPublicKeyBinding.clientServerHash(
                     subjectPublicKey: subjectPublicKey,
                     nonce: clientNonce
-                ))
+                ) else {
+                    throw MockKRDPServerError.invalidClientPDU
+                }
+                record(gate: "nonce-bound-pubkeyauth")
+            } else {
+                guard try unwrap(clientPubKeyAuth) == subjectPublicKey else {
+                    throw MockKRDPServerError.invalidClientPDU
+                }
+                record(gate: "legacy-pubkeyauth")
+            }
+            stage = .credentials
+            return try RDPCredSSPTSRequest(
+                version: bindingVersion,
+                pubKeyAuth: wrap(bindingVersion >= 5
+                    ? RDPCredSSPPublicKeyBinding.serverClientHash(subjectPublicKey: subjectPublicKey, nonce: clientNonce)
+                    : RDPCredSSPPublicKeyBinding.legacyServerResponse(subjectPublicKey: subjectPublicKey))
             ).encoded()
 
         case .credentials:
@@ -1030,10 +1051,20 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
             selectedProtocols = .tls
         case let .credSSP(credentials):
             selectedProtocols = .credSSP
-            credSSPServer = try MockCredSSPServer(credentials: connectionCredentials(credentials), transcript: transcript)
+            credSSPServer = try MockCredSSPServer(
+                credentials: connectionCredentials(credentials),
+                version: options.credSSPVersion,
+                bindingVersion: options.credSSPBindingVersion ?? options.credSSPVersion,
+                transcript: transcript
+            )
         case let .credSSPWithEarlyUserAuth(credentials, _):
             selectedProtocols = .credSSPWithEarlyUserAuth
-            credSSPServer = try MockCredSSPServer(credentials: connectionCredentials(credentials), transcript: transcript)
+            credSSPServer = try MockCredSSPServer(
+                credentials: connectionCredentials(credentials),
+                version: options.credSSPVersion,
+                bindingVersion: options.credSSPBindingVersion ?? options.credSSPVersion,
+                transcript: transcript
+            )
         case .rdSTLS:
             write(MockKRDPFixtures.x224ConnectionConfirm(selectedProtocols: .rdSTLS), context: context)
             stage = .done

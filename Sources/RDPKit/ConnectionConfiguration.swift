@@ -58,6 +58,14 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
     /// the handshake with them fails with `KEY_USAGE_BIT_INCORRECT`. RSA key exchange has no
     /// forward secrecy, so set this only to retry after that failure.
     public var legacyRSAKeyExchange: Bool
+    /// Accepts a server that answers Network Level Authentication with CredSSP version 2, 3
+    /// or 4. Those versions prove the TLS key by sealing the certificate's raw public key
+    /// ([MS-CSSP] 3.1.5), so whoever presented the certificate gets data of its choosing
+    /// sealed with the session key: the encryption oracle of CVE-2018-0886. Windows clients
+    /// refuse those versions by default since the May 2018 update. Set this only for a server
+    /// without the March 2018 CredSSP update, such as an unpatched Windows 7 or Windows
+    /// Server 2008 R2, whose certificate you trust.
+    public var legacyCredSSP: Bool
     /// Local folders the server sees as drives. Sharing one joins the rdpsnd channel too.
     public var sharedDrives: [RDPSharedDrive]
     /// The name servers show for this client, in session lists, for per-device licensing
@@ -97,6 +105,7 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
         keyboardSubType: UInt32 = 0,
         keyboardFunctionKeyCount: UInt32 = 12,
         legacyRSAKeyExchange: Bool = false,
+        legacyCredSSP: Bool = false,
         sharedDrives: [RDPSharedDrive] = [],
         clientName: String = "RDPKIT"
     ) {
@@ -122,6 +131,7 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
         self.keyboardSubType = keyboardSubType
         self.keyboardFunctionKeyCount = keyboardFunctionKeyCount
         self.legacyRSAKeyExchange = legacyRSAKeyExchange
+        self.legacyCredSSP = legacyCredSSP
         self.sharedDrives = sharedDrives
         self.clientName = Self.validClientName(clientName)
         self.redirectionRoutingToken = nil
@@ -153,6 +163,7 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
         keyboardSubType: UInt32 = 0,
         keyboardFunctionKeyCount: UInt32 = 12,
         legacyRSAKeyExchange: Bool = false,
+        legacyCredSSP: Bool = false,
         sharedDrives: [RDPSharedDrive] = [],
         clientName: String = "RDPKIT"
     ) {
@@ -180,6 +191,7 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
             keyboardSubType: keyboardSubType,
             keyboardFunctionKeyCount: keyboardFunctionKeyCount,
             legacyRSAKeyExchange: legacyRSAKeyExchange,
+            legacyCredSSP: legacyCredSSP,
             sharedDrives: sharedDrives,
             clientName: clientName
         )

@@ -386,6 +386,11 @@ public enum RDPConnectionFailure: Encodable, Equatable, Sendable {
     /// credential was sent yet; connecting again with
     /// `RDPConnectionConfiguration.legacyRSAKeyExchange` set can succeed.
     case tlsKeyUsageIncorrect
+    /// The server answered Network Level Authentication with this CredSSP version, below
+    /// 5, whose proof of the TLS key is the encryption oracle of CVE-2018-0886, and RDPKit
+    /// refused it as Windows clients do. No credential was sent yet; connecting again with
+    /// `RDPConnectionConfiguration.legacyCredSSP` set can succeed.
+    case legacyCredSSPVersion(version: Int)
     /// The server requires Network Level Authentication (CredSSP), and the
     /// configuration has no credentials.
     case credentialsRequired

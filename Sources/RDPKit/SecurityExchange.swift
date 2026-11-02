@@ -104,7 +104,8 @@ extension RDPClientConnection {
                 break
             }
             let response = try receiveTSRequest()
-            version = min(response.version, 6)
+            // Checked before the AUTHENTICATE and pubKeyAuth go out in the next request.
+            version = try credSSPVersion(answering: response.version)
             guard let serverToken = response.negoTokens.last else {
                 throw RDPCredSSPError.missingToken
             }
@@ -112,7 +113,7 @@ extension RDPClientConnection {
         }
 
         let binding = try receiveTSRequest()
-        version = min(binding.version, 6)
+        version = try credSSPVersion(answering: binding.version)
         guard let serverPubKeyAuth = binding.pubKeyAuth else {
             throw RDPCredSSPError.missingPubKeyAuth
         }
@@ -154,6 +155,17 @@ extension RDPClientConnection {
                 description: "RDSTLS server rejected the redirection's credentials with \(resultCode)"
             )
         }
+    }
+
+    /// The version to go on with after a server TSRequest of `serverVersion`. Below 5 the
+    /// client proves the TLS key by sealing the certificate's raw public key, which hands
+    /// whoever presented the certificate an encryption oracle (CVE-2018-0886), so only
+    /// `legacyCredSSP` allows it.
+    private func credSSPVersion(answering serverVersion: Int) throws -> Int {
+        guard serverVersion >= 5 || configuration.legacyCredSSP else {
+            throw RDPCredSSPError.legacyVersion(serverVersion)
+        }
+        return min(serverVersion, 6)
     }
 
     private func receiveTSRequest() throws -> RDPCredSSPTSRequest {

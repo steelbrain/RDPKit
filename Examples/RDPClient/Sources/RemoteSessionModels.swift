@@ -91,6 +91,9 @@ struct RDPSessionEndReason: Equatable {
             ("A secure connection to the server could not be set up.", false)
         case .tlsKeyUsageIncorrect:
             ("The server's certificate does not allow the key exchange RDPClient offered.", false)
+        case .legacyCredSSPVersion:
+            ("The server signs in with an old version of Network Level Authentication that is not safe "
+                + "to use. Its Windows needs the CredSSP update from 2018.", false)
         case .credentialsRequired:
             (credentialsMessage, true)
         case let .credSSP(status):

@@ -304,6 +304,9 @@ enum RDPCredSSPError: Error, CustomStringConvertible {
     case ntlmClient(String)
     case serverError(UInt32)
     case serverBindingMismatch
+    /// The server answered with this version, below 5, and the configuration does not
+    /// allow `legacyCredSSP`.
+    case legacyVersion(Int)
 
     var description: String {
         switch self {
@@ -321,6 +324,10 @@ enum RDPCredSSPError: Error, CustomStringConvertible {
             "CredSSP server returned \(RDPLogonStatus(rawValue: code))"
         case .serverBindingMismatch:
             "CredSSP server public-key binding did not match"
+        case let .legacyVersion(version):
+            "CredSSP server answered with version \(version), whose public-key binding is the "
+                + "CVE-2018-0886 encryption oracle; legacyCredSSP allows it for a server without "
+                + "the CredSSP update"
         }
     }
 
@@ -336,6 +343,8 @@ enum RDPCredSSPError: Error, CustomStringConvertible {
             .credSSP(status: RDPLogonStatus(rawValue: code))
         case .missingToken, .missingPubKeyAuth, .ntlm, .serverBindingMismatch:
             .protocolViolation
+        case let .legacyVersion(version):
+            .legacyCredSSPVersion(version: version)
         }
     }
 }

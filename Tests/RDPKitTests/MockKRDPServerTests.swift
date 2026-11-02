@@ -151,6 +151,40 @@ struct MockKRDPServerTests {
         #expect(run.transcript.credSSPMessages == ["ntlm-negotiate", "ntlm-authenticate"])
     }
 
+    /// Below version 5 the client would send the certificate's raw public key sealed with the
+    /// session key (CVE-2018-0886), so it stops before its AUTHENTICATE, as Windows clients do.
+    @Test(arguments: [2, 3, 4])
+    func clientRefusesCredSSPBelowVersion5(version: Int) throws {
+        let run = try runMock(.init(securityProtocol: .credSSP(credentials: mockCredentials), credSSPVersion: version))
+
+        #expect(run.report.status == "failure")
+        #expect(run.report.connectionStage == .credSSP)
+        #expect(run.report.failure == .legacyCredSSPVersion(version: version))
+        #expect(run.report.error?.contains("legacyCredSSP") == true)
+        #expect(run.transcript.credSSPMessages == ["ntlm-negotiate"])
+    }
+
+    /// A server that drops below version 5 only in its pubKeyAuth answer is refused too.
+    @Test func clientRefusesACredSSPBindingBelowVersion5() throws {
+        let run = try runMock(.init(securityProtocol: .credSSP(credentials: mockCredentials), credSSPBindingVersion: 2))
+
+        #expect(run.report.failure == .legacyCredSSPVersion(version: 2))
+        #expect(run.transcript.credSSPMessages == ["ntlm-negotiate", "ntlm-authenticate"])
+    }
+
+    /// With `legacyCredSSP` set, a server without the 2018 update gets the raw public key and
+    /// answers with it, its first byte plus one ([MS-CSSP] 3.1.5).
+    @Test func clientAuthenticatesWithCredSSPVersion3WhenLegacyIsAllowed() throws {
+        let run = try runMock(.init(securityProtocol: .credSSP(credentials: mockCredentials), credSSPVersion: 3)) {
+            $0.legacyCredSSP = true
+        }
+
+        #expect(run.report.status == "success")
+        #expect(run.transcript.credSSPMessages == ["ntlm-negotiate", "ntlm-authenticate", "credentials"])
+        #expect(run.transcript.credSSPGates.contains("legacy-pubkeyauth"))
+        #expect(!run.transcript.credSSPGates.contains("nonce-bound-pubkeyauth"))
+    }
+
     @Test func clientReportsMissingCredentialsForCredSSP() throws {
         let report = try runMock(.init(securityProtocol: .credSSP(credentials: mockCredentials))) {
             $0.credentials = nil
