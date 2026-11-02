@@ -122,6 +122,9 @@ final class MockKRDPServer: LoopbackTestServer {
         var credSSPClosesOnMessage: Int?
         /// Whether that close resets the connection instead.
         var credSSPCloseResets = false
+        /// Whether the server sends bytes that are no TLS record before that close, which the
+        /// client's TLS takes for an error: a connection lost rather than closed.
+        var credSSPCloseSendsNonTLSBytes = false
         /// How the server answers the X.224 Connection Request, when not as an RDP server.
         var connectionRequestAnswer: MockKRDPForeignAnswer?
     }
@@ -1394,6 +1397,11 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
         }
         credSSPMessageCount += 1
         if credSSPMessageCount == options.credSSPClosesOnMessage {
+            if options.credSSPCloseSendsNonTLSBytes,
+               let tls = try? context.pipeline.syncOperations.context(handlerType: NIOSSLServerHandler.self) {
+                // Written below the TLS handler, as they are.
+                tls.writeAndFlush(NIOAny(context.channel.allocator.buffer(string: "not a TLS record")), promise: nil)
+            }
             if options.credSSPCloseResets {
                 (context.channel as? SocketOptionProvider)?.setSoLinger(linger(l_onoff: 1, l_linger: 0))
                     .whenComplete { _ in context.close(promise: nil) }

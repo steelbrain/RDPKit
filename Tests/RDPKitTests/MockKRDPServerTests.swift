@@ -295,6 +295,25 @@ struct MockKRDPServerTests {
         #expect(run.transcript.credSSPMessages.count == message - 1)
     }
 
+    /// A connection lost rather than closed once the client proved its credentials, here to
+    /// bytes that are no TLS record, leaves them in doubt as a close does; one lost before the
+    /// AUTHENTICATE is just lost.
+    @Test(arguments: [
+        (1, RDPConnectionFailure.connectionLost),
+        (2, .credSSPClosedAfterCredentials),
+        (3, .credSSPClosedAfterCredentials),
+    ])
+    func aConnectionLostAfterTheCredentialsLeavesThemInDoubt(message: Int, failure: RDPConnectionFailure) throws {
+        let run = try runMock(.init(
+            securityProtocol: .credSSP(credentials: mockCredentials),
+            credSSPClosesOnMessage: message,
+            credSSPCloseSendsNonTLSBytes: true
+        ))
+
+        #expect(run.report.failure == failure)
+        #expect(run.transcript.credSSPMessages.count == message - 1)
+    }
+
     /// A server that answered the credentials and closes later, before licensing, just closed.
     @Test func aCloseAfterTheCredentialsWereAnsweredIsJustAClose() throws {
         let run = try runMock(.init(
