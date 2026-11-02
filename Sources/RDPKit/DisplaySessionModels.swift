@@ -148,6 +148,8 @@ public struct RDPFrameMetadata: Equatable, Sendable {
     public var height: UInt16
     /// The frame's ``RDPGraphicsFrameSnapshot/monitors``.
     public var monitors: [RDPRemoteMonitor]
+    /// The frame's ``RDPGraphicsFrameSnapshot/monitorLayoutIssues``.
+    public var monitorLayoutIssues: RDPRemoteMonitorLayoutIssues
     public var videoByteCount: Int
     public var bitmapByteCount: Int
     public var videoNalUnitTypes: [UInt8]
@@ -168,6 +170,7 @@ public struct RDPFrameMetadata: Equatable, Sendable {
         width = frame.width
         height = frame.height
         monitors = frame.monitors
+        monitorLayoutIssues = frame.monitorLayoutIssues
         videoByteCount = frame.videoByteCount
         bitmapByteCount = frame.bitmapByteCount
         videoNalUnitTypes = frame.videoNalUnitTypes

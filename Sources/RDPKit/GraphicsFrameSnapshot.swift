@@ -128,6 +128,46 @@ public struct RDPRemoteMonitor: Encodable, Equatable, Sendable {
     }
 }
 
+/// What is off about a server's monitor layout once its monitors are placed in the graphics
+/// output; empty for a layout RDPKit took as sent that covers the output with one primary
+/// monitor and no overlap.
+public struct RDPRemoteMonitorLayoutIssues: OptionSet, Encodable, Hashable, Sendable {
+    public let rawValue: UInt8
+
+    public init(rawValue: UInt8) {
+        self.rawValue = rawValue
+    }
+
+    /// A monitor reached past the graphics output and was cut to it, or was left out with none
+    /// of it inside. A right or bottom edge on the output's own edge does not count: KRdp 6.8
+    /// sends its one monitor's right and bottom exclusive, one pixel past the inclusive edges
+    /// the spec asks for, and cutting it leaves the monitor it means.
+    public static let clipped = Self(rawValue: 1 << 0)
+    /// Two monitors overlap, such as monitors side by side sent with exclusive right edges.
+    public static let overlapping = Self(rawValue: 1 << 1)
+    /// No monitor is primary.
+    public static let noPrimary = Self(rawValue: 1 << 2)
+    /// More than one monitor is primary.
+    public static let multiplePrimaries = Self(rawValue: 1 << 3)
+    /// Part of the graphics output is on no monitor, as with monitors of different sizes or
+    /// apart from each other.
+    public static let uncoveredOutput = Self(rawValue: 1 << 4)
+
+    private static let names: [(issue: Self, name: String)] = [
+        (.clipped, "clipped"),
+        (.overlapping, "overlapping"),
+        (.noPrimary, "noPrimary"),
+        (.multiplePrimaries, "multiplePrimaries"),
+        (.uncoveredOutput, "uncoveredOutput"),
+    ]
+
+    /// The issues' names, for reports.
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(Self.names.filter { contains($0.issue) }.map(\.name))
+    }
+}
+
 public enum RDPAVC444SubframeLayout: String, Encodable, Equatable, Sendable {
     case yuv420AndChroma420
     case yuv420Only
@@ -145,6 +185,8 @@ public struct RDPGraphicsFrameSnapshot: Encodable, Equatable, Sendable {
     /// The server's monitors in the graphics output, as its last ResetGraphics laid them out
     /// ([MS-RDPEGFX] 2.2.2.14). Empty before one, and for updates outside RDPGFX.
     public var monitors: [RDPRemoteMonitor]
+    /// What is off about ``monitors`` as the server laid them out.
+    public var monitorLayoutIssues: RDPRemoteMonitorLayoutIssues
     /// Where the surface is in the graphics output. Nil with a ``graphicsOutputRect`` for a
     /// surface not mapped to the output: a decoder keeps the update for later copies out of
     /// the surface and presents nothing.
@@ -178,6 +220,7 @@ public struct RDPGraphicsFrameSnapshot: Encodable, Equatable, Sendable {
         pixelFormat: UInt8,
         graphicsOutputRect: RDPFrameRect? = nil,
         monitors: [RDPRemoteMonitor] = [],
+        monitorLayoutIssues: RDPRemoteMonitorLayoutIssues = [],
         surfaceRect: RDPFrameRect? = nil,
         mappedOutputRect: RDPFrameRect? = nil,
         destinationRect: RDPFrameRect,
@@ -201,6 +244,7 @@ public struct RDPGraphicsFrameSnapshot: Encodable, Equatable, Sendable {
         self.pixelFormat = pixelFormat
         self.graphicsOutputRect = graphicsOutputRect
         self.monitors = monitors
+        self.monitorLayoutIssues = monitorLayoutIssues
         self.surfaceRect = surfaceRect
         self.mappedOutputRect = mappedOutputRect
         self.destinationRect = destinationRect
@@ -262,6 +306,7 @@ public struct RDPGraphicsFrameSnapshot: Encodable, Equatable, Sendable {
         case pixelFormat
         case graphicsOutputRect
         case monitors
+        case monitorLayoutIssues
         case surfaceRect
         case mappedOutputRect
         case destinationRect
@@ -286,6 +331,9 @@ public struct RDPGraphicsFrameSnapshot: Encodable, Equatable, Sendable {
         try container.encodeIfPresent(graphicsOutputRect, forKey: .graphicsOutputRect)
         if !monitors.isEmpty {
             try container.encode(monitors, forKey: .monitors)
+        }
+        if !monitorLayoutIssues.isEmpty {
+            try container.encode(monitorLayoutIssues, forKey: .monitorLayoutIssues)
         }
         try container.encodeIfPresent(surfaceRect, forKey: .surfaceRect)
         try container.encodeIfPresent(mappedOutputRect, forKey: .mappedOutputRect)

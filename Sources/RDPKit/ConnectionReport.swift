@@ -77,6 +77,8 @@ public struct RDPConnectionReport: Encodable, Equatable, Sendable {
     /// monitors, Windows 11 sends a new one when a Display Control layout reactivates it; a
     /// layout RDPGFX carries comes in frames' monitors instead.
     public var rdpMonitorLayout: [RDPRemoteMonitor]?
+    /// What is off about ``rdpMonitorLayout`` as the server laid it out, in its bounding box.
+    public var rdpMonitorLayoutIssues: RDPRemoteMonitorLayoutIssues?
     public var rdpDemandActiveShareID: UInt32?
     public var rdpDemandActiveCapabilitySets: [RDPCapabilitySetSummary]?
     public var rdpConfirmActiveRequestHex: String?
@@ -185,6 +187,7 @@ public struct RDPConnectionReport: Encodable, Equatable, Sendable {
         rdpPostLicensingResponseHex: String? = nil,
         rdpPostLicensingResponseType: String? = nil,
         rdpMonitorLayout: [RDPRemoteMonitor]? = nil,
+        rdpMonitorLayoutIssues: RDPRemoteMonitorLayoutIssues? = nil,
         rdpDemandActiveShareID: UInt32? = nil,
         rdpDemandActiveCapabilitySets: [RDPCapabilitySetSummary]? = nil,
         rdpConfirmActiveRequestHex: String? = nil,
@@ -286,6 +289,7 @@ public struct RDPConnectionReport: Encodable, Equatable, Sendable {
         self.rdpPostLicensingResponseHex = rdpPostLicensingResponseHex
         self.rdpPostLicensingResponseType = rdpPostLicensingResponseType
         self.rdpMonitorLayout = rdpMonitorLayout
+        self.rdpMonitorLayoutIssues = rdpMonitorLayoutIssues
         self.rdpDemandActiveShareID = rdpDemandActiveShareID
         self.rdpDemandActiveCapabilitySets = rdpDemandActiveCapabilitySets
         self.rdpConfirmActiveRequestHex = rdpConfirmActiveRequestHex

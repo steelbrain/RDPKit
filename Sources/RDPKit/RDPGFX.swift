@@ -324,7 +324,11 @@ struct RDPGFXResetGraphicsPDU: Equatable, Sendable {
 
     /// The monitors where they are in the graphics output, in the server's order.
     var outputMonitors: [RDPRemoteMonitor] {
-        monitors.outputMonitors(width: width, height: height)
+        outputLayout.monitors
+    }
+
+    var outputLayout: RDPOutputMonitorLayout {
+        monitors.outputLayout(width: width, height: height)
     }
 
     /// The PDU is always 340 bytes long; padding follows monitorDefArray.
@@ -363,50 +367,113 @@ extension RDPMonitorDefinition {
     }
 }
 
+/// A server's monitors where they are in its graphics output, and what is off about them.
+struct RDPOutputMonitorLayout: Equatable, Sendable {
+    var monitors: [RDPRemoteMonitor]
+    var issues: RDPRemoteMonitorLayoutIssues
+}
+
 extension [RDPMonitorDefinition] {
     /// The monitors where they are in a graphics output of `width` x `height`, in the server's
     /// order. The output holds the desktop from the smallest left and top of any monitor. Each
     /// monitor is clipped to the output, and one with nothing in it is left out: KRdp 6.8 sends
     /// right and bottom exclusive (Fixtures/krdp-negotiation-transcript.json, sequence 39:
     /// monitor (0,0)-(3840,2400) in a 3840x2400 output), which clipping reads as the whole
-    /// output.
+    /// output. KRdp 6.8.1 always sends that one monitor (VideoStream::performReset sets
+    /// monitorCount to 1), so its exclusive edges never make monitors overlap; no other server
+    /// is known to send exclusive edges, and ``RDPRemoteMonitorLayoutIssues`` reports overlaps
+    /// rather than guessing at them.
     func outputMonitors(width: UInt32, height: UInt32) -> [RDPRemoteMonitor] {
+        outputLayout(width: width, height: height).monitors
+    }
+
+    func outputLayout(width: UInt32, height: UInt32) -> RDPOutputMonitorLayout {
         guard let originX = map(\.left).min(),
               let originY = map(\.top).min()
         else {
-            return []
+            return RDPOutputMonitorLayout(monitors: [], issues: [])
         }
         func outputCoordinate(_ value: Int, origin: Int32, limit: UInt32) -> UInt16 {
             UInt16(Swift.min(Swift.max(value - Int(origin), 0), Int(limit)))
         }
-        return compactMap { monitor in
+        var issues: RDPRemoteMonitorLayoutIssues = []
+        let monitors: [RDPRemoteMonitor] = compactMap { monitor in
             let rect = RDPFrameRect(
                 left: outputCoordinate(Int(monitor.left), origin: originX, limit: width),
                 top: outputCoordinate(Int(monitor.top), origin: originY, limit: height),
                 right: outputCoordinate(Int(monitor.right) + 1, origin: originX, limit: width),
                 bottom: outputCoordinate(Int(monitor.bottom) + 1, origin: originY, limit: height)
             )
+            // An inclusive edge on the output's edge itself is KRdp's exclusive one.
+            if Int(monitor.right) - Int(originX) > Int(width) || Int(monitor.bottom) - Int(originY) > Int(height) {
+                issues.insert(.clipped)
+            }
             guard rect.width > 0, rect.height > 0 else {
+                issues.insert(.clipped)
                 return nil
             }
             return RDPRemoteMonitor(rect: rect, isPrimary: monitor.flags & RDPMonitorDefinition.primary != 0)
         }
+        issues.formUnion(monitors.arrangementIssues(outputWidth: Int(width), outputHeight: Int(height)))
+        return RDPOutputMonitorLayout(monitors: monitors, issues: issues)
     }
 
     /// The monitors where they are in their bounding box, as an output of the desktop's size
     /// holds them; one larger than ResetGraphics describes is cut to that.
     var boundingBoxMonitors: [RDPRemoteMonitor] {
+        boundingBoxLayout.monitors
+    }
+
+    var boundingBoxLayout: RDPOutputMonitorLayout {
         guard let left = map(\.left).min(),
               let top = map(\.top).min(),
               let right = map(\.right).max(),
               let bottom = map(\.bottom).max()
         else {
-            return []
+            return RDPOutputMonitorLayout(monitors: [], issues: [])
         }
         func dimension(_ start: Int32, _ inclusiveEnd: Int32) -> UInt32 {
             UInt32(Swift.min(Swift.max(Int(inclusiveEnd) + 1 - Int(start), 0), Int(RDPGFXResetGraphicsPDU.maximumDimension)))
         }
-        return outputMonitors(width: dimension(left, right), height: dimension(top, bottom))
+        return outputLayout(width: dimension(left, right), height: dimension(top, bottom))
+    }
+}
+
+extension [RDPRemoteMonitor] {
+    /// What is off about where these monitors are in an output of `outputWidth` x
+    /// `outputHeight`, which they lie within.
+    func arrangementIssues(outputWidth: Int, outputHeight: Int) -> RDPRemoteMonitorLayoutIssues {
+        var issues: RDPRemoteMonitorLayoutIssues = []
+        switch filter(\.isPrimary).count {
+        case 0:
+            issues.insert(.noPrimary)
+        case 1:
+            break
+        default:
+            issues.insert(.multiplePrimaries)
+        }
+        let rects = map(\.rect)
+        for (index, rect) in rects.enumerated() {
+            for other in rects[(index + 1)...] where Swift.max(rect.left, other.left) < Swift.min(rect.right, other.right)
+                && Swift.max(rect.top, other.top) < Swift.min(rect.bottom, other.bottom)
+            {
+                issues.insert(.overlapping)
+            }
+        }
+        // Each cell between the monitors' edges is on a monitor or on none.
+        let columns = Set([0, outputWidth] + rects.flatMap { [Int($0.left), Int($0.right)] }).sorted()
+        let rows = Set([0, outputHeight] + rects.flatMap { [Int($0.top), Int($0.bottom)] }).sorted()
+        let isCovered = zip(columns, columns.dropFirst()).allSatisfy { left, right in
+            zip(rows, rows.dropFirst()).allSatisfy { top, bottom in
+                rects.contains {
+                    Int($0.left) <= left && right <= Int($0.right) && Int($0.top) <= top && bottom <= Int($0.bottom)
+                }
+            }
+        }
+        if !isCovered {
+            issues.insert(.uncoveredOutput)
+        }
+        return issues
     }
 }
 

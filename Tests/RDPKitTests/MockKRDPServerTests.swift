@@ -261,6 +261,7 @@ struct MockKRDPServerTests {
             RDPRemoteMonitor(rect: RDPFrameRect(left: 1280, top: 0, right: 3200, bottom: 1080), isPrimary: true),
             RDPRemoteMonitor(rect: RDPFrameRect(left: 0, top: 120, right: 1280, bottom: 1144), isPrimary: false),
         ])
+        #expect(run.report.rdpMonitorLayoutIssues == .uncoveredOutput)
     }
 
     /// A layout of separate groups of monitors set after the initializer goes out as no layout:

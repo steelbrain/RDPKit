@@ -261,6 +261,7 @@ extension RDPClientConnection {
         var mapped = frame
         mapped.graphicsOutputRect = compositor.outputRect()
         mapped.monitors = compositor.monitors
+        mapped.monitorLayoutIssues = compositor.monitorLayoutIssues
         mapped.surfaceRect = compositor.surfaceRect(surfaceID: frame.surfaceID)
         mapped.mappedOutputRect = compositor.mappedOutputRect(surfaceID: frame.surfaceID)
         return .resolved(mapped)
@@ -341,6 +342,7 @@ extension RDPClientConnection {
             pixelFormat: wire.pixelFormat,
             graphicsOutputRect: compositor.outputRect(),
             monitors: compositor.monitors,
+            monitorLayoutIssues: compositor.monitorLayoutIssues,
             surfaceRect: compositor.surfaceRect(surfaceID: wire.surfaceID),
             mappedOutputRect: compositor.mappedOutputRect(surfaceID: wire.surfaceID),
             destinationRect: destinationRect,

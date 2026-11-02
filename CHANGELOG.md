@@ -16,6 +16,11 @@
 - `RDPMonitorLayout(remoteMonitors:scaleFactors:)` makes a layout of the
   server's monitors, from a frame or the report, to keep or change them through
   Display Control, and `formsOneGroup` is public.
+- Frames' `monitorLayoutIssues` and the report's `rdpMonitorLayoutIssues` say
+  what is off about the server's monitor layout: a monitor RDPKit cut to the
+  graphics output, monitors that overlap, no or several primary monitors, or
+  part of the output on no monitor. KRdp's exclusive right and bottom edges
+  count as exact: KRdp 6.8 always sends one monitor.
 - `RDPDisplayControlSession.resendLayout()` sends `lastSentLayout` again, or
   `connectLayout`, the layout the connection started with. Windows 11 and
   gnome-remote-desktop answer it with a keyframe, which they send no other way

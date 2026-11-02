@@ -595,6 +595,8 @@ import Testing
     #expect(reset.outputMonitors == [
         RDPRemoteMonitor(rect: RDPFrameRect(left: 0, top: 0, right: 3_840, bottom: 2_400), isPrimary: true),
     ])
+    // Cutting an exclusive edge on the output's edge leaves the monitor KRdp means.
+    #expect(reset.outputLayout.issues.isEmpty)
 }
 
 /// TS_MONITOR_DEF puts the primary monitor at 0,0 with inclusive bounds ([MS-RDPBCGR]
@@ -612,6 +614,8 @@ import Testing
         RDPRemoteMonitor(rect: RDPFrameRect(left: 1_920, top: 120, right: 3_840, bottom: 1_200), isPrimary: true),
         RDPRemoteMonitor(rect: RDPFrameRect(left: 0, top: 0, right: 1_920, bottom: 1_200), isPrimary: false),
     ])
+    // Above the shorter primary monitor, 120 rows of the output are on no monitor.
+    #expect(reset.outputLayout.issues == .uncoveredOutput)
 }
 
 /// A monitor reaching past the output is clipped to it; one outside it, or inverted, is left out.
@@ -628,6 +632,41 @@ import Testing
     #expect(reset.outputMonitors == [
         RDPRemoteMonitor(rect: RDPFrameRect(left: 0, top: 0, right: 1_920, bottom: 1_080), isPrimary: true),
     ])
+    #expect(reset.outputLayout.issues == .clipped)
+}
+
+/// Monitors side by side sent with exclusive right edges, as no known server sends them (KRdp
+/// 6.8.1 sends one monitor): the overlap is reported, not repaired.
+@Test func reportsOverlappingResetGraphicsMonitors() throws {
+    let reset = try RDPGFXResetGraphicsPDU.parse(from: RDPGFXHeader.parse(from: resetGraphicsMessage(
+        width: 3_840,
+        height: 1_080,
+        monitorCount: 2,
+        monitorData: monitorDefinitionBytes(left: 0, top: 0, right: 1_920, bottom: 1_080, flags: 1)
+            + monitorDefinitionBytes(left: 1_920, top: 0, right: 3_840, bottom: 1_080, flags: 0)
+    )))
+
+    #expect(reset.outputMonitors == [
+        RDPRemoteMonitor(rect: RDPFrameRect(left: 0, top: 0, right: 1_921, bottom: 1_080), isPrimary: true),
+        RDPRemoteMonitor(rect: RDPFrameRect(left: 1_920, top: 0, right: 3_840, bottom: 1_080), isPrimary: false),
+    ])
+    #expect(reset.outputLayout.issues == .overlapping)
+}
+
+@Test func reportsResetGraphicsMonitorsWithoutOnePrimary() throws {
+    func issues(flags: [UInt32]) throws -> RDPRemoteMonitorLayoutIssues {
+        try RDPGFXResetGraphicsPDU.parse(from: RDPGFXHeader.parse(from: resetGraphicsMessage(
+            width: 3_840,
+            height: 1_080,
+            monitorCount: 2,
+            monitorData: monitorDefinitionBytes(left: 0, top: 0, right: 1_919, bottom: 1_079, flags: flags[0])
+                + monitorDefinitionBytes(left: 1_920, top: 0, right: 3_839, bottom: 1_079, flags: flags[1])
+        ))).outputLayout.issues
+    }
+
+    #expect(try issues(flags: [1, 0]).isEmpty)
+    #expect(try issues(flags: [0, 0]) == .noPrimary)
+    #expect(try issues(flags: [1, 1]) == .multiplePrimaries)
 }
 
 @Test func rejectsResetGraphicsOutsideSpecLimits() {
@@ -1811,4 +1850,11 @@ private func capabilitySetBytes(version: UInt32, data: Data) -> Data {
     bytes.appendLittleEndianUInt32(UInt32(data.count))
     bytes.append(data)
     return bytes
+}
+
+@Test func encodesMonitorLayoutIssuesByName() throws {
+    let issues: RDPRemoteMonitorLayoutIssues = [.clipped, .uncoveredOutput]
+
+    #expect(try String(decoding: JSONEncoder().encode(issues), as: UTF8.self) == #"["clipped","uncoveredOutput"]"#)
+    #expect(try String(decoding: JSONEncoder().encode(RDPRemoteMonitorLayoutIssues()), as: UTF8.self) == "[]")
 }
