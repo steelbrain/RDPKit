@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0
+
 ### Breaking changes
 
 - New `RDPConnectionFailure` cases, which an exhaustive `switch` handles:
