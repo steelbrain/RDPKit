@@ -851,6 +851,7 @@ enum KRdpCapture {
         onDisplayControlReady: RDPDisplayControlSessionHandler? = nil,
         onRemotePointer: RDPRemotePointerHandler? = nil,
         liveReport: RDPLiveConnectionReport? = nil,
+        wireTranscript: RDPWireTranscript? = nil,
         cancellation: RDPConnectionCancellation = RDPConnectionCancellation()
     ) throws -> Run {
         var events = try events()
@@ -895,6 +896,7 @@ enum KRdpCapture {
             onRemotePointer: onRemotePointer,
             onInputReady: onInputReady,
             onDisplayControlReady: onDisplayControlReady,
+            wireTranscript: wireTranscript,
             liveReport: liveReport,
             cancellation: cancellation
         )

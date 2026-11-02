@@ -37,7 +37,7 @@ extension RDPClientConnection {
             return
         }
         if report.rdpClientInfoResponseHex == nil {
-            report.rdpClientInfoResponseHex = message.redactingServerSecrets.rdpHexString
+            report.rdpClientInfoResponseHex = message.redactingServerSecrets(ioChannelID: ioChannelID).rdpHexString
         }
         try dispatch(message)
     }
@@ -108,13 +108,13 @@ extension RDPClientConnection {
         }
         recordPostAutoDetectResponse(message, type: shareControl.typeName)
         if report.rdpLicensingResponseType != nil, report.rdpPostLicensingResponseHex == nil {
-            report.rdpPostLicensingResponseHex = message.redactingServerSecrets.rdpHexString
+            report.rdpPostLicensingResponseHex = message.redactingServerSecrets(ioChannelID: ioChannelID).rdpHexString
             report.rdpPostLicensingResponseType = shareControl.typeName
         }
         let shareData = shareControl.type == 0x7 ? try RDPShareDataPDU.parseIfPresent(from: indication) : nil
         if awaitingPostConfirmActiveResponse {
             awaitingPostConfirmActiveResponse = false
-            report.rdpPostConfirmActiveResponseHex = message.redactingServerSecrets.rdpHexString
+            report.rdpPostConfirmActiveResponseHex = message.redactingServerSecrets(ioChannelID: ioChannelID).rdpHexString
             report.rdpPostConfirmActiveResponseType = shareData?.typeName ?? shareControl.typeName
         }
 
@@ -155,14 +155,14 @@ extension RDPClientConnection {
         guard sawConnectTimeAutoDetect, report.rdpPostAutoDetectResponseHex == nil else {
             return
         }
-        report.rdpPostAutoDetectResponseHex = message.redactingServerSecrets.rdpHexString
+        report.rdpPostAutoDetectResponseHex = message.redactingServerSecrets(ioChannelID: ioChannelID).rdpHexString
         report.rdpPostAutoDetectResponseType = type
     }
 
     private func handleShareData(_ shareData: RDPShareDataPDU, packet: Data) throws {
         if var share, !share.finalization.isComplete {
             report.rdpFinalizationResponseHexes.appendIfRoom(
-                packet.redactingServerSecrets.rdpHexString,
+                packet.redactingServerSecrets(ioChannelID: ioChannelID).rdpHexString,
                 limit: RDPRecordLimit.messages
             )
             report.rdpFinalizationResponseTypes.appendIfRoom(shareData.typeName, limit: RDPRecordLimit.messages)

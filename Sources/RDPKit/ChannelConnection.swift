@@ -57,6 +57,7 @@ extension RDPClientConnection {
             throw RDPConnectionError.protocolViolation("MCS Connect Response did not include an I/O channel")
         }
         self.ioChannelID = ioChannelID
+        callbacks.wireTranscript?.noteIOChannel(ioChannelID)
         messageChannelID = connectResponse.messageChannelID.flatMap { $0 == 0 ? nil : $0 }
         serverCertificatePublicKey = connectResponse.serverCertificatePublicKey
 

@@ -11,7 +11,7 @@ import Testing
         password: password
     ))
 
-    let redacted = packet.redactingServerSecrets
+    let redacted = packet.redactingServerSecrets(ioChannelID: KRdpCapture.ioChannelID)
 
     #expect(redacted.count == packet.count)
     #expect(redacted.range(of: password) == nil)
@@ -31,7 +31,7 @@ import Testing
         password: password
     ))
 
-    let redacted = packet.redactingServerSecrets
+    let redacted = packet.redactingServerSecrets(ioChannelID: KRdpCapture.ioChannelID)
 
     #expect(redacted.count == packet.count)
     #expect(redacted.range(of: password) == nil)
@@ -53,7 +53,7 @@ import Testing
         password: password
     ))
 
-    let redacted = packet.redactingServerSecrets
+    let redacted = packet.redactingServerSecrets(ioChannelID: KRdpCapture.ioChannelID)
 
     // Read in full: the load balance info before the user name is kept.
     #expect(redacted.range(of: Data("Cookie: msts=".utf8)) != nil)
@@ -72,7 +72,7 @@ import Testing
         KRdpCapture.ioPacket(KRdpCapture.redirection(flags: loadBalanceInfo, password: password, trailingBytes: Data([1, 2, 3]))),
     ]
     for packet in packets {
-        let redacted = packet.redactingServerSecrets
+        let redacted = packet.redactingServerSecrets(ioChannelID: KRdpCapture.ioChannelID)
 
         #expect(redacted.count == packet.count)
         #expect(redacted.range(of: password) == nil)
@@ -91,7 +91,7 @@ import Testing
     payload.append(Data((1 ... 30).map { UInt8($0) }))
     let packet = KRdpCapture.ioPacket(KRdpCapture.shareData(pduType2: 0x26, payload: payload))
 
-    let redacted = packet.redactingServerSecrets
+    let redacted = packet.redactingServerSecrets(ioChannelID: KRdpCapture.ioChannelID)
 
     #expect(redacted.count == packet.count)
     #expect(redacted.suffix(payload.count).allSatisfy { $0 == 0 })
@@ -114,7 +114,7 @@ import Testing
     payload.append(Data(repeating: 0, count: 570))
     let packet = KRdpCapture.ioPacket(KRdpCapture.shareData(pduType2: 0x26, payload: payload))
 
-    let redacted = packet.redactingServerSecrets
+    let redacted = packet.redactingServerSecrets(ioChannelID: KRdpCapture.ioChannelID)
 
     #expect(redacted.count == packet.count)
     let indication = try MCSSendDataIndicationPDU.parse(fromTPKT: redacted)
@@ -126,8 +126,59 @@ import Testing
 @Test func redactionLeavesOtherPacketsAlone() throws {
     let demandActive = try #require(KRdpCapture.events().first { $0.sequence == 19 }?.bytes)
 
-    #expect(demandActive.redactingServerSecrets == demandActive)
-    #expect(KRdpCapture.pointerHidden.redactingServerSecrets == KRdpCapture.pointerHidden)
+    #expect(demandActive.redactingServerSecrets(ioChannelID: KRdpCapture.ioChannelID) == demandActive)
+    #expect(KRdpCapture.pointerHidden.redactingServerSecrets(ioChannelID: KRdpCapture.ioChannelID) == KRdpCapture.pointerHidden)
+}
+
+/// Static channel chunks whose CHANNEL_PDU_HEADER length reads as a Share Control type: byte 2
+/// of a 0x0A2000-byte message's is a redirection's 0x0A, and a 0x071000-byte message's is a
+/// Share Data PDU's 0x07 with pduType2 0x26, a Save Session Info's, where its byte 14 falls.
+private let staticChunksThatReadAsSecrets: [Data] = ([0x000A_2000, 0x0007_1000] as [UInt32]).map { length in
+    var userData = Data()
+    userData.appendLittleEndianUInt32(length)
+    userData.appendLittleEndianUInt32(0x0000_0001) // CHANNEL_FLAG_FIRST
+    userData.append(Data([1, 2, 3, 4, 5, 6, 0x26] + (8 ... 64).map { UInt8($0) }))
+    return mcsSendDataIndication(channelID: 1010, userData: userData)
+}
+
+/// A Server Redirection and a Save Session Info are Share Control PDUs on the I/O channel
+/// ([MS-RDPBCGR] 2.2.13.3, 2.2.10.1), so data on another channel is kept whole.
+@Test func redactionKeepsStaticChannelData() throws {
+    let transcript = RDPWireTranscript()
+    transcript.noteIOChannel(KRdpCapture.ioChannelID)
+    for chunk in staticChunksThatReadAsSecrets {
+        transcript.record(direction: .serverToClient, layer: .application, bytes: chunk, capturePayload: true)
+    }
+
+    for chunk in staticChunksThatReadAsSecrets {
+        #expect(chunk.redactingServerSecrets(ioChannelID: KRdpCapture.ioChannelID) == chunk)
+    }
+    #expect(transcript.events.map(\.bytes) == staticChunksThatReadAsSecrets)
+}
+
+/// A session's transcript redacts on the I/O channel its MCS Connect Response named, and
+/// keeps other channels' data whole.
+@Test func sessionTranscriptRedactsOnlyTheIOChannel() throws {
+    let password = utf16LittleEndian("S3cret!", nullTerminated: true)
+    let redirection = KRdpCapture.ioPacket(KRdpCapture.redirection(
+        flags: RDPServerRedirectionPDU.Flags.noRedirect.rawValue | RDPServerRedirectionPDU.Flags.loadBalanceInfo.rawValue,
+        password: password
+    ))
+    let transcript = RDPWireTranscript()
+
+    let run = try KRdpCapture.run(
+        appending: [redirection] + staticChunksThatReadAsSecrets + [KRdpCapture.emptyGraphicsFrame(id: 1)],
+        frameCaptureLimit: 2,
+        wireTranscript: transcript
+    )
+
+    #expect(run.report.error == nil)
+    let recorded = transcript.events.compactMap(\.bytes)
+    #expect(recorded.contains { $0.count == redirection.count && $0.prefix(20) == redirection.prefix(20) })
+    #expect(!recorded.contains { $0.range(of: password) != nil })
+    for chunk in staticChunksThatReadAsSecrets {
+        #expect(recorded.contains(chunk))
+    }
 }
 
 @Test func transcriptRedactsServerSecretsAndStopsAtItsCap() throws {

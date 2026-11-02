@@ -80,11 +80,14 @@ public final class RDPWireTranscript: @unchecked Sendable {
         var layer: RDPWireLayer
         var byteCount: Int
         var payload: Data?
+        /// The connection's I/O channel when the record was made, nil before it was known.
+        var ioChannelID: UInt16?
     }
 
     private let lock = NSLock()
     private var storage: [Record] = []
     private var stopped = false
+    private var ioChannelID: UInt16?
     private let maximumPayloadByteCount: Int?
     private var payloadByteCount = 0
 
@@ -104,7 +107,9 @@ public final class RDPWireTranscript: @unchecked Sendable {
                 layer: record.layer,
                 byteCount: record.byteCount,
                 hex: record.payload.map {
-                    (record.direction == .serverToClient ? $0.redactingServerSecrets : $0).rdpHexString
+                    (record.direction == .serverToClient
+                        ? $0.redactingServerSecrets(ioChannelID: record.ioChannelID)
+                        : $0).rdpHexString
                 }
             )
         }
@@ -135,9 +140,16 @@ public final class RDPWireTranscript: @unchecked Sendable {
                 direction: direction,
                 layer: layer,
                 byteCount: bytes.count,
-                payload: capturePayload ? bytes : nil
+                payload: capturePayload ? bytes : nil,
+                ioChannelID: ioChannelID
             ))
         }
+    }
+
+    /// Takes the I/O channel of the connection being recorded, from its MCS Connect Response;
+    /// the server PDUs recorded after it are redacted only on that channel.
+    func noteIOChannel(_ channelID: UInt16) {
+        lock.withLock { ioChannelID = channelID }
     }
 
     /// Records a layer marker with no payload (e.g. the NLA handshake).
@@ -160,8 +172,15 @@ extension Data {
     /// know or a layout it rejects, has everything after its RedirFlags zeroed, and a
     /// Save Session Info PDU it cannot read everything after its Share Data header: the
     /// secret could be anywhere in them.
-    var redactingServerSecrets: Data {
-        guard first == TPKT.version, let indication = try? MCSSendDataIndicationPDU.parse(fromTPKT: self) else {
+    ///
+    /// Both are Share Control PDUs on the I/O channel ([MS-RDPBCGR] 2.2.13.3, 2.2.10.1), so a
+    /// static channel's data is kept whole however its first bytes read. With `ioChannelID`
+    /// nil, before the channel is known, a packet on any channel is read as one.
+    func redactingServerSecrets(ioChannelID: UInt16?) -> Data {
+        guard first == TPKT.version,
+              let indication = try? MCSSendDataIndicationPDU.parse(fromTPKT: self),
+              ioChannelID.map({ indication.channelID == $0 }) ?? true
+        else {
             return self
         }
         func littleEndian(_ value: UInt32) -> Data {
