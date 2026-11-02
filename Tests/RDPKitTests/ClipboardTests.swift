@@ -704,6 +704,54 @@ import Testing
     #expect(Set(names.map { $0.lowercased() }).count == names.count)
 }
 
+/// A numbered name keeps only the start of a long base name, so long names that differ only
+/// further on are numbered alike: each skips the numbers the others took, and a server's list
+/// of many such names, each twice, is still named in linear time.
+@Test func clipboardRemoteFileTransferFilesNumberManyLongNamesOfOneStartQuickly() throws {
+    // 255 UTF-8 bytes each: "-2" leaves room for the 84 shared characters only.
+    let start = String(repeating: "\u{3042}", count: 84)
+    let rawNames = (0x4E00 ..< 0x4E00 + 1_000).compactMap { Unicode.Scalar($0) }.map { start + String(Character($0)) }
+    let list = RDPClipboardFileGroupDescriptorW(descriptors: (rawNames + rawNames).map {
+        fileDescriptor(flags: RDPClipboardFileDescriptorFlags.unicode, fileName: $0)
+    })
+
+    let started = Date()
+    let names = try list.remoteFileTransferFiles().map(\.fileName)
+
+    #expect(Date().timeIntervalSince(started) < 2)
+    #expect(Array(names.prefix(1_000)) == rawNames)
+    #expect(names[1_000] == start + "-2")
+    #expect(names[1_098] == String(repeating: "\u{3042}", count: 83) + "-100")
+    #expect(names.last == String(repeating: "\u{3042}", count: 83) + "-1001")
+    #expect(Set(names.map { $0.lowercased() }).count == names.count)
+}
+
+/// Where "-N" cuts a long extension short, a numbered name can end in whitespace, which the
+/// stored name drops. Long names that differ only there are numbered alike too, and a
+/// server's list of many such names, each twice, is still named in linear time.
+@Test func clipboardRemoteFileTransferFilesNumberManyLongNamesDifferingInTrimmedWhitespaceQuickly() throws {
+    // 255 UTF-8 bytes each: "a." and 238 "x", a distinct run of four 3-byte spaces, and a
+    // 3-byte character that "-2" pushes out of the extension, leaving the spaces at its end.
+    // Not U+2000 or U+2001, which are canonically U+2002 and U+2003.
+    let spaces = (0x2002 ... 0x200A).compactMap { Unicode.Scalar($0) } + ["\u{205F}", "\u{3000}"]
+    let rawNames = (0 ..< 1_000).map { index -> String in
+        let run = [index % 11, index / 11 % 11, index / 121 % 11, 0].map { String(spaces[$0]) }.joined()
+        return "a." + String(repeating: "x", count: 238) + run + "\u{4E00}"
+    }
+    let list = RDPClipboardFileGroupDescriptorW(descriptors: (rawNames + rawNames).map {
+        fileDescriptor(flags: RDPClipboardFileDescriptorFlags.unicode, fileName: $0)
+    })
+
+    let started = Date()
+    let names = try list.remoteFileTransferFiles().map(\.fileName)
+
+    #expect(Date().timeIntervalSince(started) < 2)
+    #expect(Array(names.prefix(1_000)) == rawNames)
+    #expect(names[1_000] == "a-2." + String(repeating: "x", count: 238))
+    #expect(names.last == "a-1001." + String(repeating: "x", count: 238))
+    #expect(Set(names.map { $0.lowercased() }).count == names.count)
+}
+
 @Test func clipboardRemoteFileTransferFilesNeverEscapeTheDownloadDirectory() throws {
     let longName = String(repeating: "\u{3042}", count: 200) + ".txt"
     let list = RDPClipboardFileGroupDescriptorW(descriptors: [

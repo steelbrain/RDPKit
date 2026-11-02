@@ -1,14 +1,14 @@
 import Foundation
 
-/// The file names the side a clipboard file is copied to accepts: `apple` for remote files
-/// saved on this device, `windows` for local files the server pastes.
-/// The paths a set of files has taken, ignoring case, and the number each name tries next, so
-/// the thousandth "a.txt" does not try the 999 numbers before its own.
+/// The paths a set of files has taken, ignoring case, and the number names numbered alike try
+/// next, so the thousandth "a.txt" does not try the 999 numbers before its own.
 struct RDPClipboardUsedFileNames {
     fileprivate var paths = Set<String>()
     fileprivate var nextNumbers: [String: Int] = [:]
 }
 
+/// The file names the side a clipboard file is copied to accepts: `apple` for remote files
+/// saved on this device, `windows` for local files the server pastes.
 enum RDPClipboardFileNameRules {
     /// APFS and HFS+: no "/" or ":", at most 255 UTF-8 bytes. Control characters and line
     /// separators go too, so a name shows on one line, and so do the bidi embeddings,
@@ -106,10 +106,8 @@ enum RDPClipboardFileNameRules {
     /// number, it goes to the top level alone: pasted outside its folder, but whole and under
     /// its own name.
     private func uniquePath(of name: String, in folder: String?, usedPaths: inout RDPClipboardUsedFileNames) -> String {
-        // Names are never given back, so every number below the next one for this name is taken.
-        let key = Self.folded((folder ?? "") + "\\" + name)
         var folder = folder
-        var number = usedPaths.nextNumbers[key] ?? 1
+        var number = 1
         while true {
             guard let candidate = candidate(name, numbered: number, in: folder) else {
                 // No room left in the folders: the top level.
@@ -117,12 +115,43 @@ enum RDPClipboardFileNameRules {
                 number = 1
                 continue
             }
+            // Names are never given back, so every number below the next one for a key is taken.
+            let key = numberingKey(of: name, numbered: number, in: folder)
+            if let next = usedPaths.nextNumbers[key], next > number {
+                number = next
+                continue
+            }
+            usedPaths.nextNumbers[key] = number + 1
             if usedPaths.paths.insert(Self.folded(candidate)).inserted {
-                usedPaths.nextNumbers[key] = number + 1
                 return candidate
             }
             number += 1
         }
+    }
+
+    /// What the candidate for `number` is made of besides the number: `name` itself for 1,
+    /// and from 2 on the start of its base name that fits beside a suffix of as many digits,
+    /// with its extension, trimmed as the candidate is. Long names that differ only further
+    /// on, or only in what trimming drops where a long extension is cut, are given the same
+    /// numbered paths, so they share a key and none tries again the numbers another has
+    /// taken: a server's list of thousands of such names is still named in linear time.
+    private func numberingKey(of name: String, numbered number: Int, in folder: String?) -> String {
+        guard number > 1 else {
+            return Self.folded((folder ?? "") + "\\" + name)
+        }
+        let nameText = name as NSString
+        let extensionText = nameText.pathExtension.isEmpty ? "" : ".\(nameText.pathExtension)"
+        // The digits masked with NUL, which no valid name has, so no name's own key is the
+        // same; trimming drops no NUL, so the key ends where the candidate does.
+        let suffix = "-" + String(repeating: "\u{0}", count: String(number).count) + extensionText
+        let numbered = trimmed(joined(nameText.deletingPathExtension, suffix: suffix, maximumLength: maximumLength(in: folder)))
+        return Self.folded((folder ?? "") + "\\" + numbered)
+    }
+
+    /// The longest last component a path in `folder` has room for.
+    private func maximumLength(in folder: String?) -> Int {
+        folder.map { min(Self.maximumComponentLength, Self.maximumWindowsPathLength - length(of: $0) - 1) }
+            ?? Self.maximumComponentLength
     }
 
     /// `path` as a file system that ignores case compares it. APFS folds case as Unicode does,
@@ -148,7 +177,7 @@ enum RDPClipboardFileNameRules {
                     maximumLength: Self.maximumComponentLength
                 ))
         }
-        let room = min(Self.maximumComponentLength, Self.maximumWindowsPathLength - length(of: folder) - 1)
+        let room = maximumLength(in: folder)
         guard room > length(of: suffix) else {
             return nil
         }
