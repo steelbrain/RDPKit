@@ -161,8 +161,11 @@ An app whose interface lives on the main thread can leave that to
 `RDPLiveSession`. It calls `run` on a thread of its own, decodes each frame
 off it, and hands decoded frames, decode failures and wire samples to the main
 queue in order. Work handed to `deliver(_:)` keeps its place among them, and
-none of it runs once `cancel()` has returned. `recipient(_:)` hands such work
-to an object, such as a view controller, that the session holds weakly:
+none of it runs once `cancel()` has returned. The main queue has to run on the
+main thread, as it does under an app's run loop, `RunLoop.main.run()` or an
+`async` `@main`; under `dispatchMain()` it runs on another thread, and the
+first delivery stops the process saying so. `recipient(_:)` hands such work to
+an object, such as a view controller, that the session holds weakly:
 
 ```swift
 let session = RDPLiveSession()
@@ -262,9 +265,12 @@ let report = client.run(
   Remote Login's handover sends it
 - New, upgraded, and stored RDP client license handling
 - System trust evaluation of the server's certificate chain, certificate
-  SHA-256 reporting, early TLS certificate callbacks, and configurable
-  certificate warning visibility
+  SHA-256 reporting, early TLS certificate callbacks, configurable
+  certificate warning visibility, and `RDPTrustedServerCertificates` to trust
+  a server's certificate on first use, per host and port
 - A connection timeout for every milestone before the first frame, TCP
+  connect retries (`connectAttempts`, `connectRetryDelay`) for the first
+  connection into the local network while Apple platforms ask for access, TCP
   keepalive during live sessions, and cancellation from any thread
 - Typed failure reasons (`RDPConnectionFailure`) and named, categorized server
   termination codes (`RDPRemoteTermination`)
@@ -294,9 +300,11 @@ let report = client.run(
   `RDPRemotePointerBitmap` to turn a shape into premultiplied RGBA or a
   `CGImage` and a hot spot for a native cursor
 - Display control channel support for resize and multi-monitor layouts
-  (`RDPMonitorLayout`), checked against the server's capabilities, and
-  `resendLayout()`, which Windows and gnome-remote-desktop answer with a
-  keyframe after video fails to decode
+  (`RDPMonitorLayout`), checked against the server's capabilities
+- Keyframe recovery: once the frame handler reports video it could not decode,
+  the session resends the layout as it is (`recoversVideoWithLayoutResend`),
+  which Windows and gnome-remote-desktop answer with a keyframe;
+  `requestKeyframe()` does the same for an app that asks itself
 - Connect-time multi-monitor layouts in Client Monitor Data and Client Monitor
   Extended Data, up to 32,766 x 32,766 pixels, and the server's Monitor Layout
   PDU in the report, live through `RDPLiveConnectionReport`, also without a
@@ -322,6 +330,9 @@ let report = client.run(
   server's clipboard; leave `clipboardEnabled` off to keep it untouched.
   `withdrawLocalCopy()` takes the client's copy back off the server only while
   `serverHoldsLocalCopy`, leaving a copy the server's user made since alone.
+  With `fetchesRemoteCopies` off, the client fetches none of the server's
+  copies; turning it on again fetches one announced meanwhile, unless the
+  client has published since.
 - HTML (CF_HTML), RTF, and bitmap (CF_DIB) clipboard content in both
   directions through `RDPClipboardContent`, with `RDPClipboardBitmap` to
   convert a DIB to and from `CGImage`. Windows 11 passes text, RTF, and
@@ -388,6 +399,9 @@ let report = client.run(
   `RDPDisplayControlSession` for an app's `onDisplayControlReady` code, whose
   server the test lays out as a ResetGraphics does and ends, and which records
   the layouts the session sent
+- `RDPDiagnosticText`, which words what a diagnostics view shows: units, pixel
+  formats, hex codes, and summaries of a report's channels, capabilities,
+  messages, graphics failure, redirection and termination
 - Mock server tests for graphics, clipboard, audio, security, Windows, and KRdp
   compatibility flows
 - First-frame capture tooling with configurable geometry, settle windows, and
