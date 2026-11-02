@@ -585,8 +585,9 @@ private func cappedAreaProduct(_ lhs: UInt32, _ rhs: UInt32, _ other: UInt32) ->
 
 /// The layouts one connection asked its server for, and the monitors the server laid out,
 /// shared by the display control sessions it hands out; read and written from any thread.
-final class RDPDisplayLayoutRecord: @unchecked Sendable {
+package final class RDPDisplayLayoutRecord: @unchecked Sendable {
     let connectLayout: RDPMonitorLayout
+    private let onSent: (@Sendable (RDPMonitorLayout) -> Void)?
     private let lock = NSLock()
     private var sentLayout: RDPMonitorLayout?
     private var isSentLayoutPending = false
@@ -595,8 +596,11 @@ final class RDPDisplayLayoutRecord: @unchecked Sendable {
     private var monitorLayoutIssues: RDPRemoteMonitorLayoutIssues = []
     private var outputRect: RDPFrameRect?
 
-    init(connectLayout: RDPMonitorLayout) {
+    /// `onSent` is told of each layout a session sends, as `RDPDisplayControlTestServer`
+    /// records them.
+    package init(connectLayout: RDPMonitorLayout, onSent: (@Sendable (RDPMonitorLayout) -> Void)? = nil) {
         self.connectLayout = connectLayout
+        self.onSent = onSent
     }
 
     var lastSentLayout: RDPMonitorLayout? {
@@ -622,6 +626,7 @@ final class RDPDisplayLayoutRecord: @unchecked Sendable {
             sentLayout = layout
             isSentLayoutPending = true
         }
+        onSent?(layout)
     }
 
     /// The layout that asks the server for a keyframe and keeps its desktop as it is: the one
@@ -662,7 +667,7 @@ final class RDPDisplayLayoutRecord: @unchecked Sendable {
     }
 
     /// Records a ResetGraphics, its graphics output and the monitors it laid out.
-    func noteResetGraphics(outputRect: RDPFrameRect?, monitors: [RDPRemoteMonitor], issues: RDPRemoteMonitorLayoutIssues) {
+    package func noteResetGraphics(outputRect: RDPFrameRect?, monitors: [RDPRemoteMonitor], issues: RDPRemoteMonitorLayoutIssues) {
         lock.withLock {
             self.outputRect = outputRect
             self.monitors = monitors
@@ -684,7 +689,7 @@ public final class RDPDisplayControlSession: Sendable {
     private let layouts: RDPDisplayLayoutRecord
     private let cutoff = RDPSendCutoff()
 
-    init(
+    package init(
         dynamicChannelID: UInt32,
         capabilities: RDPDisplayControlCapabilities,
         userChannelID: UInt16,
@@ -851,7 +856,7 @@ public final class RDPDisplayControlSession: Sendable {
         return try send(layout)
     }
 
-    func end() {
+    package func end() {
         cutoff.cut()
     }
 }

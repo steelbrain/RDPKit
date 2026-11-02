@@ -376,6 +376,10 @@ let report = client.run(
   restarts its clipboard, and answers downloads in full, refused, cut short or
   late. It records the client's copies and pastes the client's text or files,
   and can hold its messages for a test to step through.
+- `RDPKitTesting`'s `RDPDisplayControlTestServer`, a real
+  `RDPDisplayControlSession` for an app's `onDisplayControlReady` code, whose
+  server the test lays out as a ResetGraphics does and ends, and which records
+  the layouts the session sent
 - Mock server tests for graphics, clipboard, audio, security, Windows, and KRdp
   compatibility flows
 - First-frame capture tooling with configurable geometry, settle windows, and

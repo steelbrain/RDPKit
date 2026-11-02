@@ -243,6 +243,12 @@
   one to the session. `isSettled` is true once nothing the server set off is
   still under way, and `settle()`'s documentation shows how to wait for
   handlers that hand work on to the main queue.
+- `RDPKitTesting`'s `RDPDisplayControlTestServer` hands an app's
+  `onDisplayControlReady` code a real `RDPDisplayControlSession`.
+  `resetGraphics(monitors:issues:outputRect:)` lays out the server's monitors
+  as a ResetGraphics does, setting `serverMonitors` and counting
+  `graphicsResetCount`. `endSession()` ends the session as a server that
+  replaces its channel does, and `sentLayouts` records what the session sent.
 - `RDPConnectionReport.presentedFrameCount` counts the frames the
   `onGraphicsFrame` handler showed, where `rdpGraphicsFirstFrame` is the first
   that came, shown or not.
