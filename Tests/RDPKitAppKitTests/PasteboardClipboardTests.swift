@@ -212,6 +212,14 @@ private final class Shared<Value>: @unchecked Sendable {
     }
 }
 
+/// What a test does while the bridge's `onEvent`, which holds the hook, reports a download:
+/// the test sets `run` for each copy, and a variable in its place would be changed after the
+/// closure captured it.
+@MainActor
+private final class DownloadHook {
+    var run: () -> Void = {}
+}
+
 /// What the test servers' sessions handed the bridge, on the main thread.
 @MainActor
 private final class ServerHandOff {
@@ -1445,14 +1453,14 @@ final class PasteboardClipboardTests: XCTestCase {
     func testAFailedDownloadSaysWhy() async throws {
         let clipboard = makeClipboard()
         var toasts: [String] = []
-        var whileDownloading: () -> Void = {}
+        let whileDownloading = DownloadHook()
         clipboard.onEvent = { event in
             guard let text = toastText(for: event) else {
                 return
             }
             toasts.append(text)
             if text.hasPrefix("Downloading") {
-                whileDownloading()
+                whileDownloading.run()
             }
         }
         let server = try await connectServer(to: clipboard)
@@ -1481,7 +1489,7 @@ final class PasteboardClipboardTests: XCTestCase {
         try await expectFailure(saying: "Remote files exceed 32 MiB")
 
         // A folder the file cannot be written to.
-        whileDownloading = {
+        whileDownloading.run = {
             for folder in self.downloadRootContents() {
                 let path = self.downloadRoot.appendingPathComponent(folder).path
                 try? FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: path)
@@ -1489,7 +1497,7 @@ final class PasteboardClipboardTests: XCTestCase {
         }
         server.copyFiles([file])
         try await expectFailure(saying: "Remote file could not be saved")
-        whileDownloading = {}
+        whileDownloading.run = {}
 
         try await copyFilesUnanswered([file], on: server)
         await server.endSession()
@@ -1561,14 +1569,14 @@ final class PasteboardClipboardTests: XCTestCase {
     func testNewerCopyDropsARemoteFileStillDownloading() async throws {
         let clipboard = makeClipboard()
         var toasts: [String] = []
-        var whileDownloading: () -> Void = {}
+        let whileDownloading = DownloadHook()
         clipboard.onEvent = { event in
             guard let text = toastText(for: event) else {
                 return
             }
             toasts.append(text)
             if text.hasPrefix("Downloading") {
-                whileDownloading()
+                whileDownloading.run()
             }
         }
         let server = try await connectServer(to: clipboard)
@@ -1576,7 +1584,7 @@ final class PasteboardClipboardTests: XCTestCase {
 
         // A local copy the poll has not seen yet still wins: RDPKit cannot
         // end a download for it.
-        whileDownloading = { [pasteboard] in
+        whileDownloading.run = { [pasteboard] in
             pasteboard?.clearContents()
             pasteboard?.setString("local", forType: .string)
         }
@@ -1587,14 +1595,14 @@ final class PasteboardClipboardTests: XCTestCase {
 
         // So does one the poll has published.
         toasts.removeAll()
-        whileDownloading = { [pasteboard, weak clipboard] in
+        whileDownloading.run = { [pasteboard, weak clipboard] in
             pasteboard?.clearContents()
             pasteboard?.setString("newer local", forType: .string)
             clipboard?.poll()
         }
         server.copyFiles([file])
         try await finishLastDownload(from: server)
-        whileDownloading = {}
+        whileDownloading.run = {}
         XCTAssertEqual(serverHandOff.downloadTasks.last?.isCancelled, true)
         XCTAssertEqual(pasteboard.string(forType: .string), "newer local")
         let pasted = await server.pasteText()
@@ -1960,13 +1968,13 @@ final class PasteboardClipboardTests: XCTestCase {
 
     func testFinishedDownloadIsRemovedOnceItLeavesThePasteboard() async throws {
         let clipboard = makeClipboard()
-        var whileDownloading: () -> Void = {}
+        let whileDownloading = DownloadHook()
         clipboard.onEvent = { event in
             guard let text = toastText(for: event) else {
                 return
             }
             if text.hasPrefix("Downloading") {
-                whileDownloading()
+                whileDownloading.run()
             }
         }
         let server = try await connectServer(to: clipboard)
@@ -1976,10 +1984,10 @@ final class PasteboardClipboardTests: XCTestCase {
         let firstFileURL = try XCTUnwrap(copiedFileURL())
 
         var keptWhileDownloading = false
-        whileDownloading = { keptWhileDownloading = self.fileExists(firstFileURL) }
+        whileDownloading.run = { keptWhileDownloading = self.fileExists(firstFileURL) }
         server.copyFiles([file])
         try await finishLastDownload(from: server)
-        whileDownloading = {}
+        whileDownloading.run = {}
         XCTAssertTrue(keptWhileDownloading, "Still pasteable while the next file downloads")
         let secondFileURL = try XCTUnwrap(copiedFileURL())
         XCTAssertFalse(fileExists(firstFileURL))
