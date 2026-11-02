@@ -23,6 +23,20 @@ import Testing
 
     #expect(control.isDown(in: .control))
     #expect(control.isDown(in: []) == false)
+    // Without a side bit, the flag alone never names this side as held.
+    #expect(control.isSideDown(in: .control) == false)
+    #expect(control.isSideDown(in: NSEvent.ModifierFlags(rawValue: NSEvent.ModifierFlags.control.rawValue | 0x1)))
+}
+
+/// A character key types text, or nothing, on its own; Return, the arrows' and Delete's
+/// control characters and a key with no output are not one.
+@Test func aCharacterKeyIsOneThatTypesTextOrNothingOnItsOwn() {
+    for uncomposed in ["a", "¬", " ", ""] {
+        #expect(RDPMacKeyboardMapping.isCharacterKey(uncomposed: uncomposed))
+    }
+    for uncomposed: String? in ["\r", "\u{1C}", "\u{08}", "\u{7F}", "\u{10}", nil] {
+        #expect(RDPMacKeyboardMapping.isCharacterKey(uncomposed: uncomposed) == false)
+    }
 }
 
 /// A side reads as down from its own bit only; a keyboard with no side bits says no side.
@@ -170,14 +184,15 @@ import Testing
     }
 }
 
-/// Eisu and Kana go as LANG2 and LANG1 whatever the Mac types with them (a space), and Yen and
-/// Ro as the PC JIS keys, where the layout check decides.
+/// Eisu and Kana go as LANG2 and LANG1 whatever the Mac types with them (a space), and Yen,
+/// Ro and the keypad comma as the PC JIS keys, where the layout check decides.
 @Test func jisKeysMapToThePCJISScancodes() {
     let expected: [Int: RDPKeyboardScancode] = [
         kVK_JIS_Eisu: RDPKeyboardScancode(code: 0x71),
         kVK_JIS_Kana: RDPKeyboardScancode(code: 0x72),
         kVK_JIS_Yen: RDPKeyboardScancode(code: 0x7D),
         kVK_JIS_Underscore: RDPKeyboardScancode(code: 0x73),
+        kVK_JIS_KeypadComma: RDPKeyboardScancode(code: 0x7E),
     ]
     for (keyCode, scancode) in expected {
         #expect(RDPMacKeyboardMapping.scancode(forKeyCode: UInt16(keyCode)) == scancode)
@@ -186,6 +201,9 @@ import Testing
     #expect(sendsScancode(kVK_JIS_Kana, [], characters: " "))
     #expect(sendsScancode(kVK_JIS_Yen, [], characters: "¥") == false)
     #expect(sendsScancode(kVK_JIS_Underscore, [], characters: "_") == false)
+    #expect(sendsScancode(kVK_JIS_KeypadComma, [], characters: ",") == false)
+    // US has no key 0x7E, so the keypad comma's "," goes as Unicode there.
+    #expect(windowsTypes(",", scancode: 0x7E) == false)
 }
 
 private func sendsScancode(
@@ -228,8 +246,16 @@ private func sendsScancode(
 
     #expect(sendsScancode(kVK_ANSI_L, .option, characters: "@", ignoringModifiers: "l", isAltPressed: true))
     #expect(sendsScancode(kVK_ANSI_L, [.option, .command], characters: "@", ignoringModifiers: "l"))
+    #expect(sendsScancode(kVK_ANSI_L, [.option, .control], characters: "@", ignoringModifiers: "l"))
     #expect(sendsScancode(kVK_ANSI_L, .option, characters: "@", ignoringModifiers: "l", isHeldAsScancode: true))
     #expect(sendsScancode(kVK_LeftArrow, .option, characters: "\u{F702}"))
+    // Option changed nothing, or typed a control or function-key character (the Apple logo, at
+    // the top of AppKit's function-key range).
+    #expect(sendsScancode(kVK_ANSI_L, .option, characters: "l"))
+    #expect(sendsScancode(kVK_ANSI_LeftBracket, .option, characters: "\u{1B}", ignoringModifiers: "["))
+    #expect(sendsScancode(kVK_ANSI_K, [.option, .shift], characters: "\u{F8FF}", ignoringModifiers: "K"))
+    // Without Option, a character a dead key composed is left to the layout check.
+    #expect(sendsScancode(kVK_ANSI_E, [], characters: "é", ignoringModifiers: "e") == false)
     #expect(RDPMacKeyboardMapping.optionTypes("\u{F702}", charactersIgnoringModifiers: "\u{F703}") { true } == false)
     #expect(RDPMacKeyboardMapping.optionTypes("\u{1B}", charactersIgnoringModifiers: "a") { true } == false)
 }
@@ -806,7 +832,9 @@ private func keyEvent(
     #expect(RDPMacKeyboardMapping.deadKeyText(aheadOf: "´\t") == "´")
     #expect(RDPMacKeyboardMapping.deadKeyText(aheadOf: "´\u{1B}") == "´")
     #expect(RDPMacKeyboardMapping.deadKeyText(aheadOf: "^\u{03}") == "^")
-    for characters: String? in [nil, "", "\r", "a", "´", "´a", "´\r\r", "\r´", "\u{F702}", "\u{F702}\r", "\u{F728}"] {
+    for characters: String? in [
+        nil, "", "\r", "a", "é", "^", "´", "´a", "´\r\r", "\r´", "\u{1B}\r", "\u{F702}", "\u{F702}\r", "\u{F728}",
+    ] {
         #expect(RDPMacKeyboardMapping.deadKeyText(aheadOf: characters) == nil)
     }
 }

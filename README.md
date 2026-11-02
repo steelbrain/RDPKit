@@ -166,7 +166,7 @@ let session = RDPLiveSession()
 session.start(
     events: RDPLiveSession.Events(
         onFrameDecoded: { presentation, _, _, _ in
-            // The app's own, such as RDPRemoteDesktopVideoView.present(_:id:) on macOS.
+            // The app's own, such as RDPFramePresenter.present(_:) on macOS.
             show(presentation)
         },
         onFrameDecodeFailed: { _, error in print("not shown: \(error)") },
@@ -303,8 +303,9 @@ let report = client.run(
   without display control
 - HiDPI-aware display scale models for Apple clients
 - `RDPKitAppKit`'s `RDPRemoteDesktopVideoView`, which shows decoded frames on
-  macOS and recovers a failed display layer, and `RDPFramePresentationClock`,
-  which paces them to the display's refresh without waking an idle main thread
+  macOS on a whole screen pixel and recovers a failed display layer, and
+  `RDPFramePresenter`, which paces them to the display's refresh without
+  waking an idle main thread
 - Showing one monitor of a multi-monitor desktop: `RDPRemoteDisplayViewport`
   maps input within a `sourceRect` such as an `RDPRemoteMonitor`'s, and
   `RDPFrameSampleBufferFactory.sourceRect` crops the picture to it

@@ -17,6 +17,28 @@ public struct RDPRemoteDesktopVideoLayout: Equatable, Sendable {
     }
 }
 
+extension RDPRemoteDesktopVideoLayout {
+    /// Shows `viewport`'s desktop where its `contentRect` is, in a view whose bounds are the
+    /// viewport's. Without a source rect the video layer is the size of the bounds, moved as
+    /// `contentRect` moves onto a whole screen pixel, so a frame of a new size letterboxes in
+    /// it before the viewport catches up rather than stretching; with one it is `contentRect`,
+    /// for a view whose `sourceRect` crops each frame to that rect.
+    public init(viewport: RDPRemoteDisplayViewport) {
+        let contentRect = viewport.contentRect
+        guard viewport.sourceRect == nil else {
+            self.init(videoFrame: contentRect)
+            return
+        }
+        var unaligned = viewport
+        unaligned.backingScaleFactor = nil
+        let fitted = unaligned.contentRect
+        self.init(videoFrame: viewport.bounds.offsetBy(
+            dx: contentRect.minX - fitted.minX,
+            dy: contentRect.minY - fitted.minY
+        ))
+    }
+}
+
 /// Shows decoded frames through an `AVSampleBufferDisplayLayer`, letterboxed in the view unless
 /// `videoLayout` places them. A change of format, a layer that failed to decode and one that
 /// needs a flush to resume are flushed before the next frame, and a layer that fails between
@@ -30,7 +52,9 @@ public final class RDPRemoteDesktopVideoView: NSView {
     /// mask stays a cheap scissor, where a mask would render every frame through an offscreen
     /// pass.
     private let videoContainer = CALayer()
-    private let displayLayer = AVSampleBufferDisplayLayer()
+    /// The layer the video shows in, to inspect, as tests do. The view sets its frame and
+    /// gravity and enqueues each frame; changing those changes what it shows.
+    public let displayLayer = AVSampleBufferDisplayLayer()
     let sampleBufferFactory = RDPFrameSampleBufferFactory()
     private var lastPresentationID: Int?
     /// Shown again when the layer fails between frames; an idle remote screen sends no new one.

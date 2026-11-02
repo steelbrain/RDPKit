@@ -67,9 +67,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
     private var viewerMetricsSummary: String?
     private var previewDecodeError: String?
     private var hasPresentedFrame = false
-    private var framePresentationBuffer = RDPFramePresentationBuffer()
     private var framePacing = RDPFramePacingState()
-    private var remoteDesktopRenderer = RDPRemoteDesktopRenderer()
     private var renderMetricsStore = RDPRenderMetricsStore()
     private let diagnosticsModel = RemoteSessionDiagnosticsModel()
     private var certificateTrustedByApp = false
@@ -90,7 +88,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
     private let sidebarContentView = NSView()
     private let sidebarStack = NSStackView()
     private let detailView = RDPRemoteSessionAppKitDetailView()
-    private let frameClockView = RDPFramePresentationClock()
+    private lazy var framePresenter = RDPFramePresenter(videoView: detailView.displayView)
     private var sidebarWidthConstraint: NSLayoutConstraint?
     private var detailMinimumWidthConstraint: NSLayoutConstraint?
 
@@ -272,14 +270,14 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         detailView.onForgetCertificate = { [weak self] in self?.forgetCurrentCertificate() }
         detailView.onAllowLegacyCredSSP = { [weak self] in self?.allowLegacyCredSSP() }
         detailView.onSurfaceSizeChange = { [weak self] size in self?.updateViewerSurfaceSize(size) }
-        remoteDesktopRenderer.attach(detailView.displayView)
-
+        let frameClockView = framePresenter.clockView
         frameClockView.translatesAutoresizingMaskIntoConstraints = false
-        frameClockView.isHidden = true
-        frameClockView.onFrame = { [weak self] displayLink in
-            self?.displayLinkFrameArrived(displayLink)
+        framePresenter.onShow = { [weak self] presentation in
+            if self?.noteShownFrame(presentation) == true {
+                self?.render()
+            }
         }
-        frameClockView.onTimingChange = { [weak self] nextState in
+        framePresenter.onTimingChange = { [weak self] nextState in
             self?.updateFramePacing(nextState)
         }
 
@@ -486,7 +484,6 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
             canConnect: canStartConnection,
             canCancel: isConnecting
         )
-        remoteDesktopRenderer.attach(detailView.displayView)
     }
 
     private func legacyCredSSPNoticeState() -> RDPAppKitNoticeState? {
@@ -569,7 +566,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
     }
 
     private func updateFrameClock() {
-        frameClockView.isEnabled = framePresentationClockEnabled
+        framePresenter.isPacing = isConnecting
     }
 
     private func startDiagnosticsLoop() {
@@ -825,7 +822,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                         ? nil
                         : nextReport.rdpGraphicsFirstFrame.map(decodeReportFirstFrame)
                     sink.apply { controller in
-                        controller.flushPendingFramePresentation()
+                        controller.framePresenter.flush()
                         controller.publishRenderMetricsSnapshotIfNeeded(force: true)
                         controller.report = nextReport
                         controller.updateGraphicsPathSummary()
@@ -858,7 +855,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                                     timing: timing
                                 )
                                 controller.publishRenderMetricsSnapshotIfNeeded(force: true, at: decodedAt)
-                                controller.applyFramePresentation(presentation)
+                                controller.framePresenter.present(presentation)
                             case let .failed(receivedAt, errorDescription):
                                 controller.previewDecodeError = errorDescription
                                 controller.renderMetricsStore.recordDecodeFailure(
@@ -1034,42 +1031,22 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         }
     }
 
+    /// Shows the frame now or at the display's next refresh, the first at once; returns whether
+    /// a frame it replaced changed the metrics shown.
     @discardableResult
     private func presentDecodedFrame(_ presentation: RDPDecodedFramePresentation) -> Bool {
-        // The first frame shows at once; later ones wait for the display's next refresh.
-        guard hasPresentedFrame, frameClockView.requestFrame() else {
-            return applyFramePresentation(presentation)
+        guard framePresenter.present(presentation) == .replaced else {
+            return false
         }
-
-        if framePresentationBuffer.replacePendingPresentation(presentation) {
-            let skippedAt = Date()
-            renderMetricsStore.recordSkippedPresentationFrame(at: skippedAt)
-            return publishRenderMetricsSnapshotIfNeeded(at: skippedAt)
-        }
-        return false
+        let skippedAt = Date()
+        renderMetricsStore.recordSkippedPresentationFrame(at: skippedAt)
+        return publishRenderMetricsSnapshotIfNeeded(at: skippedAt)
     }
 
-    private var framePresentationClockEnabled: Bool {
-        isConnecting && hasPresentedFrame
-    }
-
-    private func displayLinkFrameArrived(_ displayLink: CADisplayLink) {
-        let nextFramePacing = framePacing.updatingDisplayLinkDuration(displayLink.duration)
-        let pacingChanged = updateFramePacing(nextFramePacing, shouldRender: false)
-        let presentationChanged = flushPendingFramePresentation()
-        if pacingChanged || presentationChanged {
-            render()
-        }
-    }
-
-    @discardableResult
-    private func updateFramePacing(
-        _ nextState: RDPFramePacingState,
-        shouldRender: Bool = true
-    ) -> Bool {
+    private func updateFramePacing(_ nextState: RDPFramePacingState) {
         let currentBackingScaleFactor = framePacing.backingScaleFactor
         guard framePacing != nextState else {
-            return false
+            return
         }
 
         framePacing = nextState
@@ -1077,30 +1054,17 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         if currentBackingScaleFactor != nextState.backingScaleFactor {
             refreshViewerPixelSize()
         }
-        if shouldRender {
-            render()
-        }
-        return true
+        render()
     }
 
-    @discardableResult
-    private func flushPendingFramePresentation() -> Bool {
-        guard let pendingFramePresentation = framePresentationBuffer.takePendingPresentation() else {
-            return false
-        }
-        return applyFramePresentation(pendingFramePresentation)
-    }
-
-    /// Returns whether the view needs a render: for the first frame, or a new desktop size that
-    /// the canvas and input mapping follow.
-    @discardableResult
-    private func applyFramePresentation(_ presentation: RDPDecodedFramePresentation) -> Bool {
+    /// Notes a frame the presenter showed; returns whether the view needs a render: for the
+    /// first frame, or a new desktop size that the canvas and input mapping follow.
+    private func noteShownFrame(_ presentation: RDPDecodedFramePresentation) -> Bool {
         let wasFirstPresentedFrame = hasPresentedFrame == false
         let sizeChanged = previewFrame.map {
             $0.width != presentation.frame.width || $0.height != presentation.frame.height
         } ?? true
         presentedFrameCount += 1
-        remoteDesktopRenderer.present(presentation, id: presentedFrameCount)
         if sizeChanged {
             previewFrame = RDPFrameMetadata(presentation.frame)
             latestPresentedFrame = nil
@@ -1178,9 +1142,8 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
     }
 
     private func resetFramePresentationState() {
-        framePresentationBuffer.clear()
+        framePresenter.clear()
         hasPresentedFrame = false
-        remoteDesktopRenderer.clear()
     }
 
     private func refuseCertificate(_ refusal: CertificateRefusal) {

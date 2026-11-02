@@ -13,7 +13,7 @@ import Testing
         return
     }
     let view = RDPRemoteDesktopVideoView(frame: CGRect(x: 0, y: 0, width: 64, height: 64))
-    let renderer = try #require(view.layer?.sublayers?.first?.sublayers?.first as? AVSampleBufferDisplayLayer).sampleBufferRenderer
+    let renderer = view.displayLayer.sampleBufferRenderer
     var imageBuffer: CVPixelBuffer?
     #expect(CVPixelBufferCreate(kCFAllocatorDefault, 16, 16, kCVPixelFormatType_32BGRA, nil, &imageBuffer) == kCVReturnSuccess)
     let presentation = try RDPDecodedFramePresentation(
@@ -142,13 +142,15 @@ func displayResetConditionsFlushBeforeEnqueue(
 
 
 /// Without a layout the video fills the view, letterboxed by the layer; a layout places the
-/// layer and clips it, in the view's coordinates, and nil fills the view again.
+/// layer and clips it, in the view's coordinates, and nil fills the view again. The display
+/// layer stays in its container throughout, as moving it could drop the image it shows.
 @MainActor
 @Test func aVideoLayoutPlacesAndClipsTheVideo() throws {
     let view = RDPRemoteDesktopVideoView(frame: CGRect(x: 0, y: 0, width: 200, height: 100))
     view.layout()
-    let container = try #require(view.layer?.sublayers?.first)
-    let displayLayer = try #require(container.sublayers?.first as? AVSampleBufferDisplayLayer)
+    let displayLayer = view.displayLayer
+    let container = try #require(displayLayer.superlayer)
+    #expect(container.superlayer === view.layer)
     #expect(container.frame == CGRect(x: 0, y: 0, width: 200, height: 100))
     #expect(displayLayer.frame == CGRect(x: 0, y: 0, width: 200, height: 100))
     #expect(container.masksToBounds == false)
@@ -160,6 +162,7 @@ func displayResetConditionsFlushBeforeEnqueue(
     #expect(container.frame == CGRect(x: 20, y: 10, width: 160, height: 80))
     #expect(container.masksToBounds)
     #expect(displayLayer.frame == CGRect(x: -120, y: -10, width: 400, height: 100))
+    #expect(displayLayer.superlayer === container)
 
     view.videoLayout = RDPRemoteDesktopVideoLayout(videoFrame: CGRect(x: 10, y: 0, width: 180, height: 100))
     #expect(container.frame == CGRect(x: 0, y: 0, width: 200, height: 100))
@@ -168,6 +171,101 @@ func displayResetConditionsFlushBeforeEnqueue(
 
     view.videoLayout = nil
     #expect(displayLayer.frame == CGRect(x: 0, y: 0, width: 200, height: 100))
+    #expect(displayLayer.superlayer === container)
+    #expect(container.superlayer === view.layer)
+}
+
+/// A viewport's layout without a source rect is a layer the size of the view, moved as the
+/// content rect moves onto a whole pixel, so the frame letterboxes in it right where the
+/// content rect is; with a source rect it is the content rect.
+@Test func aViewportsLayoutShowsTheDesktopOnAWholePixel() {
+    // 1280x720 fits 1001x700 at 563.0625 high, 68.46875 up, which a 2x screen puts at 68.5.
+    var viewport = RDPRemoteDisplayViewport(
+        remotePixelSize: CGSize(width: 1280, height: 720),
+        bounds: CGRect(x: 0, y: 0, width: 1001, height: 700),
+        coordinateOrigin: .bottomLeft,
+        backingScaleFactor: 2
+    )
+    #expect(viewport.contentRect.minY == 68.5)
+
+    let whole = RDPRemoteDesktopVideoLayout(viewport: viewport)
+    #expect(whole.clipRect == nil)
+    #expect(whole.videoFrame == CGRect(x: 0, y: 0.03125, width: 1001, height: 700))
+    let letterboxed = RDPRemoteDisplayViewport(
+        remotePixelSize: viewport.remotePixelSize,
+        bounds: whole.videoFrame,
+        coordinateOrigin: .bottomLeft
+    ).contentRect
+    #expect(letterboxed == viewport.contentRect)
+
+    viewport.sourceRect = CGRect(x: 0, y: 0, width: 640, height: 720)
+    #expect(RDPRemoteDesktopVideoLayout(viewport: viewport) == RDPRemoteDesktopVideoLayout(videoFrame: viewport.contentRect))
+}
+
+/// Moving to a display of another scale changes the video's scale without animating it, once
+/// the layers are on screen: layers not yet committed never animate.
+@MainActor
+@Test func aScaleChangeDoesNotAnimateTheVideo() {
+    let window = ScaledWindow()
+    window.scale = 2
+    let view = RDPRemoteDesktopVideoView(frame: CGRect(x: 0, y: 0, width: 200, height: 100))
+    window.contentView = view
+    defer { window.contentView = nil }
+    #expect(view.displayLayer.contentsScale == 2)
+    CATransaction.flush()
+
+    window.scale = 1
+    view.viewDidChangeBackingProperties()
+    #expect(view.displayLayer.contentsScale == 1)
+    #expect(view.displayLayer.animationKeys() == nil)
+}
+
+/// `onFrame` can ask for the next refresh, and the display link keeps running for it.
+@MainActor
+@Test func onFrameCanRequestTheNextFrame() {
+    let window = ScaledWindow()
+    let clock = RDPFramePresentationClock()
+    window.contentView = clock
+    defer {
+        clock.onFrame = nil
+        window.contentView = nil
+    }
+    clock.isEnabled = true
+    var refreshCount = 0
+    clock.onFrame = { _ in
+        refreshCount += 1
+        if refreshCount == 1 {
+            #expect(clock.requestFrame())
+        }
+    }
+    let displayLink = window.displayLink(target: clock, selector: #selector(clock.displayLinkFired(_:)))
+
+    #expect(clock.requestFrame())
+    clock.displayLinkFired(displayLink)
+    #expect(refreshCount == 1)
+    #expect(clock.isDisplayLinkRunning)
+    clock.displayLinkFired(displayLink)
+    #expect(refreshCount == 2)
+    #expect(!clock.isDisplayLinkRunning)
+}
+
+/// A window whose backing scale a test sets.
+private final class ScaledWindow: NSWindow {
+    var scale: CGFloat?
+
+    convenience init() {
+        self.init(
+            contentRect: CGRect(x: 0, y: 0, width: 200, height: 100),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        isReleasedWhenClosed = false
+    }
+
+    override var backingScaleFactor: CGFloat {
+        scale ?? super.backingScaleFactor
+    }
 }
 
 /// A new source rect shows the last frame again, cropped the new way, since an idle desktop
@@ -210,6 +308,85 @@ func displayResetConditionsFlushBeforeEnqueue(
     #expect(buffer.replacePendingPresentation(first) == false)
     buffer.clear()
     #expect(buffer.takePendingPresentation() == nil)
+}
+
+/// A presentation of a `width` pixel wide frame, so tests tell frames apart by width.
+private func presentation(width: UInt16) throws -> RDPDecodedFramePresentation {
+    var imageBuffer: CVPixelBuffer?
+    #expect(CVPixelBufferCreate(kCFAllocatorDefault, Int(width), 16, kCVPixelFormatType_32BGRA, nil, &imageBuffer) == kCVReturnSuccess)
+    return try RDPDecodedFramePresentation(frame: graphicsFrame(width: width, height: 16), imageBuffer: #require(imageBuffer))
+}
+
+/// The first frame shows at once; later ones wait for the next refresh, which shows the last
+/// to come, and publishes the display link's interval. A frame that came while one waited
+/// replaced it.
+@MainActor
+@Test func aPresenterShowsTheFirstFrameAtOnceAndPacesTheRest() throws {
+    let window = ScaledWindow()
+    let videoView = RDPRemoteDesktopVideoView(frame: CGRect(x: 0, y: 0, width: 200, height: 100))
+    let presenter = RDPFramePresenter(videoView: videoView)
+    window.contentView = videoView
+    videoView.addSubview(presenter.clockView)
+    defer { window.contentView = nil }
+    var shown: [UInt16] = []
+    presenter.onShow = { shown.append($0.frame.width) }
+    var timings: [RDPFramePacingState] = []
+    presenter.onTimingChange = { timings.append($0) }
+
+    #expect(try presenter.present(presentation(width: 16)) == .shown)
+    #expect(shown == [16])
+    #expect(try presenter.present(presentation(width: 24)) == .waiting)
+    #expect(try presenter.present(presentation(width: 32)) == .replaced)
+    #expect(shown == [16])
+    #expect(presenter.clockView.isDisplayLinkRunning)
+
+    let displayLink = window.displayLink(target: presenter.clockView, selector: #selector(RDPFramePresentationClock.displayLinkFired(_:)))
+    presenter.clockView.displayLinkFired(displayLink)
+    #expect(shown == [16, 32])
+    #expect(timings.last?.displayLinkDuration == presenter.timing.displayLinkDuration)
+    #expect(timings.last == presenter.timing)
+    #expect(presenter.flush() == false)
+}
+
+/// Turning pacing off shows the frame waiting, and the ones after it at once; `flush()` shows
+/// the frame waiting; `clear()` drops it, and the next frame is a first one again.
+@MainActor
+@Test func aPresenterFlushesAndClears() throws {
+    let window = ScaledWindow()
+    let videoView = RDPRemoteDesktopVideoView(frame: CGRect(x: 0, y: 0, width: 200, height: 100))
+    let presenter = RDPFramePresenter(videoView: videoView)
+    window.contentView = videoView
+    videoView.addSubview(presenter.clockView)
+    defer { window.contentView = nil }
+    var shown: [UInt16] = []
+    presenter.onShow = { shown.append($0.frame.width) }
+
+    try presenter.present(presentation(width: 16))
+    try presenter.present(presentation(width: 24))
+    #expect(presenter.flush())
+    #expect(shown == [16, 24])
+    #expect(presenter.flush() == false)
+
+    try presenter.present(presentation(width: 32))
+    presenter.isPacing = false
+    #expect(shown == [16, 24, 32])
+    #expect(try presenter.present(presentation(width: 40)) == .shown)
+    #expect(!presenter.clockView.isDisplayLinkRunning)
+
+    presenter.isPacing = true
+    #expect(try presenter.present(presentation(width: 48)) == .waiting)
+    presenter.clear()
+    #expect(presenter.flush() == false)
+    #expect(try presenter.present(presentation(width: 56)) == .shown)
+    #expect(shown == [16, 24, 32, 40, 56])
+}
+
+/// Without a window there is no display to wait for, so every frame shows at once.
+@MainActor
+@Test func aPresenterWithNoWindowShowsEveryFrame() throws {
+    let presenter = RDPFramePresenter(videoView: RDPRemoteDesktopVideoView(frame: .zero))
+    #expect(try presenter.present(presentation(width: 16)) == .shown)
+    #expect(try presenter.present(presentation(width: 24)) == .shown)
 }
 
 private func graphicsFrame(width: UInt16, height: UInt16) -> RDPGraphicsFrameSnapshot {

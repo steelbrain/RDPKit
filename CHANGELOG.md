@@ -263,13 +263,23 @@
 - `RDPKitAppKit` also holds the video side of a macOS client, from RDPClient
   with RDPeek's container layer:
   - `RDPRemoteDesktopVideoView` shows decoded frames through an
-    `AVSampleBufferDisplayLayer`. It flushes on a format change and shows the
-    last frame again when the layer fails. `videoLayout` places and clips the
-    video, for chosen monitors, and `sourceRect` crops each frame.
-  - `RDPFramePresentationClock` paces frames to the window's display link,
-    which runs only while a frame waits (`requestFrame()`), and publishes the
-    screen's timing as `RDPFramePacingState`.
-  - `RDPFramePresentationBuffer` holds the one frame waiting for it.
+    `AVSampleBufferDisplayLayer` (`displayLayer`). It flushes on a format
+    change and shows the last frame again when the layer fails. `videoLayout`
+    places and clips the video, for chosen monitors, and `sourceRect` crops
+    each frame.
+  - `RDPRemoteDesktopVideoLayout(viewport:)` lays the video out where an
+    `RDPRemoteDisplayViewport` draws the desktop, on a whole screen pixel. A
+    whole desktop gets a layer the size of the view, so a frame of a new size
+    letterboxes in it rather than stretching.
+  - `RDPFramePresenter` paces frames to the display for a video view. It
+    shows the first frame at once, and holds each later one for the next
+    refresh. `present(_:)` says whether a frame was shown, waits or replaced
+    one that waited, a skipped presentation. Turning `isPacing` off or
+    `flush()` shows the frame waiting, and `clear()` drops it.
+  - Underneath it, `RDPFramePresentationClock` paces to the window's display
+    link, which runs only while a frame waits (`requestFrame()`), and
+    publishes the screen's timing as `RDPFramePacingState`.
+    `RDPFramePresentationBuffer` holds the one frame waiting for it.
 - `RDPScrollWheelAccumulator.events(deltaX:deltaY:isPrecise:at:)` takes a
   scroll as AppKit reports it, a line a notch of 120 rotation units and a
   precise scroll's point 10, with the horizontal axis negated for RDP.
