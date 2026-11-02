@@ -363,22 +363,13 @@ final class RDPCredSSPNTLMContext {
         return output
     }
 
-    /// MS-NLMP 3.3.2 NTOWFv2. Windows upper-cases the user name per UTF-16 code unit
-    /// (RtlUpcaseUnicodeString), so "ß" stays "ß" instead of expanding to "SS", and a
-    /// character outside the BMP stays as it is: its surrogates have no case mapping.
+    /// MS-NLMP 3.3.2 NTOWFv2. Windows upper-cases the user name with its own table, one UTF-16
+    /// code unit at a time (RtlUpcaseUnicodeString), so "ß" stays "ß" instead of expanding to
+    /// "SS", a character outside the BMP stays as it is, and "ı" and "µ" stay too.
     static func ntowfV2(password: String, username: String, domain: String) -> Data {
-        var uppercasedUsername = String.UnicodeScalarView()
-        for scalar in username.unicodeScalars {
-            let mapping = scalar.properties.uppercaseMapping.unicodeScalars
-            if scalar.value <= 0xFFFF, mapping.count == 1, let uppercased = mapping.first {
-                uppercasedUsername.append(uppercased)
-            } else {
-                uppercasedUsername.append(scalar)
-            }
-        }
-        return hmacMD5(
+        hmacMD5(
             key: md4(Data(utf16LittleEndian: password)),
-            data: Data(utf16LittleEndian: String(uppercasedUsername) + domain)
+            data: Data(utf16LittleEndian: RDPWindowsUpcase.uppercased(username) + domain)
         )
     }
 

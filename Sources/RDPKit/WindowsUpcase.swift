@@ -1,0 +1,167 @@
+// What Windows' RtlUpcaseUnicodeChar makes of each UTF-16 code unit, read on Windows 11
+// (build 26200) by passing it all 65,536 from PowerShell: 973 change, and no surrogate does
+// (Tests/RDPKitTests/Fixtures/windows-upcase.json).
+// It is not Unicode's case mapping: Windows keeps µ, ı, ſ, ς, ǅ, the Greek symbol variants,
+// Georgian Mkhedruli and the letters later Unicode versions gave an uppercase, and maps
+// U+1F80 to U+1F88, which Unicode's full mapping makes two characters.
+
+enum RDPWindowsUpcase {
+    /// Runs of code units, first through last, every `stride`th one upper-cased by adding
+    /// `delta`.
+    private static let runs: [(first: UInt16, last: UInt16, stride: UInt16, delta: Int32)] = [
+        (0x0061, 0x007A, 1, -32),
+        (0x00E0, 0x00F6, 1, -32),
+        (0x00F8, 0x00FE, 1, -32),
+        (0x00FF, 0x00FF, 1, 121),
+        (0x0101, 0x012F, 2, -1),
+        (0x0133, 0x0137, 2, -1),
+        (0x013A, 0x0148, 2, -1),
+        (0x014B, 0x0177, 2, -1),
+        (0x017A, 0x017E, 2, -1),
+        (0x0180, 0x0180, 1, 195),
+        (0x0183, 0x0185, 2, -1),
+        (0x0188, 0x0188, 1, -1),
+        (0x018C, 0x018C, 1, -1),
+        (0x0192, 0x0192, 1, -1),
+        (0x0195, 0x0195, 1, 97),
+        (0x0199, 0x0199, 1, -1),
+        (0x019A, 0x019A, 1, 163),
+        (0x019E, 0x019E, 1, 130),
+        (0x01A1, 0x01A5, 2, -1),
+        (0x01A8, 0x01A8, 1, -1),
+        (0x01AD, 0x01AD, 1, -1),
+        (0x01B0, 0x01B0, 1, -1),
+        (0x01B4, 0x01B6, 2, -1),
+        (0x01B9, 0x01B9, 1, -1),
+        (0x01BD, 0x01BD, 1, -1),
+        (0x01BF, 0x01BF, 1, 56),
+        (0x01C6, 0x01C6, 1, -2),
+        (0x01C9, 0x01C9, 1, -2),
+        (0x01CC, 0x01CC, 1, -2),
+        (0x01CE, 0x01DC, 2, -1),
+        (0x01DD, 0x01DD, 1, -79),
+        (0x01DF, 0x01EF, 2, -1),
+        (0x01F3, 0x01F3, 1, -2),
+        (0x01F5, 0x01F5, 1, -1),
+        (0x01F9, 0x021F, 2, -1),
+        (0x0223, 0x0233, 2, -1),
+        (0x023C, 0x023C, 1, -1),
+        (0x0242, 0x0242, 1, -1),
+        (0x0247, 0x024F, 2, -1),
+        (0x0250, 0x0250, 1, 10783),
+        (0x0251, 0x0251, 1, 10780),
+        (0x0253, 0x0253, 1, -210),
+        (0x0254, 0x0254, 1, -206),
+        (0x0256, 0x0257, 1, -205),
+        (0x0259, 0x0259, 1, -202),
+        (0x025B, 0x025B, 1, -203),
+        (0x0260, 0x0260, 1, -205),
+        (0x0263, 0x0263, 1, -207),
+        (0x0268, 0x0268, 1, -209),
+        (0x0269, 0x0269, 1, -211),
+        (0x026B, 0x026B, 1, 10743),
+        (0x026F, 0x026F, 1, -211),
+        (0x0271, 0x0271, 1, 10749),
+        (0x0272, 0x0272, 1, -213),
+        (0x0275, 0x0275, 1, -214),
+        (0x027D, 0x027D, 1, 10727),
+        (0x0280, 0x0280, 1, -218),
+        (0x0283, 0x0283, 1, -218),
+        (0x0288, 0x0288, 1, -218),
+        (0x0289, 0x0289, 1, -69),
+        (0x028A, 0x028B, 1, -217),
+        (0x028C, 0x028C, 1, -71),
+        (0x0292, 0x0292, 1, -219),
+        (0x0371, 0x0373, 2, -1),
+        (0x0377, 0x0377, 1, -1),
+        (0x037B, 0x037D, 1, 130),
+        (0x03AC, 0x03AC, 1, -38),
+        (0x03AD, 0x03AF, 1, -37),
+        (0x03B1, 0x03C1, 1, -32),
+        (0x03C3, 0x03CB, 1, -32),
+        (0x03CC, 0x03CC, 1, -64),
+        (0x03CD, 0x03CE, 1, -63),
+        (0x03D7, 0x03D7, 1, -8),
+        (0x03D9, 0x03EF, 2, -1),
+        (0x03F2, 0x03F2, 1, 7),
+        (0x03F8, 0x03F8, 1, -1),
+        (0x03FB, 0x03FB, 1, -1),
+        (0x0430, 0x044F, 1, -32),
+        (0x0450, 0x045F, 1, -80),
+        (0x0461, 0x0481, 2, -1),
+        (0x048B, 0x04BF, 2, -1),
+        (0x04C2, 0x04CE, 2, -1),
+        (0x04CF, 0x04CF, 1, -15),
+        (0x04D1, 0x0523, 2, -1),
+        (0x0561, 0x0586, 1, -48),
+        (0x1D79, 0x1D79, 1, 35332),
+        (0x1D7D, 0x1D7D, 1, 3814),
+        (0x1E01, 0x1E95, 2, -1),
+        (0x1EA1, 0x1EFF, 2, -1),
+        (0x1F00, 0x1F07, 1, 8),
+        (0x1F10, 0x1F15, 1, 8),
+        (0x1F20, 0x1F27, 1, 8),
+        (0x1F30, 0x1F37, 1, 8),
+        (0x1F40, 0x1F45, 1, 8),
+        (0x1F51, 0x1F57, 2, 8),
+        (0x1F60, 0x1F67, 1, 8),
+        (0x1F70, 0x1F71, 1, 74),
+        (0x1F72, 0x1F75, 1, 86),
+        (0x1F76, 0x1F77, 1, 100),
+        (0x1F78, 0x1F79, 1, 128),
+        (0x1F7A, 0x1F7B, 1, 112),
+        (0x1F7C, 0x1F7D, 1, 126),
+        (0x1F80, 0x1F87, 1, 8),
+        (0x1F90, 0x1F97, 1, 8),
+        (0x1FA0, 0x1FA7, 1, 8),
+        (0x1FB0, 0x1FB1, 1, 8),
+        (0x1FB3, 0x1FB3, 1, 9),
+        (0x1FC3, 0x1FC3, 1, 9),
+        (0x1FD0, 0x1FD1, 1, 8),
+        (0x1FE0, 0x1FE1, 1, 8),
+        (0x1FE5, 0x1FE5, 1, 7),
+        (0x1FF3, 0x1FF3, 1, 9),
+        (0x214E, 0x214E, 1, -28),
+        (0x2170, 0x217F, 1, -16),
+        (0x2184, 0x2184, 1, -1),
+        (0x24D0, 0x24E9, 1, -26),
+        (0x2C30, 0x2C5E, 1, -48),
+        (0x2C61, 0x2C61, 1, -1),
+        (0x2C65, 0x2C65, 1, -10795),
+        (0x2C66, 0x2C66, 1, -10792),
+        (0x2C68, 0x2C6C, 2, -1),
+        (0x2C73, 0x2C73, 1, -1),
+        (0x2C76, 0x2C76, 1, -1),
+        (0x2C81, 0x2CE3, 2, -1),
+        (0x2D00, 0x2D25, 1, -7264),
+        (0xA641, 0xA65F, 2, -1),
+        (0xA663, 0xA66D, 2, -1),
+        (0xA681, 0xA697, 2, -1),
+        (0xA723, 0xA72F, 2, -1),
+        (0xA733, 0xA76F, 2, -1),
+        (0xA77A, 0xA77C, 2, -1),
+        (0xA77F, 0xA787, 2, -1),
+        (0xA78C, 0xA78C, 1, -1),
+        (0xFF41, 0xFF5A, 1, -32),
+    ]
+
+    private static let mapping: [UInt16: UInt16] = {
+        var mapping: [UInt16: UInt16] = [:]
+        for run in runs {
+            for codeUnit in stride(from: run.first, through: run.last, by: Int(run.stride)) {
+                mapping[codeUnit] = UInt16(Int32(codeUnit) + run.delta)
+            }
+        }
+        return mapping
+    }()
+
+    /// What Windows' RtlUpcaseUnicodeChar makes of `codeUnit`.
+    static func uppercased(_ codeUnit: UInt16) -> UInt16 {
+        mapping[codeUnit] ?? codeUnit
+    }
+
+    /// What Windows' RtlUpcaseUnicodeString makes of `text`, one UTF-16 code unit at a time.
+    static func uppercased(_ text: String) -> String {
+        String(decoding: text.utf16.map(uppercased), as: UTF16.self)
+    }
+}

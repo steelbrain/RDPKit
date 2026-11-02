@@ -526,6 +526,45 @@ import Testing
     #expect(RDPCredSSPNTLMContext.ntowfV2(password: "Password", username: "\u{10428}user", domain: "Domain") == expected)
 }
 
+/// Windows upper-cases with its own table, not Unicode's case mappings: it keeps "µ", "ı", "ſ",
+/// "ς" and the titlecase "ǅ", maps "ǆ" to "Ǆ" and U+1F80 to U+1F88, which Unicode's full
+/// mapping makes two characters, and keeps Georgian Mkhedruli.
+@Test func ntlmNTOWFv2UpperCasesTheUserNameAsWindowsDoes() {
+    let ntHash = RDPCredSSPNTLMContext.md4(utf16LittleEndian("Password"))
+    let expected = Data(HMAC<Insecure.MD5>.authenticationCode(
+        for: utf16LittleEndian("USÉRµıſςǄǅ\u{1F88}აDomain"),
+        using: SymmetricKey(data: ntHash)
+    ))
+    #expect(RDPCredSSPNTLMContext.ntowfV2(password: "Password", username: "usérµıſςǆǅ\u{1F80}ა", domain: "Domain") == expected)
+}
+
+/// The table gives what RtlUpcaseUnicodeChar gave Windows 11 for each of the 65,536 UTF-16
+/// code units, and RtlUpcaseUnicodeString for each string read.
+@Test func windowsUpcaseTableMatchesWhatWindowsGave() throws {
+    struct Capture: Decodable {
+        struct Sample: Decodable {
+            var input: [UInt16]
+            var output: [UInt16]
+        }
+
+        var changedCodeUnits: [[UInt16]]
+        var strings: [Sample]
+    }
+    let url = try #require(Bundle.module.url(forResource: "windows-upcase", withExtension: "json", subdirectory: "Fixtures"))
+    let capture = try JSONDecoder().decode(Capture.self, from: Data(contentsOf: url))
+    var windows: [UInt16: UInt16] = [:]
+    for pair in capture.changedCodeUnits {
+        windows[pair[0]] = pair[1]
+    }
+    #expect(windows.count == 973)
+
+    let mismatches = (UInt16.min ... UInt16.max).filter { RDPWindowsUpcase.uppercased($0) != windows[$0] ?? $0 }
+    #expect(mismatches.isEmpty)
+    for sample in capture.strings {
+        #expect(Array(RDPWindowsUpcase.uppercased(String(decoding: sample.input, as: UTF16.self)).utf16) == sample.output)
+    }
+}
+
 @Test func credSSPTSRequestParsesAuthInfoPubKeyAndNonce() throws {
     let request = RDPCredSSPTSRequest(
         version: 5,
