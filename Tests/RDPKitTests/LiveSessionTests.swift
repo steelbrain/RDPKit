@@ -253,3 +253,32 @@ func aLiveSessionCanBeWaitedOnUntilItEnds() async throws {
     #expect(await ending.waitUntilEnded(timeout: 30))
     #expect(endReturned.value)
 }
+
+/// A recipient hands work to its object while the object lives, without keeping it alive.
+@MainActor
+@Test(.timeLimit(.minutes(1)))
+func aLiveSessionsRecipientHoldsItsObjectWeakly() async throws {
+    @MainActor
+    final class Controller {
+        var events: [String] = []
+    }
+    let session = RDPLiveSession()
+    var controller: Controller? = Controller()
+    let recipient = session.recipient(try #require(controller))
+    #expect(isKnownUniquelyReferenced(&controller))
+    let received = Locked([String]())
+
+    recipient.deliver { controller in
+        controller.events.append("first")
+        received.withLock { $0.append("first") }
+    }
+    await drainMainQueue()
+    #expect(controller?.events == ["first"])
+
+    controller = nil
+    recipient.deliver { _ in
+        received.withLock { $0.append("after release") }
+    }
+    await drainMainQueue()
+    #expect(received.value == ["first"])
+}

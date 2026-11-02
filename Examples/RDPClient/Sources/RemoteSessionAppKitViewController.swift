@@ -758,7 +758,8 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         isConnecting = true
         render()
 
-        let sink = RDPRemoteSessionMainActorSink(controller: self, session: session)
+        // The handlers hold the controller weakly, so a closed one is not kept alive.
+        let recipient = session.recipient(self)
         let credentialStore = credentialStore
         let clientLicenseStore = clientLicenseStore
         let trustedCertificateStore = trustedCertificateStore
@@ -820,7 +821,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                     let firstFrameDecodeResult = (nextReport.presentedFrameCount ?? 0) > 0
                         ? nil
                         : nextReport.rdpGraphicsFirstFrame.map(decodeReportFirstFrame)
-                    sink.apply { controller in
+                    recipient.deliver { controller in
                         controller.framePresenter.flush()
                         controller.publishRenderMetricsSnapshotIfNeeded(force: true)
                         controller.report = nextReport
@@ -898,24 +899,24 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                     )
                     let persistenceResult = persistCredentialsIfNeeded(persistence.request, store: credentialStore)
                     if let persistenceResult {
-                        sink.apply { controller in
+                        recipient.deliver { controller in
                             controller.applyCredentialPersistenceResult(persistenceResult)
                             controller.render()
                         }
                     } else if persistence.droppedUncheckedSave {
-                        sink.apply { controller in
+                        recipient.deliver { controller in
                             controller.keychainMessage = "Password not saved: the server did not check it before "
                                 + "the session, as it does not use Network Level Authentication."
                             controller.render()
                         }
                     }
-                    sink.apply { controller in
+                    recipient.deliver { controller in
                         controller.inputSession = session
                         controller.render()
                     }
                 },
                 onDisplayControlReady: { session in
-                    sink.apply { controller in
+                    recipient.deliver { controller in
                         controller.displayControlSession = session
                         controller.displayControlMessage = "Display Control ready."
                         // A server redirection's target has not been sent the layout the first server got.
@@ -925,7 +926,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                     }
                 },
                 onClipboardReady: { session in
-                    sink.apply { controller in
+                    recipient.deliver { controller in
                         controller.clipboard.attach(session)
                         controller.render()
                     }
@@ -933,25 +934,25 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                 // Each remote copy comes with its number, so the bridge can drop one that a
                 // publish on the main thread replaced before the copy got there.
                 onClipboardText: { text, copyNumber in
-                    sink.apply { controller in
+                    recipient.deliver { controller in
                         controller.clipboard.receiveText(text, copyNumber: copyNumber)
                         controller.render()
                     }
                 },
                 onClipboardFileGroupDescriptor: { descriptorList, copyNumber in
-                    sink.apply { controller in
+                    recipient.deliver { controller in
                         controller.clipboard.receiveFileList(descriptorList, copyNumber: copyNumber)
                         controller.render()
                     }
                 },
                 onClipboardRemoteCopyUnavailable: { isEmpty, copyNumber in
-                    sink.apply { controller in
+                    recipient.deliver { controller in
                         controller.clipboard.receiveRemoteCopyUnavailable(isEmpty: isEmpty, copyNumber: copyNumber)
                         controller.render()
                     }
                 },
                 onAudioSample: { sample in
-                    sink.apply { controller in
+                    recipient.deliver { controller in
                         guard controller.audioPlaybackEnabled else {
                             return
                         }
@@ -984,7 +985,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                     if refusal != nil {
                         cancellation.cancel()
                     }
-                    sink.apply { controller in
+                    recipient.deliver { controller in
                         controller.serverCertificateInfo = certificateInfo
                         // After a server redirection, the certificate belongs to the redirection target.
                         controller.certificateTrustedByApp = controller.trustedCertificateStore.isTrusted(
@@ -1005,7 +1006,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                     do {
                         return try clientLicenseStore.license(for: clientLicenseKey)
                     } catch {
-                        sink.apply { controller in
+                        recipient.deliver { controller in
                             controller.keychainMessage = String(describing: error)
                             controller.render()
                         }
@@ -1017,7 +1018,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                     guard let result = persistClientLicenseIfNeeded(license, key: clientLicenseKey, store: clientLicenseStore) else {
                         return
                     }
-                    sink.apply { controller in
+                    recipient.deliver { controller in
                         controller.applyClientLicensePersistenceResult(result)
                         controller.render()
                     }
@@ -1786,27 +1787,5 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         stack.addArrangedSubview(connectButton)
         stack.addArrangedSubview(cancelButton)
         return stack
-    }
-}
-
-private final class RDPRemoteSessionMainActorSink: @unchecked Sendable {
-    weak var controller: RDPRemoteSessionViewController?
-    let session: RDPLiveSession
-
-    init(controller: RDPRemoteSessionViewController, session: RDPLiveSession) {
-        self.controller = controller
-        self.session = session
-    }
-
-    /// Runs `operation` on the main queue in submission order, so frames and audio stay
-    /// ordered, unless the session was cancelled by then. The sink holds the controller weakly,
-    /// so this forms no cycle.
-    func apply(_ operation: @escaping @MainActor (RDPRemoteSessionViewController) -> Void) {
-        session.deliver { [self] in
-            guard let controller else {
-                return
-            }
-            operation(controller)
-        }
     }
 }

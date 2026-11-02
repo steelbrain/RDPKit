@@ -786,14 +786,17 @@ private func outboundDisplayControlPayloads(_ channel: EmbeddedChannel) throws -
 
     #expect(session.isEnded == false)
     #expect(try session.send(request.monitorLayout))
-    #expect(try outboundDisplayControlPayloads(channel).count == 1)
+    #expect(session.send(request))
+    #expect(try outboundDisplayControlPayloads(channel).count == 2)
     #expect(throws: RDPMonitorLayoutError.self) {
         try session.send(.singlePrimary(width: 4096, height: 2160))
     }
+    #expect(session.send(RDPDisplayRequest(width: 4096, height: 2160, scaleFactors: RDPDisplayScaleFactors(backingScaleFactor: 1))) == false)
 
     session.end()
     #expect(session.isEnded)
     #expect(try session.send(request.monitorLayout) == false)
+    #expect(session.send(request) == false)
     #expect(try outboundDisplayControlPayloads(channel).isEmpty)
 
     // A session the server has not ended stops sending once the connection closes.

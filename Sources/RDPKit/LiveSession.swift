@@ -100,6 +100,37 @@ public final class RDPLiveSession: @unchecked Sendable {
         }
     }
 
+    /// Hands main-thread work to `object` through ``deliver(_:)`` while holding it weakly. Make
+    /// one before ``start(events:run:)`` and let the handlers capture it in place of `object`,
+    /// such as the view controller showing the session, so the session's thread does not keep
+    /// a closed one alive.
+    public func recipient<Object: AnyObject & Sendable>(_ object: Object) -> Recipient<Object> {
+        Recipient(object: object, session: self)
+    }
+
+    /// An object that work from the session's thread runs with on the main queue; see
+    /// ``RDPLiveSession/recipient(_:)``.
+    public struct Recipient<Object: AnyObject & Sendable>: Sendable {
+        private weak var object: Object?
+        private let session: RDPLiveSession
+
+        fileprivate init(object: Object, session: RDPLiveSession) {
+            self.object = object
+            self.session = session
+        }
+
+        /// Runs `work` with the object on the main queue, as ``RDPLiveSession/deliver(_:)``
+        /// runs work, unless the object is gone by then.
+        public func deliver(_ work: @escaping @MainActor @Sendable (Object) -> Void) {
+            session.deliver { [weak object] in
+                guard let object else {
+                    return
+                }
+                work(object)
+            }
+        }
+    }
+
     /// Ends the session: nothing delivered runs once this returns, and the session's thread
     /// closes the connection and stops decoding.
     @MainActor

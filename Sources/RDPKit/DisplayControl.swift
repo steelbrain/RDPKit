@@ -772,10 +772,12 @@ public final class RDPDisplayControlSession: Sendable {
         ))
     }
 
-    /// Sends the request's one monitor, or nothing when the server's ``capabilities`` do not
-    /// allow it; `send(_:)` with its ``RDPDisplayRequest/monitorLayout`` says which.
-    public func send(_ request: RDPDisplayRequest) {
-        _ = try? send(request.monitorLayout)
+    /// Sends the request's one monitor and returns whether it went to the connection, as
+    /// `send(_:)` with its ``RDPDisplayRequest/monitorLayout`` does; false, without the reason
+    /// that one throws, when the server's ``capabilities`` do not allow it.
+    @discardableResult
+    public func send(_ request: RDPDisplayRequest) -> Bool {
+        (try? send(request.monitorLayout)) ?? false
     }
 
     /// Asks the server for `layout` ([MS-RDPEDISP] 2.2.2.2). Throws ``RDPMonitorLayoutError``

@@ -159,7 +159,8 @@ An app whose interface lives on the main thread can leave that to
 `RDPLiveSession`. It calls `run` on a thread of its own, decodes each frame
 off it, and hands decoded frames, decode failures and wire samples to the main
 queue in order. Work handed to `deliver(_:)` keeps its place among them, and
-none of it runs once `cancel()` has returned:
+none of it runs once `cancel()` has returned. `recipient(_:)` hands such work
+to an object, such as a view controller, that the session holds weakly:
 
 ```swift
 let session = RDPLiveSession()

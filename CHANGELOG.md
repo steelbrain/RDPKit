@@ -90,6 +90,8 @@
 - `RDPDisplayControlSession.send(_:)` says whether the layout went out, and
   `isEnded` whether the session sends anything more: once the server replaces
   its channel or the connection closes, a layout is for the next session.
+  `send(_:)` for an `RDPDisplayRequest` returns a discardable `Bool` too,
+  false also when the server's capabilities refuse the request.
   `RDPDisplayRequest.monitorLayout` is public, so a request goes through it.
 - `RDPRemoteMonitor.index` is the monitor's place in the server's list, which
   stays put when RDPKit leaves out a monitor with nothing in the graphics
@@ -311,7 +313,9 @@
     reports one that failed as not presented;
   - `onWireReceive` coalesces wire samples, the last one sent before the end.
   `events` gets decoded frames, failures and samples on the main queue.
-  `deliver(_:)` puts the app's own main-thread work in the same order.
+  `deliver(_:)` puts the app's own main-thread work in the same order, and
+  `recipient(_:)` hands it to an object held weakly, such as the view
+  controller, so the session's thread does not keep a closed one alive.
   `cancel()` drops whatever has not run yet, so a session the app left
   changes nothing. `onEnd` gets the report on the session thread unless the
   session was cancelled. `waitUntilEnded(timeout:)` returns once the session's
