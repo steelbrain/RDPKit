@@ -59,6 +59,9 @@
   activates the session whatever the password, so activation does not say
   the sign-in worked; a user who logs on at the server's own logon screen is
   notified too.
+- The report's `rdpKeyboardIndicators` holds the toggle keys the server last
+  said are on, so a client can set Caps Lock again when it drifts.
+  `RDPToggleKeyFlags` is `Encodable` and `Hashable`.
 
 ### Compatibility and fixes
 

@@ -84,7 +84,7 @@ struct RDPClientKeyboard: Equatable, Sendable {
     var functionKeyCount: UInt32 = 12
 }
 
-public struct RDPToggleKeyFlags: OptionSet, Sendable {
+public struct RDPToggleKeyFlags: OptionSet, Encodable, Hashable, Sendable {
     public let rawValue: UInt32
 
     public init(rawValue: UInt32) {
@@ -95,6 +95,19 @@ public struct RDPToggleKeyFlags: OptionSet, Sendable {
     public static let numLock = RDPToggleKeyFlags(rawValue: 0x0000_0002)
     public static let capsLock = RDPToggleKeyFlags(rawValue: 0x0000_0004)
     public static let kanaLock = RDPToggleKeyFlags(rawValue: 0x0000_0008)
+
+    private static let names: [(key: Self, name: String)] = [
+        (.scrollLock, "scrollLock"),
+        (.numLock, "numLock"),
+        (.capsLock, "capsLock"),
+        (.kanaLock, "kanaLock"),
+    ]
+
+    /// The keys' names, for reports.
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(Self.names.filter { contains($0.key) }.map(\.name))
+    }
 }
 
 public struct RDPRemotePoint: Equatable, Sendable {

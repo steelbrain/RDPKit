@@ -189,6 +189,9 @@ extension RDPClientConnection {
                 report.rdpAutoReconnectCookie = cookie
             }
         }
+        if let indicators = shareData.keyboardIndicatorFlags {
+            report.rdpKeyboardIndicators = indicators
+        }
         if let monitors = shareData.monitorLayout {
             let layout = monitors.boundingBoxLayout
             report.rdpMonitorLayout = layout.monitors

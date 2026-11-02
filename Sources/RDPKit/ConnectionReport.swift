@@ -89,6 +89,12 @@ public struct RDPConnectionReport: Encodable, Equatable, Sendable {
     public var rdpMonitorLayout: [RDPRemoteMonitor]?
     /// What is off about ``rdpMonitorLayout`` as the server laid it out, in its bounding box.
     public var rdpMonitorLayoutIssues: RDPRemoteMonitorLayoutIssues?
+    /// The toggle keys the server last said are on, in a Set Keyboard Indicators PDU
+    /// ([MS-RDPBCGR] 2.2.8.2.1.1); an ``RDPLiveConnectionReport``'s snapshot holds them as soon
+    /// as they arrive. They can drift from the client's keyboard, such as when another client of
+    /// the session or a server setting changes them, and Caps Lock then types the other case;
+    /// ``RDPInputSession/synchronizationEvents(toggleFlags:)`` sets them again.
+    public var rdpKeyboardIndicators: RDPToggleKeyFlags?
     public var rdpDemandActiveShareID: UInt32?
     public var rdpDemandActiveCapabilitySets: [RDPCapabilitySetSummary]?
     public var rdpConfirmActiveRequestHex: String?
@@ -200,6 +206,7 @@ public struct RDPConnectionReport: Encodable, Equatable, Sendable {
         rdpPostLicensingResponseType: String? = nil,
         rdpMonitorLayout: [RDPRemoteMonitor]? = nil,
         rdpMonitorLayoutIssues: RDPRemoteMonitorLayoutIssues? = nil,
+        rdpKeyboardIndicators: RDPToggleKeyFlags? = nil,
         rdpDemandActiveShareID: UInt32? = nil,
         rdpDemandActiveCapabilitySets: [RDPCapabilitySetSummary]? = nil,
         rdpConfirmActiveRequestHex: String? = nil,
@@ -304,6 +311,7 @@ public struct RDPConnectionReport: Encodable, Equatable, Sendable {
         self.rdpPostLicensingResponseType = rdpPostLicensingResponseType
         self.rdpMonitorLayout = rdpMonitorLayout
         self.rdpMonitorLayoutIssues = rdpMonitorLayoutIssues
+        self.rdpKeyboardIndicators = rdpKeyboardIndicators
         self.rdpDemandActiveShareID = rdpDemandActiveShareID
         self.rdpDemandActiveCapabilitySets = rdpDemandActiveCapabilitySets
         self.rdpConfirmActiveRequestHex = rdpConfirmActiveRequestHex

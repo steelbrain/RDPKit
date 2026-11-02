@@ -455,3 +455,31 @@ import Testing
 
     #expect(buffer.readInteger(as: UInt8.self) == 0x03)
 }
+
+/// The report keeps the toggle keys of the server's latest Set Keyboard Indicators PDU
+/// ([MS-RDPBCGR] 2.2.8.2.1.1), so a client can set them again when they drift.
+@Test func reportKeepsTheServersLatestKeyboardIndicators() throws {
+    func setKeyboardIndicators(_ flags: UInt16) -> Data {
+        var payload = Data()
+        payload.appendLittleEndianUInt16(0) // UnitId
+        payload.appendLittleEndianUInt16(flags) // LedFlags
+        return KRdpCapture.ioPacket(KRdpCapture.shareData(pduType2: 0x29, payload: payload))
+    }
+    let liveReport = RDPLiveConnectionReport()
+
+    let run = try KRdpCapture.run(
+        appending: [
+            setKeyboardIndicators(0x0004),
+            setKeyboardIndicators(0x0006),
+            KRdpCapture.emptyGraphicsFrame(id: 1),
+        ],
+        frameCaptureLimit: 2,
+        liveReport: liveReport
+    )
+
+    #expect(run.report.error == nil)
+    #expect(run.report.rdpKeyboardIndicators == [.numLock, .capsLock])
+    #expect(liveReport.snapshot?.rdpKeyboardIndicators == [.numLock, .capsLock])
+    let json = try String(decoding: JSONEncoder().encode(run.report), as: UTF8.self)
+    #expect(json.contains(#""rdpKeyboardIndicators":["numLock","capsLock"]"#))
+}
