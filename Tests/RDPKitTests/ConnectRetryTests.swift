@@ -11,7 +11,7 @@ private func connectFailure(_ errno: Int32) -> RDPConnectionError {
 @Test func aConnectThatMayWorkLaterIsTriedAgain() throws {
     for errno in [EHOSTUNREACH, ENETUNREACH, ETIMEDOUT, EIO] {
         var tries: [Int] = []
-        let connected = try connectRetrying(attempts: 3, delay: 0, callbacks: RDPSessionCallbacks(), onAttempt: { tries.append($0) }) {
+        let connected = try connectRetrying(attempts: 3, delay: 0, callbacks: RDPSessionCallbacks(), onAttempt: { attempt, _ in if tries.last != attempt { tries.append(attempt) } }) {
             guard tries.count == 3 else {
                 throw connectFailure(errno)
             }
@@ -23,7 +23,7 @@ private func connectFailure(_ errno: Int32) -> RDPConnectionError {
 
     var tries: [Int] = []
     let error = #expect(throws: RDPConnectionError.self) {
-        try connectRetrying(attempts: 2, delay: 0, callbacks: RDPSessionCallbacks(), onAttempt: { tries.append($0) }) { () -> String in
+        try connectRetrying(attempts: 2, delay: 0, callbacks: RDPSessionCallbacks(), onAttempt: { attempt, _ in if tries.last != attempt { tries.append(attempt) } }) { () -> String in
             throw connectFailure(tries.count == 1 ? EHOSTUNREACH : ETIMEDOUT)
         }
     }
@@ -43,7 +43,7 @@ private func connectFailure(_ errno: Int32) -> RDPConnectionError {
     for failure in failures {
         var tries = 0
         #expect(throws: RDPConnectionError.self) {
-            try connectRetrying(attempts: 3, delay: 0, callbacks: RDPSessionCallbacks(), onAttempt: { _ in tries += 1 }) { () -> String in
+            try connectRetrying(attempts: 3, delay: 0, callbacks: RDPSessionCallbacks(), onAttempt: { attempt, _ in tries = attempt }) { () -> String in
                 throw failure
             }
         }
@@ -51,7 +51,7 @@ private func connectFailure(_ errno: Int32) -> RDPConnectionError {
     }
     var tries = 0
     #expect(throws: RDPConnectionError.self) {
-        try connectRetrying(attempts: 1, delay: 0, callbacks: RDPSessionCallbacks(), onAttempt: { _ in tries += 1 }) { () -> String in
+        try connectRetrying(attempts: 1, delay: 0, callbacks: RDPSessionCallbacks(), onAttempt: { attempt, _ in tries = attempt }) { () -> String in
             throw connectFailure(EHOSTUNREACH)
         }
     }
@@ -61,7 +61,7 @@ private func connectFailure(_ errno: Int32) -> RDPConnectionError {
 /// Tries are `delay` apart, and cancelling ends the pause at once.
 @Test func aConnectRetryWaitsItsDelayUnlessCancelled() throws {
     var tries: [ContinuousClock.Instant] = []
-    _ = try connectRetrying(attempts: 2, delay: 0.3, callbacks: RDPSessionCallbacks(), onAttempt: { _ in tries.append(.now) }) {
+    _ = try connectRetrying(attempts: 2, delay: 0.3, callbacks: RDPSessionCallbacks(), onAttempt: { attempt, next in if next == nil, attempt > tries.count { tries.append(.now) } }) {
         guard tries.count == 2 else {
             throw connectFailure(EHOSTUNREACH)
         }
@@ -77,7 +77,7 @@ private func connectFailure(_ errno: Int32) -> RDPConnectionError {
     let started = ContinuousClock.now
     var count = 0
     let error = #expect(throws: RDPConnectionError.self) {
-        try connectRetrying(attempts: 3, delay: 60, callbacks: RDPSessionCallbacks(cancellation: cancellation), onAttempt: { _ in count += 1 }) { () -> String in
+        try connectRetrying(attempts: 3, delay: 60, callbacks: RDPSessionCallbacks(cancellation: cancellation), onAttempt: { attempt, _ in count = attempt }) { () -> String in
             throw connectFailure(EHOSTUNREACH)
         }
     }
@@ -92,7 +92,7 @@ private func connectFailure(_ errno: Int32) -> RDPConnectionError {
             attempts: 3,
             delay: 60,
             callbacks: RDPSessionCallbacks(shouldCancel: { ContinuousClock.now - polledStart > .milliseconds(200) }),
-            onAttempt: { _ in }
+            onAttempt: { _, _ in }
         ) { () -> String in
             throw connectFailure(EHOSTUNREACH)
         }
@@ -109,9 +109,8 @@ private func connectFailure(_ errno: Int32) -> RDPConnectionError {
         attempts: 3,
         delay: 0.2,
         callbacks: RDPSessionCallbacks(),
-        onAttempt: { events.append("attempt \($0)") },
-        onWait: { date in
-            events.append(date == nil ? "waited" : "waiting")
+        onAttempt: { attempt, date in
+            events.append(date == nil ? "attempt \(attempt)" : "waiting after \(attempt)")
             if let date {
                 waits.append(date)
             }
@@ -122,7 +121,8 @@ private func connectFailure(_ errno: Int32) -> RDPConnectionError {
         }
         return "connected"
     }
-    #expect(events == ["attempt 1", "waiting", "waited", "attempt 2", "waiting", "waited", "attempt 3"])
+    // The pause's end is the next try's start, in one call.
+    #expect(events == ["attempt 1", "waiting after 1", "attempt 2", "waiting after 2", "attempt 3"])
     #expect(waits.count == 2)
     #expect(waits.allSatisfy { $0.timeIntervalSinceNow < 0.1 && $0.timeIntervalSinceNow > -5 })
     #expect(waits.count == 2 && waits[1].timeIntervalSince(waits[0]) >= 0.2)
@@ -130,6 +130,7 @@ private func connectFailure(_ errno: Int32) -> RDPConnectionError {
     // A delay out of range is waited as its nearest in range: none, or an hour.
     for (delay, seconds) in [(-600.0, 0.0), (.nan, 0), (7200, 3600)] {
         var starts: [Date] = []
+        var calls: [String] = []
         let cancellation = RDPConnectionCancellation()
         let requested = Date()
         #expect(throws: RDPConnectionError.self) {
@@ -137,8 +138,8 @@ private func connectFailure(_ errno: Int32) -> RDPConnectionError {
                 attempts: 2,
                 delay: delay,
                 callbacks: RDPSessionCallbacks(cancellation: cancellation),
-                onAttempt: { _ in },
-                onWait: { date in
+                onAttempt: { attempt, date in
+                    calls.append("\(attempt) \(date == nil ? "starts" : "waits")")
                     if let date {
                         starts.append(date)
                         // Ends a long pause at once; a short one ends on its own.
@@ -149,6 +150,8 @@ private func connectFailure(_ errno: Int32) -> RDPConnectionError {
                 throw connectFailure(EHOSTUNREACH)
             }
         }
+        // Cancelled, the pause ends with the failed try's number and no date.
+        #expect(calls == ["1 starts", "1 waits", "1 starts"])
         #expect(starts.count == 1)
         #expect(abs((starts.first ?? .distantPast).timeIntervalSince(requested) - seconds) < 5)
     }

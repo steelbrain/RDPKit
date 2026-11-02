@@ -2,28 +2,32 @@ import Foundation
 
 /// Runs `connect` until it succeeds, it fails other than a TCP connect the server may answer
 /// later does, or `attempts` tries have failed, `delay` seconds apart. `onAttempt` gets each
-/// try's number, from 1, before it. `onWait` gets when the next try starts as a pause before
-/// it begins, and nil once the pause ends. Cancellation ends a pause with
-/// ``RDPConnectionError/cancelled``.
+/// try's number, from 1, as it starts, with no date; as the pause after a failed try begins,
+/// that try's number with when the next starts; and that number with no date again when
+/// cancellation ends the pause, with ``RDPConnectionError/cancelled``. Each call is the whole
+/// state, so a reader never sees a try's number apart from its date.
 func connectRetrying<Connection>(
     attempts: Int,
     delay: TimeInterval,
     callbacks: RDPSessionCallbacks,
-    onAttempt: (Int) -> Void,
-    onWait: (Date?) -> Void = { _ in },
+    onAttempt: (_ attempt: Int, _ nextAttemptDate: Date?) -> Void,
     connect: () throws -> Connection
 ) throws -> Connection {
     // Up to an hour, which also keeps the deadline within what DispatchTime holds.
     let delay = delay.isNaN ? 0 : min(max(delay, 0), 3600)
     var attempt = 1
     while true {
-        onAttempt(attempt)
+        onAttempt(attempt, nil)
         do {
             return try connect()
         } catch let error as RDPConnectionError where attempt < attempts && error.isRetriableConnectFailure {
-            onWait(Date(timeIntervalSinceNow: delay))
-            defer { onWait(nil) }
-            try pauseBeforeRetry(seconds: delay, callbacks: callbacks)
+            onAttempt(attempt, Date(timeIntervalSinceNow: delay))
+            do {
+                try pauseBeforeRetry(seconds: delay, callbacks: callbacks)
+            } catch {
+                onAttempt(attempt, nil)
+                throw error
+            }
             attempt += 1
         }
     }
@@ -57,5 +61,14 @@ extension RDPConnectionError {
             return false
         }
         return [.hostUnreachable, .networkUnreachable, .timedOut, .other].contains(error.category)
+    }
+}
+
+extension RDPConnectionReport {
+    /// Sets the connect attempt and when the next starts at once, so a live report's copy
+    /// never has one without the other.
+    mutating func noteConnectAttempt(_ attempt: Int, nextAttemptDate: Date?) {
+        connectAttempt = attempt
+        nextConnectAttemptDate = nextAttemptDate
     }
 }

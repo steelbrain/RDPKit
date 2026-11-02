@@ -229,8 +229,7 @@ final class RDPClientConnection {
             attempts: configuration.connectAttempts,
             delay: configuration.connectRetryDelay,
             callbacks: callbacks,
-            onAttempt: { report.connectAttempt = $0 },
-            onWait: { report.nextConnectAttemptDate = $0 }
+            onAttempt: { report.noteConnectAttempt($0, nextAttemptDate: $1) }
         ) {
             try RDPTransport.connect(
                 host: configuration.host,
