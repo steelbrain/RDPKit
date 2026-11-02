@@ -193,8 +193,8 @@ extension RDPClientConnection {
     /// Settles what is queued for a surface the server is deleting, while it is still there.
     /// Staged copies to or from it take their video now. The updates writing it that no
     /// later copy reads have nowhere to go; the others are mapped as the surface is now.
-    private func settlePendingGraphicsUpdates(beforeDeleting surfaceID: UInt16, compositor: RDPGFXSurfaceCompositor) {
-        pendingGraphicsUpdates = expandingStagedVideoCopies(pendingGraphicsUpdates) {
+    private func settlePendingGraphicsUpdates(beforeDeleting surfaceID: UInt16, compositor: RDPGFXSurfaceCompositor) throws {
+        pendingGraphicsUpdates = try expandingStagedVideoCopies(pendingGraphicsUpdates) {
             $0.sourceSurfaceID == surfaceID || $0.destinationSurfaceID == surfaceID
         }
         var isReadLater = false
@@ -230,7 +230,7 @@ extension RDPClientConnection {
     /// The ended frame's snapshots: the decoder's updates in wire order, then the bitmap
     /// snapshots, as other codecs' updates follow the video they were drawn over. Each one
     /// names the surfaces deleted and the decoder's cache entries evicted before it.
-    private func endedFrameSnapshots(frameID: UInt32) -> [RDPGraphicsFrameSnapshot] {
+    private func endedFrameSnapshots(frameID: UInt32) throws -> [RDPGraphicsFrameSnapshot] {
         guard let compositor = graphicsCompositor else {
             return []
         }
@@ -243,7 +243,7 @@ extension RDPClientConnection {
             evictedGraphicsCacheSlots = []
             frames.append(frame)
         }
-        for update in expandingStagedVideoCopies(pendingGraphicsUpdates) {
+        for update in try expandingStagedVideoCopies(pendingGraphicsUpdates) {
             switch mapped(update, compositor: compositor) {
             case let .resolved(frame)?:
                 append(frame)
@@ -279,42 +279,59 @@ extension RDPClientConnection {
 
     /// `updates` with the staged copies `isExpanded` picks replaced by the video they copy:
     /// each access unit once per destination surface, with the regions of all its copies.
-    private func expandingStagedVideoCopies(
+    /// A frame can hold thousands of copies, each over 64 access units of 1,024 regions, so a
+    /// cancelled session stops between copies.
+    func expandingStagedVideoCopies(
         _ updates: [RDPPendingGraphicsUpdate],
         where isExpanded: (RDPGFXSurfaceToSurfacePDU) -> Bool = { _ in true }
-    ) -> [RDPPendingGraphicsUpdate] {
+    ) throws -> [RDPPendingGraphicsUpdate] {
         var expanded: [RDPPendingGraphicsUpdate] = []
         var stagedIndices: [StagedVideoKey: Int] = [:]
+        // Where each surface's video is in `updates`, so a copy looks at its source's alone.
+        var videoIndices: [UInt16: [Int]] = [:]
         for (index, update) in updates.enumerated() {
             guard case let .stagedVideoCopy(copy) = update, isExpanded(copy) else {
+                if case let .frame(frame) = update, frame.contentKind == .video {
+                    videoIndices[frame.surfaceID, default: []].append(index)
+                }
                 expanded.append(update)
                 continue
             }
-            for (videoIndex, earlier) in updates[..<index].enumerated() {
-                guard case let .frame(video) = earlier, video.contentKind == .video, video.surfaceID == copy.sourceSurfaceID
+            try callbacks.throwIfCancelledWithoutPolling()
+            // The decoder decodes an access unit at one offset, and a copy can list 65,535 points:
+            // the unit goes where the first copy's first point puts it, and a later copy adds
+            // its regions when one of its points puts the unit there too, looked up in a set.
+            // gnome-remote-desktop copies each rectangle to its own corner with one point
+            // (blit_surface_to_surface in grd-rdp-dvc-graphics-pipeline.c; the gnome fixtures).
+            // Either point is checked before any region is worked out.
+            let points = Set(copy.destinationPoints)
+            for videoIndex in videoIndices[copy.sourceSurfaceID] ?? [] {
+                guard case let .frame(video) = updates[videoIndex] else {
+                    continue
+                }
+                let key = StagedVideoKey(videoIndex: videoIndex, surfaceID: copy.destinationSurfaceID)
+                guard let stagedIndex = stagedIndices[key] else {
+                    if let point = copy.destinationPoints.first,
+                       let staged = stagedVideoCopy(of: video, sourceRect: copy.sourceRect, to: point, surfaceID: copy.destinationSurfaceID)
+                    {
+                        stagedIndices[key] = expanded.count
+                        expanded.append(.frame(staged))
+                    }
+                    continue
+                }
+                // A second offset would decode the access unit twice; the first one wins.
+                guard case var .frame(first) = expanded[stagedIndex],
+                      let point = video.destinationRect.point(copying: copy.sourceRect, to: first.destinationRect),
+                      points.contains(point),
+                      let copied = stagedVideoCopy(of: video, sourceRect: copy.sourceRect, surfaceID: copy.destinationSurfaceID)
                 else {
                     continue
                 }
-                for point in copy.destinationPoints {
-                    guard let staged = stagedVideoCopy(of: video, sourceRect: copy.sourceRect, to: point, surfaceID: copy.destinationSurfaceID)
-                    else {
-                        continue
-                    }
-                    let key = StagedVideoKey(videoIndex: videoIndex, surfaceID: copy.destinationSurfaceID)
-                    guard let stagedIndex = stagedIndices[key] else {
-                        stagedIndices[key] = expanded.count
-                        expanded.append(.frame(staged))
-                        continue
-                    }
-                    // A second offset would decode the access unit twice; the first one wins.
-                    if case var .frame(first) = expanded[stagedIndex], first.destinationRect == staged.destinationRect {
-                        first.regionRects = (first.regionRects + staged.regionRects)
-                            .boundedVideoRegions(within: first.destinationRect)
-                        first.auxiliaryRegionRects = (first.auxiliaryRegionRects + staged.auxiliaryRegionRects)
-                            .boundedVideoRegions(within: first.destinationRect)
-                        expanded[stagedIndex] = .frame(first)
-                    }
-                }
+                first.regionRects = (first.regionRects + copied.regionRects)
+                    .boundedVideoRegions(within: first.destinationRect)
+                first.auxiliaryRegionRects = (first.auxiliaryRegionRects + copied.auxiliaryRegionRects)
+                    .boundedVideoRegions(within: first.destinationRect)
+                expanded[stagedIndex] = .frame(first)
             }
         }
         return expanded
@@ -368,7 +385,7 @@ extension RDPClientConnection {
     /// Hands the frame's snapshots to the application, then sends the
     /// RDPGFX_FRAME_ACKNOWLEDGE_PDU ([MS-RDPEGFX] 3.2.5.4) for every EndFrame.
     private func finishGraphicsFrame(_ frameID: UInt32) throws {
-        let frames = endedFrameSnapshots(frameID: frameID)
+        let frames = try endedFrameSnapshots(frameID: frameID)
         pendingGraphicsUpdates = []
         // A capture run counts every frame; a live session's first frame is one it shows.
         if try deliver(frames) || targetFrameCount != nil {
@@ -645,16 +662,22 @@ func stagedVideoCopy(
     to point: RDPGFXPoint16,
     surfaceID: UInt16
 ) -> RDPGraphicsFrameSnapshot? {
-    let xOffset = Int(point.x) - Int(sourceRect.left)
-    let yOffset = Int(point.y) - Int(sourceRect.top)
-    let update = video.destinationRect
-    guard let left = UInt16(exactly: Int(update.left) + xOffset),
-          let top = UInt16(exactly: Int(update.top) + yOffset),
-          let right = UInt16(exactly: Int(update.right) + xOffset),
-          let bottom = UInt16(exactly: Int(update.bottom) + yOffset)
+    guard let destinationRect = video.destinationRect.moved(copying: sourceRect, to: point),
+          var staged = stagedVideoCopy(of: video, sourceRect: sourceRect, surfaceID: surfaceID)
     else {
         return nil
     }
+    staged.destinationRect = destinationRect
+    return staged
+}
+
+/// The same, still where `video` is: the regions do not depend on the point.
+private func stagedVideoCopy(
+    of video: RDPGraphicsFrameSnapshot,
+    sourceRect: RDPGFXRect16,
+    surfaceID: UInt16
+) -> RDPGraphicsFrameSnapshot? {
+    let update = video.destinationRect
     let relative = video.hasRelativeRegions
     // The copied part of each region, relative to the update, which moves with it.
     func copied(_ regions: [RDPFrameRect]) -> [RDPFrameRect] {
@@ -681,8 +704,34 @@ func stagedVideoCopy(
     staged.surfaceID = surfaceID
     staged.surfaceRect = nil
     staged.mappedOutputRect = nil
-    staged.destinationRect = RDPFrameRect(left: left, top: top, right: right, bottom: bottom)
     staged.regionRects = regions
     staged.auxiliaryRegionRects = auxiliaryRegions
     return staged
+}
+
+private extension RDPFrameRect {
+    /// This rectangle moved as a copy of `sourceRect` to `point` moves it; nil when that takes
+    /// it out of 16-bit coordinates.
+    func moved(copying sourceRect: RDPGFXRect16, to point: RDPGFXPoint16) -> RDPFrameRect? {
+        let xOffset = Int(point.x) - Int(sourceRect.left)
+        let yOffset = Int(point.y) - Int(sourceRect.top)
+        guard let left = UInt16(exactly: Int(self.left) + xOffset),
+              let top = UInt16(exactly: Int(self.top) + yOffset),
+              let right = UInt16(exactly: Int(self.right) + xOffset),
+              let bottom = UInt16(exactly: Int(self.bottom) + yOffset)
+        else {
+            return nil
+        }
+        return RDPFrameRect(left: left, top: top, right: right, bottom: bottom)
+    }
+
+    /// The point a copy of `sourceRect` goes to that moves this rectangle to `destination`.
+    func point(copying sourceRect: RDPGFXRect16, to destination: RDPFrameRect) -> RDPGFXPoint16? {
+        guard let x = Int16(exactly: Int(sourceRect.left) + Int(destination.left) - Int(left)),
+              let y = Int16(exactly: Int(sourceRect.top) + Int(destination.top) - Int(top))
+        else {
+            return nil
+        }
+        return RDPGFXPoint16(x: x, y: y)
+    }
 }

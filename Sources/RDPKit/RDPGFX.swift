@@ -235,7 +235,7 @@ struct RDPGFXRect16: Equatable, Sendable {
     }
 }
 
-struct RDPGFXPoint16: Equatable, Sendable {
+struct RDPGFXPoint16: Hashable, Sendable {
     var x: Int16
     var y: Int16
 

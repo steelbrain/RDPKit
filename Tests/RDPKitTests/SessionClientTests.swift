@@ -542,6 +542,135 @@ func graphicsPathDescriptionNamesEachVersion10Confirm(version: UInt32, flags: UI
     #expect(overhanging.boundedVideoRegions(within: update) == overhanging)
 }
 
+/// An access unit for unmapped staging surface 2 at (0, 0)-(64, 16), with the 1,024 regions a
+/// video update keeps at most, one pixel each.
+private func stagingSurfaceVideo() -> RDPGraphicsFrameSnapshot {
+    let regions = (0 ..< UInt16(rdpMaximumVideoRegionCount)).map {
+        RDPFrameRect(left: $0 % 64, top: $0 / 64, right: $0 % 64 + 1, bottom: $0 / 64 + 1)
+    }
+    return RDPGraphicsFrameSnapshot(
+        frameID: 9,
+        surfaceID: 2,
+        codecID: RDPGFXCodecID.avc420,
+        codecName: "avc420",
+        pixelFormat: RDPGFXPixelFormat.xrgb8888,
+        destinationRect: RDPFrameRect(left: 0, top: 0, right: 64, bottom: 16),
+        regionRects: regions,
+        encodedVideoData: Data([0x00, 0x00, 0x01, 0x65])
+    )
+}
+
+/// The access units a staged copy's expansion placed, after the `videoCount` it copies.
+private func placedStagedVideo(_ expanded: [RDPPendingGraphicsUpdate], after videoCount: Int) -> [RDPGraphicsFrameSnapshot] {
+    expanded.dropFirst(videoCount).compactMap { update in
+        guard case let .frame(frame) = update else {
+            return nil
+        }
+        return frame
+    }
+}
+
+/// A staged copy can list thousands of points, for each of a frame's 64 access units of 1,024
+/// regions: what it carries of each one is worked out once, not again for every point.
+@Test func stagedVideoCopiesExpandInTimeLinearInTheirPoints() throws {
+    let copy = RDPGFXSurfaceToSurfacePDU(
+        sourceSurfaceID: 2,
+        destinationSurfaceID: 1,
+        sourceRect: RDPGFXRect16(left: 0, top: 0, right: 1, bottom: 1),
+        destinationPoints: (0 ..< 4_096).map { RDPGFXPoint16(x: Int16($0 % 1_024), y: Int16($0 / 1_024)) }
+    )
+    let updates = Array(repeating: RDPPendingGraphicsUpdate.frame(stagingSurfaceVideo()), count: 64) + [.stagedVideoCopy(copy)]
+    let connection = RDPClientConnection(configuration: RDPConnectionConfiguration(host: "example.test"), callbacks: RDPSessionCallbacks())
+
+    let started = Date()
+    let expanded = try connection.expandingStagedVideoCopies(updates)
+    #expect(Date().timeIntervalSince(started) < 1)
+    // Each access unit goes to the destination once, at the first point, with the region copied.
+    let staged = placedStagedVideo(expanded, after: 64)
+    #expect(staged.count == 64)
+    #expect(staged.allSatisfy {
+        $0.surfaceID == 1
+            && $0.destinationRect == RDPFrameRect(left: 0, top: 0, right: 64, bottom: 16)
+            && $0.regionRects == [RDPFrameRect(left: 0, top: 0, right: 1, bottom: 1)]
+    })
+}
+
+/// An access unit goes where a copy's first point puts it. A copy whose first point would take
+/// it out of 16-bit coordinates places none of a frame's 64, without trying its other points:
+/// a copy whose 65,535 points none fits costs one check per unit, not 65,535.
+@Test func stagedVideoCopyWhoseFirstPointDoesNotFitPlacesNoAccessUnit() throws {
+    // A copy of (63, 15)-(64, 16) to a point left of x = 63 or above y = 15 would move the
+    // unit's corner left of or above (0, 0).
+    let sourceRect = RDPGFXRect16(left: 63, top: 15, right: 64, bottom: 16)
+    let noPointFits = RDPGFXSurfaceToSurfacePDU(
+        sourceSurfaceID: 2,
+        destinationSurfaceID: 1,
+        sourceRect: sourceRect,
+        destinationPoints: (0 ..< 65_535).map { RDPGFXPoint16(x: Int16($0 % 32), y: Int16($0 / 32 % 8)) }
+    )
+    let laterPointFits = RDPGFXSurfaceToSurfacePDU(
+        sourceSurfaceID: 2,
+        destinationSurfaceID: 1,
+        sourceRect: sourceRect,
+        destinationPoints: [RDPGFXPoint16(x: 0, y: 0), RDPGFXPoint16(x: 63, y: 15)]
+    )
+    let videos = Array(repeating: RDPPendingGraphicsUpdate.frame(stagingSurfaceVideo()), count: 64)
+    let connection = RDPClientConnection(configuration: RDPConnectionConfiguration(host: "example.test"), callbacks: RDPSessionCallbacks())
+
+    let expanded = try connection.expandingStagedVideoCopies(videos + [.stagedVideoCopy(noPointFits), .stagedVideoCopy(laterPointFits)])
+    #expect(placedStagedVideo(expanded, after: 64).isEmpty)
+}
+
+/// A frame can hold 4,032 copies of one point each after its 64 access units of 1,024 regions.
+/// A copy whose point does not put a placed unit where it is adds nothing, and is checked
+/// before what it carries of the unit is worked out: once placed, each costs a check per unit.
+@Test func manyOnePointStagedVideoCopiesExpandInTimeLinearInTheirCount() throws {
+    let copies = (0 ..< 4_032).map { index in
+        RDPPendingGraphicsUpdate.stagedVideoCopy(RDPGFXSurfaceToSurfacePDU(
+            sourceSurfaceID: 2,
+            destinationSurfaceID: 1,
+            sourceRect: RDPGFXRect16(left: 0, top: 0, right: 64, bottom: 16),
+            destinationPoints: [RDPGFXPoint16(x: Int16(index % 64), y: Int16(index / 64))]
+        ))
+    }
+    let videos = Array(repeating: RDPPendingGraphicsUpdate.frame(stagingSurfaceVideo()), count: 64)
+    let connection = RDPClientConnection(configuration: RDPConnectionConfiguration(host: "example.test"), callbacks: RDPSessionCallbacks())
+
+    let started = Date()
+    let expanded = try connection.expandingStagedVideoCopies(videos + copies)
+    #expect(Date().timeIntervalSince(started) < 2)
+    // The first copy places every unit where it was, with all its regions; the others are
+    // at other offsets.
+    let staged = placedStagedVideo(expanded, after: 64)
+    #expect(staged.count == 64)
+    #expect(staged.allSatisfy {
+        $0.destinationRect == RDPFrameRect(left: 0, top: 0, right: 64, bottom: 16)
+            && $0.regionRects == stagingSurfaceVideo().regionRects
+    })
+}
+
+/// A cancelled session stops expanding a frame's staged copies, which can take a debug build
+/// seconds, at the next copy.
+@Test func cancelledSessionStopsExpandingStagedVideoCopies() {
+    let copy = RDPGFXSurfaceToSurfacePDU(
+        sourceSurfaceID: 2,
+        destinationSurfaceID: 1,
+        sourceRect: RDPGFXRect16(left: 0, top: 0, right: 64, bottom: 16),
+        destinationPoints: [RDPGFXPoint16(x: 0, y: 0)]
+    )
+    let cancellation = RDPConnectionCancellation()
+    cancellation.cancel()
+    let connection = RDPClientConnection(
+        configuration: RDPConnectionConfiguration(host: "example.test"),
+        callbacks: RDPSessionCallbacks(cancellation: cancellation)
+    )
+
+    let error = #expect(throws: RDPConnectionError.self) {
+        try connection.expandingStagedVideoCopies([.frame(stagingSurfaceVideo()), .stagedVideoCopy(copy)])
+    }
+    #expect(error?.failure == .cancelled)
+}
+
 /// gnome-remote-desktop copies each damage rectangle of its staging surface with a
 /// SurfaceToSurface of its own; each copy carries the access unit's part inside it.
 @Test func stagedVideoCopyCarriesTheRegionsInsideTheCopiedRectangle() throws {
