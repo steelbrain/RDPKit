@@ -77,6 +77,7 @@ struct RemoteSessionDiagnosticsSnapshot: Equatable {
     /// Frames handed to the display; frames the display-link buffer replaced are not counted.
     var presentedFrameCount = 0
     var previewDecodeError: String?
+    var serverLayout: RDPServerLayout?
     var renderMetrics = RDPRenderMetrics()
     /// `renderMetrics`' rates when the snapshot was taken: they change with time once traffic
     /// stops, which records nothing new in `renderMetrics`.
@@ -156,6 +157,7 @@ struct RemoteSessionDiagnosticsWindowContent: View {
                 Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 24, verticalSpacing: 10) {
                     DiagnosticRow("Target", snapshot.report?.target ?? snapshot.title)
                     DiagnosticRow("Status", statusText(snapshot))
+                    DiagnosticRow("Connect Attempt", connectAttempt(snapshot.report))
                     DiagnosticRow("Stage", snapshot.report?.stage ?? "not started")
                     DiagnosticRow("Disconnect Reason", disconnectReason(snapshot))
                     DiagnosticRow("Warnings", RDPDiagnosticText.warnings(snapshot.report?.warnings))
@@ -226,6 +228,7 @@ struct RemoteSessionDiagnosticsWindowContent: View {
                                 ?? snapshot.report?.rdpGraphicsFirstFrame.map(RDPFrameMetadata.init)
                         )
                     )
+                    DiagnosticRow("Server Layout", serverLayout(snapshot.serverLayout))
                     DiagnosticRow("Frame Acks", RDPDiagnosticText.number(snapshot.report?.rdpGraphicsFrameAcknowledgeCount))
                     DiagnosticRow("Next", snapshot.report?.nextStage ?? "none")
                 }
@@ -395,7 +398,10 @@ struct RemoteSessionDiagnosticsWindowContent: View {
 
     private func statusText(_ snapshot: RemoteSessionDiagnosticsSnapshot) -> String {
         if snapshot.isConnecting {
-            return snapshot.previewFrameCount > 0 ? "Receiving" : "Connecting"
+            if snapshot.previewFrameCount > 0 {
+                return "Receiving"
+            }
+            return snapshot.report?.nextConnectAttemptDate == nil ? "Connecting" : "Waiting to retry"
         }
         if let sessionEndReason = snapshot.sessionEndReason {
             return sessionEndReason.statusText
@@ -424,6 +430,41 @@ struct RemoteSessionDiagnosticsWindowContent: View {
             return "not available"
         }
         return trusted ? "trusted" : "unrecognized"
+    }
+
+    /// Which try connects, and while waiting to try again, when the next one starts.
+    private func connectAttempt(_ report: RDPConnectionReport?) -> String {
+        guard let attempt = report?.connectAttempt else {
+            return "not attempted"
+        }
+        guard let next = report?.nextConnectAttemptDate else {
+            return "\(attempt)"
+        }
+        return "\(attempt) failed, next in \(String(format: "%.0f s", max(next.timeIntervalSinceNow, 0)))"
+    }
+
+    /// The server's monitors as of the last frame, its ResetGraphics count, and what RDPKit
+    /// found wrong with the layout.
+    private func serverLayout(_ layout: RDPServerLayout?) -> String {
+        guard let layout else {
+            return "none"
+        }
+        let monitors = layout.monitors.isEmpty
+            ? "no monitors listed"
+            : layout.monitors.map { monitor in
+                let rect = monitor.rect
+                return "\(rect.width)x\(rect.height) at \(rect.left),\(rect.top)\(monitor.isPrimary ? " primary" : "")"
+            }.joined(separator: "; ")
+        let issues: [(RDPRemoteMonitorLayoutIssues, String)] = [
+            (.clipped, "clipped"),
+            (.overlapping, "overlapping"),
+            (.noPrimary, "no primary"),
+            (.multiplePrimaries, "several primaries"),
+            (.uncoveredOutput, "uncovered output"),
+        ]
+        let found = issues.filter { layout.monitorLayoutIssues.contains($0.0) }.map(\.1)
+        let issueText = found.isEmpty ? "" : ", \(found.joined(separator: ", "))"
+        return "\(monitors), reset \(layout.graphicsResetCount)\(issueText)"
     }
 
     private func clipboardState(_ snapshot: RemoteSessionDiagnosticsSnapshot) -> String {

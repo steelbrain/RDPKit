@@ -1,4 +1,5 @@
 import AppKit
+import RDPKit
 import SwiftUI
 
 @main
@@ -27,6 +28,29 @@ private final class RDPClientAppDelegate: NSObject, NSApplicationDelegate {
         RDPRemoteSessionClipboard.removeStaleDownloadDirectories()
     }
 
+    /// Ends each running session with its server before the process exits, waiting up to two
+    /// seconds for them, so a server sees the session end rather than its connection drop.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        let sessions = RDPRunningSessions.shared.sessions
+        guard !sessions.isEmpty else {
+            return .terminateNow
+        }
+        for session in sessions {
+            session.cancel()
+        }
+        Task {
+            await withTaskGroup(of: Void.self) { group in
+                for session in sessions {
+                    group.addTask {
+                        _ = await session.waitUntilEnded(timeout: 2)
+                    }
+                }
+            }
+            NSApp.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
+    }
+
     private func activateViewerWindow() {
         NSApp.activate(ignoringOtherApps: true)
         if makeVisibleWindowKey() {
@@ -44,6 +68,27 @@ private final class RDPClientAppDelegate: NSObject, NSApplicationDelegate {
         }
         window.makeKeyAndOrderFront(nil)
         return true
+    }
+}
+
+/// The sessions whose thread may still be running, for quitting to end them. Held weakly: a
+/// session's thread keeps it alive until it ends, and a window keeps the one it shows.
+@MainActor
+final class RDPRunningSessions {
+    static let shared = RDPRunningSessions()
+    private var tracked: [Tracked] = []
+
+    var sessions: [RDPLiveSession] {
+        tracked.compactMap(\.session)
+    }
+
+    func track(_ session: RDPLiveSession) {
+        tracked.removeAll { $0.session == nil }
+        tracked.append(Tracked(session: session))
+    }
+
+    private struct Tracked {
+        weak var session: RDPLiveSession?
     }
 }
 

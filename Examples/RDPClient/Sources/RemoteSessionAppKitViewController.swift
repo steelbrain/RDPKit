@@ -66,6 +66,8 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
     private var presentedFrameCount = 0
     private var viewerMetricsSummary: String?
     private var previewDecodeError: String?
+    /// The server's layout as of the last frame, for Stats for Nerds.
+    private var serverLayout: RDPServerLayout?
     private var hasPresentedFrame = false
     private var framePacing = RDPFramePacingState()
     private var renderMetricsStore = RDPRenderMetricsStore()
@@ -616,6 +618,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
             previewFrameCount: previewFrameCount,
             presentedFrameCount: presentedFrameCount,
             previewDecodeError: previewDecodeError,
+            serverLayout: serverLayout,
             renderMetrics: renderMetrics,
             rollingFramesPerSecond: renderMetrics.rollingFramesPerSecond(at: now),
             rollingWireMegabitsPerSecond: renderMetrics.rollingWireMegabitsPerSecond(at: now),
@@ -658,6 +661,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         presentedFrameCount = 0
         viewerMetricsSummary = nil
         previewDecodeError = nil
+        serverLayout = nil
         resetFramePresentationState()
         renderMetricsStore.reset()
         certificateTrustedByApp = false
@@ -746,12 +750,17 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
             clientName: SCDynamicStoreCopyComputerName(nil, nil) as String? ?? "RDPKIT"
         )
         configuration.keyboard = keyboard
+        // The first connection into the local network can fail as unreachable while macOS asks
+        // whether RDPClient may reach it; a try a second later gets past that.
+        configuration.connectAttempts = 3
+        configuration.connectRetryDelay = 1
         let sessionConfiguration = configuration
 
         let session = RDPLiveSession(threadName: "RDPClient session")
         let cancellation = session.cancellation
         let connectionStartedAt = Date()
         activeSession = session
+        RDPRunningSessions.shared.track(session)
         liveReport = session.liveReport
         renderMetricsStore.reset(connectionStartedAt: connectionStartedAt)
         updateViewerMetricsSummary(renderMetricsStore.metrics)
@@ -815,6 +824,9 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                     if controller.publishRenderMetricsSnapshotIfNeeded(at: sample.receivedAt) {
                         controller.render()
                     }
+                },
+                onServerLayout: { [weak self] layout in
+                    self?.serverLayout = layout
                 },
                 onEnd: { nextReport in
                     // The report's first frame is shown only when the session presented none.

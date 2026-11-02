@@ -359,7 +359,8 @@
   session was cancelled. `waitUntilEnded(timeout:)` returns once the session's
   thread is done and the connection is closed, so an app that quits right
   after `cancel()` waits until the server has been told rather than for a
-  fixed time.
+  fixed time. RDPClient does that when it quits, tries a connect three times,
+  and shows the server's layout and the connect attempt in Stats for Nerds.
 
 ### Security
 
