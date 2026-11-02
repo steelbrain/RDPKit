@@ -649,6 +649,49 @@ private func placedStagedVideo(_ expanded: [RDPPendingGraphicsUpdate], after vid
     })
 }
 
+/// A frame's staged copies carry at most 4,096 access units in all, as many as updates a frame
+/// may hold: 64 copies of 64 units each, whether each copy adds its regions to the units the
+/// first one placed or places them on a surface of its own. Past that, thousands of copies
+/// held the session thread for minutes and their regions took gigabytes. The count goes on
+/// over the frame's expansions, at a DeleteSurface and at its end. The units here have one
+/// region each, as the count does not depend on regions, to keep the test fast.
+@Test func stagedVideoCopiesCarryAtMostAFramesUpdateCountOfAccessUnits() throws {
+    var video = stagingSurfaceVideo()
+    video.regionRects = [RDPFrameRect(left: 0, top: 0, right: 1, bottom: 1)]
+    let videos = Array(repeating: RDPPendingGraphicsUpdate.frame(video), count: 64)
+    func copies(_ count: Int, toSurfaces: Bool) -> [RDPPendingGraphicsUpdate] {
+        (0 ..< count).map { index in
+            .stagedVideoCopy(RDPGFXSurfaceToSurfacePDU(
+                sourceSurfaceID: 2,
+                destinationSurfaceID: toSurfaces ? UInt16(3 + index) : 1,
+                sourceRect: RDPGFXRect16(left: 0, top: 0, right: 64, bottom: 16),
+                destinationPoints: [RDPGFXPoint16(x: 0, y: 0)]
+            ))
+        }
+    }
+    func connection() -> RDPClientConnection {
+        RDPClientConnection(configuration: RDPConnectionConfiguration(host: "example.test"), callbacks: RDPSessionCallbacks())
+    }
+    let message = "server sent staged video copies of more than 4096 access units without ending the frame"
+
+    for toSurfaces in [false, true] {
+        let atTheBound = try connection().expandingStagedVideoCopies(videos + copies(64, toSurfaces: toSurfaces))
+        #expect(placedStagedVideo(atTheBound, after: 64).count == (toSurfaces ? 64 * 64 : 64))
+
+        let error = #expect(throws: RDPConnectionError.self) {
+            try connection().expandingStagedVideoCopies(videos + copies(4_032, toSurfaces: toSurfaces))
+        }
+        #expect(error?.description == message)
+    }
+
+    let settling = connection()
+    _ = try settling.expandingStagedVideoCopies(videos + copies(64, toSurfaces: false))
+    let error = #expect(throws: RDPConnectionError.self) {
+        try settling.expandingStagedVideoCopies(videos + copies(1, toSurfaces: true))
+    }
+    #expect(error?.description == message)
+}
+
 /// A cancelled session stops expanding a frame's staged copies, which can take a debug build
 /// seconds, at the next copy.
 @Test func cancelledSessionStopsExpandingStagedVideoCopies() {

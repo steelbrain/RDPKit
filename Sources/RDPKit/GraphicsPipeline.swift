@@ -10,7 +10,8 @@ extension RDPClientConnection {
     /// Video updates one frame may hold before its EndFrame; past this the
     /// server is not ending its frames.
     static let maximumPendingVideoFrameCount = 64
-    /// The same for copies, which servers send one per rectangle.
+    /// The same for copies, which servers send one per rectangle, and for the access units a
+    /// frame's staged video copies carry.
     static let maximumPendingGraphicsUpdateCount = 4_096
     /// The bytes they may hold, in desktops of 32-bit pixels: an Alpha update over video
     /// copies its whole rectangle, so a few bytes on the wire can hold a surface each. A
@@ -225,6 +226,7 @@ extension RDPClientConnection {
             }
         }
         pendingGraphicsUpdates = []
+        stagedVideoExpansionCount = 0
     }
 
     /// The ended frame's snapshots: the decoder's updates in wire order, then the bitmap
@@ -280,7 +282,10 @@ extension RDPClientConnection {
     /// `updates` with the staged copies `isExpanded` picks replaced by the video they copy:
     /// each access unit once per destination surface, with the regions of all its copies.
     /// A frame can hold thousands of copies, each over 64 access units of 1,024 regions, so a
-    /// cancelled session stops between copies.
+    /// cancelled session stops between copies, and a frame's copies carry at most
+    /// `maximumPendingGraphicsUpdateCount` units in all, whether they place a unit or add
+    /// regions to one: past that, thousands of copies to one surface or to thousands held the
+    /// session thread for minutes and their regions took gigabytes.
     func expandingStagedVideoCopies(
         _ updates: [RDPPendingGraphicsUpdate],
         where isExpanded: (RDPGFXSurfaceToSurfacePDU) -> Bool = { _ in true }
@@ -304,27 +309,34 @@ extension RDPClientConnection {
             // gnome-remote-desktop copies each rectangle to its own corner with one point
             // (blit_surface_to_surface in grd-rdp-dvc-graphics-pipeline.c; the gnome fixtures).
             // Either point is checked before any region is worked out.
-            let points = Set(copy.destinationPoints)
+            var points: Set<RDPGFXPoint16>?
             for videoIndex in videoIndices[copy.sourceSurfaceID] ?? [] {
                 guard case let .frame(video) = updates[videoIndex] else {
                     continue
                 }
                 let key = StagedVideoKey(videoIndex: videoIndex, surfaceID: copy.destinationSurfaceID)
                 guard let stagedIndex = stagedIndices[key] else {
-                    if let point = copy.destinationPoints.first,
-                       let staged = stagedVideoCopy(of: video, sourceRect: copy.sourceRect, to: point, surfaceID: copy.destinationSurfaceID)
-                    {
+                    guard let point = copy.destinationPoints.first else {
+                        continue
+                    }
+                    try countStagedVideoExpansion()
+                    if let staged = stagedVideoCopy(of: video, sourceRect: copy.sourceRect, to: point, surfaceID: copy.destinationSurfaceID) {
                         stagedIndices[key] = expanded.count
                         expanded.append(.frame(staged))
                     }
                     continue
                 }
                 // A second offset would decode the access unit twice; the first one wins.
+                let copyPoints = points ?? Set(copy.destinationPoints)
+                points = copyPoints
                 guard case var .frame(first) = expanded[stagedIndex],
                       let point = video.destinationRect.point(copying: copy.sourceRect, to: first.destinationRect),
-                      points.contains(point),
-                      let copied = stagedVideoCopy(of: video, sourceRect: copy.sourceRect, surfaceID: copy.destinationSurfaceID)
+                      copyPoints.contains(point)
                 else {
+                    continue
+                }
+                try countStagedVideoExpansion()
+                guard let copied = stagedVideoCopy(of: video, sourceRect: copy.sourceRect, surfaceID: copy.destinationSurfaceID) else {
                     continue
                 }
                 first.regionRects = (first.regionRects + copied.regionRects)
@@ -335,6 +347,16 @@ extension RDPClientConnection {
             }
         }
         return expanded
+    }
+
+    /// Counts an access unit a staged copy carries, before its regions are worked out.
+    private func countStagedVideoExpansion() throws {
+        guard stagedVideoExpansionCount < Self.maximumPendingGraphicsUpdateCount else {
+            throw RDPConnectionError.protocolViolation(
+                "server sent staged video copies of more than \(Self.maximumPendingGraphicsUpdateCount) access units without ending the frame"
+            )
+        }
+        stagedVideoExpansionCount += 1
     }
 
     private func videoFrame(
@@ -387,6 +409,7 @@ extension RDPClientConnection {
     private func finishGraphicsFrame(_ frameID: UInt32) throws {
         let frames = try endedFrameSnapshots(frameID: frameID)
         pendingGraphicsUpdates = []
+        stagedVideoExpansionCount = 0
         // A capture run counts every frame; a live session's first frame is one it shows.
         if try deliver(frames) || targetFrameCount != nil {
             startPhase(awaitingFrame: true)

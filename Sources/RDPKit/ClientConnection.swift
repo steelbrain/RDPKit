@@ -90,6 +90,8 @@ final class RDPClientConnection {
     var graphicsFrameTracker = RDPGFXLogicalFrameTracker()
     /// The current RDPGFX frame's updates for the decoder, in wire order.
     var pendingGraphicsUpdates: [RDPPendingGraphicsUpdate] = []
+    /// The access units the current frame's staged video copies have carried so far.
+    var stagedVideoExpansionCount = 0
     /// Surfaces deleted, and the decoder's cache slots evicted, after the last delivered
     /// snapshot; the next one names them, each once.
     var deletedGraphicsSurfaceIDs: Set<UInt16> = []
