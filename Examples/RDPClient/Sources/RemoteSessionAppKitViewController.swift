@@ -100,7 +100,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
     private var detailMinimumWidthConstraint: NSLayoutConstraint?
 
     private let hostField = NSTextField()
-    private let portField = NSTextField()
+    let portField = NSTextField()
     private let desktopWidthField = NSTextField()
     private let desktopHeightField = NSTextField()
     private let usernameField = NSTextField()
@@ -321,9 +321,9 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
             field.action = #selector(textFieldAction(_:))
             field.lineBreakMode = .byTruncatingTail
         }
-        portField.formatter = integerFormatter()
-        desktopWidthField.formatter = integerFormatter()
-        desktopHeightField.formatter = integerFormatter()
+        portField.formatter = Self.portFormatter()
+        desktopWidthField.formatter = Self.integerFormatter(in: 0 ... 8192)
+        desktopHeightField.formatter = Self.integerFormatter(in: 0 ... 8192)
 
         configureCheckbox(autoApplyViewerSizeButton, action: #selector(toggleAutoApplyViewerSize(_:)))
         configureCheckbox(rememberPasswordButton, action: #selector(toggleRememberPassword(_:)))
@@ -1787,11 +1787,17 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         button.setButtonType(.switch)
     }
 
-    private func integerFormatter() -> NumberFormatter {
+    /// The Port field's formatter: every TCP port. A field drops a number its formatter
+    /// refuses, so the desktop size's limit of 8192 would drop every port above it.
+    private static func portFormatter() -> NumberFormatter {
+        integerFormatter(in: 1 ... Int(UInt16.max))
+    }
+
+    private static func integerFormatter(in range: ClosedRange<Int>) -> NumberFormatter {
         let formatter = NumberFormatter()
         formatter.allowsFloats = false
-        formatter.minimum = 0
-        formatter.maximum = 8192
+        formatter.minimum = NSNumber(value: range.lowerBound)
+        formatter.maximum = NSNumber(value: range.upperBound)
         formatter.usesGroupingSeparator = false
         return formatter
     }

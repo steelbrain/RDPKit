@@ -487,3 +487,55 @@ private func passwordField(showing password: String) -> (window: NSWindow, field
     #expect(persistence(.delete(key: key), ["tls"]) == (false, true, false))
     #expect(persistence(nil, ["tls"]) == (false, false, false))
 }
+
+/// A port above the desktop size's limit of 8192, such as a forwarded 33890, stays in the
+/// session window's Port field once editing ends, rather than leaving it empty.
+@MainActor
+@Test func thePortFieldTakesEveryTCPPort() throws {
+    _ = NSApplication.shared
+    let launchStore = RDPConnectionLaunchStore()
+    let controller = RDPRemoteSessionViewController(
+        sessionID: UUID(),
+        draft: RDPConnectionDraft(
+            host: "desktop.example",
+            port: 3389,
+            username: "",
+            domain: "",
+            password: "",
+            desktopWidth: 1920,
+            desktopHeight: 1080,
+            hideCertificateWarnings: false,
+            timeoutSeconds: 10,
+            graphicsCapabilityProfile: .automatic,
+            clipboardSharingEnabled: false,
+            audioPlaybackEnabled: false,
+            rememberPassword: false,
+            passwordAnswer: nil
+        ),
+        launchStore: launchStore
+    )
+    // As the session window does on closing, before the controller goes.
+    defer { controller.closeSession() }
+    // Only the controls: viewDidLoad would read Keychain and connect.
+    controller.loadView()
+    let window = NSWindow(
+        contentRect: CGRect(x: 0, y: 0, width: 200, height: 100),
+        styleMask: [.titled],
+        backing: .buffered,
+        defer: true
+    )
+    let field = controller.portField
+    window.contentView?.addSubview(field)
+
+    for port in ["33890", "65535", "1"] {
+        #expect(window.makeFirstResponder(field))
+        let editor = try #require(field.currentEditor() as? NSTextView)
+        editor.selectAll(nil)
+        editor.insertText(port, replacementRange: editor.selectedRange())
+        #expect(window.makeFirstResponder(nil))
+        #expect(field.stringValue == port)
+    }
+    let formatter = try #require(field.formatter as? NumberFormatter)
+    #expect(formatter.number(from: "0") == nil)
+    #expect(formatter.number(from: "65536") == nil)
+}
