@@ -409,12 +409,12 @@ func aLiveSessionDeliversTheServersLayoutOncePerConnection() async throws {
 @Test(.timeLimit(.minutes(1)))
 func mainQueueWorkOffTheMainThreadStopsSayingWhy() async {
     let result = await #expect(processExitsWith: .failure, observing: [\.standardErrorContent]) {
-        let finished = DispatchSemaphore(value: 0)
-        Thread.detachNewThread {
-            runOnMainQueueAsMainActor("RDPLiveSession") {}
-            finished.signal()
+        await withCheckedContinuation { finished in
+            Thread.detachNewThread {
+                runOnMainQueueAsMainActor("RDPLiveSession") {}
+                finished.resume()
+            }
         }
-        finished.wait()
     }
     let message = String(decoding: result?.standardErrorContent ?? [], as: UTF8.self)
     #expect(message.contains("RDPLiveSession needs the main queue to run on the main thread"))
