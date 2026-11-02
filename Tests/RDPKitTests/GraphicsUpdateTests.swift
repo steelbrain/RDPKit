@@ -425,6 +425,40 @@ private func compressedBitmapHeader(
     #expect(frame.decodedBitmapData?[16 ..< 20] == Data([85, 105, 105, 0x7F]))
 }
 
+/// NSCodec surface bits store the bottom row first, as FreeRDP's encoder writes them.
+@Test func primarySurfaceCompositorPaintsNSCodecSurfaceBitsBottomUp() throws {
+    var stream = Data()
+    for _ in 0 ..< 4 {
+        stream.appendLittleEndianUInt32(4)
+    }
+    // Raw 2x2 planes: grey luma 0x10, 0x11 in the first stored row and 0x20, 0x21 in the second.
+    stream.append(contentsOf: [1, 0, 0, 0])
+    stream.append(contentsOf: [0x10, 0x11, 0x20, 0x21] + [0, 0, 0, 0] + [0, 0, 0, 0] + [0xFF, 0xFF, 0xFF, 0xFF])
+    let command = RDPSurfaceBitsCommand(
+        destinationLeft: 1,
+        destinationTop: 1,
+        destinationRight: 3,
+        destinationBottom: 3,
+        bitmapData: RDPExtendedBitmapData(
+            bitsPerPixel: 32,
+            flags: 0,
+            codecID: 1,
+            width: 2,
+            height: 2,
+            extendedCompressionHeader: nil,
+            bitmapData: stream
+        )
+    )
+    let compositor = RDPPrimarySurfaceCompositor(width: 4, height: 4)
+
+    let frame = try #require(try compositor.process([.setSurfaceBits(command)]).first)
+    let bitmap = try #require(frame.decodedBitmapData)
+
+    #expect(frame.regionRects == [RDPFrameRect(left: 1, top: 1, right: 3, bottom: 3)])
+    #expect(bitmap[20 ..< 28] == Data([0x20, 0x20, 0x20, 0xFF, 0x21, 0x21, 0x21, 0xFF]))
+    #expect(bitmap[36 ..< 44] == Data([0x10, 0x10, 0x10, 0xFF, 0x11, 0x11, 0x11, 0xFF]))
+}
+
 @Test func primarySurfaceCompositorDecodesRemoteFXSurfaceCommand() throws {
     let command = RDPSurfaceBitsCommand(
         destinationLeft: 1,

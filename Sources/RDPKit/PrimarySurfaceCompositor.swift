@@ -131,9 +131,15 @@ final class RDPPrimarySurfaceCompositor {
                 $0 * sourceBytesPerRow
             }
         case 1:
+            // NSCodec surface bits store rows bottom-up, which [MS-RDPNSC] 2.2.2 leaves unsaid.
+            // FreeRDP's gdi_surface_bits (libfreerdp/gdi/gdi.c) flips them (FREERDP_FLIP_VERTICAL),
+            // as xf_gdi_surface_bits (client/X11/xf_gdi.c) did in FreeRDP 1.0, which had no NSCodec
+            // encoder; its encoder now, nsc_encode_argb_to_aycocg (libfreerdp/codec/nsc_encode.c),
+            // reads the last row first. The ClearCodec NSCodec subcodec stays top-down, as in
+            // clear_decompress_nscodec (libfreerdp/codec/clear.c, FREERDP_FLIP_NONE).
             let decoded = try RDPNSCodecDecoder.decode(bitmap.bitmapData, width: width, height: height)
             try paint(decoded, bitsPerPixel: 32, x: x, y: y, width: width, height: height) {
-                $0 * width * 4
+                (height - 1 - $0) * width * 4
             }
         case 3:
             try paintRemoteFXTiles(bitmap.bitmapData, command: command)
