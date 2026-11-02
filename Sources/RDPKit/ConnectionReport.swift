@@ -25,7 +25,8 @@ public struct RDPConnectionReport: Encodable, Equatable, Sendable {
     public var targetPort: UInt16
     /// Whether a Server Redirection named `targetHost`: false for the configured server, and
     /// after redirections that named only a routing token, which lead to the configured host
-    /// again, so the session went on with the server the user chose.
+    /// again, so the session went on with the server the user chose. A redirection may name the
+    /// configured host itself, so to tell another server, compare `targetHost` too.
     public var redirectionNamedHost: Bool
     /// How many Server Redirections led to `target` ([MS-RDPBCGR] 3.1.5.2): 0
     /// for the configured server, at most 2. Above 0, the configured server
