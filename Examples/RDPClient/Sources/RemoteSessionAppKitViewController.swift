@@ -713,13 +713,6 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         )
         let credentialKey = KeychainCredentialKey(identity: identity)
         let clientLicenseKey = ClientLicenseStoreKey(identity: identity)
-        let storedClientLicense: RDPStoredClientLicense?
-        do {
-            storedClientLicense = try clientLicenseStore.license(for: clientLicenseKey)
-        } catch {
-            storedClientLicense = nil
-            keychainMessage = String(describing: error)
-        }
         let credentials: RDPCredentials?
         do {
             credentials = try RDPCredentials.validated(
@@ -758,7 +751,6 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
             clipboardEnabled: true,
             audioPlaybackEnabled: audioPlaybackEnabled,
             graphicsCapabilityProfile: graphicsCapabilityProfile,
-            storedClientLicense: storedClientLicense,
             keyboardLayout: keyboard.layout,
             keyboardType: keyboard.type,
             keyboardSubType: keyboard.subType,
@@ -789,6 +781,17 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         // RDPSessionClient.run blocks for the whole session, so it gets its own thread
         // rather than holding a Swift concurrency worker.
         let sessionThread = Thread {
+            // A license the server issued earlier is read here, off the main actor: a Keychain
+            // read blocks, and can wait for the user to allow access.
+            var sessionConfiguration = configuration
+            do {
+                sessionConfiguration.storedClientLicense = try clientLicenseStore.license(for: clientLicenseKey)
+            } catch {
+                sink.apply { controller in
+                    controller.keychainMessage = String(describing: error)
+                    controller.render()
+                }
+            }
             var keyframeRequests = RDPKeyframeRequestThrottle()
             let didPresentFrame = OSAllocatedUnfairLock(initialState: false)
             // Which remote copy a clipboard handler is called for, so the bridge can drop one
@@ -858,7 +861,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                 decodeQueue.cancel()
             }
             let nextReport = RDPSessionClient().run(
-                configuration: configuration,
+                configuration: sessionConfiguration,
                 onGraphicsFrame: { frame in
                     let completion = decodeQueue.submitAndWait(
                         frame,
