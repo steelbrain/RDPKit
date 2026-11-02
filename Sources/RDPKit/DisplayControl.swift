@@ -561,6 +561,19 @@ private struct RDPDisplayControlMonitorRect {
     }
 }
 
+extension RDPMonitorLayout {
+    /// Whether `other` has the same monitors in the same places, in any order and at any
+    /// scale. A layout's primary monitor is the one at its origin, so it is the same one too.
+    func placesTheSameMonitors(as other: RDPMonitorLayout) -> Bool {
+        func placements(_ layout: RDPMonitorLayout) -> [[Int64]] {
+            layout.monitors
+                .map { [Int64($0.left), Int64($0.top), Int64($0.width), Int64($0.height)] }
+                .sorted { $0.lexicographicallyPrecedes($1) }
+        }
+        return placements(self) == placements(other)
+    }
+}
+
 private func cappedAreaProduct(_ lhs: UInt32, _ rhs: UInt32, _ other: UInt32) -> UInt64 {
     let first = UInt64(lhs).multipliedReportingOverflow(by: UInt64(rhs))
     guard first.overflow == false else {
@@ -611,21 +624,30 @@ final class RDPDisplayLayoutRecord: @unchecked Sendable {
     }
 
     /// The layout that asks the server for a keyframe and keeps its desktop as it is: the one
-    /// last sent while the server has not answered it, otherwise the server's monitors at the
-    /// scale last sent, or the connect layout's. nil without monitors, or when Display Control
-    /// cannot ask for them exactly, such as for a monitor of odd width.
+    /// last sent while the server has not answered it. Otherwise the layout last sent, or the
+    /// connect layout, when the server's monitors are the ones it asked for, so each keeps the
+    /// scale it asked for; or the server's one monitor at the scale that layout asked for its
+    /// primary monitor. nil without monitors, for several monitors other than the ones last
+    /// asked for, whose scales the server never says and a guess could change, or when Display
+    /// Control cannot ask for them exactly, such as for a monitor of odd width.
     func keyframeRequestLayout() -> RDPMonitorLayout? {
         let (sent, isPending, monitors) = lock.withLock { (sentLayout, isSentLayoutPending, self.monitors) }
         if isPending, let sent {
             return sent
         }
-        let scaled = sent ?? connectLayout
-        let primary = scaled.monitors.first { $0.flags & RDPDisplayControlMonitorFlags.primary != 0 } ?? scaled.monitors.first
+        let asked = sent ?? connectLayout
+        let primary = asked.monitors.first { $0.flags & RDPDisplayControlMonitorFlags.primary != 0 } ?? asked.monitors.first
         let scaleFactors = RDPDisplayScaleFactors(
             desktopScaleFactor: primary?.desktopScaleFactor ?? 100,
             deviceScaleFactor: primary?.deviceScaleFactor ?? 100
         )
-        return try? RDPMonitorLayout(remoteMonitors: monitors, scaleFactors: scaleFactors)
+        guard let server = try? RDPMonitorLayout(remoteMonitors: monitors, scaleFactors: scaleFactors) else {
+            return nil
+        }
+        if server.placesTheSameMonitors(as: asked) {
+            return asked
+        }
+        return server.monitors.count == 1 ? server : nil
     }
 
     /// Records a ResetGraphics and the monitors it laid out.
@@ -797,12 +819,14 @@ public final class RDPDisplayControlSession: Sendable {
     }
 
     /// Asks the server for a keyframe with a layout that keeps its desktop as it is:
-    /// ``lastSentLayout`` while ``isLastSentLayoutPending``, otherwise ``serverMonitors`` at the
-    /// scale ``lastSentLayout``, or ``connectLayout``, gives its primary monitor. Unlike
-    /// ``resendLayout()``, it never asks again for a layout the server has since replaced, such
-    /// as after the user changed its resolution there. Returns false when there is no such
-    /// layout, as without monitors or for a monitor of odd width, or once the session
-    /// ``isEnded``; throws as `send(_:)` does. The session sends one itself after video fails
+    /// ``lastSentLayout`` while ``isLastSentLayoutPending``. Otherwise ``lastSentLayout``, or
+    /// ``connectLayout``, when ``serverMonitors`` are the monitors it asked for, or the server's
+    /// one monitor at the scale it asked for its primary monitor. Unlike ``resendLayout()``, it
+    /// never asks again for a layout the server has since replaced, such as after the user
+    /// changed its resolution there. Returns false when there is no such layout, as without
+    /// monitors, for several monitors other than the ones asked for, whose scales the server
+    /// never says, or for a monitor of odd width, or once the session ``isEnded``; throws as
+    /// `send(_:)` does. The session sends one itself after video fails
     /// to decode unless ``RDPConnectionConfiguration/recoversVideoWithLayoutResend`` is off.
     @discardableResult
     public func requestKeyframe() throws -> Bool {

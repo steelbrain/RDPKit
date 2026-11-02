@@ -33,10 +33,7 @@ import Testing
     let layouts = RDPDisplayLayoutRecord(connectLayout: .singlePrimary(width: 1280, height: 720, desktopScaleFactor: 200))
     #expect(layouts.keyframeRequestLayout() == nil)
 
-    let server = [
-        RDPRemoteMonitor(rect: RDPFrameRect(left: 0, top: 0, right: 1920, bottom: 1080), isPrimary: true),
-        RDPRemoteMonitor(rect: RDPFrameRect(left: 1920, top: 0, right: 3200, bottom: 1024), isPrimary: false),
-    ]
+    let server = [RDPRemoteMonitor(rect: RDPFrameRect(left: 0, top: 0, right: 1920, bottom: 1080), isPrimary: true)]
     layouts.noteResetGraphics(monitors: server, issues: [])
     let atConnectScale = try RDPMonitorLayout(
         remoteMonitors: server,
@@ -57,6 +54,37 @@ import Testing
     )))
 
     layouts.noteResetGraphics(monitors: [RDPRemoteMonitor(rect: RDPFrameRect(left: 0, top: 0, right: 1279, bottom: 720), isPrimary: true)], issues: [])
+    #expect(layouts.keyframeRequestLayout() == nil)
+}
+
+/// Several monitors keep the scales they were asked for, which the server never says: the
+/// layout that asked for them goes again, and other monitors get no request rather than a
+/// guessed scale that could change them.
+@Test func keyframeRequestLayoutAsksForSeveralMonitorsOnlyAtTheirKnownScales() throws {
+    let layouts = RDPDisplayLayoutRecord(connectLayout: .singlePrimary(width: 1280, height: 720, desktopScaleFactor: 200))
+    let primary = RDPRemoteMonitor(rect: RDPFrameRect(left: 1280, top: 0, right: 3200, bottom: 1080), isPrimary: true)
+    let left = RDPRemoteMonitor(rect: RDPFrameRect(left: 0, top: 56, right: 1280, bottom: 1080), isPrimary: false, index: 1)
+    // The connect layout asked for one monitor, so the server's two have scales of their own.
+    layouts.noteResetGraphics(monitors: [primary, left], issues: [])
+    #expect(layouts.keyframeRequestLayout() == nil)
+
+    let sent = try RDPMonitorLayout(monitors: [
+        .singlePrimary(width: 1920, height: 1080, desktopScaleFactor: 150, deviceScaleFactor: 140),
+        RDPDisplayControlMonitorLayout(left: -1280, top: 56, width: 1280, height: 1024, desktopScaleFactor: 100, deviceScaleFactor: 100),
+    ])
+    layouts.noteSent(sent)
+    // The server lists the monitors asked for in an order of its own.
+    layouts.noteResetGraphics(monitors: [left, primary], issues: [])
+    #expect(layouts.keyframeRequestLayout() == sent)
+
+    // A monitor moved, or another primary, is not the layout asked for.
+    let moved = RDPRemoteMonitor(rect: RDPFrameRect(left: 0, top: 0, right: 1280, bottom: 1024), isPrimary: false, index: 1)
+    layouts.noteResetGraphics(monitors: [primary, moved], issues: [])
+    #expect(layouts.keyframeRequestLayout() == nil)
+    var otherPrimary = [primary, left]
+    otherPrimary[0].isPrimary = false
+    otherPrimary[1].isPrimary = true
+    layouts.noteResetGraphics(monitors: otherPrimary, issues: [])
     #expect(layouts.keyframeRequestLayout() == nil)
 }
 
