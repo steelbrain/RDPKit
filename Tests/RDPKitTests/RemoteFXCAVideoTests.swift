@@ -128,6 +128,23 @@ import Testing
     #expect(try RDPRemoteFXDecoder().decode(stream, clipSize: (width: 0, height: 64)).tiles.isEmpty)
 }
 
+/// The compositors draw every region rect of a message. One region lists at most 65,535, as a
+/// SolidFill does, but a message may hold any number of frames: their total is capped too.
+@Test func cavideoRemoteFXCapsTheRegionRectsOfAMessage() throws {
+    func message(firstRegionRectCount: UInt16) -> Data {
+        let first = cavideoRemoteFXBlocks(cavideoRemoteFXGrayTileStream(regionRectangleCount: firstRegionRectCount))
+        let second = cavideoRemoteFXBlocks(cavideoRemoteFXGrayTileStream(frameIndex: 2))
+        return cavideoRemoteFXStream(first + second[4 ... 7])
+    }
+
+    let frame = try RDPRemoteFXDecoder().decode(message(firstRegionRectCount: 65534))
+
+    #expect(frame.regionRects.count == 65535)
+    #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
+        _ = try RDPRemoteFXDecoder().decode(message(firstRegionRectCount: 65535))
+    }
+}
+
 @Test func cavideoRemoteFXRejectsOutOfSequenceFrameBlocks() throws {
     let blocks = cavideoRemoteFXBlocks(cavideoRemoteFXGrayTileStream())
     let blockOrder = [0, 1, 2, 3, 4, 6, 5, 7]

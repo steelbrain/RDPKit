@@ -12,6 +12,7 @@ struct RDPRemoteFXDecodedFrame: Equatable, Sendable {
     /// One tile per position, the last one sent there: a tile fills its 64x64 cell, so a
     /// later one hides an earlier one.
     var tiles: [RDPRemoteFXDecodedTile]
+    /// At most `RDPRemoteFXDecoder.maximumRegionRectCount`.
     var regionRects: [RDPFrameRect]
 }
 
@@ -369,6 +370,11 @@ final class RDPRemoteFXDecoder {
     /// 1x65535 surface takes 256 KiB of the budget and has 1,024 positions.
     static let maximumProgressiveTileCount = RDPGFXSurfaceCompositor.maximumSurfaceByteCount / (64 * 64 * 4)
 
+    /// The most region rects one message gives, over all its frames or regions: as many as one
+    /// region, or a SolidFill (MS-RDPEGFX 2.2.2.4), can list. The compositors draw each rect on
+    /// its own, and a 63 MB classic message of nearly 8M rects took a release build seconds.
+    static let maximumRegionRectCount = 65535
+
     /// `isCancelled` is checked, from any thread, before each tile: a decode that stops
     /// throws `RDPConnectionError.cancelled`.
     init(
@@ -384,6 +390,7 @@ final class RDPRemoteFXDecoder {
     /// Decodes an RFX_PROGRESSIVE_BITMAP_STREAM. With `surfaceSize`, tiles outside
     /// the surface are rejected, which bounds the tile positions kept per surface. Past
     /// `maximumProgressiveTileCount` positions over all surfaces, a tile at a new one is too.
+    /// A stream whose regions list more than `maximumRegionRectCount` rectangles in all is refused.
     func decodeProgressive(
         _ data: Data,
         surfaceID: UInt16 = 0,
@@ -430,7 +437,8 @@ final class RDPRemoteFXDecoder {
                     block.body,
                     surfaceID: surfaceID,
                     codecContextID: codecContextID,
-                    surfaceSize: surfaceSize
+                    surfaceSize: surfaceSize,
+                    maximumRectangleCount: Self.maximumRegionRectCount - decodedRegionRects.count
                 )
                 decodedTiles.add(region.tiles)
                 decodedRegionRects += region.rectangles
@@ -501,12 +509,14 @@ final class RDPRemoteFXDecoder {
         return (frameIndex, regionCount)
     }
 
-    /// RFX_PROGRESSIVE_REGION (MS-RDPEGFX 2.2.4.2.1.5).
+    /// RFX_PROGRESSIVE_REGION (MS-RDPEGFX 2.2.4.2.1.5). A region listing more than
+    /// `maximumRectangleCount` rectangles is refused before its tiles are decoded.
     private func decodeProgressiveRegion(
         _ data: Data,
         surfaceID: UInt16,
         codecContextID: UInt32,
-        surfaceSize: (width: Int, height: Int)?
+        surfaceSize: (width: Int, height: Int)?,
+        maximumRectangleCount: Int
     ) throws -> (tiles: [RDPRemoteFXDecodedTile], rectangles: [RDPFrameRect]) {
         var cursor = ByteCursor(data)
         guard cursor.remaining >= 12 else {
@@ -521,6 +531,7 @@ final class RDPRemoteFXDecoder {
         let tileDataSize = try Int(cursor.readLittleEndianUInt32())
         guard tileSize == 64,
               rectangleCount > 0,
+              rectangleCount <= maximumRectangleCount,
               quantCount <= 7,
               flags & 0xFE == 0,
               cursor.remaining == rectangleCount * 8 + quantCount * 5 + progressiveQuantCount * 16 + tileDataSize
@@ -836,7 +847,8 @@ final class RDPRemoteFXDecoder {
     // MARK: - RemoteFX (classic)
 
     /// Decodes a TS_RFX_MESSAGE (MS-RDPRFX 2.2.2). With `clipSize`, the area from the frame's
-    /// origin the caller draws in, tiles outside it are dropped undecoded.
+    /// origin the caller draws in, tiles outside it are dropped undecoded. A message whose
+    /// frames give more than `maximumRegionRectCount` region rects in all is refused.
     func decode(_ data: Data, clipSize: (width: Int, height: Int)? = nil) throws -> RDPRemoteFXDecodedFrame {
         do {
             return try decodeClassicMessage(data, clipSize: clipSize)
@@ -903,6 +915,10 @@ final class RDPRemoteFXDecoder {
                     throw RDPDecodeError.invalidRDPGFXPDU
                 }
                 classicRegionRects = try parseRegion(block.body)
+                // The region rects of every frame in the message are drawn.
+                guard decodedRegionRects.count + classicRegionRects.count <= Self.maximumRegionRectCount else {
+                    throw RDPDecodeError.invalidRDPGFXPDU
+                }
                 classicDataBlockState = .tileSet
             case ClassicBlockType.tileSet:
                 guard classicDataBlockState == .tileSet else {

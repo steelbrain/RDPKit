@@ -829,6 +829,37 @@ import Testing
     }
 }
 
+/// The compositor draws every region rect of a stream. One region lists at most 65,535, as a
+/// SolidFill does, but a frame may hold 65,535 regions: their total is capped too, and a region
+/// past the cap is refused before its tiles are decoded.
+@Test func caprogressiveCapsTheRegionRectsOfAStream() throws {
+    func stream(firstRegionRectCount: UInt16) -> Data {
+        caprogressiveRemoteFXRegionsStream(regions: [
+            caprogressiveRemoteFXGrayRegionBlock(
+                rectangleCount: firstRegionRectCount,
+                tiles: [CAPROGRESSIVERemoteFXGrayTile(xIndex: 0, yIndex: 0)]
+            ),
+            caprogressiveRemoteFXGrayRegionBlock(
+                regionX: 64,
+                tiles: [CAPROGRESSIVERemoteFXGrayTile(xIndex: 1, yIndex: 0)]
+            ),
+        ])
+    }
+    let checks = Locked(0)
+    let decoder = RDPRemoteFXDecoder(isCancelled: {
+        checks.withLock { $0 += 1 }
+        return false
+    })
+
+    let frame = try RDPRemoteFXDecoder().decodeProgressive(stream(firstRegionRectCount: 65534))
+
+    #expect(frame.regionRects.count == 65535)
+    #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
+        _ = try decoder.decodeProgressive(stream(firstRegionRectCount: 65535))
+    }
+    #expect(checks.value == 1)
+}
+
 @Test func caprogressiveIgnoresRegionOutsideFrame() throws {
     // Regions outside FRAME_BEGIN/FRAME_END MUST be ignored (MS-RDPEGFX 2.2.4.2.1.5).
     let bitmapStream = caprogressiveRemoteFXGrayRegionBlock(
