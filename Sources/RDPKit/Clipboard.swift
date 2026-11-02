@@ -946,6 +946,9 @@ public final class RDPClipboardSession: @unchecked Sendable {
     private let userChannelID: UInt16
     private let channel: Channel
     private let sentMessageHandler: RDPClipboardSentMessageHandler?
+    /// Gets each message the session sends, whole, before it is chunked: RDPKitTesting's
+    /// in-memory server reads them.
+    private let sentPayloadHandler: (@Sendable (Data) -> Void)?
     /// Called, on the thread that turned fetching on, once `takePendingEvent` has an event.
     private let pendingEventHandler: @Sendable () -> Void
     private let chunkSize: RDPStaticVirtualChannelChunkSize
@@ -1011,6 +1014,7 @@ public final class RDPClipboardSession: @unchecked Sendable {
         fetchesRemoteCopies: Bool = true,
         connectionContext: RDPConnectionContext = RDPConnectionContext(),
         sentMessageHandler: RDPClipboardSentMessageHandler? = nil,
+        sentPayloadHandler: (@Sendable (Data) -> Void)? = nil,
         pendingEventHandler: @escaping @Sendable () -> Void = {},
         isCancelled: @escaping @Sendable () -> Bool = { false }
     ) {
@@ -1024,6 +1028,7 @@ public final class RDPClipboardSession: @unchecked Sendable {
         initiallyFetchesRemoteCopies = fetchesRemoteCopies
         self.connectionContext = connectionContext
         self.sentMessageHandler = sentMessageHandler
+        self.sentPayloadHandler = sentPayloadHandler
         self.pendingEventHandler = pendingEventHandler
         self.isCancelled = isCancelled
         channel.closeFuture.whenComplete { [weak self] _ in
@@ -1084,7 +1089,7 @@ public final class RDPClipboardSession: @unchecked Sendable {
 
     /// The event turning fetching on found for a copy announced while it was off, once; nil
     /// when there is none, or a newer copy, local or remote, has replaced that one since.
-    func takePendingEvent() -> RDPClipboardEvent? {
+    package func takePendingEvent() -> RDPClipboardEvent? {
         lock.withLock {
             defer { pendingEvent = nil }
             return pendingEvent.flatMap { deliverable($0.event, of: $0.copyID) }
@@ -1778,6 +1783,7 @@ public final class RDPClipboardSession: @unchecked Sendable {
         if let sentMessageHandler, let pdu = try? RDPClipboardPDU.parse(from: payload), let first = packets.first {
             sentMessageHandler(.summarize(pdu), first)
         }
+        sentPayloadHandler?(payload)
         if waitingForRoom {
             replyBudget.write(packets, to: channel, isCancelled: isCancelled)
             return
@@ -1824,7 +1830,7 @@ private struct RDPClipboardFormatDataRequestSlot: Equatable, Sendable {
     var response: RDPClipboardRequestedFormatDataResponse
 }
 
-enum RDPClipboardEvent: Equatable, Sendable {
+package enum RDPClipboardEvent: Equatable, Sendable {
     /// Monitor Ready was answered; the session can publish local content.
     case ready
     /// The text of a remote copy, when only text is fetched.

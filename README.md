@@ -53,6 +53,15 @@ Then add it to your target:
 )
 ```
 
+`RDPKitTesting` holds in-memory stand-ins for a server, for your own tests:
+
+```swift
+.testTarget(
+    name: "YourTargetTests",
+    dependencies: ["YourTarget", .product(name: "RDPKitTesting", package: "RDPKit")]
+)
+```
+
 ## Usage
 
 ```swift
@@ -298,6 +307,10 @@ let report = client.run(
 
 ### Testing And Diagnostics
 
+- `RDPKitTesting`'s `RDPClipboardTestServer`, the server's end of a clipboard
+  channel in memory, to test an app's clipboard code against a real
+  `RDPClipboardSession`: it copies text or files, empties or restarts its
+  clipboard, answers downloads, and pastes the client's text
 - Mock server tests for graphics, clipboard, audio, security, Windows, and KRdp
   compatibility flows
 - First-frame capture tooling with configurable geometry, settle windows, and

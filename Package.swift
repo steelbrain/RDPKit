@@ -16,6 +16,11 @@ let package = Package(
             name: "RDPKit",
             targets: ["RDPKit"]
         ),
+        // In-memory stand-ins for a server, for an application's own tests.
+        .library(
+            name: "RDPKitTesting",
+            targets: ["RDPKitTesting"]
+        ),
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.80.0"),
@@ -31,10 +36,19 @@ let package = Package(
                 .product(name: "NIOSSL", package: "swift-nio-ssl"),
             ]
         ),
+        .target(
+            name: "RDPKitTesting",
+            dependencies: [
+                "RDPKit",
+                .product(name: "NIOCore", package: "swift-nio"),
+                .product(name: "NIOEmbedded", package: "swift-nio"),
+            ]
+        ),
         .testTarget(
             name: "RDPKitTests",
             dependencies: [
                 "RDPKit",
+                "RDPKitTesting",
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOEmbedded", package: "swift-nio"),
                 .product(name: "NIOPosix", package: "swift-nio"),
