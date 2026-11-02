@@ -1240,6 +1240,34 @@ private final class ClipboardPublishRace: @unchecked Sendable {
     _ = try channel.finish()
 }
 
+/// A session made with fetching off asks for nothing of the server's copies until fetching is
+/// turned on, which fetches the last one announced.
+@Test func clipboardSessionMadeWithFetchingOffFetchesOnlyOnceTurnedOn() throws {
+    let channel = EmbeddedChannel()
+    let sent = ClipboardSentMessages()
+    let session = RDPClipboardSession(
+        userChannelID: 1006,
+        staticChannelID: 1007,
+        channel: channel,
+        fetchesRemoteCopies: false,
+        sentMessageHandler: sent.record
+    )
+    let textCopy = RDPClipboardFormatListPDU(entries: [
+        RDPClipboardFormatListEntry(formatID: RDPClipboardFormatID.unicodeText),
+    ]).encoded()
+
+    #expect(!session.fetchesRemoteCopies)
+    _ = try session.receive(RDPClipboardPDU.parse(from: RDPClipboardCapabilitiesPDU().encoded()))
+    _ = try session.receive(RDPClipboardPDU(messageType: RDPClipboardMessageType.monitorReady))
+    _ = try session.receive(serverFormatListResponse)
+    #expect(try session.receive(RDPClipboardPDU.parse(from: textCopy)) == nil)
+    #expect(try sentFormatDataRequestIDs(sent).isEmpty)
+
+    session.fetchesRemoteCopies = true
+    #expect(try sentFormatDataRequestIDs(sent) == [RDPClipboardFormatID.unicodeText])
+    _ = try channel.finish()
+}
+
 /// The server holds the client's copy from a publish that is not empty until an empty one, or
 /// a server copy of its own, fetched or not; one that crossed the publish is older and leaves
 /// it. Withdrawing publishes an empty copy only while the server holds the client's.

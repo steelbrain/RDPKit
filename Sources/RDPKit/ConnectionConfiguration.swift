@@ -49,6 +49,12 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
     /// reconnect to share, keeps this off; `RDPClipboardSession.fetchesRemoteCopies` controls
     /// only what the client fetches.
     public var clipboardEnabled: Bool
+    /// What `RDPClipboardSession.fetchesRemoteCopies` starts as, in each clipboard session a
+    /// connection makes, a redirected one's too. Off, no copy of the server's is fetched until
+    /// the client turns fetching on, which fetches the last copy announced meanwhile unless the
+    /// client has published since: a client with sharing off fetches nothing, and one that
+    /// decides on another thread, such as the main one, loses no copy that comes in between.
+    public var clipboardFetchesRemoteCopies: Bool
     public var audioPlaybackEnabled: Bool
     public var earlyUserAuthorizationEnabled: Bool
     public var graphicsCapabilityProfile: RDPGraphicsCapabilityProfile
@@ -112,6 +118,7 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
         receivesServerMonitorLayout: Bool = false,
         recoversVideoWithLayoutResend: Bool = true,
         clipboardEnabled: Bool = true,
+        clipboardFetchesRemoteCopies: Bool = true,
         audioPlaybackEnabled: Bool = false,
         earlyUserAuthorizationEnabled: Bool = false,
         graphicsCapabilityProfile: RDPGraphicsCapabilityProfile = .automatic,
@@ -139,6 +146,7 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
         self.receivesServerMonitorLayout = receivesServerMonitorLayout
         self.recoversVideoWithLayoutResend = recoversVideoWithLayoutResend
         self.clipboardEnabled = clipboardEnabled
+        self.clipboardFetchesRemoteCopies = clipboardFetchesRemoteCopies
         self.audioPlaybackEnabled = audioPlaybackEnabled
         self.earlyUserAuthorizationEnabled = earlyUserAuthorizationEnabled
         self.graphicsCapabilityProfile = graphicsCapabilityProfile
@@ -173,6 +181,7 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
         receivesServerMonitorLayout: Bool = false,
         recoversVideoWithLayoutResend: Bool = true,
         clipboardEnabled: Bool = true,
+        clipboardFetchesRemoteCopies: Bool = true,
         audioPlaybackEnabled: Bool = false,
         earlyUserAuthorizationEnabled: Bool = false,
         graphicsCapabilityProfile: RDPGraphicsCapabilityProfile = .automatic,
@@ -202,6 +211,7 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
             receivesServerMonitorLayout: receivesServerMonitorLayout,
             recoversVideoWithLayoutResend: recoversVideoWithLayoutResend,
             clipboardEnabled: clipboardEnabled,
+            clipboardFetchesRemoteCopies: clipboardFetchesRemoteCopies,
             audioPlaybackEnabled: audioPlaybackEnabled,
             earlyUserAuthorizationEnabled: earlyUserAuthorizationEnabled,
             graphicsCapabilityProfile: graphicsCapabilityProfile,

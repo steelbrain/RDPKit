@@ -1004,6 +1004,7 @@ public final class RDPClipboardSession: @unchecked Sendable {
         chunkSize: RDPStaticVirtualChannelChunkSize = RDPStaticVirtualChannelChunkSize(),
         requestsRichFormats: Bool = false,
         requestsFileLists: Bool = true,
+        fetchesRemoteCopies: Bool = true,
         sentMessageHandler: RDPClipboardSentMessageHandler? = nil,
         pendingEventHandler: @escaping @Sendable () -> Void = {},
         isCancelled: @escaping @Sendable () -> Bool = { false }
@@ -1014,6 +1015,7 @@ public final class RDPClipboardSession: @unchecked Sendable {
         self.chunkSize = chunkSize
         self.requestsRichFormats = requestsRichFormats
         self.requestsFileLists = requestsFileLists
+        isFetchingRemoteCopies = fetchesRemoteCopies
         self.sentMessageHandler = sentMessageHandler
         self.pendingEventHandler = pendingEventHandler
         self.isCancelled = isCancelled
@@ -1022,16 +1024,15 @@ public final class RDPClipboardSession: @unchecked Sendable {
         }
     }
 
-    /// Whether a copy the server announces is fetched; on by default. While off, the server's
-    /// Format Lists are acknowledged and nothing is requested, so none of its clipboard reaches
-    /// this client, and the rest of a copy already being fetched is dropped. The server's
-    /// clipboard emptied, which brings nothing of it, still goes to
-    /// `onClipboardRemoteCopyUnavailable` when it comes. Set it in `onClipboardReady`, which
-    /// runs before the server's first copy is handled, to keep that copy from being fetched
-    /// too. Turned back on, it fetches the last copy the server announced while it was off,
-    /// unless this client has published since, which replaced that copy on the server: a
-    /// client that turns it off in `onClipboardReady` until it can decide, say on the main
-    /// thread, still gets a copy that came in between. One with nothing to fetch goes to
+    /// Whether a copy the server announces is fetched; it starts as
+    /// `RDPConnectionConfiguration.clipboardFetchesRemoteCopies` says, on by default. While off,
+    /// the server's Format Lists are acknowledged and nothing is requested, so none of its
+    /// clipboard reaches this client, and the rest of a copy already being fetched is dropped.
+    /// The server's clipboard emptied, which brings nothing of it, still goes to
+    /// `onClipboardRemoteCopyUnavailable` when it comes. Turned back on, it fetches the last
+    /// copy the server announced while it was off, unless this client has published since,
+    /// which replaced that copy on the server: a client that starts with it off until it can
+    /// decide, say on the main thread, still gets a copy that came in between. One with nothing to fetch goes to
     /// `onClipboardRemoteCopyUnavailable` instead, on the session's thread like the other
     /// handlers; a client that publishes right after turning fetching on can drop that
     /// report with `hasPublished(since:)` should it reach the client's thread later. It does not

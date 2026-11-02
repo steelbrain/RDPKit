@@ -120,6 +120,11 @@
   downloads through it.
 - `RDPClipboardFileGroupDescriptorW.remoteFileTransferFiles` takes a
   `maximumFileCount`.
+- `RDPConnectionConfiguration.clipboardFetchesRemoteCopies` sets what
+  `RDPClipboardSession.fetchesRemoteCopies` starts as, so a client with
+  sharing off fetches nothing of the server's clipboard, without turning it off
+  in `onClipboardReady`. RDPClient starts with it off until its clipboard
+  bridge attaches.
 - `RDPClipboardSession.serverHoldsLocalCopy` says whether the server's
   clipboard holds the client's last publish, which was not empty, and
   `withdrawLocalCopy()` takes it back with an empty publish only then, so a

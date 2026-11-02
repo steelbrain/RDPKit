@@ -2216,6 +2216,30 @@ struct MockKRDPServerTests {
         #expect(sent.contains("clipboard-format-list-response"))
     }
 
+    /// A configuration that starts the clipboard session with fetching off fetches none of the
+    /// server's copy, though the session answers its Format List.
+    @Test func clientWithFetchingOffFromTheStartFetchesNoRemoteCopy() throws {
+        let fetchedAtReady = Locked<Bool?>(nil)
+        let texts = Locked<[String]>([])
+        let run = try runMock(.init(remoteClipboardText: "remote"), {
+            $0.clipboardEnabled = true
+            $0.clipboardFetchesRemoteCopies = false
+        }, client: {
+            RDPSessionClient().run(
+                configuration: $0,
+                onClipboardReady: { session in fetchedAtReady.withLock { $0 = session.fetchesRemoteCopies } },
+                onClipboardText: { text, _ in texts.withLock { $0.append(text) } }
+            )
+        })
+
+        #expect(run.report.status == "success")
+        #expect(fetchedAtReady.value == false)
+        #expect(texts.value.isEmpty)
+        let sent = run.transcript.clientClipboardMessages.map(\.typeName)
+        #expect(sent.contains("clipboard-format-list-response"))
+        #expect(!sent.contains("clipboard-format-data-request"))
+    }
+
     /// With onClipboardContent the client asks for each format of a remote copy in
     /// turn and delivers them together; onClipboardText still gets the text. Both get the
     /// copy's number, the session's `deliveredRemoteCopyNumber`.
@@ -2324,8 +2348,8 @@ struct MockKRDPServerTests {
         #expect(!run.transcript.clientClipboardMessages.map(\.typeName).contains("clipboard-format-data-request"))
     }
 
-    /// A client that turns fetching off in onClipboardReady, as RDPClient does until its
-    /// clipboard bridge attaches on the main thread, still hears at once of a clipboard emptied
+    /// A client that turns fetching off in onClipboardReady, as one that starts with it off
+    /// until it decides on the main thread has it, still hears at once of a clipboard emptied
     /// meanwhile, which brings nothing of the server's clipboard. The report comes on the
     /// session's thread, like every handler.
     @Test func clientReportsAClipboardEmptiedWhileFetchingWasOff() throws {
@@ -2360,7 +2384,7 @@ struct MockKRDPServerTests {
     }
 
     /// A client that turns fetching off in onClipboardReady and back on from another thread,
-    /// as RDPClient does from its main thread, hears of a copy it fetches nothing of that came
+    /// as RDPClient does on its main thread, hears of a copy it fetches nothing of that came
     /// in between. The report comes on the session's thread, like every handler, though no
     /// more traffic does.
     @Test func clientReportsACopyItFetchesNothingOfThatCameWhileFetchingWasOff() throws {
