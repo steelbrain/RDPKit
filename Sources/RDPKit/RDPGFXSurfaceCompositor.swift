@@ -731,19 +731,19 @@ final class RDPGFXSurfaceCompositor {
     }
 
     private func writeRemoteFXTiles(_ pdu: RDPGFXWireToSurface1PDU) throws {
-        let frame = try remoteFX.decode(pdu.bitmapData)
         let originX = Int(pdu.destinationRect.left)
         let originY = Int(pdu.destinationRect.top)
-        // A tile fills its 64x64 cell, so a later tile at a position hides an earlier one.
-        var tiles: [Int: RDPRemoteFXDecodedTile] = [:]
-        for tile in frame.tiles {
-            tiles[(tile.y / 64) << 16 | tile.x / 64] = tile
-        }
         try modifySurface(pdu.surfaceID) { surface in
             // Tiles are drawn only in the region rects, which are in destRect coordinates
             // (MS-RDPRFX 2.2.2.3.3), clipped to destRect and the surface.
             let clipWidth = min(Int(pdu.destinationRect.width), surface.width - originX)
             let clipHeight = min(Int(pdu.destinationRect.height), surface.height - originY)
+            let frame = try remoteFX.decode(pdu.bitmapData, clipSize: (width: clipWidth, height: clipHeight))
+            // A tile fills its 64x64 cell, so a later tile at a position hides an earlier one.
+            var tiles: [Int: RDPRemoteFXDecodedTile] = [:]
+            for tile in frame.tiles {
+                tiles[(tile.y / 64) << 16 | tile.x / 64] = tile
+            }
             let regions = frame.regionRects.compactMap { region in
                 let right = min(Int(region.right), clipWidth)
                 let bottom = min(Int(region.bottom), clipHeight)

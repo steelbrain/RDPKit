@@ -258,15 +258,16 @@ import Testing
 
 @Test func caprogressiveAppliesUpgradePass() throws {
     let progressiveQuant = Data([50] + Array(repeating: UInt8(0x11), count: 15))
+    let firstPass = CAPROGRESSIVERemoteFXGrayTile(
+        blockType: 0xCCC6,
+        xIndex: 0,
+        yIndex: 0,
+        progressiveQuality: 0
+    )
     let bitmapStream = caprogressiveRemoteFXGrayTilesStream(
         progressiveQuantTables: [progressiveQuant],
         tiles: [
-            CAPROGRESSIVERemoteFXGrayTile(
-                blockType: 0xCCC6,
-                xIndex: 0,
-                yIndex: 0,
-                progressiveQuality: 0
-            ),
+            firstPass,
             CAPROGRESSIVERemoteFXGrayTile(
                 blockType: 0xCCC7,
                 xIndex: 0,
@@ -282,10 +283,15 @@ import Testing
         ]
     )
 
+    let firstPassAlone = try RDPRemoteFXDecoder().decodeProgressive(caprogressiveRemoteFXGrayTilesStream(
+        progressiveQuantTables: [progressiveQuant],
+        tiles: [firstPass]
+    )).tiles
+    // The upgrade covers the first pass, so only the upgraded tile is drawn.
     let tiles = try RDPRemoteFXDecoder().decodeProgressive(bitmapStream).tiles
 
-    #expect(tiles.count == 2)
-    #expect(tiles[1].bgraData == tiles[0].bgraData)
+    #expect(tiles.count == 1)
+    #expect(tiles.first?.bgraData == firstPassAlone.first?.bgraData)
 }
 
 /// A cancelled decode stops before its next tile. Upgrade passes, which build on the stored
@@ -496,16 +502,17 @@ import Testing
 
 @Test func caprogressiveUpgradesOriginalTransform() throws {
     let progressiveQuant = Data([50] + Array(repeating: UInt8(0x11), count: 15))
+    let firstPass = CAPROGRESSIVERemoteFXGrayTile(
+        blockType: 0xCCC6,
+        xIndex: 0,
+        yIndex: 0,
+        progressiveQuality: 0
+    )
     let bitmapStream = caprogressiveRemoteFXGrayTilesStream(
         regionFlags: 0,
         progressiveQuantTables: [progressiveQuant],
         tiles: [
-            CAPROGRESSIVERemoteFXGrayTile(
-                blockType: 0xCCC6,
-                xIndex: 0,
-                yIndex: 0,
-                progressiveQuality: 0
-            ),
+            firstPass,
             CAPROGRESSIVERemoteFXGrayTile(
                 blockType: 0xCCC7,
                 xIndex: 0,
@@ -521,10 +528,16 @@ import Testing
         ]
     )
 
+    let firstPassAlone = try RDPRemoteFXDecoder().decodeProgressive(caprogressiveRemoteFXGrayTilesStream(
+        regionFlags: 0,
+        progressiveQuantTables: [progressiveQuant],
+        tiles: [firstPass]
+    )).tiles
+    // The upgrade covers the first pass, so only the upgraded tile is drawn.
     let tiles = try RDPRemoteFXDecoder().decodeProgressive(bitmapStream).tiles
 
-    #expect(tiles.count == 2)
-    #expect(tiles[1].bgraData == tiles[0].bgraData)
+    #expect(tiles.count == 1)
+    #expect(tiles.first?.bgraData == firstPassAlone.first?.bgraData)
 }
 
 @Test func caprogressiveUsesReduceExtrapolateBandSizes() {
@@ -667,6 +680,41 @@ import Testing
 
     #expect(frame.frameIndex == 9)
     #expect(frame.tiles.map { [$0.x, $0.y] } == [[0, 0], [64, 0]])
+}
+
+/// A tile fills its cell, so of the tiles a frame sends for one position only the last is
+/// drawn: a region may hold 65,535 tiles at one position, each 16 KiB once decoded. The
+/// earlier ones still set the state later ones build on.
+@Test func caprogressiveDrawsOnlyTheLastTileSentForAPosition() throws {
+    let grey = CAPROGRESSIVERemoteFXGrayTile(xIndex: 0, yIndex: 0)
+    let patterned = CAPROGRESSIVERemoteFXGrayTile(xIndex: 0, yIndex: 0, yData: rlgrSingleOneComponent())
+    let expected = try RDPRemoteFXDecoder().decodeProgressive(caprogressiveRemoteFXGrayTilesStream(
+        tiles: [patterned]
+    )).tiles
+    let greyTiles = try RDPRemoteFXDecoder().decodeProgressive(caprogressiveRemoteFXGrayTilesStream(
+        tiles: [grey]
+    )).tiles
+
+    let region = try RDPRemoteFXDecoder().decodeProgressive(caprogressiveRemoteFXGrayTilesStream(
+        tiles: Array(repeating: grey, count: 11) + [patterned]
+    ))
+    let regions = try RDPRemoteFXDecoder().decodeProgressive(caprogressiveRemoteFXRegionsStream(regions: [
+        caprogressiveRemoteFXGrayRegionBlock(
+            regionWidth: 128,
+            tiles: [patterned, CAPROGRESSIVERemoteFXGrayTile(xIndex: 1, yIndex: 0)]
+        ),
+        caprogressiveRemoteFXGrayRegionBlock(tiles: [grey]),
+    ]))
+    // A difference tile of zeros keeps the tile before it, which is not drawn.
+    let difference = try RDPRemoteFXDecoder().decodeProgressive(caprogressiveRemoteFXGrayTilesStream(
+        tiles: [patterned, CAPROGRESSIVERemoteFXGrayTile(xIndex: 0, yIndex: 0, flags: 1)]
+    ))
+
+    #expect(expected != greyTiles)
+    #expect(region.tiles == expected)
+    #expect(regions.tiles.map { [$0.x, $0.y] } == [[0, 0], [64, 0]])
+    #expect(regions.tiles.first == greyTiles.first)
+    #expect(difference.tiles == expected)
 }
 
 @Test func caprogressiveAcceptsRegionWithoutNewTiles() throws {

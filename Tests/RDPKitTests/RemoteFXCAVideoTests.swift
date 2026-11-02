@@ -85,6 +85,49 @@ import Testing
     ])
 }
 
+/// A tile fills its cell, so of the tiles a message sends for one position only the last is
+/// decoded: a tile set may hold 65,535 tiles at one position, each 16 KiB once decoded.
+@Test func cavideoRemoteFXDecodesOnlyTheLastTileSentForAPosition() throws {
+    let checks = Locked(0)
+    let decoder = RDPRemoteFXDecoder(isCancelled: {
+        checks.withLock { $0 += 1 }
+        return false
+    })
+    let patterned = try RDPRemoteFXDecoder().decode(cavideoRemoteFXGrayTileStream(
+        tileYComponents: [rlgrSingleOneComponent()]
+    )).tiles
+    let grey = try RDPRemoteFXDecoder().decode(cavideoRemoteFXGrayTileStream()).tiles
+
+    let tileSet = try decoder.decode(cavideoRemoteFXGrayTileStream(
+        tilePositions: Array(repeating: (x: 0, y: 0), count: 12),
+        tileYComponents: Array(repeating: nil, count: 11) + [rlgrSingleOneComponent()]
+    ))
+    // A later frame of the message is drawn over the earlier one.
+    let first = cavideoRemoteFXBlocks(cavideoRemoteFXGrayTileStream(tileYComponents: [rlgrSingleOneComponent()]))
+    let second = cavideoRemoteFXBlocks(cavideoRemoteFXGrayTileStream(frameIndex: 2))
+    let frames = try RDPRemoteFXDecoder().decode(cavideoRemoteFXStream(first + second[4 ... 7]))
+
+    #expect(patterned != grey)
+    #expect(tileSet.tiles == patterned)
+    #expect(checks.value == 1)
+    #expect(frames.tiles == grey)
+    #expect(frames.regionRects.count == 2)
+}
+
+/// Region rects are clipped to the channel, and the caller draws only inside its clip size,
+/// so a tile outside either is drawn nowhere and is not decoded.
+@Test func cavideoRemoteFXDropsTilesNothingDraws() throws {
+    let stream = cavideoRemoteFXGrayTileStream(
+        channelWidth: 128,
+        channelHeight: 64,
+        tilePositions: [(x: 0, y: 0), (x: 1, y: 0), (x: 2, y: 0), (x: 0, y: 1)]
+    )
+
+    #expect(try RDPRemoteFXDecoder().decode(stream).tiles.map { [$0.x, $0.y] } == [[0, 0], [64, 0]])
+    #expect(try RDPRemoteFXDecoder().decode(stream, clipSize: (width: 64, height: 64)).tiles.map(\.x) == [0])
+    #expect(try RDPRemoteFXDecoder().decode(stream, clipSize: (width: 0, height: 64)).tiles.isEmpty)
+}
+
 @Test func cavideoRemoteFXRejectsOutOfSequenceFrameBlocks() throws {
     let blocks = cavideoRemoteFXBlocks(cavideoRemoteFXGrayTileStream())
     let blockOrder = [0, 1, 2, 3, 4, 6, 5, 7]

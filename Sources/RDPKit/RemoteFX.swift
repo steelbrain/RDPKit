@@ -9,6 +9,8 @@ struct RDPRemoteFXDecodedTile: Equatable, Sendable {
 
 struct RDPRemoteFXDecodedFrame: Equatable, Sendable {
     var frameIndex: UInt32?
+    /// One tile per position, the last one sent there: a tile fills its 64x64 cell, so a
+    /// later one hides an earlier one.
     var tiles: [RDPRemoteFXDecodedTile]
     var regionRects: [RDPFrameRect]
 }
@@ -171,7 +173,7 @@ private final class RDPConcurrentTileResults: @unchecked Sendable {
         return firstError != nil
     }
 
-    func store(_ tile: RDPRemoteFXDecodedTile, at index: Int) {
+    func store(_ tile: RDPRemoteFXDecodedTile?, at index: Int) {
         lock.lock()
         decodedTiles[index] = tile
         lock.unlock()
@@ -192,6 +194,25 @@ private final class RDPConcurrentTileResults: @unchecked Sendable {
             throw firstError
         }
         return decodedTiles.compactMap { $0 }
+    }
+}
+
+/// Decoded tiles by position, in the order positions were first added; a tile added at a
+/// position replaces the one there.
+private struct RDPRemoteFXTileGrid {
+    private(set) var tiles: [RDPRemoteFXDecodedTile] = []
+    private var indices: [Int: Int] = [:]
+
+    mutating func add(_ newTiles: [RDPRemoteFXDecodedTile]) {
+        for tile in newTiles {
+            let position = (tile.y / 64) << 16 | tile.x / 64
+            if let index = indices[position] {
+                tiles[index] = tile
+            } else {
+                indices[position] = tiles.count
+                tiles.append(tile)
+            }
+        }
     }
 }
 
@@ -352,7 +373,7 @@ final class RDPRemoteFXDecoder {
         var frameIndex: UInt32?
         var expectedRegionCount: Int?
         var regionCount = 0
-        var decodedTiles: [RDPRemoteFXDecodedTile] = []
+        var decodedTiles = RDPRemoteFXTileGrid()
         var decodedRegionRects: [RDPFrameRect] = []
         var hasSeenBlock = false
         var hasSeenFrameBegin = false
@@ -390,7 +411,7 @@ final class RDPRemoteFXDecoder {
                     codecContextID: codecContextID,
                     surfaceSize: surfaceSize
                 )
-                decodedTiles += region.tiles
+                decodedTiles.add(region.tiles)
                 decodedRegionRects += region.rectangles
             case ProgressiveBlockType.frameEnd:
                 guard isInsideFrame, !hasSeenFrameEnd else {
@@ -415,7 +436,7 @@ final class RDPRemoteFXDecoder {
         }
         return RDPRemoteFXDecodedFrame(
             frameIndex: frameIndex,
-            tiles: decodedTiles,
+            tiles: decodedTiles.tiles,
             regionRects: decodedRegionRects
         )
     }
@@ -534,17 +555,23 @@ final class RDPRemoteFXDecoder {
             codecContextID: codecContextID,
             store: progressiveStore
         )
+        // A region may hold 65,535 tiles at one position. Only the last is drawn; the earlier
+        // ones still update the stored state that later ones refine or add to.
+        var lastIndices: [Int: Int] = [:]
+        for (index, tile) in tiles.enumerated() {
+            lastIndices[tile.yIndex << 16 | tile.xIndex] = index
+        }
+        let drawnIndices = Set(lastIndices.values)
         // Tiles that build on stored state, or repeat a position, must decode in order.
-        let positions = Set(tiles.map { $0.yIndex << 16 | $0.xIndex })
         let decodesConcurrently = tiles.count >= Self.minimumConcurrentTileCount
-            && positions.count == tiles.count
+            && lastIndices.count == tiles.count
             && !tiles.contains(where: \.dependsOnStoredTile)
         let decodedTiles = try Self.decodeTiles(
             count: tiles.count,
             concurrently: decodesConcurrently,
             isCancelled: isCancelled
         ) { index in
-            try Self.decodeProgressiveTile(tiles[index], in: region)
+            try Self.decodeProgressiveTile(tiles[index], in: region, isDrawn: drawnIndices.contains(index))
         }
         return (decodedTiles, rectangles)
     }
@@ -606,10 +633,12 @@ final class RDPRemoteFXDecoder {
         )
     }
 
+    /// Updates the stored state of `tile`, and returns its pixels when it `isDrawn`.
     private static func decodeProgressiveTile(
         _ tile: ProgressiveTile,
-        in region: ProgressiveRegion
-    ) throws -> RDPRemoteFXDecodedTile {
+        in region: ProgressiveRegion,
+        isDrawn: Bool
+    ) throws -> RDPRemoteFXDecodedTile? {
         let bands = Self.bands(reduceExtrapolate: region.usesReduceExtrapolate)
         let quants = tile.quantIndices.map { region.quants[$0] }
         // Quality 0xFF selects the full-quality table, whose values are all zero.
@@ -671,6 +700,9 @@ final class RDPRemoteFXDecoder {
                 refinement: tile.kind == .first ? refinement : nil,
                 for: key
             )
+        }
+        guard isDrawn else {
+            return nil
         }
 
         var components = coefficients.components
@@ -782,9 +814,11 @@ final class RDPRemoteFXDecoder {
 
     // MARK: - RemoteFX (classic)
 
-    func decode(_ data: Data) throws -> RDPRemoteFXDecodedFrame {
+    /// Decodes a TS_RFX_MESSAGE (MS-RDPRFX 2.2.2). With `clipSize`, the area from the frame's
+    /// origin the caller draws in, tiles outside it are dropped undecoded.
+    func decode(_ data: Data, clipSize: (width: Int, height: Int)? = nil) throws -> RDPRemoteFXDecodedFrame {
         do {
-            return try decodeClassicMessage(data)
+            return try decodeClassicMessage(data, clipSize: clipSize)
         } catch {
             // The frame a failed message left open is lost; the next message starts afresh.
             classicDataBlockState = .frameBegin
@@ -793,10 +827,13 @@ final class RDPRemoteFXDecoder {
         }
     }
 
-    private func decodeClassicMessage(_ data: Data) throws -> RDPRemoteFXDecodedFrame {
+    private func decodeClassicMessage(
+        _ data: Data,
+        clipSize: (width: Int, height: Int)?
+    ) throws -> RDPRemoteFXDecodedFrame {
         var cursor = ByteCursor(data)
         var frameIndex: UInt32?
-        var decodedTiles: [RDPRemoteFXDecodedTile] = []
+        var decodedTiles = RDPRemoteFXTileGrid()
         var decodedRegionRects: [RDPFrameRect] = []
 
         while cursor.remaining > 0 {
@@ -850,7 +887,16 @@ final class RDPRemoteFXDecoder {
                 guard classicDataBlockState == .tileSet else {
                     throw RDPDecodeError.invalidRDPGFXPDU
                 }
-                decodedTiles += try Self.decodeTileSet(block.body, isCancelled: isCancelled)
+                // Region rects are clipped to the channel, so tiles outside it are drawn nowhere.
+                guard let channelWidth, let channelHeight else {
+                    throw RDPDecodeError.invalidRDPGFXPDU
+                }
+                try decodedTiles.add(Self.decodeTileSet(
+                    block.body,
+                    width: min(channelWidth, clipSize?.width ?? channelWidth),
+                    height: min(channelHeight, clipSize?.height ?? channelHeight),
+                    isCancelled: isCancelled
+                ))
                 // A later frame's tiles are drawn over an earlier one's, so its region adds to theirs.
                 decodedRegionRects += classicRegionRects
                 classicDataBlockState = .frameEnd
@@ -868,7 +914,7 @@ final class RDPRemoteFXDecoder {
 
         return RDPRemoteFXDecodedFrame(
             frameIndex: frameIndex,
-            tiles: decodedTiles,
+            tiles: decodedTiles.tiles,
             regionRects: decodedRegionRects
         )
     }
@@ -1030,9 +1076,12 @@ final class RDPRemoteFXDecoder {
         return rectangles
     }
 
-    /// TS_RFX_TILESET (MS-RDPRFX 2.2.2.3.4).
+    /// TS_RFX_TILESET (MS-RDPRFX 2.2.2.3.4). Only the tiles that start inside `width` x
+    /// `height` are decoded, and of those at one position only the last.
     private static func decodeTileSet(
         _ data: Data,
+        width: Int,
+        height: Int,
         isCancelled: @Sendable () -> Bool
     ) throws -> [RDPRemoteFXDecodedTile] {
         var cursor = ByteCursor(data)
@@ -1069,12 +1118,18 @@ final class RDPRemoteFXDecoder {
             throw RDPDecodeError.invalidRDPGFXPDU
         }
 
+        // A tile set may hold 65,535 tiles, all at one position.
+        var lastIndices: [Int: Int] = [:]
+        for (index, tile) in tiles.enumerated() where tile.xIndex * 64 < width && tile.yIndex * 64 < height {
+            lastIndices[tile.yIndex << 16 | tile.xIndex] = index
+        }
+        let decodedIndices = lastIndices.values.sorted()
         return try decodeTiles(
-            count: tiles.count,
-            concurrently: tiles.count >= minimumConcurrentTileCount,
+            count: decodedIndices.count,
+            concurrently: decodedIndices.count >= minimumConcurrentTileCount,
             isCancelled: isCancelled
         ) { index in
-            let tile = tiles[index]
+            let tile = tiles[decodedIndices[index]]
             let components = try (0 ..< 3).map { component in
                 var values = try entropyDecode(tile.components[component], algorithm: algorithm, bands: classicBands)
                 try dequantize(&values, quant: quants[tile.quantIndices[component]], bands: classicBands)
@@ -1155,17 +1210,17 @@ final class RDPRemoteFXDecoder {
         return tiles
     }
 
-    /// Runs `decode` for every tile index, concurrently when asked, keeping tile order. Stops
-    /// before the next tile once `isCancelled` is true: a region of a wide desktop holds
-    /// thousands of tiles, and the upgrade passes of one decode in order.
+    /// Runs `decode` for every tile index, concurrently when asked, keeping tile order and
+    /// dropping nil results. Stops before the next tile once `isCancelled` is true: a region
+    /// of a wide desktop holds thousands of tiles, and the upgrade passes of one decode in order.
     private static func decodeTiles(
         count: Int,
         concurrently: Bool,
         isCancelled: @Sendable () -> Bool,
-        _ decode: @Sendable (Int) throws -> RDPRemoteFXDecodedTile
+        _ decode: @Sendable (Int) throws -> RDPRemoteFXDecodedTile?
     ) throws -> [RDPRemoteFXDecodedTile] {
         guard concurrently else {
-            return try (0 ..< count).map { index in
+            return try (0 ..< count).compactMap { index in
                 guard !isCancelled() else {
                     throw RDPConnectionError.cancelled
                 }

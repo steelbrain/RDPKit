@@ -143,22 +143,22 @@ final class RDPPrimarySurfaceCompositor {
     }
 
     private func paintRemoteFXTiles(_ encoded: Data, command: RDPSurfaceBitsCommand) throws {
+        let originX = Int(command.destinationLeft)
+        let originY = Int(command.destinationTop)
+        // Tiles are painted only in the region rects, clipped to the bitmap and the desktop.
+        let clipWidth = min(Int(command.bitmapData.width), width - originX)
+        let clipHeight = min(Int(command.bitmapData.height), height - originY)
         let frame: RDPRemoteFXDecodedFrame
         do {
-            frame = try remoteFX.decode(encoded)
+            frame = try remoteFX.decode(encoded, clipSize: (width: clipWidth, height: clipHeight))
         } catch {
             throw RDPDecodeError.invalidGraphicsUpdatePDU
         }
-        let originX = Int(command.destinationLeft)
-        let originY = Int(command.destinationTop)
         // A tile fills its 64x64 cell, so a later tile at a position hides an earlier one.
         var tiles: [Int: RDPRemoteFXDecodedTile] = [:]
         for tile in frame.tiles {
             tiles[(tile.y / 64) << 16 | tile.x / 64] = tile
         }
-        // Tiles are painted only in the region rects, clipped to the bitmap and the desktop.
-        let clipWidth = min(Int(command.bitmapData.width), width - originX)
-        let clipHeight = min(Int(command.bitmapData.height), height - originY)
         let regions = frame.regionRects.compactMap { region in
             let right = min(Int(region.right), clipWidth)
             let bottom = min(Int(region.bottom), clipHeight)

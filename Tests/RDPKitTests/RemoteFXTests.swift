@@ -57,16 +57,18 @@ func rlgrDecodesSpecEncoderOutput(algorithm: RDPRemoteFXDecoder.EntropyAlgorithm
         }
     }
     let zeroLL3RawBits = Data(repeating: 0, count: 21)
+    let progressiveQuantTables = [Data([50] + Array(repeating: UInt8(0x22), count: 15))]
+    let firstPassTile = CAPROGRESSIVERemoteFXGrayTile(
+        blockType: 0xCCC6,
+        xIndex: 0,
+        yIndex: 0,
+        progressiveQuality: 0,
+        yData: rlgrEncode(differentialLL3(firstPass), algorithm: .rlgr1)
+    )
     let progressive = caprogressiveRemoteFXGrayTilesStream(
-        progressiveQuantTables: [Data([50] + Array(repeating: UInt8(0x22), count: 15))],
+        progressiveQuantTables: progressiveQuantTables,
         tiles: [
-            CAPROGRESSIVERemoteFXGrayTile(
-                blockType: 0xCCC6,
-                xIndex: 0,
-                yIndex: 0,
-                progressiveQuality: 0,
-                yData: rlgrEncode(differentialLL3(firstPass), algorithm: .rlgr1)
-            ),
+            firstPassTile,
             CAPROGRESSIVERemoteFXGrayTile(
                 blockType: 0xCCC7,
                 xIndex: 0,
@@ -83,10 +85,15 @@ func rlgrDecodesSpecEncoderOutput(algorithm: RDPRemoteFXDecoder.EntropyAlgorithm
     )
 
     let expected = try #require(RDPRemoteFXDecoder().decodeProgressive(simple).tiles.first)
+    let firstPassAlone = try RDPRemoteFXDecoder().decodeProgressive(caprogressiveRemoteFXGrayTilesStream(
+        progressiveQuantTables: progressiveQuantTables,
+        tiles: [firstPassTile]
+    )).tiles
+    // The upgrade covers the first pass, so only the upgraded tile is drawn.
     let passes = try RDPRemoteFXDecoder().decodeProgressive(progressive).tiles
 
-    #expect(passes.count == 2)
-    #expect(passes.first?.bgraData != expected.bgraData)
+    #expect(firstPassAlone.first?.bgraData != expected.bgraData)
+    #expect(passes.count == 1)
     #expect(passes.last?.bgraData == expected.bgraData)
 }
 
