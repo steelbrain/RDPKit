@@ -307,6 +307,7 @@ extension Optional {
 public final class RDPLiveConnectionReport: @unchecked Sendable {
     private let lock = NSLock()
     private var storage: RDPConnectionReportStorage?
+    private var followedConnections = 0
 
     public init() {}
 
@@ -319,7 +320,16 @@ public final class RDPLiveConnectionReport: @unchecked Sendable {
 
     /// Reads the report of the connection now starting, such as a redirection's.
     func follow(_ storage: RDPConnectionReportStorage) {
-        lock.withLock { self.storage = storage }
+        lock.withLock {
+            self.storage = storage
+            followedConnections += 1
+        }
+    }
+
+    /// How many connections the report has followed: one more for each connection a run
+    /// makes, such as a Server Redirection's.
+    var connectionCount: Int {
+        lock.withLock { followedConnections }
     }
 }
 

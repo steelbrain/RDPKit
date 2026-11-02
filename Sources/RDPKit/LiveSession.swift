@@ -32,8 +32,9 @@ public final class RDPLiveSession: @unchecked Sendable {
         /// more before `onEnd`.
         public var onWireReceive: (@MainActor @Sendable (RDPWireReceiveSample) -> Void)?
         /// The server's layout as of a frame, before that frame is decoded or fails to: with
-        /// the first frame, and with each frame whose layout differs from the one before, such
-        /// as after a ResetGraphics, even to the same monitors.
+        /// each connection's first frame, a Server Redirection's included, and with each frame
+        /// whose layout differs from the one before, such as after a ResetGraphics, even to the
+        /// same monitors. A connection is told apart by the `liveReport` that `run` passes on.
         public var onServerLayout: (@MainActor @Sendable (RDPServerLayout) -> Void)?
         /// The session ended on its own: called on the session thread with its report, so
         /// slow work such as decoding the report's first frame stays off the main thread; hand
@@ -71,7 +72,8 @@ public final class RDPLiveSession: @unchecked Sendable {
     private var isDelivering = true
     private var hasStarted = false
     private var hasEnded = false
-    private var deliveredServerLayout: RDPServerLayout?
+    /// The layout delivered last, and the `liveReport` connection its frame came on.
+    private var deliveredServerLayout: (connection: Int, layout: RDPServerLayout)?
     private var endWaiters: [UUID: CheckedContinuation<Bool, Never>] = [:]
 
     /// `threadName` names the session's thread, as debuggers and crash reports show it.
@@ -240,8 +242,9 @@ public final class RDPLiveSession: @unchecked Sendable {
         events.onEnd(report)
     }
 
-    /// Delivers the frame's layout when it differs from the one delivered last, before the
-    /// frame goes to the decoder, whose result is delivered after it.
+    /// Delivers the frame's layout when it differs from the one delivered last or came on
+    /// another connection, before the frame goes to the decoder, whose result is delivered
+    /// after it.
     private func deliverServerLayout(
         of frame: RDPGraphicsFrameSnapshot,
         to onServerLayout: (@MainActor @Sendable (RDPServerLayout) -> Void)?
@@ -250,9 +253,10 @@ public final class RDPLiveSession: @unchecked Sendable {
             return
         }
         let layout = RDPServerLayout(frame)
+        let connection = liveReport.connectionCount
         let isNew = lock.withLock {
-            defer { deliveredServerLayout = layout }
-            return deliveredServerLayout != layout
+            defer { deliveredServerLayout = (connection, layout) }
+            return deliveredServerLayout?.connection != connection || deliveredServerLayout?.layout != layout
         }
         if isNew {
             deliver {

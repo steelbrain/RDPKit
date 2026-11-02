@@ -333,3 +333,49 @@ func aLiveSessionDeliversTheServersLayoutBeforeItsFrames() async throws {
         "layout 2 0", "decoded 5",
     ])
 }
+
+/// Each connection's first frame comes with the server's layout, though a Server Redirection's
+/// server lays out the same monitors as the one before; the frames after it on the same
+/// connection do not repeat it.
+@Test(.timeLimit(.minutes(1)))
+func aLiveSessionDeliversTheServersLayoutOncePerConnection() async throws {
+    let received = Received()
+    let session = RDPLiveSession()
+    let monitor = RDPRemoteMonitor(rect: RDPFrameRect(left: 0, top: 0, right: 1, bottom: 1), isPrimary: true)
+    let frames = (1 ... 4).map { id in
+        var frame = bitmapFrame(id: UInt32(id))
+        frame.graphicsResetCount = 1
+        frame.monitors = [monitor]
+        return frame
+    }
+    session.start(events: RDPLiveSession.Events(
+        onFrameDecoded: { presentation, _, _, _ in
+            received.append("decoded \(presentation.frame.frameID ?? 0)")
+        },
+        onFrameDecodeFailed: { _, _ in
+            received.append("failed")
+        },
+        onServerLayout: { layout in
+            received.append("layout \(layout.graphicsResetCount) \(layout.monitors.count)")
+        },
+        onEnd: { _ in
+            session.deliver {
+                received.ended.signal()
+            }
+        }
+    )) { run in
+        for (index, frame) in frames.enumerated() {
+            if index % 2 == 0 {
+                run.liveReport.follow(RDPConnectionReportStorage(report(status: "connecting")))
+            }
+            try? run.onGraphicsFrame(frame)
+        }
+        return report(status: "success")
+    }
+
+    #expect(await wait(for: received.ended))
+    #expect(received.snapshot == [
+        "layout 1 1", "decoded 1", "decoded 2",
+        "layout 1 1", "decoded 3", "decoded 4",
+    ])
+}
