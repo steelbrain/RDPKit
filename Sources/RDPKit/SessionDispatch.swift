@@ -431,7 +431,8 @@ extension RDPClientConnection {
             userChannelID: userChannelID,
             ioChannelID: ioChannelID,
             channel: channel,
-            serverInputFlags: share.serverInputFlags
+            serverInputFlags: share.serverInputFlags,
+            connectionContext: connectionContext
         )
         inputSession = session
         callbacks.onInputReady?(session)

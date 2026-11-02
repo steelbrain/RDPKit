@@ -414,23 +414,19 @@ private func passwordField(showing password: String) -> (window: NSWindow, field
     )))
     func persistence(
         _ request: CredentialPersistenceRequest?,
-        _ protocols: [String]?
+        _ verified: Bool
     ) -> (saves: Bool, deletes: Bool, dropped: Bool) {
-        let result = rdpCredentialPersistenceOnceReady(request, selectedProtocols: protocols)
+        let result = rdpCredentialPersistenceOnceReady(request, credentialsVerified: verified)
         let saves = if case .save = result.request { true } else { false }
         let deletes = if case .delete = result.request { true } else { false }
         return (saves, deletes, result.droppedUncheckedSave)
     }
     let save = CredentialPersistenceRequest.save(key: key, password: "secret")
 
-    for protocols in [["credssp"], ["credssp-early-user-auth"], ["rdstls"]] {
-        #expect(persistence(save, protocols) == (true, false, false))
-    }
-    for protocols in [["tls"], ["standard-rdp-security"], nil] {
-        #expect(persistence(save, protocols) == (false, false, true))
-    }
-    #expect(persistence(.delete(key: key), ["tls"]) == (false, true, false))
-    #expect(persistence(nil, ["tls"]) == (false, false, false))
+    #expect(persistence(save, true) == (true, false, false))
+    #expect(persistence(save, false) == (false, false, true))
+    #expect(persistence(.delete(key: key), false) == (false, true, false))
+    #expect(persistence(nil, false) == (false, false, false))
 }
 
 /// A port above the desktop size's limit of 8192, such as a forwarded 33890, stays in the

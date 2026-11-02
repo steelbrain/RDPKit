@@ -642,6 +642,8 @@ final class RDPDisplayLayoutRecord: @unchecked Sendable {
 public final class RDPDisplayControlSession: Sendable {
     public let dynamicChannelID: UInt32
     public let capabilities: RDPDisplayControlCapabilities
+    /// The connection this session belongs to.
+    public let connectionContext: RDPConnectionContext
     private let userChannelID: UInt16
     private let staticChannelID: UInt16
     private let channel: Channel
@@ -654,10 +656,12 @@ public final class RDPDisplayControlSession: Sendable {
         userChannelID: UInt16,
         staticChannelID: UInt16,
         channel: Channel,
-        layouts: RDPDisplayLayoutRecord
+        layouts: RDPDisplayLayoutRecord,
+        connectionContext: RDPConnectionContext = RDPConnectionContext()
     ) {
         self.dynamicChannelID = dynamicChannelID
         self.capabilities = capabilities
+        self.connectionContext = connectionContext
         self.userChannelID = userChannelID
         self.staticChannelID = staticChannelID
         self.channel = channel

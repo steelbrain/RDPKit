@@ -180,6 +180,7 @@ extension RDPClientConnection {
                     requestsRichFormats: callbacks.onClipboardContent != nil,
                     requestsFileLists: callbacks.onClipboardFileGroupDescriptor != nil,
                     fetchesRemoteCopies: configuration.clipboardFetchesRemoteCopies,
+                    connectionContext: connectionContext,
                     sentMessageHandler: { summary, _ in storage.recordClipboardSent(summary) },
                     // Its event goes out from the session loop, which the wake runs.
                     pendingEventHandler: transport.wake,

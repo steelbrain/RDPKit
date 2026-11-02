@@ -106,6 +106,7 @@ struct MockKRDPServerTests {
 
         #expect(run.report.status == "success")
         #expect(run.report.selectedProtocols == ["credssp"])
+        #expect(run.report.credentialsVerifiedBeforeActivation == true)
         #expect(run.transcript.credSSPMessages == ["ntlm-negotiate", "ntlm-authenticate", "credentials"])
         #expect(run.transcript.credSSPGates == [
             "raw-ntlm-negotiate-token",
@@ -572,6 +573,48 @@ struct MockKRDPServerTests {
         #expect(client.allSatisfy { $0.hex == nil && $0.byteCount > 0 })
         #expect(!server.isEmpty)
         #expect(server.allSatisfy { $0.bytes?.count == $0.byteCount })
+    }
+
+    /// The sessions handlers get carry the context of the connection they belong to: a TLS
+    /// connection's, whose server checks no credential, and after a Gnome handover the
+    /// redirected connection's, whose RDSTLS does. These mocks open no Display Control; a KRdp
+    /// replay checks its session.
+    @Test func sessionsCarryTheContextOfTheirConnection() throws {
+        let contexts = Locked<[String: [RDPConnectionContext]]>([:])
+        let record: @Sendable (String, RDPConnectionContext) -> Void = { name, context in
+            contexts.withLock { $0[name, default: []].append(context) }
+        }
+        let tls = try runMock(.init(remoteClipboardText: "remote"), { $0.clipboardEnabled = true }, client: {
+            RDPSessionClient().run(
+                configuration: $0,
+                onInputReady: { record("tls-input", $0.connectionContext) },
+                onClipboardReady: { record("tls-clipboard", $0.connectionContext) }
+            )
+        })
+        let handover = try runMock(
+            .init(redirectionBehavior: .redirectLikeGnomeHandover, remoteClipboardText: "remote"),
+            { $0.clipboardEnabled = true },
+            client: {
+            RDPSessionClient().run(
+                configuration: $0,
+                onInputReady: { record("handover-input", $0.connectionContext) },
+                onClipboardReady: { record("handover-clipboard", $0.connectionContext) }
+            )
+            }
+        )
+
+        #expect(tls.report.status == "success", "\(tls.report.error ?? "")")
+        #expect(handover.report.status == "success", "\(handover.report.error ?? "") \(handover.report.selectedProtocols ?? [])")
+        #expect(tls.report.credentialsVerifiedBeforeActivation == false)
+        #expect(handover.report.credentialsVerifiedBeforeActivation == true)
+        let unchecked = RDPConnectionContext(redirectionDepth: 0, credentialsVerifiedBeforeActivation: false)
+        let checkedAfterRedirect = RDPConnectionContext(redirectionDepth: 1, credentialsVerifiedBeforeActivation: true)
+        #expect(contexts.value.mapValues { $0.last } == [
+            "tls-input": unchecked,
+            "tls-clipboard": unchecked,
+            "handover-input": checkedAfterRedirect,
+            "handover-clipboard": checkedAfterRedirect,
+        ])
     }
 
     @Test func clientFollowsServerRedirectionAndReconnects() throws {

@@ -191,6 +191,14 @@ final class RDPClientConnection {
         primarySurfaceStorage = nil
     }
 
+    /// What the sessions this connection hands out carry of it.
+    var connectionContext: RDPConnectionContext {
+        RDPConnectionContext(
+            redirectionDepth: configuration.redirectionDepth,
+            credentialsVerifiedBeforeActivation: selectedProtocols.verifiesCredentials
+        )
+    }
+
     /// Connects and runs the X.224 negotiation ([MS-RDPBCGR] 3.2.5.3.1-2).
     /// Returns false when the negotiation response ends the connection; the
     /// reason is in `report.failure` and `report.error`.
@@ -212,6 +220,7 @@ final class RDPClientConnection {
         switch confirm.negotiationResult {
         case let .selected(protocols):
             report.selectedProtocols = protocols.names
+            report.credentialsVerifiedBeforeActivation = protocols.verifiesCredentials
             guard request.negotiationRequest.requestedProtocols.canSelect(protocols) else {
                 return end(.protocolViolation, "server selected an unrequested security protocol")
             }

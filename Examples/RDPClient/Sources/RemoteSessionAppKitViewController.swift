@@ -875,7 +875,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                 onInputReady: { session in
                     let persistence = rdpCredentialPersistenceOnceReady(
                         credentialPersistenceRequest,
-                        selectedProtocols: liveReport.snapshot?.selectedProtocols
+                        credentialsVerified: session.connectionContext.credentialsVerifiedBeforeActivation
                     )
                     let persistenceResult = persistCredentialsIfNeeded(persistence.request, store: credentialStore)
                     if let persistenceResult {

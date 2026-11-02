@@ -34,6 +34,15 @@ public struct RDPConnectionReport: Encodable, Equatable, Sendable {
     public var responseHex: String?
     public var negotiationFlags: UInt8?
     public var selectedProtocols: [String]?
+    /// Whether the server checks the credentials before the session starts: it selected CredSSP
+    /// (Network Level Authentication), with or without Early User Authorization, or RDSTLS,
+    /// which end the connection on a wrong password before activation. False when it selected
+    /// TLS alone: the server then starts the session whatever the password and asks on its own
+    /// logon screen, where the user may sign in with another, so a client saves a password only
+    /// when this is true. Nil until the negotiation, and for the connection a redirection led
+    /// to, that connection's. The sessions handlers get carry it in their
+    /// ``RDPConnectionContext``.
+    public var credentialsVerifiedBeforeActivation: Bool?
     public var failureCode: UInt32?
     public var tlsProtocol: String?
     public var certificateTrusted: Bool?
@@ -182,6 +191,7 @@ public struct RDPConnectionReport: Encodable, Equatable, Sendable {
         responseHex: String? = nil,
         negotiationFlags: UInt8? = nil,
         selectedProtocols: [String]? = nil,
+        credentialsVerifiedBeforeActivation: Bool? = nil,
         failureCode: UInt32? = nil,
         tlsProtocol: String? = nil,
         certificateTrusted: Bool? = nil,
@@ -290,6 +300,7 @@ public struct RDPConnectionReport: Encodable, Equatable, Sendable {
         self.responseHex = responseHex
         self.negotiationFlags = negotiationFlags
         self.selectedProtocols = selectedProtocols
+        self.credentialsVerifiedBeforeActivation = credentialsVerifiedBeforeActivation
         self.failureCode = failureCode
         self.tlsProtocol = tlsProtocol
         self.certificateTrusted = certificateTrusted

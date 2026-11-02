@@ -967,6 +967,7 @@ enum KRdpCapture {
         timeoutSeconds: Int = 10,
         guardSeconds: Double = 20,
         recoversVideoWithLayoutResend: Bool = true,
+        redirectionDepth: Int = 0,
         onEnd: (@Sendable (Channel) -> Void)? = nil,
         onTrailingClientPacket: (@Sendable (Channel, Data) -> Void)? = nil,
         onGraphicsFrame: RDPGraphicsFrameHandler? = nil,
@@ -1002,20 +1003,23 @@ enum KRdpCapture {
         DispatchQueue(label: "KRdpCapture.guard").asyncAfter(deadline: .now() + guardSeconds) {
             cancellation.cancel()
         }
+        var configuration = RDPConnectionConfiguration(
+            host: "127.0.0.1",
+            port: server.port,
+            credentials: credentials,
+            timeoutSeconds: timeoutSeconds,
+            hideCertificateWarnings: true,
+            graphicsFrameCaptureLimit: frameCaptureLimit,
+            desktopWidth: 1280,
+            desktopHeight: 720,
+            recoversVideoWithLayoutResend: recoversVideoWithLayoutResend,
+            clipboardEnabled: false,
+            graphicsCapabilityProfile: .avcThinClient
+        )
+        // As a Server Redirection would have led to the server.
+        configuration.redirectionDepth = redirectionDepth
         let report = RDPSessionClient().run(
-            configuration: RDPConnectionConfiguration(
-                host: "127.0.0.1",
-                port: server.port,
-                credentials: credentials,
-                timeoutSeconds: timeoutSeconds,
-                hideCertificateWarnings: true,
-                graphicsFrameCaptureLimit: frameCaptureLimit,
-                desktopWidth: 1280,
-                desktopHeight: 720,
-                recoversVideoWithLayoutResend: recoversVideoWithLayoutResend,
-                clipboardEnabled: false,
-                graphicsCapabilityProfile: .avcThinClient
-            ),
+            configuration: configuration,
             onGraphicsFrame: onGraphicsFrame,
             onRemotePointer: onRemotePointer,
             onInputReady: onInputReady,

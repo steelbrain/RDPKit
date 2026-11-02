@@ -13,6 +13,12 @@ struct RDPSecurityProtocols: OptionSet, Sendable, Equatable {
     static let credSSPWithEarlyUserAuth = RDPSecurityProtocols(rawValue: 0x0000_0008)
     static let rdsAAD = RDPSecurityProtocols(rawValue: 0x0000_0010)
 
+    /// Whether the server checks the credentials before the session starts: CredSSP, with or
+    /// without Early User Authorization, and RDSTLS end the connection on wrong ones.
+    var verifiesCredentials: Bool {
+        !intersection([.credSSP, .credSSPWithEarlyUserAuth, .rdSTLS]).isEmpty
+    }
+
     var names: [String] {
         var values: [String] = []
         if contains(.tls) { values.append("tls") }

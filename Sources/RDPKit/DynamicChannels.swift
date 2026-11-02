@@ -281,7 +281,8 @@ extension RDPClientConnection {
                 userChannelID: userChannelID,
                 staticChannelID: staticChannelID,
                 channel: channel,
-                layouts: displayLayouts
+                layouts: displayLayouts,
+                connectionContext: connectionContext
             )
             if report.rdpGraphicsFirstFrame != nil {
                 announceDisplayControl()

@@ -941,6 +941,8 @@ extension RDPClipboardFileContentsResponse {
 
 public final class RDPClipboardSession: @unchecked Sendable {
     public let staticChannelID: UInt16
+    /// The connection this session belongs to.
+    public let connectionContext: RDPConnectionContext
     private let userChannelID: UInt16
     private let channel: Channel
     private let sentMessageHandler: RDPClipboardSentMessageHandler?
@@ -1005,6 +1007,7 @@ public final class RDPClipboardSession: @unchecked Sendable {
         requestsRichFormats: Bool = false,
         requestsFileLists: Bool = true,
         fetchesRemoteCopies: Bool = true,
+        connectionContext: RDPConnectionContext = RDPConnectionContext(),
         sentMessageHandler: RDPClipboardSentMessageHandler? = nil,
         pendingEventHandler: @escaping @Sendable () -> Void = {},
         isCancelled: @escaping @Sendable () -> Bool = { false }
@@ -1016,6 +1019,7 @@ public final class RDPClipboardSession: @unchecked Sendable {
         self.requestsRichFormats = requestsRichFormats
         self.requestsFileLists = requestsFileLists
         isFetchingRemoteCopies = fetchesRemoteCopies
+        self.connectionContext = connectionContext
         self.sentMessageHandler = sentMessageHandler
         self.pendingEventHandler = pendingEventHandler
         self.isCancelled = isCancelled

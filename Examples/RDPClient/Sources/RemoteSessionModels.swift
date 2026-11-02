@@ -279,13 +279,13 @@ struct RDPLegacyKeyExchangeFallback: Equatable {
 /// for one on its own logon screen when it is wrong, so `request` saves no password it did not
 /// check; removing a saved one, as the user asked, still happens. Its logon notification
 /// (`rdpLogonNotification`) would not do instead: the user may have logged on at that screen with
-/// another password. Returns whether a save was dropped.
+/// another password. `credentialsVerified` is the ready session's
+/// `connectionContext.credentialsVerifiedBeforeActivation`. Returns whether a save was dropped.
 func rdpCredentialPersistenceOnceReady(
     _ request: CredentialPersistenceRequest?,
-    selectedProtocols: [String]?
+    credentialsVerified: Bool
 ) -> (request: CredentialPersistenceRequest?, droppedUncheckedSave: Bool) {
-    let checked = selectedProtocols?.contains { ["credssp", "credssp-early-user-auth", "rdstls"].contains($0) } == true
-    guard case .save = request, !checked else {
+    guard case .save = request, !credentialsVerified else {
         return (request, false)
     }
     return (nil, true)

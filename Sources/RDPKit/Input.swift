@@ -488,6 +488,8 @@ struct RDPFastPathInputPDU: Equatable, Sendable {
 
 public final class RDPInputSession: Sendable {
     public let shareID: UInt32
+    /// The connection this session belongs to.
+    public let connectionContext: RDPConnectionContext
     private let userChannelID: UInt16
     private let ioChannelID: UInt16
     private let channel: Channel
@@ -499,9 +501,11 @@ public final class RDPInputSession: Sendable {
         userChannelID: UInt16,
         ioChannelID: UInt16,
         channel: Channel,
-        serverInputFlags: UInt16? = nil
+        serverInputFlags: UInt16? = nil,
+        connectionContext: RDPConnectionContext = RDPConnectionContext()
     ) {
         self.shareID = shareID
+        self.connectionContext = connectionContext
         self.userChannelID = userChannelID
         self.ioChannelID = ioChannelID
         self.channel = channel

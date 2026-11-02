@@ -120,6 +120,15 @@
   downloads through it.
 - `RDPClipboardFileGroupDescriptorW.remoteFileTransferFiles` takes a
   `maximumFileCount`.
+- `RDPConnectionReport.credentialsVerifiedBeforeActivation` says whether the
+  server checked the credentials before the session started: it selected
+  CredSSP, with or without Early User Authorization, or RDSTLS. A client saves
+  a password only then, without matching `selectedProtocols` names.
+- `RDPInputSession`, `RDPDisplayControlSession` and `RDPClipboardSession` carry
+  an `RDPConnectionContext`, the `redirectionDepth` and
+  `credentialsVerifiedBeforeActivation` of the connection they belong to, for
+  their ready handlers to read rather than the live report, which a Server
+  Redirection moves on. RDPClient decides whether to save a password from it.
 - `RDPConnectionConfiguration.clipboardFetchesRemoteCopies` sets what
   `RDPClipboardSession.fetchesRemoteCopies` starts as, so a client with
   sharing off fetches nothing of the server's clipboard, without turning it off

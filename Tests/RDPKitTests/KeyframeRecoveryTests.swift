@@ -157,3 +157,20 @@ func keyframeRecoverySendsNothingOnceVideoIsShownOrWhenOff(recovers: Bool) throw
     #expect(!run.clientPackets.contains { $0.range(of: layoutData) != nil })
     #expect(run.report.rdpKeyframeRequestCount == nil)
 }
+
+/// The Display Control session carries the context of its connection: here one a redirection
+/// led to, over TLS, so the server checked no credential.
+@Test func displayControlSessionCarriesTheContextOfItsConnection() throws {
+    let displayControl = try displayControlPackets()
+    let firstFrame = try KRdpCapture.events()[39...].map { try #require($0.bytes) }
+    let context = Locked<RDPConnectionContext?>(nil)
+    let run = try KRdpCapture.run(
+        prefix: 39,
+        appending: [displayControl.channel, displayControl.caps] + firstFrame,
+        redirectionDepth: 1,
+        onDisplayControlReady: { session in context.withLock { $0 = session.connectionContext } }
+    )
+
+    #expect(run.report.status == "success")
+    #expect(context.value == RDPConnectionContext(redirectionDepth: 1, credentialsVerifiedBeforeActivation: false))
+}
