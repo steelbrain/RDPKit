@@ -82,6 +82,7 @@ let package = Package(
             name: "RDPClientTests",
             dependencies: [
                 "RDPClient",
+                .product(name: "RDPKitTesting", package: "RDPKit"),
             ],
             path: "Tests/RDPClientTests"
         ),

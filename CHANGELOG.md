@@ -268,6 +268,17 @@
   `rdpGraphicsFirstFrame` is the first that came, shown or not, and
   `runPresentedFrameCount` those of the whole run, so a run that showed a
   desktop before a Server Redirection's target failed still says so.
+- `RDPKitAppKit`'s `RDPPasteboardClipboard` bridges a Mac pasteboard and a
+  session's clipboard, as RDPClient and RDPeek each did with a copy of their
+  own: `attach(_:)`, the `receive…` calls for the session's handlers, `poll()`
+  once a second, `syncNow()`, `setSharingEnabled(_:)` and
+  `startTemporarySharing()`. It publishes the user's copies, puts the server's
+  text and quarantined downloads on the pasteboard, drops what a newer copy
+  replaced, sends nothing while macOS denies reading the pasteboard, and clears
+  the copy it sent when the server's clipboard is emptied, also while sharing
+  is off. `onEvent` reports what happened for the app to word, and
+  `removeStaleDownloadDirectories(in:changedBefore:keeping:)` clears what
+  earlier runs left. RDPClient now uses it.
 - `RDPConnectionReport.targetHost` and `targetPort` give `target` apart, and
   `redirectionNamedHost` says whether a Server Redirection named that host,
   rather than only a routing token that leads to the configured host again.
