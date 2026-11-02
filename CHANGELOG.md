@@ -151,6 +151,13 @@
   `\`, which `publishLocalFiles` takes for a folder separator, becomes `_`.
   It throws an `RDPClipboardLocalFileReadError`. RDPClient reads and publishes
   copied files through these.
+- `run` and `connect` take a `storedClientLicenseProvider`, asked for the
+  client license to present only once a server starts licensing, at most once
+  per connection, in place of `storedClientLicense`, and an
+  `onClientLicenseIssued` handler that gets a new or upgraded license as soon
+  as it arrives. The deadline for the connection's next step starts once
+  either returns, so a Keychain prompt takes none of it. RDPClient reads and
+  saves its Keychain license through them.
 
 ### Security
 

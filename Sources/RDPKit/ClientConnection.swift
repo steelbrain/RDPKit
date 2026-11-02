@@ -42,6 +42,8 @@ final class RDPClientConnection {
     // Licensing and activation.
     var licensingComplete = false
     var licenseKeys: RDPLicenseKeys?
+    /// What `storedClientLicenseProvider` returned, once it was asked.
+    var providedClientLicense: RDPStoredClientLicense??
     var sawConnectTimeAutoDetect = false
     var autoDetectMeter = RDPAutoDetectBandwidthMeter()
     var share: RDPActiveShare?

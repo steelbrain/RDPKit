@@ -940,6 +940,58 @@ struct MockKRDPServerTests {
         #expect(report.error == nil)
     }
 
+    /// A license the server issues reaches its handler as it arrives, and the deadline for the
+    /// next step starts once the handler returns: one that saves it behind a Keychain prompt
+    /// longer than the timeout does not end the session.
+    @Test func clientHandsAnIssuedLicenseToItsHandlerBeforeTheNextDeadlineStarts() throws {
+        let issued = Locked<[RDPStoredClientLicense]>([])
+        let run = try runMock(.init(licensingBehavior: .serverLicenseRequestThenNewLicense), { $0.timeoutSeconds = 1 }, client: {
+            RDPSessionClient().run(
+                configuration: $0,
+                onClientLicenseIssued: { license in
+                    Thread.sleep(forTimeInterval: 1.5)
+                    issued.withLock { $0.append(license) }
+                }
+            )
+        })
+
+        #expect(run.report.status == "success", "\(run.report.error ?? "")")
+        #expect(run.report.rdpLicensingResponseType == "license-request")
+        #expect(issued.value == [mockIssuedClientLicense])
+        #expect(run.report.rdpIssuedClientLicense == mockIssuedClientLicense)
+    }
+
+    /// The license provider is asked only once a server starts licensing, in place of the
+    /// configuration's license, and the deadline for the next step starts once it returns.
+    @Test func clientAsksTheLicenseProviderOnlyOnceTheServerStartsLicensing() throws {
+        let stored = RDPStoredClientLicense(
+            version: 0x0006_0001,
+            scope: "localhost",
+            companyName: "Microsoft Corporation",
+            productID: "A02",
+            licenseInfo: Data([0x30, 0x82, 0x01, 0x02])
+        )
+        let calls = Locked(0)
+        let provider: RDPStoredClientLicenseProvider = {
+            Thread.sleep(forTimeInterval: 1.5)
+            calls.withLock { $0 += 1 }
+            return stored
+        }
+        let unlicensed = try runMock(.init(), client: {
+            RDPSessionClient().run(configuration: $0, storedClientLicenseProvider: provider)
+        })
+        #expect(unlicensed.report.status == "success")
+        #expect(calls.value == 0)
+
+        let licensed = try runMock(.init(licensingBehavior: .serverLicenseRequestWithStoredClientLicense), { $0.timeoutSeconds = 1 }, client: {
+            RDPSessionClient().run(configuration: $0, storedClientLicenseProvider: provider)
+        })
+        #expect(licensed.report.status == "success", "\(licensed.report.error ?? "")")
+        #expect(calls.value == 1)
+        // The provided license went out, not a request for a new one.
+        #expect(licensed.transcript.licenseMachineName == nil)
+    }
+
     @Test func clientSendsClientLicenseInformationForMatchingStoredLicense() throws {
         let run = try runMock(.init(licensingBehavior: .serverLicenseRequestWithStoredClientLicense)) {
             $0.storedClientLicense = RDPStoredClientLicense(

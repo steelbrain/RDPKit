@@ -783,17 +783,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         // RDPSessionClient.run blocks for the whole session, so it gets its own thread
         // rather than holding a Swift concurrency worker.
         let sessionThread = Thread {
-            // A license the server issued earlier is read here, off the main actor: a Keychain
-            // read blocks, and can wait for the user to allow access.
-            var sessionConfiguration = configuration
-            do {
-                sessionConfiguration.storedClientLicense = try clientLicenseStore.license(for: clientLicenseKey)
-            } catch {
-                sink.apply { controller in
-                    controller.keychainMessage = String(describing: error)
-                    controller.render()
-                }
-            }
+            let sessionConfiguration = configuration
             let didPresentFrame = OSAllocatedUnfairLock(initialState: false)
             let decodeQueue = RDPFrameDecodeQueue(
                 shouldCancel: {
@@ -979,17 +969,35 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                         controller.render()
                     }
                 },
+                // A license the server issued earlier is read only once a server asks for one. The
+                // Keychain read blocks, and can wait for the user to allow access; RDPKit starts
+                // the next deadline once it returns.
+                storedClientLicenseProvider: {
+                    do {
+                        return try clientLicenseStore.license(for: clientLicenseKey)
+                    } catch {
+                        sink.apply { controller in
+                            controller.keychainMessage = String(describing: error)
+                            controller.render()
+                        }
+                        return nil
+                    }
+                },
+                // Saved as it arrives, so it stays valid even when the user ends the session.
+                onClientLicenseIssued: { license in
+                    guard let result = persistClientLicenseIfNeeded(license, key: clientLicenseKey, store: clientLicenseStore) else {
+                        return
+                    }
+                    sink.apply { controller in
+                        controller.applyClientLicensePersistenceResult(result)
+                        controller.render()
+                    }
+                },
                 onWireReceive: { sample in
                     wireReceiveCoalescer.record(sample)
                 },
                 liveReport: liveReport,
                 cancellation: cancellation
-            )
-            // A license the server issued stays valid even when the user ends the session.
-            let clientLicensePersistenceResult = persistClientLicenseIfNeeded(
-                nextReport.rdpIssuedClientLicense,
-                key: clientLicenseKey,
-                store: clientLicenseStore
             )
             guard cancellation.isCancelled == false else {
                 return
@@ -1016,9 +1024,6 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                 controller.publishRenderMetricsSnapshotIfNeeded(force: true)
                 controller.report = nextReport
                 controller.updateGraphicsPathSummary()
-                if let clientLicensePersistenceResult {
-                    controller.applyClientLicensePersistenceResult(clientLicensePersistenceResult)
-                }
                 let certificateHost = controller.serverCertificateInfo?.host ?? target.host
                 if let certificateTrusted = nextReport.certificateTrusted {
                     controller.serverCertificateInfo = RDPServerCertificateInfo(

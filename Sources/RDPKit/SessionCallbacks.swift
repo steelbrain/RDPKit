@@ -77,6 +77,17 @@ public typealias RDPAudioSampleHandler = @Sendable (RDPAudioSample) -> Void
 /// ([MS-RDPEA] 2.2.3.8), so the server can keep video in step with the sound; FreeRDP's
 /// second confirm adds its audio device's latency the same way.
 public typealias RDPAudioPlaybackDelayHandler = @Sendable () -> Duration
+/// Returns the client license to present when a server asks for one ([MS-RDPELE] 1.3.3), in
+/// place of `RDPConnectionConfiguration.storedClientLicense`. Called on the session's thread
+/// only once a server starts licensing, at most once per connection, so an application reads
+/// its store, such as the Keychain, only then; the connection's deadline for its next step
+/// starts once it returns, so a Keychain prompt takes none of that time.
+public typealias RDPStoredClientLicenseProvider = @Sendable () -> RDPStoredClientLicense?
+/// Receives a client license the server issued, new or upgraded ([MS-RDPELE] 2.2.2.6, 2.2.2.7),
+/// on the session's thread as soon as it arrives, so an application can save it before the
+/// session starts; `RDPConnectionReport.rdpIssuedClientLicense` holds it too. The
+/// connection's deadline for its next step starts once it returns.
+public typealias RDPClientLicenseIssuedHandler = @Sendable (RDPStoredClientLicense) -> Void
 /// Runs on the NIO event loop for every server message, before it is processed.
 public typealias RDPWireReceiveHandler = @Sendable (RDPWireReceiveSample) -> Void
 
@@ -109,6 +120,8 @@ struct RDPSessionCallbacks {
     var onAudioSample: RDPAudioSampleHandler?
     var audioPlaybackDelay: RDPAudioPlaybackDelayHandler?
     var onCertificate: RDPServerCertificateHandler?
+    var storedClientLicenseProvider: RDPStoredClientLicenseProvider?
+    var onClientLicenseIssued: RDPClientLicenseIssuedHandler?
     var onWireReceive: RDPWireReceiveHandler?
     var wireTranscript: RDPWireTranscript?
     var liveReport: RDPLiveConnectionReport?

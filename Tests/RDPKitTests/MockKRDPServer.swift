@@ -266,6 +266,15 @@ enum MockKRDPAutoDetectBehavior {
     case noReplyRequestOnly
 }
 
+/// The license `MockKRDPLicensingBehavior.serverLicenseRequestThenNewLicense` issues.
+let mockIssuedClientLicense = RDPStoredClientLicense(
+    version: 0x0006_0001,
+    scope: "localhost",
+    companyName: "Microsoft Corporation",
+    productID: "A02",
+    licenseInfo: Data([0x30, 0x82, 0x01, 0x02, 0x0A])
+)
+
 enum MockKRDPLicensingBehavior {
     case validClientThenDemandActive
     case validClientThenDemandActiveWithMonitorLayout
@@ -276,6 +285,9 @@ enum MockKRDPLicensingBehavior {
     case serverLicenseRequest
     case serverLicenseRequestWithStoredClientLicense
     case serverLicenseRequestX509
+    /// A License Request whose key leaves the premaster secret readable, then a New License
+    /// for `mockIssuedClientLicense`, sealed with the keys the client derived.
+    case serverLicenseRequestThenNewLicense
     case noLicenseServerError
     case disconnectInsteadOfLicensing
 }
@@ -971,6 +983,9 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
             if options.licensingBehavior == .serverLicenseRequest {
                 write(MockKRDPFixtures.licenseValidClient(), context: context)
             }
+            if options.licensingBehavior == .serverLicenseRequestThenNewLicense {
+                write(try MockKRDPFixtures.newLicense(answering: request.userData), context: context)
+            }
             write(MockKRDPFixtures.demandActive(), context: context)
             stage = .confirmActive
 
@@ -1148,6 +1163,14 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
         case .serverLicenseRequestX509:
             write(
                 MockKRDPFixtures.serverLicenseRequest(certificatePayload: try MockKRDPTLS.rdpX509CertificateChain()),
+                context: context
+            )
+            stage = .clientNewLicenseRequest
+        case .serverLicenseRequestThenNewLicense:
+            write(
+                MockKRDPFixtures.serverLicenseRequest(
+                    certificatePayload: proprietaryServerCertificate(publicExponent: 1, modulusByte: 0xFF)
+                ),
                 context: context
             )
             stage = .clientNewLicenseRequest
@@ -1919,6 +1942,43 @@ private enum MockKRDPFixtures {
             channelID: MockKRDPConstants.ioChannelID,
             userData: payload
         )
+    }
+
+    /// A New License for `issuedClientLicense` answering a Client New License Request whose
+    /// premaster secret the exponent-1 key left readable, sealed with the keys it derives
+    /// ([MS-RDPELE] 2.2.2.7, 5.1.3).
+    static func newLicense(answering userData: Data) throws -> Data {
+        var cursor = ByteCursor(userData)
+        _ = try cursor.readData(count: 4 + 4 + 4 + 4)
+        let clientRandom = try cursor.readData(count: 32)
+        let premasterSecret = try Data(cursor.readLicenseBlob().data.prefix(48))
+        let keys = try RDPLicenseKeys.derive(
+            clientRandom: clientRandom,
+            serverRandom: Data((0 ..< 32).map(UInt8.init)),
+            premasterSecret: premasterSecret
+        )
+        let license = mockIssuedClientLicense
+        var licenseInfo = Data()
+        licenseInfo.appendLittleEndianUInt32(license.version)
+        let scope = Data((license.scope + "\u{0}").utf8)
+        let companyName = utf16LENullTerminated(license.companyName)
+        let productID = utf16LENullTerminated(license.productID)
+        for field in [scope, companyName, productID, license.licenseInfo] {
+            licenseInfo.appendLittleEndianUInt32(UInt32(field.count))
+            licenseInfo.append(field)
+        }
+
+        var body = Data()
+        body.appendLicenseBlob(type: 0x0009, payload: keys.encrypt(licenseInfo))
+        body.append(keys.mac(licenseInfo))
+        var payload = Data()
+        payload.appendLittleEndianUInt16(0x0080)
+        payload.appendLittleEndianUInt16(0)
+        payload.appendUInt8(0x03)
+        payload.appendUInt8(0x03)
+        payload.appendLittleEndianUInt16(UInt16(body.count + 4))
+        payload.append(body)
+        return mcsSendDataIndication(channelID: MockKRDPConstants.ioChannelID, userData: payload)
     }
 
     static func serverLicenseRequest(certificatePayload: Data = proprietaryServerCertificate()) -> Data {

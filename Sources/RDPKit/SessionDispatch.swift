@@ -250,8 +250,11 @@ extension RDPClientConnection {
                 throw RDPDecodeError.invalidLicensePDU
             }
             let licenseInfo = try licenseKeys.openVerified(issued.encryptedLicenseInfo, mac: issued.mac)
-            report.rdpIssuedClientLicense = try RDPServerNewLicenseInformation.parse(licenseInfo).storedClientLicense
+            let license = try RDPServerNewLicenseInformation.parse(licenseInfo).storedClientLicense
+            report.rdpIssuedClientLicense = license
+            callbacks.onClientLicenseIssued?(license)
             licensingComplete = true
+            // After the handler, which may have saved the license to the Keychain.
             startPhase()
         }
     }
@@ -259,13 +262,16 @@ extension RDPClientConnection {
     /// Presents the stored license when it matches the server's product and fits
     /// the PDU, otherwise asks for a new one.
     private func answerLicenseRequest(_ request: RDPServerLicenseRequest) throws {
+        let storedLicense = storedClientLicenseToPresent()
         guard let serverPublicKey = request.serverCertificatePublicKey ?? serverCertificatePublicKey else {
             throw RDPConnectionError.protocolViolation("server did not provide a usable licensing public key")
         }
         let packet: Data
         let clientRandom: Data
         let premasterSecret: Data?
-        if let information = try storedLicenseInformation(answering: request, serverPublicKey: serverPublicKey) {
+        if let storedLicense,
+           let information = try storedLicenseInformation(storedLicense, answering: request, serverPublicKey: serverPublicKey)
+        {
             packet = information.packet
             clientRandom = information.pdu.clientRandom
             premasterSecret = information.pdu.premasterSecret
@@ -286,13 +292,30 @@ extension RDPClientConnection {
         try send(packet)
     }
 
+    /// The license to present: the provider's, asked for once per connection, or the
+    /// configuration's.
+    private func storedClientLicenseToPresent() -> RDPStoredClientLicense? {
+        guard let provider = callbacks.storedClientLicenseProvider else {
+            return configuration.storedClientLicense
+        }
+        if let providedClientLicense {
+            return providedClientLicense
+        }
+        let license = provider()
+        providedClientLicense = .some(license)
+        // A Keychain prompt in the provider takes none of the time for the next step.
+        startPhase()
+        return license
+    }
+
     /// The Client License Information PDU presenting the stored license, or nil when there is
     /// none, it does not match the server's product, or it is too large to present.
     private func storedLicenseInformation(
+        _ storedLicense: RDPStoredClientLicense,
         answering request: RDPServerLicenseRequest,
         serverPublicKey: RDPRSAPublicKey
     ) throws -> (pdu: RDPClientLicenseInformationPDU, packet: Data)? {
-        guard let storedLicense = configuration.storedClientLicense, storedLicense.matches(request) else {
+        guard storedLicense.matches(request) else {
             return nil
         }
         let information = try RDPClientLicenseInformationPDU(

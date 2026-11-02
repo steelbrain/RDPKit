@@ -133,14 +133,16 @@ func shareDataPacket(
 }
 
 /// A Server Proprietary Certificate ([MS-RDPBCGR] 2.2.1.4.3.1.1) with a 512-bit key.
-func proprietaryServerCertificate() -> Data {
+/// With a `publicExponent` of 1 and a modulus above every 48-byte value, raw RSA leaves what
+/// it encrypts as it is, so a mock server reads the client's premaster secret.
+func proprietaryServerCertificate(publicExponent: UInt32 = 0x0001_0001, modulusByte: UInt8 = 0xA5) -> Data {
     var publicKey = Data()
     publicKey.appendLittleEndianUInt32(0x3141_5352)
     publicKey.appendLittleEndianUInt32(72)
     publicKey.appendLittleEndianUInt32(512)
     publicKey.appendLittleEndianUInt32(63)
-    publicKey.appendLittleEndianUInt32(0x0001_0001)
-    publicKey.append(Data(repeating: 0xA5, count: 64))
+    publicKey.appendLittleEndianUInt32(publicExponent)
+    publicKey.append(Data(repeating: modulusByte, count: 64))
     publicKey.append(Data(repeating: 0, count: 8))
 
     var certificate = Data()
