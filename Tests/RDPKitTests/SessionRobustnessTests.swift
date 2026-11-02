@@ -421,6 +421,63 @@ func deactivatedSessionThatNeverReactivatesFails(closes: Bool, failure: RDPConne
     #expect(acknowledgesOnChannel2.count == 2)
 }
 
+/// A second RDPGFX channel is a new pipeline, whose ClearCodec streams start again at
+/// sequence number 0 ([MS-RDPEGFX] 2.2.4.1) however far the old channel's went.
+@Test func recreatedGraphicsChannelStartsClearCodecAfresh() throws {
+    func clearCodecUpdate(sequenceNumber: UInt8) -> Data {
+        var stream = clearCodecRawRegionStream(width: 1, height: 1, pixels: [0x10, 0x20, 0x30])
+        stream[1] = sequenceNumber
+        var body = Data()
+        body.appendLittleEndianUInt16(1)
+        body.appendLittleEndianUInt16(RDPGFXCodecID.clearCodec)
+        body.appendUInt8(0x20)
+        body.append(rectangleData(RDPGFXRect16(left: 0, top: 0, right: 1, bottom: 1)))
+        body.appendLittleEndianUInt32(UInt32(stream.count))
+        body.append(stream)
+        return graphicsMessage(commandID: RDPGFXCommandID.wireToSurface1, payload: body)
+    }
+    var createSurface = Data()
+    createSurface.appendLittleEndianUInt16(1)
+    createSurface.appendLittleEndianUInt16(16)
+    createSurface.appendLittleEndianUInt16(16)
+    createSurface.appendUInt8(0x20)
+    var mapSurface = Data()
+    mapSurface.appendLittleEndianUInt16(1)
+    mapSurface.appendLittleEndianUInt16(0)
+    mapSurface.appendLittleEndianUInt32(0)
+    mapSurface.appendLittleEndianUInt32(0)
+    // KRdp's CapsConfirm (event 35), after its DVC and segment headers.
+    let capsConfirm = try #require(KRdpCapture.events()[35].bytes).dropFirst(27)
+    let create = Data([0x10, 0x02]) + Data("Microsoft::Windows::RDS::Graphics".utf8) + Data([0])
+    let run = try KRdpCapture.run(
+        appending: [
+            // The old channel's stream 0, in a frame it never ends.
+            KRdpCapture.graphicsPacket(KRdpCapture.startFrame(id: 2) + clearCodecUpdate(sequenceNumber: 0)),
+            mcsSendDataIndication(
+                channelID: KRdpCapture.drdynvcChannelID,
+                userData: RDPStaticVirtualChannelPDU(payload: create).encodedUserData()
+            ),
+            KRdpCapture.graphicsPacket(Data(capsConfirm), channelID: 2),
+            KRdpCapture.graphicsPacket(
+                graphicsMessage(commandID: RDPGFXCommandID.createSurface, payload: createSurface)
+                    + graphicsMessage(commandID: RDPGFXCommandID.mapSurfaceToOutput, payload: mapSurface)
+                    + KRdpCapture.startFrame(id: 1) + clearCodecUpdate(sequenceNumber: 0) + KRdpCapture.endFrame(id: 1),
+                channelID: 2
+            ),
+            KRdpCapture.graphicsPacket(
+                KRdpCapture.startFrame(id: 2) + clearCodecUpdate(sequenceNumber: 1) + KRdpCapture.endFrame(id: 2),
+                channelID: 2
+            ),
+        ],
+        frameCaptureLimit: 2
+    )
+
+    #expect(run.report.error == nil)
+    let frame = try #require(run.report.rdpGraphicsFrames?.last)
+    #expect(frame.surfaceID == 1)
+    #expect(pixel(atX: 0, y: 0, data: try #require(frame.decodedBitmapData), bytesPerRow: 64) == [0x10, 0x20, 0x30, 0xFF])
+}
+
 /// A second DisplayControl channel replaces the first, as a second RDPGFX channel does: the
 /// session made for the old channel, and capabilities still arriving on it, are dropped.
 @Test func recreatedDisplayControlChannelForgetsTheOldChannelID() throws {

@@ -86,7 +86,7 @@ final class RDPClientConnection {
     var graphicsChannelID: UInt32?
     var graphicsDecoder = RDPGFXServerTransportDecoder()
     var graphicsCompositor: RDPGFXSurfaceCompositor?
-    let clearCodec = RDPClearCodecDecoder()
+    var clearCodec = RDPClearCodecDecoder()
     var graphicsFrameTracker = RDPGFXLogicalFrameTracker()
     /// The current RDPGFX frame's updates for the decoder, in wire order.
     var pendingGraphicsUpdates: [RDPPendingGraphicsUpdate] = []

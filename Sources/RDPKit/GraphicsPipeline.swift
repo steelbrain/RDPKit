@@ -24,6 +24,9 @@ extension RDPClientConnection {
         deletedGraphicsSurfaceIDs.formUnion(graphicsCompositor?.surfaceIDs ?? [])
         evictedGraphicsCacheSlots.formUnion(graphicsCompositor?.decoderCacheSlots ?? [])
         graphicsCompositor = nil
+        // Its ClearCodec streams start over too: from sequence number 0, without the old
+        // glyphs and V-Bars ([MS-RDPEGFX] 2.2.4.1).
+        clearCodec = RDPClearCodecDecoder()
         graphicsFrameTracker = RDPGFXLogicalFrameTracker()
         // totalFramesDecoded counts from the channel's creation ([MS-RDPEGFX] 2.2.2.13).
         graphicsFramesDecoded = 0
