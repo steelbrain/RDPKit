@@ -307,6 +307,11 @@
   certificate as `.changed` even when untrusted ones are accepted.
   `RDPServerCertificateTrustKey(storageIdentifier:)` reads a stored key back.
   RDPClient's store keeps only the storage.
+- `RDPDiagnosticText` formats what a diagnostics view such as Stats for Nerds
+  shows: metric units, Core Video pixel formats, hex codes, a one-line
+  performance summary, and summaries of a report's channels, capability sets,
+  messages, RDPGFX updates, graphics failure, first frame, redirection and
+  termination. RDPClient's window uses it; the layout stays the app's.
 - `RDPConnectionIdentity.legacyCredentialMoves(keptBy:)` plans moving the
   passwords saved under an account's earlier names to its current one, as
   `RDPCredentialAccountMove` steps in order: for a lookup that finds nothing

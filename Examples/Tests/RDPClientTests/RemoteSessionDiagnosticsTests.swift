@@ -40,30 +40,3 @@ import Testing
     #expect(compactViewerMetricsSummary(metrics: metrics, framePacing: RDPFramePacingState(), at: end.addingTimeInterval(10))
         == "0.0 fps - decode 2.0 ms - rx 0.00 Mbps")
 }
-
-/// The failure row says which of the update's PDUs failed and which one its summaries start
-/// at: around the failing PDU, not at the update's first, in an update of more than 64.
-@MainActor
-@Test func graphicsFailureSummarySaysWhereTheSummariesStart() {
-    var report = RDPConnectionReport(
-        status: "success",
-        stage: "rdp-graphics-dynamic-channel",
-        target: "127.0.0.1:3389",
-        passwordConfigured: true,
-        requestedProtocols: ["tls", "credssp"],
-        requestHex: "",
-        warnings: []
-    )
-    report.rdpGraphicsFailureUpdatePayloadHex = "00"
-    report.rdpGraphicsFailureUpdateMessageIndex = 80
-    report.rdpGraphicsFailureUpdateFirstMessageIndex = 48
-    report.rdpGraphicsFailureUpdateMessageCount = 161
-
-    #expect(RemoteSessionDiagnosticsWindowContent.graphicsFailureSummary(report) == "message 80 of 161, summaries from 48")
-
-    // An update that did not decode into PDUs failed in transport.
-    report.rdpGraphicsFailureUpdateMessageIndex = nil
-    report.rdpGraphicsFailureUpdateFirstMessageIndex = nil
-    report.rdpGraphicsFailureUpdateMessageCount = nil
-    #expect(RemoteSessionDiagnosticsWindowContent.graphicsFailureSummary(report) == "transport")
-}
