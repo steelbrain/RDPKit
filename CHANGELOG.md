@@ -26,7 +26,10 @@
   the 2018 CredSSP update: connect with it off, and on that failure ask the
   user before connecting again with it on. It covers only that server: a
   Server Redirection's target answering below version 5 is refused the same
-  way. RDPClient offers Connect Anyway for that one connection.
+  way. `RDPLegacyCredSSPConsent` keeps that rule for an app: it offers the
+  old version only after the server connected to answered with it, and
+  allows it only for the next connection to that server once the user
+  agrees. RDPClient offers Connect Anyway with it.
 - `RDPVideoToolboxFrameDecoder` throws the new
   `RDPVideoDecodeError.needsCompositor(_:)` for `.surfaceCopy` and `.alpha`
   snapshots, which it took for empty video samples that stalled the surface's

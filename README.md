@@ -130,7 +130,9 @@ within the run), or
 `.legacyCredSSPVersion(version:)`: the server answered Network Level
 Authentication with a CredSSP version from before the CVE-2018-0886 fix, and
 no credential was sent. Ask the user, and retry with `legacyCredSSP` only if
-they agree. `report.error` describes the failure in words.
+they agree; `RDPLegacyCredSSPConsent` keeps that agreement to the server and
+the one connection it was given for, never a redirection's target.
+`report.error` describes the failure in words.
 `report.remoteTermination?.category` says how the server ended a session:
 logoff, an administrator, an idle limit, another connection, and so on.
 `connect` throws `RDPConnectionError` with the same `failure`, and its `report`

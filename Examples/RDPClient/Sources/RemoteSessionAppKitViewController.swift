@@ -882,11 +882,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                             report: nextReport,
                             showedDesktop: controller.hasPresentedFrame
                         )
-                        controller.legacyCredSSPConsent.connectionEnded(
-                            target,
-                            failure: nextReport.failure,
-                            redirectionDepth: nextReport.redirectionDepth
-                        )
+                        controller.legacyCredSSPConsent.connectionEnded(target, report: nextReport)
                         controller.detachSessionChannels()
                         controller.isConnecting = false
                         controller.activeSession = nil

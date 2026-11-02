@@ -270,56 +270,6 @@ func rdpCredentialPersistenceOnceReady(
     return (nil, true)
 }
 
-/// CredSSP below version 5, which RDPKit refuses unless `legacyCredSSP` is set: offered to the
-/// user after a server answered with it, and allowed only for the one connection their agreement
-/// starts. Any other connection, a later one to the same server included, refuses it again.
-struct RDPLegacyCredSSPConsent: Equatable {
-    struct Offer: Equatable {
-        var target: RDPConnectionTarget
-        /// The CredSSP version the server answered with.
-        var version: Int
-    }
-
-    /// The server the last connection was refused for, until the next connection starts.
-    private(set) var offer: Offer?
-    private var allowedTarget: RDPConnectionTarget?
-
-    /// Returns whether a connection to `target` allows CredSSP below version 5: only when the
-    /// user just agreed to it for `target`. Forgets the offer and the agreement.
-    mutating func connect(to target: RDPConnectionTarget) -> Bool {
-        defer {
-            offer = nil
-            allowedTarget = nil
-        }
-        return allowedTarget == target
-    }
-
-    /// Offers the old version after a connection to `target` ended with `failure`. RDPKit refuses
-    /// it before any credential is sent. After a Server Redirection (`redirectionDepth` above 0)
-    /// another server than `target` answered, which the user did not type in, so nothing is
-    /// offered.
-    mutating func connectionEnded(
-        _ target: RDPConnectionTarget,
-        failure: RDPConnectionFailure?,
-        redirectionDepth: Int
-    ) {
-        guard case let .legacyCredSSPVersion(version) = failure, redirectionDepth == 0 else {
-            return
-        }
-        offer = Offer(target: target, version: version)
-    }
-
-    /// The user agreed to the offer: the next connection to its target allows the old version.
-    /// Returns false without an offer.
-    mutating func allow() -> Bool {
-        guard let offer else {
-            return false
-        }
-        allowedTarget = offer.target
-        return true
-    }
-}
-
 /// Paces the sizes Follow View Size sends over Display Control: a size goes out once the view
 /// has kept it for a moment, and never when the server was last sent it.
 struct RDPDisplayResizeDebounce {
