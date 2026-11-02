@@ -69,6 +69,16 @@
   once it is.
 - RDPClient saves a password only when the server checked it, with Network
   Level Authentication or RDSTLS.
+- RDPClient announces a Windows layout that types the Mac layout's letters on
+  the same keys, so Control shortcuts reach the letters they show, for Turkish
+  F, German DIN 2137, ABC QWERTZ and ABC AZERTY, Latvian, Lithuanian and LST
+  1582, Hungarian QWERTY, Romanian, Finnish Extended, Slovenian, Albanian and
+  Kabyle AZERTY.
+- RDPClient synchronizes Caps Lock again when a key or click shows a toggle it
+  missed, releases the keys held when a menu opens, moves the remote pointer to
+  a scroll's position before the wheel, sends no Windows or Alt tap while
+  another modifier or a button is down, types the JIS keypad comma as a comma,
+  and composes the key after a dead key that follows one sent as an Alt chord.
 - `RDPAudioPlayer` keeps playing after the output device or its sample rate
   changes. The engine stopped, and starting it again played nothing: the
   queue never drained and later audio was dropped.
