@@ -383,9 +383,16 @@ func startingTLSRejectsDataSentAfterTheConnectionConfirm(extra: Data) throws {
         timeoutSeconds: 10,
         callbacks: callbacks
     )
-    try transport.send(Data([0x00]))
+    // Not `send`: its wait needs a task on the event loop, and when the answer is read first,
+    // the first onWireReceive holds the loop until this thread, still in `send`, releases it.
+    transport.channel.writeAndFlush(ByteBuffer(bytes: [0x00]), promise: nil)
 
-    firstReceiveStarted.wait()
+    // With the write failed, nothing would arrive: fail instead of waiting for good.
+    guard firstReceiveStarted.wait(timeout: .now() + 10) == .success else {
+        Issue.record("the server's answer never arrived")
+        transport.close()
+        return
+    }
     DispatchQueue.global().asyncAfter(deadline: .now() + 0.1) {
         releaseFirstReceive.signal()
     }
