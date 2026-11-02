@@ -62,9 +62,11 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
     /// or 4. Those versions prove the TLS key by sealing the certificate's raw public key
     /// ([MS-CSSP] 3.1.5), so whoever presented the certificate gets data of its choosing
     /// sealed with the session key: the encryption oracle of CVE-2018-0886. Windows clients
-    /// refuse those versions by default since the May 2018 update. Set this only for a server
-    /// without the March 2018 CredSSP update, such as an unpatched Windows 7 or Windows
-    /// Server 2008 R2, whose certificate you trust.
+    /// refuse those versions by default since the May 2018 update; servers without the March
+    /// 2018 CredSSP update, such as an unpatched Windows 7 or Windows Server 2008 R2, still
+    /// answer with them. Connect with this off. When a run fails with
+    /// ``RDPConnectionFailure/legacyCredSSPVersion(version:)``, which happens before any
+    /// credential is sent, ask the user, and connect again with it on only if they agree.
     public var legacyCredSSP: Bool
     /// Local folders the server sees as drives. Sharing one joins the rdpsnd channel too.
     public var sharedDrives: [RDPSharedDrive]

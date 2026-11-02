@@ -104,10 +104,13 @@ print(report.status)
 
 When a run fails, `report.failure` says why without matching text, for example
 `.credSSP(status: .logonFailure)`, `.connect(error:)` with the errno and its
-category, or `.tlsKeyUsageIncorrect` (retry with `legacyRSAKeyExchange`);
-`report.error` describes it in words. `report.remoteTermination?.category`
-says how the server ended a session: logoff, an administrator, an idle limit,
-another connection, and so on.
+category, `.tlsKeyUsageIncorrect` (retry with `legacyRSAKeyExchange`), or
+`.legacyCredSSPVersion(version:)`: the server answered Network Level
+Authentication with a CredSSP version from before the CVE-2018-0886 fix, and
+no credential was sent. Ask the user, and retry with `legacyCredSSP` only if
+they agree. `report.error` describes the failure in words.
+`report.remoteTermination?.category` says how the server ended a session:
+logoff, an administrator, an idle limit, another connection, and so on.
 `connect` throws `RDPConnectionError` with the same `failure`, and its `report`
 is the one `run` would have returned. After a Server Redirection,
 `redirectionDepth` above 0, on the report and on the error, together with
@@ -187,7 +190,8 @@ let report = client.run(
 - TLS upgrade through SwiftNIO SSL, with an opt-in RSA key exchange mode
   (`legacyRSAKeyExchange`) for servers whose certificate lacks
   digitalSignature
-- CredSSP with NTLM Network Level Authentication and Early User Authorization
+- CredSSP with NTLM Network Level Authentication and Early User Authorization;
+  CredSSP versions 2 to 4 only with `legacyCredSSP`
 - MCS connect, channel join, static virtual channels, and dynamic virtual
   channels
 - Connect-time and continuous bandwidth auto-detection, and reactivation after

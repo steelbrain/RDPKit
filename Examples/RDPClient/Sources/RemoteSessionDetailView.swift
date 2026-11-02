@@ -50,6 +50,7 @@ struct RDPRemoteSessionAppKitStatus {
 enum RDPAppKitNoticeAction {
     case trustCertificate
     case forgetCertificate
+    case allowLegacyCredSSP
 }
 
 struct RDPAppKitNoticeState {
@@ -68,6 +69,7 @@ final class RDPRemoteSessionAppKitDetailView: NSView {
     var onOpenDiagnostics: (() -> Void)?
     var onTrustCertificate: (() -> Void)?
     var onForgetCertificate: (() -> Void)?
+    var onAllowLegacyCredSSP: (() -> Void)?
     var onSurfaceSizeChange: ((CGSize) -> Void)? {
         didSet {
             canvasView.onSurfaceSizeChange = onSurfaceSizeChange
@@ -89,6 +91,7 @@ final class RDPRemoteSessionAppKitDetailView: NSView {
     private let sessionNotice = RDPAppKitNoticeView()
     private let certificateNotice = RDPAppKitNoticeView()
     private let keyExchangeNotice = RDPAppKitNoticeView()
+    private let legacyCredSSPNotice = RDPAppKitNoticeView()
     private let decodeNotice = RDPAppKitNoticeView()
     private var statusSystemImageName: String?
 
@@ -119,6 +122,7 @@ final class RDPRemoteSessionAppKitDetailView: NSView {
         sessionEndReason: RDPSessionEndReason?,
         certificateNotice certificateNoticeState: RDPAppKitNoticeState?,
         usesLegacyRSAKeyExchange: Bool,
+        legacyCredSSPNotice legacyCredSSPNoticeState: RDPAppKitNoticeState?,
         controlsVisible: Bool,
         connectTitle: String,
         canConnect: Bool,
@@ -181,12 +185,7 @@ final class RDPRemoteSessionAppKitDetailView: NSView {
             actionHandler: nil
         )
         certificateNotice.render(certificateNoticeState) { [weak self] action in
-            switch action {
-            case .trustCertificate:
-                self?.onTrustCertificate?()
-            case .forgetCertificate:
-                self?.onForgetCertificate?()
-            }
+            self?.perform(action)
         }
         keyExchangeNotice.render(
             usesLegacyRSAKeyExchange
@@ -201,6 +200,9 @@ final class RDPRemoteSessionAppKitDetailView: NSView {
                 : nil,
             actionHandler: nil
         )
+        legacyCredSSPNotice.render(legacyCredSSPNoticeState) { [weak self] action in
+            self?.perform(action)
+        }
         decodeNotice.render(
             decodeError.map {
                 RDPAppKitNoticeState(
@@ -213,6 +215,17 @@ final class RDPRemoteSessionAppKitDetailView: NSView {
             },
             actionHandler: nil
         )
+    }
+
+    private func perform(_ action: RDPAppKitNoticeAction) {
+        switch action {
+        case .trustCertificate:
+            onTrustCertificate?()
+        case .forgetCertificate:
+            onForgetCertificate?()
+        case .allowLegacyCredSSP:
+            onAllowLegacyCredSSP?()
+        }
     }
 
     private func configure() {
@@ -259,7 +272,14 @@ final class RDPRemoteSessionAppKitDetailView: NSView {
         noticesStack.orientation = .vertical
         noticesStack.alignment = .leading
         noticesStack.spacing = 8
-        for notice in [formErrorNotice, sessionNotice, certificateNotice, keyExchangeNotice, decodeNotice] {
+        for notice in [
+            formErrorNotice,
+            sessionNotice,
+            certificateNotice,
+            keyExchangeNotice,
+            legacyCredSSPNotice,
+            decodeNotice,
+        ] {
             notice.translatesAutoresizingMaskIntoConstraints = false
             noticesStack.addArrangedSubview(notice)
         }

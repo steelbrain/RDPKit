@@ -17,7 +17,9 @@
   credential. Those versions prove the TLS key by sealing the certificate's
   raw public key, the encryption oracle of CVE-2018-0886.
   `RDPConnectionConfiguration.legacyCredSSP` accepts them for a server without
-  the 2018 CredSSP update.
+  the 2018 CredSSP update: connect with it off, and on that failure ask the
+  user before connecting again with it on. RDPClient offers Connect Anyway
+  for that one connection.
 
 ### Additions
 

@@ -196,6 +196,8 @@ struct RemoteSessionDiagnosticsSnapshot: Equatable {
     var certificateTrustMessage: String?
     /// The server's certificate refused ECDHE, so the connection uses RSA key exchange.
     var legacyRSAKeyExchange = false
+    /// The user allowed this connection CredSSP below version 5.
+    var legacyCredSSP = false
     var formError: String?
     var isConnecting = false
 }
@@ -266,6 +268,12 @@ struct RemoteSessionDiagnosticsWindowContent: View {
                         snapshot.legacyRSAKeyExchange
                             ? "RSA only, no forward secrecy: the server's certificate refused ECDHE (KEY_USAGE_BIT_INCORRECT)"
                             : "default"
+                    )
+                    DiagnosticRow(
+                        "CredSSP",
+                        snapshot.legacyCredSSP
+                            ? "versions below 5 allowed, as you agreed: CVE-2018-0886 encryption oracle"
+                            : "version 5 or later"
                     )
                     DiagnosticRow("Certificate", certificateState(snapshot))
                     DiagnosticRow("MCS", snapshot.report?.mcsConnectResult ?? "not exchanged")

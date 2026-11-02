@@ -80,6 +80,9 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
     private var legacyKeyExchangeFallback = RDPLegacyKeyExchangeFallback()
     /// Whether the connection shown uses RSA key exchange, as its target's certificate refused ECDHE.
     private var usesLegacyRSAKeyExchange = false
+    private var legacyCredSSPConsent = RDPLegacyCredSSPConsent()
+    /// Whether the connection shown allows CredSSP below version 5, as the user agreed to.
+    private var usesLegacyCredSSP = false
     private var formError: String?
     private var controlsVisible = false
     private var shouldAutoConnect = true
@@ -272,6 +275,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         detailView.onOpenDiagnostics = { [weak self] in self?.openDiagnosticsWindow() }
         detailView.onTrustCertificate = { [weak self] in self?.trustCurrentCertificate() }
         detailView.onForgetCertificate = { [weak self] in self?.forgetCurrentCertificate() }
+        detailView.onAllowLegacyCredSSP = { [weak self] in self?.allowLegacyCredSSP() }
         detailView.onSurfaceSizeChange = { [weak self] size in self?.updateViewerSurfaceSize(size) }
         remoteDesktopRenderer.attach(detailView.displayView)
 
@@ -479,12 +483,46 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
             sessionEndReason: sessionEndReason,
             certificateNotice: certificateNotice,
             usesLegacyRSAKeyExchange: usesLegacyRSAKeyExchange,
+            legacyCredSSPNotice: legacyCredSSPNoticeState(),
             controlsVisible: controlsVisible,
             connectTitle: connectButtonTitle,
             canConnect: canStartConnection,
             canCancel: isConnecting
         )
         remoteDesktopRenderer.attach(detailView.displayView)
+    }
+
+    private func legacyCredSSPNoticeState() -> RDPAppKitNoticeState? {
+        if let offer = legacyCredSSPConsent.offer {
+            return RDPAppKitNoticeState(
+                title: "Outdated Network Level Authentication",
+                message: "\(offer.target.host) signs in with CredSSP \(offer.version), from before the 2018 "
+                    + "security update (CVE-2018-0886). Anyone able to intercept the connection could use your "
+                    + "sign-in on other servers. Connect anyway only if you trust this network.",
+                systemImage: "lock.trianglebadge.exclamationmark.fill",
+                actionTitle: "Connect Anyway",
+                action: .allowLegacyCredSSP
+            )
+        }
+        guard usesLegacyCredSSP else {
+            return nil
+        }
+        return RDPAppKitNoticeState(
+            title: "Outdated Network Level Authentication",
+            message: "You allowed this connection an outdated CredSSP version, from before the 2018 security "
+                + "update (CVE-2018-0886). The next connection asks again.",
+            systemImage: "lock.trianglebadge.exclamationmark",
+            actionTitle: nil,
+            action: nil
+        )
+    }
+
+    /// The user agreed to connect again with the CredSSP version the server was refused for.
+    private func allowLegacyCredSSP() {
+        guard !isConnecting, legacyCredSSPConsent.allow() else {
+            return
+        }
+        beginConnection()
     }
 
     private func certificateNoticeState() -> RDPAppKitNoticeState? {
@@ -609,6 +647,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
             certificateTrustedByApp: certificateTrustedByApp,
             certificateTrustMessage: certificateTrustMessage,
             legacyRSAKeyExchange: usesLegacyRSAKeyExchange,
+            legacyCredSSP: usesLegacyCredSSP,
             formError: formError,
             isConnecting: isConnecting
         )
@@ -640,6 +679,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         certificateRefusal = nil
         certificateTrustMessage = nil
         usesLegacyRSAKeyExchange = false
+        usesLegacyCredSSP = false
         // Connecting saves, keeps or removes a saved password, so it waits for Keychain's answer
         // about the form's account: the lookup's, never a read of its own, as a read under way
         // cannot be stopped and a second one could ask the user to allow access again.
@@ -661,6 +701,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
             return
         }
         usesLegacyRSAKeyExchange = legacyKeyExchangeFallback.connect(to: target)
+        usesLegacyCredSSP = legacyCredSSPConsent.connect(to: target)
 
         let trimmedUsername = username.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedDomain = domain.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -722,6 +763,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
             keyboardType: keyboard.type,
             keyboardSubType: keyboard.subType,
             legacyRSAKeyExchange: usesLegacyRSAKeyExchange,
+            legacyCredSSP: usesLegacyCredSSP,
             // The Mac's name, as servers list clients; RDPKit cuts it to 15 characters.
             clientName: SCDynamicStoreCopyComputerName(nil, nil) as String? ?? "RDPKIT"
         )
@@ -1029,6 +1071,11 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                 controller.sessionEndReason = RDPSessionEndReason(
                     report: nextReport,
                     showedDesktop: controller.hasPresentedFrame
+                )
+                controller.legacyCredSSPConsent.connectionEnded(
+                    target,
+                    failure: nextReport.failure,
+                    redirectionDepth: nextReport.redirectionDepth
                 )
                 controller.detachSessionChannels()
                 controller.isConnecting = false
