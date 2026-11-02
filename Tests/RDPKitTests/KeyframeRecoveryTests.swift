@@ -202,6 +202,64 @@ func videoThatIsNotShownAsksForAKeyframe(displayControlOpensLate: Bool) throws {
     #expect(run.report.rdpKeyframeRequestCount == 1)
 }
 
+/// A bitmap frame the handler does not show asks for no keyframe: only video waits for one.
+@Test func aBitmapFrameThatIsNotShownAsksForNoKeyframe() throws {
+    let displayControl = try displayControlPackets()
+    let firstFrame = try KRdpCapture.events()[39...].map { try #require($0.bytes) }
+    let refused = Locked([RDPGraphicsFrameContentKind]())
+    let run = try KRdpCapture.run(
+        prefix: 39,
+        appending: [displayControl.channel, displayControl.caps] + firstFrame
+            + [KRdpCapture.fastPathSurfaceBits(left: 1, top: 1, pixel: Data([1, 2, 3, 0xFF]))],
+        frameCaptureLimit: nil,
+        onEnd: { channel in
+            // Time for a request, which would go out as the client handles the frame.
+            channel.eventLoop.scheduleTask(in: .milliseconds(500)) {
+                KRdpCapture.endConnection(channel, .close)
+            }
+        },
+        onGraphicsFrame: { frame in
+            if frame.contentKind != .video {
+                refused.withLock { $0.append(frame.contentKind) }
+                throw RDPGraphicsFrameNotPresented(reason: "not shown")
+            }
+        }
+    )
+
+    #expect(refused.value == [.bitmap])
+    #expect(run.report.rdpKeyframeRequestCount == nil)
+    #expect(!run.report.warnings.contains { $0.code == "keyframe-request-skipped" })
+}
+
+/// Keyframe recovery is per connection: a redirection's next connection asks for a keyframe of
+/// its own at once, however recently the one before asked.
+@Test func eachConnectionOfARedirectionAsksForAKeyframe() throws {
+    let displayControl = try displayControlPackets()
+    let firstFrame = try KRdpCapture.events()[39...].map { try #require($0.bytes) }
+    let layoutData = try krdpKeyframeRequestLayout()
+    let redirection = KRdpCapture.ioPacket(KRdpCapture.redirection(
+        flags: RDPServerRedirectionPDU.Flags.loadBalanceInfo.rawValue
+    ))
+    let requests = Locked(0)
+    let run = try KRdpCapture.run(
+        prefix: 39,
+        appending: [displayControl.channel, displayControl.caps] + firstFrame + [redirection],
+        appendingAfterReconnect: [displayControl.channel, displayControl.caps] + firstFrame,
+        frameCaptureLimit: nil,
+        onTrailingClientPacket: { channel, packet in
+            if packet.range(of: layoutData) != nil, requests.withLock({ $0 += 1; return $0 }) == 2 {
+                KRdpCapture.endConnection(channel, .close)
+            }
+        },
+        onGraphicsFrame: { _ in
+            throw RDPGraphicsFrameNotPresented(reason: "awaiting a keyframe")
+        }
+    )
+
+    #expect(run.report.redirectionDepth == 1)
+    #expect(run.clientPackets.filter { $0.range(of: layoutData) != nil }.count == 2)
+}
+
 /// Video shown before Display Control opens drops the request held for it, and a session with
 /// recovery off asks for nothing. The client cancels the session from the last callback before
 /// the request would go out, so the server is still there to take it.

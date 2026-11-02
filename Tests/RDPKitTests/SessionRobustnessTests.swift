@@ -1009,11 +1009,14 @@ enum KRdpCapture {
     /// Replays the capture (or its first `prefix` events) followed by
     /// `appending`, then hands the connection to `onEnd`, and to
     /// `onTrailingClientPacket` with each packet the client sends after that.
+    /// With `appendingAfterReconnect`, the client's next connection, as a
+    /// redirection among `appending` leads to, replays the same and then those.
     /// The run is cancelled, through `cancellation`, after `guardSeconds` so a
     /// hang fails the test instead of stalling it.
     static func run(
         prefix: Int? = nil,
         appending packets: [Data] = [],
+        appendingAfterReconnect packetsAfterReconnect: [Data]? = nil,
         frameCaptureLimit: Int? = 1,
         timeoutSeconds: Int = 10,
         guardSeconds: Double = 20,
@@ -1029,18 +1032,26 @@ enum KRdpCapture {
         wireTranscript: RDPWireTranscript? = nil,
         cancellation: RDPConnectionCancellation = RDPConnectionCancellation()
     ) throws -> Run {
-        var events = try events()
+        var captured = try events()
         if let prefix {
-            events = Array(events.prefix(prefix))
+            captured = Array(captured.prefix(prefix))
         }
-        for packet in packets {
-            events.append(RDPWireEvent(
-                sequence: events.count,
-                direction: .serverToClient,
-                layer: .application,
-                byteCount: packet.count,
-                hex: packet.rdpHexString
-            ))
+        var events: [RDPWireEvent] = []
+        for connectionPackets in [packets] + (packetsAfterReconnect.map { [$0] } ?? []) {
+            for event in captured {
+                var event = event
+                event.sequence = events.count
+                events.append(event)
+            }
+            for packet in connectionPackets {
+                events.append(RDPWireEvent(
+                    sequence: events.count,
+                    direction: .serverToClient,
+                    layer: .application,
+                    byteCount: packet.count,
+                    hex: packet.rdpHexString
+                ))
+            }
         }
         let credentials = RDPCredentials(username: "rdp-user", password: "rdp-user")
         let server = try RDPTranscriptReplayServer(
