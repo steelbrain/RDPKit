@@ -298,6 +298,23 @@ private func sendsScancode(
     #expect(output(kVK_ANSI_L, .option) == "¬")
     #expect(output(kVK_ANSI_E, .option) == "")
     #expect(output(kVK_Return, []) == "\r")
+
+    // Right after Option-E, E types "é", Shift-A "Á", Return "´\r" and Option-E "´"; after a
+    // key that starts no dead key, nothing is composed.
+    func output(_ keyCode: Int, _ modifierFlags: NSEvent.ModifierFlags, after deadKey: (Int, NSEvent.ModifierFlags)) -> String? {
+        MacRDPDeadKeys.output(
+            keyCode: UInt16(keyCode),
+            modifierFlags: modifierFlags,
+            afterDeadKey: UInt16(deadKey.0),
+            deadKeyModifierFlags: deadKey.1,
+            in: us
+        )
+    }
+    #expect(output(kVK_ANSI_E, [], after: (kVK_ANSI_E, .option)) == "é")
+    #expect(output(kVK_ANSI_A, .shift, after: (kVK_ANSI_E, .option)) == "Á")
+    #expect(output(kVK_Return, [], after: (kVK_ANSI_E, .option)) == "´\r")
+    #expect(output(kVK_ANSI_E, .option, after: (kVK_ANSI_E, .option)) == "´")
+    #expect(output(kVK_ANSI_E, [], after: (kVK_ANSI_L, .option)) == nil)
 }
 
 /// After a dead key went as an Alt chord, the next key is decided by what it types on its own,
@@ -1274,6 +1291,52 @@ private let rightOptionFlags = NSEvent.ModifierFlags(rawValue: NSEvent.ModifierF
             .keyboard(scancode: rightAlt, isReleased: true),
         ] + keyAPress
         + altE + composedA)
+}
+
+/// US left Option-E goes as Alt-E, and macOS spends right Option-E after it on that dead key's
+/// accent, typing "´", which goes nowhere. The second dead key is the user's, so E after it
+/// types "é", whether or not macOS left a dead key pending (German's Option dead keys leave
+/// none). Only the key right after it is composed.
+@MainActor
+@Test func aDeadKeyRightAfterAChordedDeadKeyComposesTheKeyAfterIt() throws {
+    let leftAlt = RDPKeyboardScancode(code: 0x38)
+    let keyE = RDPKeyboardScancode(code: 0x12)
+    let input = RecordedInput()
+    let view = RemoteInputCaptureNSView()
+    view.inputSession = input
+    view.isDeadKey = { keyCode, flags in Int(keyCode) == kVK_ANSI_E && flags.contains(.option) }
+    view.uncomposedOutput = { keyCode, flags in Int(keyCode) == kVK_ANSI_E && flags.contains(.option) ? "" : nil }
+    view.composedOutput = { keyCode, flags, deadKeyCode, deadKeyFlags in
+        Int(keyCode) == kVK_ANSI_E && flags.isEmpty && Int(deadKeyCode) == kVK_ANSI_E && deadKeyFlags.contains(.option)
+            ? "é" : nil
+    }
+    func modifier(_ keyCode: Int, _ flags: NSEvent.ModifierFlags) throws {
+        view.flagsChanged(with: try keyEvent(.flagsChanged, keyCode: keyCode, modifierFlags: flags))
+    }
+    func press(_ characters: String, _ flags: NSEvent.ModifierFlags = []) throws {
+        view.keyDown(with: try keyEvent(.keyDown, keyCode: kVK_ANSI_E, characters: characters, charactersIgnoringModifiers: "e", modifierFlags: flags))
+        view.keyUp(with: try keyEvent(.keyUp, keyCode: kVK_ANSI_E, characters: characters, charactersIgnoringModifiers: "e", modifierFlags: flags))
+    }
+
+    try modifier(kVK_Option, leftOptionFlags)
+    try press("", leftOptionFlags)
+    try modifier(kVK_Option, [])
+    try modifier(kVK_RightOption, rightOptionFlags)
+    try press("´", rightOptionFlags)
+    try modifier(kVK_RightOption, [])
+    try press("e")
+    try press("e")
+
+    #expect(input.events == [
+        .keyboard(scancode: leftAlt, isReleased: false),
+        .keyboard(scancode: keyE, isReleased: false),
+        .keyboard(scancode: keyE, isReleased: true),
+        .keyboard(scancode: leftAlt, isReleased: true),
+        .unicode(codeUnit: 0xE9, isReleased: false),
+        .unicode(codeUnit: 0xE9, isReleased: true),
+        .keyboard(scancode: keyE, isReleased: false),
+        .keyboard(scancode: keyE, isReleased: true),
+    ])
 }
 
 /// Letters Caps Lock shifts go as scancodes, so the server's Caps Lock has to match the Mac's.
