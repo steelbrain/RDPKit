@@ -481,6 +481,34 @@ private func compressedBitmapHeader(
     #expect(bitmap[(9 * 264 + 17 * 4) ..< (9 * 264 + 18 * 4)] == Data([0x80, 0x80, 0x80, 0xFF]))
 }
 
+/// A RemoteFX region lists up to 65,535 rectangles, each as large as the desktop: one that
+/// would paint more than sixteen times the desktop's pixels (or 16M on a small one) is refused.
+@Test func primarySurfaceCompositorRefusesRemoteFXThatPaintsManyTimesTheDesktop() throws {
+    let compositor = RDPPrimarySurfaceCompositor(width: 64, height: 64)
+    let bits = { (regionRectangleCount: UInt16) in
+        RDPSurfaceCommand.setSurfaceBits(RDPSurfaceBitsCommand(
+            destinationLeft: 0,
+            destinationTop: 0,
+            destinationRight: 64,
+            destinationBottom: 64,
+            bitmapData: RDPExtendedBitmapData(
+                bitsPerPixel: 32,
+                flags: 0,
+                codecID: 3,
+                width: 64,
+                height: 64,
+                extendedCompressionHeader: nil,
+                bitmapData: cavideoRemoteFXGrayTileStream(regionRectangleCount: regionRectangleCount)
+            )
+        ))
+    }
+
+    #expect(try compositor.process([bits(4_096)]).count == 1)
+    #expect(throws: RDPDecodeError.invalidGraphicsUpdatePDU) {
+        try compositor.process([bits(4_097)])
+    }
+}
+
 @Test func primarySurfaceCompositorKeepsMarkedFramePendingUntilEndMarker() throws {
     let compositor = RDPPrimarySurfaceCompositor(width: 4, height: 4)
     let pixelData = Data([

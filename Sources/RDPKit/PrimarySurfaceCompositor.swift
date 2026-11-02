@@ -151,24 +151,44 @@ final class RDPPrimarySurfaceCompositor {
         }
         let originX = Int(command.destinationLeft)
         let originY = Int(command.destinationTop)
+        // A tile fills its 64x64 cell, so a later tile at a position hides an earlier one.
+        var tiles: [Int: RDPRemoteFXDecodedTile] = [:]
         for tile in frame.tiles {
-            for region in frame.regionRects {
-                let left = max(tile.x, Int(region.left))
-                let top = max(tile.y, Int(region.top))
-                let right = min(tile.x + 64, Int(region.right), Int(command.bitmapData.width), width - originX)
-                let bottom = min(tile.y + 64, Int(region.bottom), Int(command.bitmapData.height), height - originY)
-                guard right > left, bottom > top else {
-                    continue
-                }
-                try paint(
-                    tile.bgraData,
-                    bitsPerPixel: 32,
-                    x: originX + left,
-                    y: originY + top,
-                    width: right - left,
-                    height: bottom - top
-                ) {
-                    (top - tile.y + $0) * tile.bytesPerRow + (left - tile.x) * 4
+            tiles[(tile.y / 64) << 16 | tile.x / 64] = tile
+        }
+        // Tiles are painted only in the region rects, clipped to the bitmap and the desktop.
+        let clipWidth = min(Int(command.bitmapData.width), width - originX)
+        let clipHeight = min(Int(command.bitmapData.height), height - originY)
+        let regions = frame.regionRects.compactMap { region in
+            let right = min(Int(region.right), clipWidth)
+            let bottom = min(Int(region.bottom), clipHeight)
+            return right > Int(region.left) && bottom > Int(region.top)
+                ? RDPFrameRect(left: region.left, top: region.top, right: UInt16(right), bottom: UInt16(bottom))
+                : nil
+        }
+        // A region lists up to 65,535 rectangles, each as large as the desktop. As on an
+        // RDPGFX surface, more than sixteen times its pixels (or 16M) is refused.
+        guard regions.reduce(0, { $0 + Int($1.width) * Int($1.height) }) <= max(16 * width * height, 1 << 24) else {
+            throw RDPDecodeError.invalidGraphicsUpdatePDU
+        }
+        for region in regions {
+            for yIndex in Int(region.top) / 64 ... (Int(region.bottom) - 1) / 64 {
+                for xIndex in Int(region.left) / 64 ... (Int(region.right) - 1) / 64 {
+                    guard let tile = tiles[yIndex << 16 | xIndex] else {
+                        continue
+                    }
+                    let left = max(tile.x, Int(region.left))
+                    let top = max(tile.y, Int(region.top))
+                    try paint(
+                        tile.bgraData,
+                        bitsPerPixel: 32,
+                        x: originX + left,
+                        y: originY + top,
+                        width: min(tile.x + 64, Int(region.right)) - left,
+                        height: min(tile.y + 64, Int(region.bottom)) - top
+                    ) {
+                        (top - tile.y + $0) * tile.bytesPerRow + (left - tile.x) * 4
+                    }
                 }
             }
         }

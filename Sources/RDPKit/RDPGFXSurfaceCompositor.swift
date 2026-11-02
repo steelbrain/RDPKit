@@ -131,8 +131,8 @@ final class RDPGFXSurfaceCompositor {
         }
 
         /// Throws when one PDU would write more than sixteen times the surface's pixels, or 16M
-        /// on a small one: a SolidFill or a copy can list 65,535 rectangles or points, each as
-        /// large as the surface, which would keep the session busy for minutes.
+        /// on a small one: a SolidFill, a copy or a RemoteFX update can list 65,535 rectangles
+        /// or points, each as large as the surface, which would keep the session busy for minutes.
         func checkPixelsWritten(_ pixelCount: Int) throws {
             guard pixelCount <= max(16 * width * height, 1 << 24) else {
                 throw RDPDecodeError.invalidRDPGFXPDU
@@ -734,36 +734,54 @@ final class RDPGFXSurfaceCompositor {
         let frame = try remoteFX.decode(pdu.bitmapData)
         let originX = Int(pdu.destinationRect.left)
         let originY = Int(pdu.destinationRect.top)
-        let clipWidth = Int(pdu.destinationRect.width)
-        let clipHeight = Int(pdu.destinationRect.height)
+        // A tile fills its 64x64 cell, so a later tile at a position hides an earlier one.
+        var tiles: [Int: RDPRemoteFXDecodedTile] = [:]
+        for tile in frame.tiles {
+            tiles[(tile.y / 64) << 16 | tile.x / 64] = tile
+        }
         try modifySurface(pdu.surfaceID) { surface in
-            for tile in frame.tiles {
-                for region in frame.regionRects {
-                    let left = max(tile.x, Int(region.left))
-                    let top = max(tile.y, Int(region.top))
-                    let right = min(tile.x + 64, Int(region.right), clipWidth, surface.width - originX)
-                    let bottom = min(tile.y + 64, Int(region.bottom), clipHeight, surface.height - originY)
-                    guard right > left, bottom > top else {
-                        continue
+            // Tiles are drawn only in the region rects, which are in destRect coordinates
+            // (MS-RDPRFX 2.2.2.3.3), clipped to destRect and the surface.
+            let clipWidth = min(Int(pdu.destinationRect.width), surface.width - originX)
+            let clipHeight = min(Int(pdu.destinationRect.height), surface.height - originY)
+            let regions = frame.regionRects.compactMap { region in
+                let right = min(Int(region.right), clipWidth)
+                let bottom = min(Int(region.bottom), clipHeight)
+                return right > Int(region.left) && bottom > Int(region.top)
+                    ? RDPFrameRect(left: region.left, top: region.top, right: UInt16(right), bottom: UInt16(bottom))
+                    : nil
+            }
+            // A region lists up to 65,535 rectangles, each as large as the surface.
+            try surface.checkPixelsWritten(regions.reduce(0) { $0 + Int($1.width) * Int($1.height) })
+            for region in regions {
+                for yIndex in Int(region.top) / 64 ... (Int(region.bottom) - 1) / 64 {
+                    for xIndex in Int(region.left) / 64 ... (Int(region.right) - 1) / 64 {
+                        guard let tile = tiles[yIndex << 16 | xIndex] else {
+                            continue
+                        }
+                        let left = max(tile.x, Int(region.left))
+                        let top = max(tile.y, Int(region.top))
+                        let width = min(tile.x + 64, Int(region.right)) - left
+                        let height = min(tile.y + 64, Int(region.bottom)) - top
+                        let x = originX + left
+                        let y = originY + top
+                        try surface.write(
+                            tile.bgraData,
+                            bytesPerRow: tile.bytesPerRow,
+                            sourceX: left - tile.x,
+                            sourceY: top - tile.y,
+                            width: width,
+                            height: height,
+                            x: x,
+                            y: y
+                        )
+                        surface.markDirty(RDPGFXRect16(
+                            left: UInt16(x),
+                            top: UInt16(y),
+                            right: UInt16(x + width),
+                            bottom: UInt16(y + height)
+                        ))
                     }
-                    let x = originX + left
-                    let y = originY + top
-                    try surface.write(
-                        tile.bgraData,
-                        bytesPerRow: tile.bytesPerRow,
-                        sourceX: left - tile.x,
-                        sourceY: top - tile.y,
-                        width: right - left,
-                        height: bottom - top,
-                        x: x,
-                        y: y
-                    )
-                    surface.markDirty(RDPGFXRect16(
-                        left: UInt16(x),
-                        top: UInt16(y),
-                        right: UInt16(x + right - left),
-                        bottom: UInt16(y + bottom - top)
-                    ))
                 }
             }
         }

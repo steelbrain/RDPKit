@@ -1790,6 +1790,67 @@ import Testing
     #expect(compositor.makeFrame(frameID: 15) == nil)
 }
 
+/// A CAVIDEO region lists up to 65,535 rectangles and a tile set up to 65,535 tiles; drawing
+/// every tile in every rectangle would keep the session busy for hours. A rectangle draws the
+/// tiles of the cells it covers, and an update that would write more than sixteen times the
+/// surface's pixels (or 16M on a small one) is refused.
+@Test func compositorRefusesACAVideoUpdateThatWritesManyTimesTheSurface() throws {
+    let compositor = RDPGFXSurfaceCompositor()
+    let clearCodec = RDPClearCodecDecoder()
+    try compositor.process(try createSurfaceMessage(surfaceID: 1, width: 64, height: 64), clearCodec: clearCodec)
+    // The rectangles count only where they meet the surface.
+    let update = { (regionRectangleCount: UInt16) in
+        try wireToSurface1Message(
+            surfaceID: 1,
+            codecID: RDPGFXCodecID.cavideo,
+            pixelFormat: 0x20,
+            destinationRect: RDPGFXRect16(left: 0, top: 0, right: 128, bottom: 128),
+            bitmapData: cavideoRemoteFXGrayTileStream(
+                channelWidth: 128,
+                channelHeight: 128,
+                regionWidth: 128,
+                regionHeight: 128,
+                regionRectangleCount: regionRectangleCount
+            )
+        )
+    }
+
+    try compositor.process(try update(4_096), clearCodec: clearCodec)
+    #expect(throws: RDPDecodeError.invalidRDPGFXPDU) {
+        try compositor.process(try update(4_097), clearCodec: clearCodec)
+    }
+}
+
+/// A tile fills its cell, so of the tiles sent for one position only the last shows.
+@Test func compositorDrawsTheLastCAVideoRemoteFXTileSentForAPosition() throws {
+    func drawn(_ tileYComponents: [Data?]) throws -> Data {
+        let compositor = RDPGFXSurfaceCompositor()
+        let clearCodec = RDPClearCodecDecoder()
+        try compositor.process(try createSurfaceMessage(surfaceID: 1, width: 64, height: 64), clearCodec: clearCodec)
+        try compositor.process(try mapSurfaceToOutputMessage(surfaceID: 1, x: 0, y: 0), clearCodec: clearCodec)
+        try compositor.process(
+            try wireToSurface1Message(
+                surfaceID: 1,
+                codecID: RDPGFXCodecID.cavideo,
+                pixelFormat: 0x20,
+                destinationRect: RDPGFXRect16(left: 0, top: 0, right: 64, bottom: 64),
+                bitmapData: cavideoRemoteFXGrayTileStream(
+                    tilePositions: Array(repeating: (x: 0, y: 0), count: tileYComponents.count),
+                    tileYComponents: tileYComponents
+                )
+            ),
+            clearCodec: clearCodec
+        )
+        return try #require(compositor.makeFrame(frameID: 1)?.decodedBitmapData)
+    }
+    let grey = try drawn([nil])
+    let patterned = try drawn([rlgrSingleOneComponent()])
+
+    #expect(grey != patterned)
+    #expect(try drawn([rlgrSingleOneComponent(), nil]) == grey)
+    #expect(try drawn([nil, nil, rlgrSingleOneComponent()]) == patterned)
+}
+
 @Test func compositorReportsClearCodecDecodeFailures() throws {
     let compositor = RDPGFXSurfaceCompositor()
     let clearCodec = RDPClearCodecDecoder()

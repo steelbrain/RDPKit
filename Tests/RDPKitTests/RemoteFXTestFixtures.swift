@@ -14,6 +14,8 @@ func cavideoRemoteFXGrayTileStream(
     tileXIndex: UInt16 = 0,
     tileYIndex: UInt16 = 0,
     tilePositions: [(x: UInt16, y: UInt16)]? = nil,
+    /// The Y component of each tile; nil, or a nil entry, is all zero (grey).
+    tileYComponents: [Data?]? = nil,
     codecVersionID: UInt8 = 1,
     codecVersion: UInt16 = 0x0100,
     contextID: UInt8 = 0,
@@ -63,7 +65,7 @@ func cavideoRemoteFXGrayTileStream(
     region.appendRFXChannelHeader(channelID: 0)
     region.appendUInt8(regionFlags)
     region.appendLittleEndianUInt16(regionRectangleCount)
-    if regionRectangleCount > 0 {
+    for _ in 0 ..< regionRectangleCount {
         region.appendLittleEndianUInt16(regionX)
         region.appendLittleEndianUInt16(regionY)
         region.appendLittleEndianUInt16(regionWidth)
@@ -75,17 +77,18 @@ func cavideoRemoteFXGrayTileStream(
 
     let positions = tilePositions ?? [(tileXIndex, tileYIndex)]
     var tileBlock = Data()
-    for position in positions {
+    for (index, position) in positions.enumerated() {
+        let yComponent = tileYComponents?[index] ?? component
         var tile = Data()
         tile.appendUInt8(0)
         tile.appendUInt8(0)
         tile.appendUInt8(0)
         tile.appendLittleEndianUInt16(position.x)
         tile.appendLittleEndianUInt16(position.y)
+        tile.appendLittleEndianUInt16(UInt16(yComponent.count))
         tile.appendLittleEndianUInt16(UInt16(component.count))
         tile.appendLittleEndianUInt16(UInt16(component.count))
-        tile.appendLittleEndianUInt16(UInt16(component.count))
-        tile.append(component)
+        tile.append(yComponent)
         tile.append(component)
         tile.append(component)
         tileBlock.appendRFXBlock(type: 0xCAC3, body: tile)
