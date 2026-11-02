@@ -69,7 +69,7 @@ let package = Package(
         ),
         .testTarget(
             name: "RDPKitAppKitTests",
-            dependencies: ["RDPKit", "RDPKitAppKit"]
+            dependencies: ["RDPKit", "RDPKitAppKit", "RDPKitTesting"]
         ),
     ]
 )

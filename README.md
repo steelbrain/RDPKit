@@ -339,6 +339,12 @@ let report = client.run(
   them into a folder, asking again for the rest of a range the server answers
   short, and ends once a newer copy replaces the one downloading or the
   connection closes.
+- `RDPKitAppKit`'s `RDPPasteboardClipboard` for macOS bridges the pasteboard
+  and a session's clipboard: it publishes the user's text and files as they
+  copy them, puts the server's text and downloaded files (quarantined) on the
+  pasteboard, shares for a while with `startTemporarySharing()`, and reports
+  what happened as `Event`s for the app to word. An emptied server clipboard
+  clears the copy it sent here, also while sharing is off.
 - File contents requests and responses, for an app that makes its own: they
   have no timeout, so to give one up, ignore answers for its stream ID and use
   a new one, below `RDPClipboardSession.firstDownloadStreamID`, for the next
@@ -452,10 +458,11 @@ Package.swift                         SwiftPM library manifest
 Sources/RDPKit/                       Reusable RDP protocol, transport, media,
                                       input, clipboard, audio, and metrics code
 Sources/RDPKitAppKit/                 macOS input and video views, frame clock,
-                                      and keyboard mapping
+                                      keyboard mapping, and pasteboard bridge
 Sources/RDPKitTesting/                In-memory server stand-ins for app tests
 Tests/RDPKitTests/                    Unit and mock-server integration tests
-Tests/RDPKitAppKitTests/              View, frame clock and keyboard tests
+Tests/RDPKitAppKitTests/              View, frame clock, keyboard and pasteboard
+                                      tests
 Scripts/                              CI checks and keyboard table capture
 Examples/Package.swift                SwiftPM example app and tool manifest
 Examples/RDPClient/                   Native macOS viewer shell
@@ -465,8 +472,9 @@ Examples/RDPFrameBenchmark/           Live capture and decode benchmark tool
 Examples/RDPCommandLineSupport/       Argument parsing shared by the tools
 ```
 
-Keep reusable behavior in `Sources/RDPKit`, and reusable AppKit views and Mac
-keyboard handling in `Sources/RDPKitAppKit`. Keep SwiftUI, Keychain, menus,
+Keep reusable behavior in `Sources/RDPKit`, and reusable AppKit views, Mac
+keyboard handling and the pasteboard bridge in `Sources/RDPKitAppKit`. Keep
+SwiftUI, Keychain, menus,
 windows, and macOS preferences in the example app.
 
 ## Testing
