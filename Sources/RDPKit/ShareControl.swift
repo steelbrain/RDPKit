@@ -23,9 +23,24 @@ enum RDPSaveSessionInfoType: UInt32, Sendable {
     case logonExtendedInfo = 0x0000_0003
 }
 
-struct RDPLogonErrorInfo: Equatable, Sendable {
-    var errorNotificationType: UInt32
-    var errorNotificationData: UInt32
+/// The Save Session Info PDU a server said a user logged on with ([MS-RDPBCGR] 2.2.10.1.1).
+public enum RDPLogonNotification: String, Encodable, Hashable, Sendable {
+    /// Logon Info Version 1 (INFOTYPE_LOGON).
+    case logon
+    /// Logon Info Version 2 (INFOTYPE_LOGON_LONG).
+    case logonLong
+    /// Plain Notify (INFOTYPE_LOGON_PLAINNOTIFY).
+    case plainNotify
+}
+
+/// A logon error notification ([MS-RDPBCGR] 2.2.10.1.1.4.1.1), as the server sent it.
+public struct RDPLogonErrorInfo: Encodable, Hashable, Sendable {
+    /// An NTSTATUS, or a LOGON_MSG_* code such as LOGON_MSG_SESSION_CONTINUE (0xFFFFFFFE);
+    /// ERROR_CODE_ACCESS_DENIED (0xFFFFFFFF) says the logon failed and cannot go on.
+    public var errorNotificationType: UInt32
+    /// A session identifier, or a LOGON_FAILED_* code such as LOGON_FAILED_BAD_PASSWORD (0),
+    /// which says the credentials supplied were invalid.
+    public var errorNotificationData: UInt32
 }
 
 struct RDPSaveSessionInfoPDU: Equatable, Sendable {
@@ -35,6 +50,16 @@ struct RDPSaveSessionInfoPDU: Equatable, Sendable {
 
     var infoType: RDPSaveSessionInfoType? {
         RDPSaveSessionInfoType(rawValue: infoTypeRawValue)
+    }
+
+    /// The types that say a user logged on; Logon Info Extended carries other information.
+    var logonNotification: RDPLogonNotification? {
+        switch infoType {
+        case .logon: .logon
+        case .logonLong: .logonLong
+        case .logonPlainNotify: .plainNotify
+        case .logonExtendedInfo, nil: nil
+        }
     }
 
     static func parsePayload(_ payload: Data) throws -> RDPSaveSessionInfoPDU {

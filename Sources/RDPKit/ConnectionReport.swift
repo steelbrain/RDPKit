@@ -65,6 +65,15 @@ public struct RDPConnectionReport: Encodable, Equatable, Sendable {
     /// through ``RDPConnectionConfiguration/autoReconnectCookie``. It is a secret, and
     /// the report's encoding keeps only its logon ID.
     public var rdpAutoReconnectCookie: RDPAutoReconnectCookie?
+    /// How the server last said a user logged on to the session ([MS-RDPBCGR] 2.2.10.1); nil
+    /// until it does, and an ``RDPLiveConnectionReport``'s snapshot holds it once it arrives.
+    /// Without Network Level Authentication or RDSTLS a server activates the session whatever
+    /// the credentials, and asks for others on its own logon screen when they are wrong, so
+    /// activation says nothing about them. A user who logs on at that screen is notified too,
+    /// so this says the session is signed in, not with which credentials.
+    public var rdpLogonNotification: RDPLogonNotification?
+    /// The latest logon error notification the server sent ([MS-RDPBCGR] 2.2.10.1.1.4.1.1).
+    public var rdpLogonErrorInfo: RDPLogonErrorInfo?
     public var rdpPostLicensingResponseHex: String?
     public var rdpPostLicensingResponseType: String?
     /// The monitors of the server's latest Monitor Layout PDU ([MS-RDPBCGR] 2.2.12.1), where
@@ -185,6 +194,8 @@ public struct RDPConnectionReport: Encodable, Equatable, Sendable {
         rdpLicensingErrorCode: UInt32? = nil,
         rdpIssuedClientLicense: RDPStoredClientLicense? = nil,
         rdpAutoReconnectCookie: RDPAutoReconnectCookie? = nil,
+        rdpLogonNotification: RDPLogonNotification? = nil,
+        rdpLogonErrorInfo: RDPLogonErrorInfo? = nil,
         rdpPostLicensingResponseHex: String? = nil,
         rdpPostLicensingResponseType: String? = nil,
         rdpMonitorLayout: [RDPRemoteMonitor]? = nil,
@@ -287,6 +298,8 @@ public struct RDPConnectionReport: Encodable, Equatable, Sendable {
         self.rdpLicensingErrorCode = rdpLicensingErrorCode
         self.rdpIssuedClientLicense = rdpIssuedClientLicense
         self.rdpAutoReconnectCookie = rdpAutoReconnectCookie
+        self.rdpLogonNotification = rdpLogonNotification
+        self.rdpLogonErrorInfo = rdpLogonErrorInfo
         self.rdpPostLicensingResponseHex = rdpPostLicensingResponseHex
         self.rdpPostLicensingResponseType = rdpPostLicensingResponseType
         self.rdpMonitorLayout = rdpMonitorLayout

@@ -76,6 +76,44 @@ private let arcRandomBits = Data((1 ... 16).map { UInt8($0 * 11) })
     #expect(run.report.rdpAutoReconnectCookie == latest)
 }
 
+/// The report says when the server notified a logon, and what logon error it sent, as it
+/// sent them ([MS-RDPBCGR] 2.2.10.1.1).
+@Test func reportRecordsLogonNotificationsAndErrors() throws {
+    var plainNotify = Data()
+    plainNotify.appendLittleEndianUInt32(0x0000_0002) // INFOTYPE_LOGON_PLAINNOTIFY
+    plainNotify.append(Data(repeating: 0, count: 576))
+    var logonErrors = Data()
+    logonErrors.appendLittleEndianUInt32(0x0000_0003) // INFOTYPE_LOGON_EXTENDED_INF
+    logonErrors.appendLittleEndianUInt16(18) // Length
+    logonErrors.appendLittleEndianUInt32(0x0000_0002) // LOGON_EX_LOGONERRORS
+    logonErrors.appendLittleEndianUInt32(8) // cbFieldData
+    logonErrors.appendLittleEndianUInt32(0xFFFF_FFFF) // ERROR_CODE_ACCESS_DENIED
+    logonErrors.appendLittleEndianUInt32(0) // LOGON_FAILED_BAD_PASSWORD
+    logonErrors.append(Data(repeating: 0, count: 570)) // Pad
+    let cookie = try #require(RDPAutoReconnectCookie(logonID: 2, arcRandomBits: arcRandomBits))
+
+    let beforeLogon = try KRdpCapture.run(appending: [
+        KRdpCapture.ioPacket(KRdpCapture.shareData(pduType2: 0x26, payload: logonErrors)),
+        // An auto-reconnect cookie is no logon notification.
+        saveSessionInfo(with: cookie),
+        KRdpCapture.emptyGraphicsFrame(id: 1),
+    ], frameCaptureLimit: 2).report
+    #expect(beforeLogon.error == nil)
+    #expect(beforeLogon.rdpLogonNotification == nil)
+    #expect(beforeLogon.rdpLogonErrorInfo == RDPLogonErrorInfo(
+        errorNotificationType: 0xFFFF_FFFF,
+        errorNotificationData: 0
+    ))
+
+    let afterLogon = try KRdpCapture.run(appending: [
+        KRdpCapture.ioPacket(KRdpCapture.shareData(pduType2: 0x26, payload: plainNotify)),
+        KRdpCapture.emptyGraphicsFrame(id: 1),
+    ], frameCaptureLimit: 2).report
+    #expect(afterLogon.error == nil)
+    #expect(afterLogon.rdpLogonNotification == .plainNotify)
+    #expect(afterLogon.rdpLogonErrorInfo == nil)
+}
+
 /// A Save Session Info PDU with only an ARC_SC_PRIVATE_PACKET ([MS-RDPBCGR] 2.2.10.1.1.4).
 private func saveSessionInfo(with cookie: RDPAutoReconnectCookie) -> Data {
     var payload = Data()

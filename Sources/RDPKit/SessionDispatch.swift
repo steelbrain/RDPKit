@@ -178,8 +178,16 @@ extension RDPClientConnection {
             termination.errorInfo = errorInfo
             self.termination = termination
         }
-        if let cookie = shareData.saveSessionInfo?.autoReconnectPacket {
-            report.rdpAutoReconnectCookie = cookie
+        if let saveSessionInfo = shareData.saveSessionInfo {
+            if let notification = saveSessionInfo.logonNotification {
+                report.rdpLogonNotification = notification
+            }
+            if let errorInfo = saveSessionInfo.logonErrorInfo {
+                report.rdpLogonErrorInfo = errorInfo
+            }
+            if let cookie = saveSessionInfo.autoReconnectPacket {
+                report.rdpAutoReconnectCookie = cookie
+            }
         }
         if let monitors = shareData.monitorLayout {
             let layout = monitors.boundingBoxLayout

@@ -53,6 +53,12 @@
   such as one of its monitors: `init(frame:monitor:bounds:coordinateOrigin:)`
   maps input within an `RDPRemoteMonitor`, and the factory crops the picture to
   it.
+- The report's `rdpLogonNotification` says the server notified that a user
+  logged on, and `rdpLogonErrorInfo` holds its latest logon error
+  notification, as sent. Without Network Level Authentication a server
+  activates the session whatever the password, so activation does not say
+  the sign-in worked; a user who logs on at the server's own logon screen is
+  notified too.
 
 ### Compatibility and fixes
 
