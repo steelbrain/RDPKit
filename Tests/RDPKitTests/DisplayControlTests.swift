@@ -862,7 +862,7 @@ private func outboundDisplayControlPayloads(_ channel: EmbeddedChannel) throws -
 
     #expect(remoteMonitors == [
         RDPRemoteMonitor(rect: RDPFrameRect(left: 1280, top: 56, right: 3200, bottom: 1136), isPrimary: true),
-        RDPRemoteMonitor(rect: RDPFrameRect(left: 0, top: 0, right: 1280, bottom: 1024), isPrimary: false),
+        RDPRemoteMonitor(rect: RDPFrameRect(left: 0, top: 0, right: 1280, bottom: 1024), isPrimary: false, index: 1),
     ])
     #expect(try RDPMonitorLayout(
         remoteMonitors: remoteMonitors,

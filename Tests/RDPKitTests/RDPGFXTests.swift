@@ -612,7 +612,7 @@ import Testing
 
     #expect(reset.outputMonitors == [
         RDPRemoteMonitor(rect: RDPFrameRect(left: 1_920, top: 120, right: 3_840, bottom: 1_200), isPrimary: true),
-        RDPRemoteMonitor(rect: RDPFrameRect(left: 0, top: 0, right: 1_920, bottom: 1_200), isPrimary: false),
+        RDPRemoteMonitor(rect: RDPFrameRect(left: 0, top: 0, right: 1_920, bottom: 1_200), isPrimary: false, index: 1),
     ])
     // Above the shorter primary monitor, 120 rows of the output are on no monitor.
     #expect(reset.outputLayout.issues == .uncoveredOutput)
@@ -635,6 +635,24 @@ import Testing
     #expect(reset.outputLayout.issues == .clipped)
 }
 
+/// A monitor left out of the output does not move the ones after it in the server's list.
+@Test func aMonitorKeepsItsPlaceInTheServersList() throws {
+    let reset = try RDPGFXResetGraphicsPDU.parse(from: RDPGFXHeader.parse(from: resetGraphicsMessage(
+        width: 1_920,
+        height: 1_080,
+        monitorCount: 3,
+        monitorData: monitorDefinitionBytes(left: 100, top: 100, right: 99, bottom: 199, flags: 0)
+            + monitorDefinitionBytes(left: 0, top: 0, right: 959, bottom: 1_079, flags: 1)
+            + monitorDefinitionBytes(left: 960, top: 0, right: 1_919, bottom: 1_079, flags: 0)
+    )))
+
+    #expect(reset.outputMonitors == [
+        RDPRemoteMonitor(rect: RDPFrameRect(left: 0, top: 0, right: 960, bottom: 1_080), isPrimary: true, index: 1),
+        RDPRemoteMonitor(rect: RDPFrameRect(left: 960, top: 0, right: 1_920, bottom: 1_080), isPrimary: false, index: 2),
+    ])
+    #expect(reset.outputLayout.issues == .clipped)
+}
+
 /// Monitors side by side sent with exclusive right edges, as no known server sends them (KRdp
 /// 6.8.1 sends one monitor): the overlap is reported, not repaired.
 @Test func reportsOverlappingResetGraphicsMonitors() throws {
@@ -648,7 +666,7 @@ import Testing
 
     #expect(reset.outputMonitors == [
         RDPRemoteMonitor(rect: RDPFrameRect(left: 0, top: 0, right: 1_921, bottom: 1_080), isPrimary: true),
-        RDPRemoteMonitor(rect: RDPFrameRect(left: 1_920, top: 0, right: 3_840, bottom: 1_080), isPrimary: false),
+        RDPRemoteMonitor(rect: RDPFrameRect(left: 1_920, top: 0, right: 3_840, bottom: 1_080), isPrimary: false, index: 1),
     ])
     #expect(reset.outputLayout.issues == .overlapping)
 }

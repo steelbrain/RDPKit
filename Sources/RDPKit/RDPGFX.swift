@@ -397,7 +397,7 @@ extension [RDPMonitorDefinition] {
             UInt16(Swift.min(Swift.max(value - Int(origin), 0), Int(limit)))
         }
         var issues: RDPRemoteMonitorLayoutIssues = []
-        let monitors: [RDPRemoteMonitor] = compactMap { monitor in
+        let monitors: [RDPRemoteMonitor] = enumerated().compactMap { index, monitor in
             let rect = RDPFrameRect(
                 left: outputCoordinate(Int(monitor.left), origin: originX, limit: width),
                 top: outputCoordinate(Int(monitor.top), origin: originY, limit: height),
@@ -412,7 +412,11 @@ extension [RDPMonitorDefinition] {
                 issues.insert(.clipped)
                 return nil
             }
-            return RDPRemoteMonitor(rect: rect, isPrimary: monitor.flags & RDPMonitorDefinition.primary != 0)
+            return RDPRemoteMonitor(
+                rect: rect,
+                isPrimary: monitor.flags & RDPMonitorDefinition.primary != 0,
+                index: index
+            )
         }
         issues.formUnion(monitors.arrangementIssues(outputWidth: Int(width), outputHeight: Int(height)))
         return RDPOutputMonitorLayout(monitors: monitors, issues: issues)

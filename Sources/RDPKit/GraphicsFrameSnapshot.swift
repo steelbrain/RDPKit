@@ -133,10 +133,15 @@ public struct RDPRemoteMonitor: Encodable, Equatable, Sendable {
     public var rect: RDPFrameRect
     /// Whether this is the primary monitor, whose top-left is the desktop's origin.
     public var isPrimary: Bool
+    /// The monitor's place in the server's list, from 0. RDPKit leaves out a monitor with
+    /// nothing in the graphics output, so this can differ from its place among the monitors
+    /// kept; numbering displays by it matches the server's numbers.
+    public var index: Int
 
-    public init(rect: RDPFrameRect, isPrimary: Bool) {
+    public init(rect: RDPFrameRect, isPrimary: Bool, index: Int = 0) {
         self.rect = rect
         self.isPrimary = isPrimary
+        self.index = index
     }
 }
 

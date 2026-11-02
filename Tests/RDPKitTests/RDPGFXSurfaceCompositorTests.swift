@@ -201,7 +201,7 @@ import Testing
 
     #expect(compositor.makeFrames(frameID: 1).map(\.monitors) == [[
         RDPRemoteMonitor(rect: RDPFrameRect(left: 0, top: 0, right: 2, bottom: 2), isPrimary: true),
-        RDPRemoteMonitor(rect: RDPFrameRect(left: 2, top: 0, right: 4, bottom: 2), isPrimary: false),
+        RDPRemoteMonitor(rect: RDPFrameRect(left: 2, top: 0, right: 4, bottom: 2), isPrimary: false, index: 1),
     ]])
 
     try compositor.process(try resetGraphicsMessage(width: 4, height: 2), clearCodec: clearCodec)

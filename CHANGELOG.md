@@ -91,6 +91,9 @@
   `isEnded` whether the session sends anything more: once the server replaces
   its channel or the connection closes, a layout is for the next session.
   `RDPDisplayRequest.monitorLayout` is public, so a request goes through it.
+- `RDPRemoteMonitor.index` is the monitor's place in the server's list, which
+  stays put when RDPKit leaves out a monitor with nothing in the graphics
+  output, so a client numbers displays as the server does.
 - `RDPMonitorLayout(remoteMonitors:scaleFactors:)` makes a layout of the
   server's monitors, from a frame or the report, to keep or change them through
   Display Control, and `formsOneGroup` is public.

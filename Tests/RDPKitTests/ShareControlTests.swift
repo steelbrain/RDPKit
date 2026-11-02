@@ -311,7 +311,7 @@ import Testing
     ])
     #expect(pdu.monitorLayout?.boundingBoxMonitors == [
         RDPRemoteMonitor(rect: RDPFrameRect(left: 1280, top: 0, right: 3200, bottom: 1080), isPrimary: true),
-        RDPRemoteMonitor(rect: RDPFrameRect(left: 0, top: 120, right: 1280, bottom: 1144), isPrimary: false),
+        RDPRemoteMonitor(rect: RDPFrameRect(left: 0, top: 120, right: 1280, bottom: 1144), isPrimary: false, index: 1),
     ])
     #expect(pdu.monitorLayout?.boundingBoxLayout.issues == .uncoveredOutput)
 }

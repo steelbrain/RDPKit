@@ -202,7 +202,7 @@ func reactivationIgnoresADesktopTheClientDoesNotTake(size: [UInt16]) throws {
     )
     let layout = [
         RDPRemoteMonitor(rect: RDPFrameRect(left: 0, top: 0, right: 1280, bottom: 720), isPrimary: true),
-        RDPRemoteMonitor(rect: RDPFrameRect(left: 1280, top: 0, right: 2560, bottom: 720), isPrimary: false),
+        RDPRemoteMonitor(rect: RDPFrameRect(left: 1280, top: 0, right: 2560, bottom: 720), isPrimary: false, index: 1),
     ]
 
     #expect(run.report.error == nil)
