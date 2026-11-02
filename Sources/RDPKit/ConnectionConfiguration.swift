@@ -31,7 +31,8 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
     /// refused connection, one the system does not permit, or a host name that does not
     /// resolve fails at once. Nothing has gone to the server when a TCP connect fails, so a
     /// Server Redirection's target is tried the same way. ``RDPConnectionReport/connectAttempt``
-    /// says which try is under way.
+    /// says which try is under way, and ``RDPConnectionReport/nextConnectAttemptDate`` when the
+    /// next one starts.
     public var connectAttempts = 1
     /// The seconds between connect attempts; see ``connectAttempts``.
     public var connectRetryDelay: TimeInterval = 1

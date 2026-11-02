@@ -28,6 +28,11 @@ public struct RDPConnectionReport: Encodable, Equatable, Sendable {
     /// first. An ``RDPLiveConnectionReport`` shows it as it changes, so an app can say it is
     /// trying again.
     public var connectAttempt: Int?
+    /// When the next TCP connect attempt starts, while the client waits for it after
+    /// `connectAttempt` failed; nil otherwise. An ``RDPLiveConnectionReport`` shows it, so an
+    /// app can say when it tries again: attempt `connectAttempt + 1` of
+    /// ``RDPConnectionConfiguration/connectAttempts``.
+    public var nextConnectAttemptDate: Date?
     /// The configured credentials' user name and `domain` or, with none, those a Server
     /// Redirection named with its password cookie, which the reconnect's Client Info PDU
     /// carries.

@@ -1341,3 +1341,44 @@ enum KRdpCapture {
         }
     }
 }
+
+/// While the client waits to try a connect again, the live report says when the next try
+/// starts, and the report a cancelled wait ends with no longer does. TEST-NET-1 (RFC 5737)
+/// answers nothing: the connect times out or fails as unreachable, both tried again.
+@Test(.timeLimit(.minutes(1)))
+func theLiveReportSaysWhenTheNextConnectAttemptStarts() throws {
+    var configuration = RDPConnectionConfiguration(host: "192.0.2.1", port: 9, timeoutSeconds: 1)
+    configuration.connectAttempts = 3
+    configuration.connectRetryDelay = 60
+    let liveReport = RDPLiveConnectionReport()
+    let cancellation = RDPConnectionCancellation()
+    let finished = DispatchSemaphore(value: 0)
+    let final = Locked<RDPConnectionReport?>(nil)
+    Thread.detachNewThread {
+        let report = RDPSessionClient().run(configuration: configuration, liveReport: liveReport, cancellation: cancellation)
+        final.withLock { $0 = report }
+        finished.signal()
+    }
+
+    let started = Date()
+    var waiting: RDPConnectionReport?
+    while waiting == nil, Date().timeIntervalSince(started) < 30 {
+        if let report = liveReport.snapshot, report.nextConnectAttemptDate != nil {
+            waiting = report
+        } else if finished.wait(timeout: .now() + 0.05) == .success {
+            finished.signal()
+            break
+        }
+    }
+    let report = try #require(waiting, "the run ended with \(String(describing: final.value?.failure))")
+    #expect(report.connectAttempt == 1)
+    let nextAttempt = try #require(report.nextConnectAttemptDate)
+    #expect(nextAttempt.timeIntervalSince(started) > 50)
+    #expect(nextAttempt.timeIntervalSince(started) < 70)
+
+    cancellation.cancel()
+    #expect(finished.wait(timeout: .now() + 10) == .success)
+    #expect(final.value?.failure == .cancelled)
+    #expect(final.value?.connectAttempt == 1)
+    #expect(final.value?.nextConnectAttemptDate == nil)
+}

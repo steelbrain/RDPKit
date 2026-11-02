@@ -315,7 +315,8 @@
   connection into the local network failing while Apple platforms ask to
   allow local network access. A refused connection, one the system does not
   permit, or a name that does not resolve fails at once. The report's
-  `connectAttempt`, live too, says which try is under way.
+  `connectAttempt`, live too, says which try is under way, and
+  `nextConnectAttemptDate`, while the client waits, when the next one starts.
 - `RDPDiagnosticText` formats what a diagnostics view such as Stats for Nerds
   shows: metric units, Core Video pixel formats, hex codes, a one-line
   performance summary, and summaries of a report's channels, capability sets,

@@ -100,3 +100,56 @@ private func connectFailure(_ errno: Int32) -> RDPConnectionError {
     #expect(polled?.failure == .cancelled)
     #expect(ContinuousClock.now - polledStart < .seconds(10))
 }
+
+/// Each pause before a try says when that try starts, and ends with nil, also when cancelled.
+@Test func aConnectRetrySaysWhenTheNextTryStarts() throws {
+    var events: [String] = []
+    var waits: [Date] = []
+    _ = try connectRetrying(
+        attempts: 3,
+        delay: 0.2,
+        callbacks: RDPSessionCallbacks(),
+        onAttempt: { events.append("attempt \($0)") },
+        onWait: { date in
+            events.append(date == nil ? "waited" : "waiting")
+            if let date {
+                waits.append(date)
+            }
+        }
+    ) {
+        guard waits.count == 2 else {
+            throw connectFailure(ETIMEDOUT)
+        }
+        return "connected"
+    }
+    #expect(events == ["attempt 1", "waiting", "waited", "attempt 2", "waiting", "waited", "attempt 3"])
+    #expect(waits.count == 2)
+    #expect(waits.allSatisfy { $0.timeIntervalSinceNow < 0.1 && $0.timeIntervalSinceNow > -5 })
+    #expect(waits.count == 2 && waits[1].timeIntervalSince(waits[0]) >= 0.2)
+
+    // A delay out of range is waited as its nearest in range: none, or an hour.
+    for (delay, seconds) in [(-600.0, 0.0), (.nan, 0), (7200, 3600)] {
+        var starts: [Date] = []
+        let cancellation = RDPConnectionCancellation()
+        let requested = Date()
+        #expect(throws: RDPConnectionError.self) {
+            try connectRetrying(
+                attempts: 2,
+                delay: delay,
+                callbacks: RDPSessionCallbacks(cancellation: cancellation),
+                onAttempt: { _ in },
+                onWait: { date in
+                    if let date {
+                        starts.append(date)
+                        // Ends a long pause at once; a short one ends on its own.
+                        cancellation.cancel()
+                    }
+                }
+            ) { () -> String in
+                throw connectFailure(EHOSTUNREACH)
+            }
+        }
+        #expect(starts.count == 1)
+        #expect(abs((starts.first ?? .distantPast).timeIntervalSince(requested) - seconds) < 5)
+    }
+}
