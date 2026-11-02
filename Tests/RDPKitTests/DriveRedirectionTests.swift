@@ -196,6 +196,24 @@ import Testing
     #expect(try Data(contentsOf: drive.root.appendingPathComponent("a.txt")).isEmpty)
 }
 
+/// A file locked in the Finder (UF_IMMUTABLE) refuses writing with EPERM, not EACCES; a
+/// MAXIMUM_ALLOWED open still gets read access, as on a read-only volume (EROFS).
+@Test func driveOpensALockedFileReadOnlyForMaximumAllowed() throws {
+    let drive = try TemporaryDrive()
+    let locked = drive.root.appendingPathComponent("locked.txt")
+    try Data("abc".utf8).write(to: locked)
+    try FileManager.default.setAttributes([.immutable: true], ofItemAtPath: locked.path)
+    // Unlocked while the drive lives, so its folder can be removed.
+    defer { try? FileManager.default.setAttributes([.immutable: false], ofItemAtPath: drive.root.appendingPathComponent("locked.txt").path) }
+
+    let maximum = drive.create("\\locked.txt", disposition: RDPDriveCreateDisposition.open, access: 0x0200_0000)
+    #expect(maximum.status == RDPNTStatus.success)
+    #expect(drive.read(maximum.fileID, length: 3, offset: 0).body.dropFirst(4) == Data("abc".utf8))
+    #expect(drive.write(maximum.fileID, offset: 0, Data("x".utf8)).status == RDPNTStatus.accessDenied)
+    // Asked for write access, the open fails as before.
+    #expect(drive.create("\\locked.txt", disposition: RDPDriveCreateDisposition.open).status == RDPNTStatus.accessDenied)
+}
+
 @Test func driveAnswersDirectoryAndFileTypeChecksLikeNTFS() throws {
     let drive = try TemporaryDrive()
     try FileManager.default.createDirectory(at: drive.root.appendingPathComponent("dir"), withIntermediateDirectories: false)

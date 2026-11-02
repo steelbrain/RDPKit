@@ -278,14 +278,20 @@ final class RDPSharedDriveDevice: @unchecked Sendable {
         }
         let flags = O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK
         var descriptor = Darwin.open(file.targetPath, (write ? O_RDWR : O_RDONLY) | (truncate ? O_TRUNC : 0) | flags)
+        // Saved at once, from the retry when there is one, as later calls may change errno.
+        var openError = errno
         file.isWritable = write
-        if descriptor < 0, write, readOnlyFallback, errno == EACCES {
+        // The errors that refuse writing only: the file's permissions (EACCES), a locked file
+        // (UF_IMMUTABLE) or a read-only sandbox grant (EPERM), a read-only volume (EROFS),
+        // and a program that is running (ETXTBSY).
+        if descriptor < 0, write, readOnlyFallback, [EACCES, EPERM, EROFS, ETXTBSY].contains(openError) {
             descriptor = Darwin.open(file.targetPath, O_RDONLY | flags)
+            openError = errno
             file.isWritable = false
         }
         var info = stat()
         guard descriptor >= 0, fstat(descriptor, &info) == 0, info.isRegularFile else {
-            let failure = descriptor >= 0 ? RDPDriveFailure(status: RDPNTStatus.accessDenied) : RDPDriveFailure.posix()
+            let failure = descriptor >= 0 ? RDPDriveFailure(status: RDPNTStatus.accessDenied) : RDPDriveFailure.posix(openError)
             if descriptor >= 0 {
                 Darwin.close(descriptor)
             }
