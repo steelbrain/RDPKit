@@ -124,7 +124,11 @@
   Windows 11 answered with a ResetGraphics and an IDR 0.23 s later, the
   desktop unchanged (observed live).
 - `RDPDisplayControlSession.isLastSentLayoutPending` says whether the layout
-  last sent is still unanswered, until the next ResetGraphics, and frames'
+  last sent is still unanswered: until a ResetGraphics lays out its monitors,
+  or, from a server that changes what it is asked for, until one has come
+  for it and each layout before it. A ResetGraphics for an earlier layout
+  leaves it pending, so the keyframe request asks for it rather than the
+  size the window left. Frames'
   `graphicsResetCount`, also on `RDPFrameMetadata` and the session, counts
   the connection's ResetGraphics PDUs, so a client sees the server lay out its
   graphics again even to the same size and monitors.

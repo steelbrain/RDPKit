@@ -57,6 +57,61 @@ import Testing
     #expect(layouts.keyframeRequestLayout() == nil)
 }
 
+/// A ResetGraphics answers the layouts it lays out the monitors of, and those sent before them,
+/// so the keyframe request keeps asking for a later layout the server has yet to take. One
+/// with other monitors answers the oldest, as the server changed it or reset on its own.
+@Test func keyframeRequestLayoutKeepsALaterLayoutUntilItIsAnswered() throws {
+    func monitor(_ width: UInt16, _ height: UInt16) -> [RDPRemoteMonitor] {
+        [RDPRemoteMonitor(rect: RDPFrameRect(left: 0, top: 0, right: width, bottom: height), isPrimary: true)]
+    }
+    func layout(_ width: UInt32, _ height: UInt32) -> RDPMonitorLayout {
+        .singlePrimary(width: width, height: height, desktopScaleFactor: 200)
+    }
+    let layouts = RDPDisplayLayoutRecord(connectLayout: layout(1280, 720))
+    layouts.noteResetGraphics(outputRect: nil, monitors: monitor(1280, 720), issues: [])
+
+    // The window grew, then shrank, before the server took the first size.
+    layouts.noteSent(layout(2880, 1800))
+    layouts.noteSent(layout(2400, 1600))
+    layouts.noteResetGraphics(outputRect: nil, monitors: monitor(2880, 1800), issues: [])
+    #expect(layouts.isLastSentLayoutPending)
+    #expect(layouts.keyframeRequestLayout() == layout(2400, 1600))
+    // The request itself, the same monitors, waits for the same answer.
+    layouts.noteSent(layout(2400, 1600))
+    layouts.noteResetGraphics(outputRect: nil, monitors: monitor(2400, 1600), issues: [])
+    #expect(!layouts.isLastSentLayoutPending)
+    #expect(layouts.keyframeRequestLayout() == layout(2400, 1600))
+
+    // A later answer takes the ones before it with it.
+    layouts.noteSent(layout(2000, 1200))
+    layouts.noteSent(layout(1800, 1200))
+    layouts.noteSent(layout(1600, 1200))
+    layouts.noteResetGraphics(outputRect: nil, monitors: monitor(1800, 1200), issues: [])
+    #expect(layouts.keyframeRequestLayout() == layout(1600, 1200))
+    layouts.noteResetGraphics(outputRect: nil, monitors: monitor(1600, 1200), issues: [])
+    #expect(!layouts.isLastSentLayoutPending)
+
+    // A server that changes what it is asked for answers each layout in turn.
+    layouts.noteSent(layout(1400, 1000))
+    layouts.noteSent(layout(1200, 1000))
+    layouts.noteResetGraphics(outputRect: nil, monitors: monitor(1402, 1000), issues: [])
+    #expect(layouts.keyframeRequestLayout() == layout(1200, 1000))
+    layouts.noteResetGraphics(outputRect: nil, monitors: monitor(1202, 1000), issues: [])
+    #expect(!layouts.isLastSentLayoutPending)
+    #expect(layouts.keyframeRequestLayout() == layout(1202, 1000))
+
+    // Sixteen unanswered layouts are kept, the newest.
+    for width in stride(from: UInt32(1000), to: 1040, by: 2) {
+        layouts.noteSent(layout(width, 800))
+    }
+    for _ in 1 ..< 16 {
+        layouts.noteResetGraphics(outputRect: nil, monitors: monitor(640, 480), issues: [])
+    }
+    #expect(layouts.isLastSentLayoutPending)
+    layouts.noteResetGraphics(outputRect: nil, monitors: monitor(640, 480), issues: [])
+    #expect(!layouts.isLastSentLayoutPending)
+}
+
 /// A server that lists no monitors has a desktop of its graphics output's size; one whose
 /// monitors RDPKit all left out gets no request.
 @Test func keyframeRequestLayoutTakesTheOutputOfAServerWithNoMonitors() throws {
@@ -200,6 +255,60 @@ func videoThatIsNotShownAsksForAKeyframe(displayControlOpensLate: Bool) throws {
 
     #expect(run.clientPackets.contains { $0.range(of: layoutData) != nil })
     #expect(run.report.rdpKeyframeRequestCount == 1)
+}
+
+/// Two layouts sent before the server answers the first: the keyframe request after video
+/// fails to decode asks for the second, which the server is still to take, not for the first
+/// the server's monitors show, which would leave the desktop at the earlier size.
+@Test func aKeyframeRequestAsksForTheLayoutTheServerIsStillToTake() throws {
+    let displayControl = try displayControlPackets()
+    let firstFrame = try KRdpCapture.events()[39...].map { try #require($0.bytes) }
+    var reset = Data()
+    // The first layout's one monitor, inclusive bounds.
+    for value: UInt32 in [2880, 1800, 1, 0, 0, 2879, 1799, 1] {
+        reset.appendLittleEndianUInt32(value)
+    }
+    reset.append(Data(count: 340 - 8 - reset.count))
+    let answer = KRdpCapture.graphicsPacket(
+        graphicsMessage(commandID: RDPGFXCommandID.resetGraphics, payload: reset)
+            + KRdpCapture.startFrame(id: 900) + KRdpCapture.avc420Update() + KRdpCapture.endFrame(id: 900)
+    )
+    let first = RDPMonitorLayout.singlePrimary(width: 2880, height: 1800, desktopScaleFactor: 200)
+    let second = RDPMonitorLayout.singlePrimary(width: 2400, height: 1600, desktopScaleFactor: 200)
+    func data(_ layout: RDPMonitorLayout) -> Data {
+        RDPDynamicVirtualChannelDataPDU(
+            channelID: 2,
+            payload: RDPDisplayControlMonitorLayoutPDU(monitors: layout.monitors).encoded()
+        ).encoded()
+    }
+    let firstData = data(first)
+    let secondData = data(second)
+    let layoutsSeen = Locked(0)
+    let run = try KRdpCapture.run(
+        prefix: 39,
+        appending: [displayControl.channel, displayControl.caps] + firstFrame + [answer],
+        frameCaptureLimit: nil,
+        onTrailingClientPacket: { channel, packet in
+            if packet.range(of: firstData) != nil || packet.range(of: secondData) != nil,
+               layoutsSeen.withLock({ $0 += 1; return $0 }) == 3
+            {
+                KRdpCapture.endConnection(channel, .close)
+            }
+        },
+        onGraphicsFrame: { frame in
+            if frame.frameID == 900 {
+                throw RDPGraphicsFrameNotPresented(reason: "awaiting a keyframe")
+            }
+        },
+        onDisplayControlReady: { session in
+            #expect((try? session.send(first)) == true)
+            #expect((try? session.send(second)) == true)
+        }
+    )
+
+    #expect(run.report.rdpKeyframeRequestCount == 1)
+    #expect(run.clientPackets.filter { $0.range(of: firstData) != nil }.count == 1)
+    #expect(run.clientPackets.filter { $0.range(of: secondData) != nil }.count == 2)
 }
 
 /// A bitmap frame the handler does not show asks for no keyframe: only video waits for one.

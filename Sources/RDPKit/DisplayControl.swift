@@ -590,7 +590,8 @@ package final class RDPDisplayLayoutRecord: @unchecked Sendable {
     private let onSent: (@Sendable (RDPMonitorLayout) -> Void)?
     private let lock = NSLock()
     private var sentLayout: RDPMonitorLayout?
-    private var isSentLayoutPending = false
+    /// The layouts sent that no ResetGraphics has answered yet, oldest first.
+    private var unansweredLayouts: [RDPMonitorLayout] = []
     private var resetCount: UInt32 = 0
     private var monitors: [RDPRemoteMonitor] = []
     private var monitorLayoutIssues: RDPRemoteMonitorLayoutIssues = []
@@ -607,9 +608,9 @@ package final class RDPDisplayLayoutRecord: @unchecked Sendable {
         lock.withLock { sentLayout }
     }
 
-    /// Whether no ResetGraphics has come since ``lastSentLayout`` was sent.
+    /// Whether no ResetGraphics has answered ``lastSentLayout`` yet.
     var isLastSentLayoutPending: Bool {
-        lock.withLock { isSentLayoutPending }
+        lock.withLock { !unansweredLayouts.isEmpty }
     }
 
     /// The ResetGraphics PDUs the connection's graphics pipelines have handled, wrapping.
@@ -621,13 +622,26 @@ package final class RDPDisplayLayoutRecord: @unchecked Sendable {
         lock.withLock { (monitors, monitorLayoutIssues) }
     }
 
+    /// Records a layout sent. One with the same monitors as the layout before it, still
+    /// unanswered, takes its place: the server's monitors cannot tell them apart, and a resend
+    /// that changes nothing may get no ResetGraphics of its own.
     func noteSent(_ layout: RDPMonitorLayout) {
         lock.withLock {
             sentLayout = layout
-            isSentLayoutPending = true
+            if unansweredLayouts.last?.placesTheSameMonitors(as: layout) == true {
+                unansweredLayouts.removeLast()
+            }
+            unansweredLayouts.append(layout)
+            if unansweredLayouts.count > Self.unansweredLayoutLimit {
+                unansweredLayouts.removeFirst()
+            }
         }
         onSent?(layout)
     }
+
+    /// How many unanswered layouts are kept; a window resized for long against a server that
+    /// answers none sends many.
+    private static let unansweredLayoutLimit = 16
 
     /// The layout that asks the server for a keyframe and keeps its desktop as it is: the one
     /// last sent while the server has not answered it. Otherwise the layout last sent, or the
@@ -640,16 +654,10 @@ package final class RDPDisplayLayoutRecord: @unchecked Sendable {
     /// Control cannot ask for them exactly, such as for a monitor of odd width.
     func keyframeRequestLayout() -> RDPMonitorLayout? {
         let (sent, isPending, listed, issues, outputRect) = lock.withLock {
-            (sentLayout, isSentLayoutPending, self.monitors, monitorLayoutIssues, self.outputRect)
+            (sentLayout, !unansweredLayouts.isEmpty, self.monitors, monitorLayoutIssues, self.outputRect)
         }
         if isPending, let sent {
             return sent
-        }
-        // No issues: the server listed none, rather than RDPKit leaving them all out.
-        let monitors = if listed.isEmpty, issues.isEmpty, let outputRect {
-            [RDPRemoteMonitor(rect: outputRect, isPrimary: true)]
-        } else {
-            listed
         }
         let asked = sent ?? connectLayout
         let primary = asked.monitors.first { $0.flags & RDPDisplayControlMonitorFlags.primary != 0 } ?? asked.monitors.first
@@ -657,7 +665,7 @@ package final class RDPDisplayLayoutRecord: @unchecked Sendable {
             desktopScaleFactor: primary?.desktopScaleFactor ?? 100,
             deviceScaleFactor: primary?.deviceScaleFactor ?? 100
         )
-        guard let server = try? RDPMonitorLayout(remoteMonitors: monitors, scaleFactors: scaleFactors) else {
+        guard let server = Self.serverLayout(listed: listed, issues: issues, outputRect: outputRect, scaleFactors: scaleFactors) else {
             return nil
         }
         if server.placesTheSameMonitors(as: asked) {
@@ -667,21 +675,51 @@ package final class RDPDisplayLayoutRecord: @unchecked Sendable {
     }
 
     /// Records a ResetGraphics, its graphics output and the monitors it laid out, and returns
-    /// the ResetGraphics count it made.
+    /// the ResetGraphics count it made. It answers the first unanswered layout with its
+    /// monitors and every one sent before that, which the server took in turn; one with the
+    /// monitors of none answers the oldest, which the server changed or took after resetting
+    /// for a reason of its own. Either way, a later layout stays unanswered until its own.
     @discardableResult
     package func noteResetGraphics(
         outputRect: RDPFrameRect?,
         monitors: [RDPRemoteMonitor],
         issues: RDPRemoteMonitorLayoutIssues
     ) -> UInt32 {
-        lock.withLock {
+        let laidOut = Self.serverLayout(
+            listed: monitors,
+            issues: issues,
+            outputRect: outputRect,
+            scaleFactors: RDPDisplayScaleFactors(desktopScaleFactor: 100, deviceScaleFactor: 100)
+        )
+        return lock.withLock {
             self.outputRect = outputRect
             self.monitors = monitors
             monitorLayoutIssues = issues
             resetCount &+= 1
-            isSentLayoutPending = false
+            if let laidOut, let answered = unansweredLayouts.firstIndex(where: { $0.placesTheSameMonitors(as: laidOut) }) {
+                unansweredLayouts.removeFirst(answered + 1)
+            } else if !unansweredLayouts.isEmpty {
+                unansweredLayouts.removeFirst()
+            }
             return resetCount
         }
+    }
+
+    /// The server's desktop as a layout at `scaleFactors`: its monitors or, when it listed
+    /// none rather than RDPKit leaving them all out, one of its graphics output's size. nil
+    /// when Display Control cannot ask for it exactly.
+    private static func serverLayout(
+        listed: [RDPRemoteMonitor],
+        issues: RDPRemoteMonitorLayoutIssues,
+        outputRect: RDPFrameRect?,
+        scaleFactors: RDPDisplayScaleFactors
+    ) -> RDPMonitorLayout? {
+        let monitors = if listed.isEmpty, issues.isEmpty, let outputRect {
+            [RDPRemoteMonitor(rect: outputRect, isPrimary: true)]
+        } else {
+            listed
+        }
+        return try? RDPMonitorLayout(remoteMonitors: monitors, scaleFactors: scaleFactors)
     }
 }
 
@@ -743,12 +781,15 @@ public final class RDPDisplayControlSession: Sendable {
         layouts.serverMonitors.issues
     }
 
-    /// Whether ``lastSentLayout`` went out and no ResetGraphics has come since, for a client
-    /// that waits for the server to take a layout before it sends the next, or that must not
-    /// count the server's monitors as the answer yet. The first ResetGraphics after the send
-    /// clears it, even one the server sent for an earlier layout or on its own. A server that
-    /// ignores a layout, as KRdp 6.8.1 does, leaves it pending until it resets graphics for
-    /// some other reason. Read from any thread.
+    /// Whether ``lastSentLayout`` went out and no ResetGraphics has answered it yet, for a
+    /// client that waits for the server to take a layout before it sends the next, or that
+    /// must not count the server's monitors as the answer yet. A ResetGraphics answers the
+    /// first layout still unanswered whose monitors it lays out, and every one sent before
+    /// that; one that lays out the monitors of none answers the oldest, as a server that
+    /// changed the layout asked for or reset graphics on its own. So a ResetGraphics for an
+    /// earlier layout, sent before the server took the last one, leaves the last one pending.
+    /// A server that ignores layouts, as KRdp 6.8.1 does, leaves them pending until it resets
+    /// graphics for other reasons, once for each. Read from any thread.
     public var isLastSentLayoutPending: Bool {
         layouts.isLastSentLayoutPending
     }
