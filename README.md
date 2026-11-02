@@ -155,6 +155,39 @@ which runs on the SwiftNIO event loop and must not block. Cancelling from
 transcript keeps server PDUs in full, so store it as you would the session
 itself.
 
+An app whose interface lives on the main thread can leave that to
+`RDPLiveSession`. It calls `run` on a thread of its own, decodes each frame
+off it, and hands decoded frames, decode failures and wire samples to the main
+queue in order. Work handed to `deliver(_:)` keeps its place among them, and
+none of it runs once `cancel()` has returned:
+
+```swift
+let session = RDPLiveSession()
+session.start(
+    events: RDPLiveSession.Events(
+        onFrameDecoded: { presentation, _, _, _ in
+            // The app's own, such as RDPRemoteDesktopVideoView.present(_:id:) on macOS.
+            show(presentation)
+        },
+        onFrameDecodeFailed: { _, error in print("not shown: \(error)") },
+        onEnd: { report in
+            session.deliver { print("ended: \(report.status)") }
+        }
+    )
+) { run in
+    RDPSessionClient().run(
+        configuration: configuration,
+        onGraphicsFrame: run.onGraphicsFrame,
+        onInputReady: { input in session.deliver { inputView.inputSession = input } },
+        onWireReceive: run.onWireReceive,
+        liveReport: run.liveReport,
+        cancellation: run.cancellation
+    )
+}
+// Leaving the session: nothing delivered runs after this.
+session.cancel()
+```
+
 The configuration also sets the keyboard the server assumes and the folders it
 can see, and `onClipboardContent` receives every format of a remote copy, with
 its number, which `hasPublished(since:)` and `downloadRemoteFiles` take:
@@ -410,7 +443,7 @@ Sources/RDPKitAppKit/                 macOS input and video views, frame clock,
                                       and keyboard mapping
 Sources/RDPKitTesting/                In-memory server stand-ins for app tests
 Tests/RDPKitTests/                    Unit and mock-server integration tests
-Tests/RDPKitAppKitTests/              Input view and keyboard mapping tests
+Tests/RDPKitAppKitTests/              View, frame clock and keyboard tests
 Scripts/                              CI checks and keyboard table capture
 Examples/Package.swift                SwiftPM example app and tool manifest
 Examples/RDPClient/                   Native macOS viewer shell

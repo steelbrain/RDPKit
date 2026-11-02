@@ -240,6 +240,17 @@
 - `RDPScrollWheelAccumulator.events(deltaX:deltaY:isPrecise:at:)` takes a
   scroll as AppKit reports it, a line a notch of 120 rotation units and a
   precise scroll's point 10, with the horizontal axis negated for RDP.
+- `RDPLiveSession` runs a connection for an app whose interface lives on the
+  main thread, as RDPClient did on its own. `start(events:run:)` calls `run`
+  on a named thread with the handlers to pass to `RDPSessionClient.run`:
+  - `onGraphicsFrame` decodes each frame on an `RDPFrameDecodeQueue` and
+    reports one that failed as not presented;
+  - `onWireReceive` coalesces wire samples, the last one sent before the end.
+  `events` gets decoded frames, failures and samples on the main queue.
+  `deliver(_:)` puts the app's own main-thread work in the same order.
+  `cancel()` drops whatever has not run yet, so a session the app left
+  changes nothing. `onEnd` gets the report on the session thread unless the
+  session was cancelled.
 
 ### Security
 

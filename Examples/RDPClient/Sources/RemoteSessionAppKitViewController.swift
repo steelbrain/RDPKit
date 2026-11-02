@@ -33,8 +33,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
     private var hideCertificateWarnings = false
     private var timeoutSeconds = 10.0
     private var isConnecting = false
-    private var activeConnectionID: UUID?
-    private var activeCancellation: RDPConnectionCancellation?
+    private var activeSession: RDPLiveSession?
     private var sessionEndReason: RDPSessionEndReason?
     private var inputSession: RDPInputSession?
     /// The keyboard the current session announced.
@@ -422,10 +421,6 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         publishSessionCommands()
     }
 
-    fileprivate func acceptsConnectionEvent(id: UUID) -> Bool {
-        activeConnectionID == id
-    }
-
     private func renderSidebar() {
         sidebarScrollView.isHidden = !controlsVisible
         sidebarWidthConstraint?.constant = controlsVisible ? 312 : 0
@@ -649,10 +644,9 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
     }
 
     private func beginConnection() {
-        activeCancellation?.cancel()
+        activeSession?.cancel()
         detachSessionChannels()
-        activeConnectionID = nil
-        activeCancellation = nil
+        activeSession = nil
         sessionEndReason = nil
         isConnecting = false
 
@@ -758,106 +752,150 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
             clientName: SCDynamicStoreCopyComputerName(nil, nil) as String? ?? "RDPKIT"
         )
 
-        let connectionID = UUID()
-        let cancellation = RDPConnectionCancellation()
-        let liveReport = RDPLiveConnectionReport()
+        let session = RDPLiveSession(threadName: "RDPClient session")
+        let cancellation = session.cancellation
         let connectionStartedAt = Date()
-        activeConnectionID = connectionID
-        activeCancellation = cancellation
-        self.liveReport = liveReport
+        activeSession = session
+        liveReport = session.liveReport
         renderMetricsStore.reset(connectionStartedAt: connectionStartedAt)
         updateViewerMetricsSummary(renderMetricsStore.metrics)
         isConnecting = true
         render()
 
-        let sink = RDPRemoteSessionMainActorSink(controller: self, connectionID: connectionID)
+        let sink = RDPRemoteSessionMainActorSink(controller: self, session: session)
         let credentialStore = credentialStore
         let clientLicenseStore = clientLicenseStore
         let trustedCertificateStore = trustedCertificateStore
         let remoteAudioPlayer = remoteAudioPlayer
         let acceptsUntrustedCertificates = hideCertificateWarnings
-        // RDPSessionClient.run blocks for the whole session, so it gets its own thread
-        // rather than holding a Swift concurrency worker.
-        let sessionThread = Thread {
-            let sessionConfiguration = configuration
-            let didPresentFrame = OSAllocatedUnfairLock(initialState: false)
-            let decodeQueue = RDPFrameDecodeQueue(
-                shouldCancel: {
-                    cancellation.isCancelled
-                },
-                onDecoded: { presentation, receivedAt, decodedAt, timing in
-                    didPresentFrame.withLock { $0 = true }
-                    sink.apply { controller in
-                        let decodeErrorCleared = controller.previewDecodeError != nil
-                        controller.previewDecodeError = nil
-                        let shouldForceMetricsSnapshot = !controller.hasPresentedFrame
-                        controller.renderMetricsStore.recordDecodedFrame(
-                            presentation.frame,
-                            receivedAt: receivedAt,
-                            decodedAt: decodedAt,
-                            timing: timing
-                        )
-                        let metricsChanged = controller.publishRenderMetricsSnapshotIfNeeded(
-                            force: shouldForceMetricsSnapshot,
-                            at: decodedAt
-                        )
-                        let presentationChanged = controller.presentDecodedFrame(presentation)
-                        if decodeErrorCleared || metricsChanged || presentationChanged {
-                            controller.render()
-                        }
+        // RDPLiveSession runs RDPSessionClient.run on a thread of its own, as it blocks for the
+        // whole session, decodes frames off it, and drops what is still to come once cancelled.
+        session.start(
+            events: RDPLiveSession.Events(
+                onFrameDecoded: { [weak self] presentation, receivedAt, decodedAt, timing in
+                    guard let controller = self else {
+                        return
                     }
-                },
-                onDecodeFailed: { receivedAt, errorDescription in
-                    sink.apply { controller in
-                        // Video waiting for a keyframe fails every frame with the same error.
-                        let decodeErrorChanged = controller.previewDecodeError != errorDescription
-                        controller.previewDecodeError = errorDescription
-                        controller.renderMetricsStore.recordDecodeFailure(
-                            receivedAt: receivedAt,
-                            errorDescription: errorDescription
-                        )
-                        let metricsChanged = controller.publishRenderMetricsSnapshotIfNeeded(at: receivedAt)
-                        if decodeErrorChanged || metricsChanged {
-                            controller.render()
-                        }
-                    }
-                }
-            )
-            let wireReceiveCoalescer = RDPWireReceiveMetricsCoalescer(
-                shouldCancel: {
-                    cancellation.isCancelled
-                },
-                onFlush: { sample in
-                    sink.apply { controller in
-                        controller.renderMetricsStore.recordWireReceive(sample)
-                        if controller.publishRenderMetricsSnapshotIfNeeded(at: sample.receivedAt) {
-                            controller.render()
-                        }
-                    }
-                }
-            )
-            defer {
-                wireReceiveCoalescer.flush()
-                wireReceiveCoalescer.cancel()
-                decodeQueue.cancel()
-            }
-            let nextReport = RDPSessionClient().run(
-                configuration: sessionConfiguration,
-                onGraphicsFrame: { frame in
-                    let completion = decodeQueue.submitAndWait(
-                        frame,
-                        receivedAt: Date(),
-                        shouldContinue: {
-                            cancellation.isCancelled == false
-                        }
+                    let decodeErrorCleared = controller.previewDecodeError != nil
+                    controller.previewDecodeError = nil
+                    let shouldForceMetricsSnapshot = !controller.hasPresentedFrame
+                    controller.renderMetricsStore.recordDecodedFrame(
+                        presentation.frame,
+                        receivedAt: receivedAt,
+                        decodedAt: decodedAt,
+                        timing: timing
                     )
-                    // A frame that fails to decode leaves stale pixels, not a broken session, so
-                    // the session goes on, acknowledges it, and asks the server for a keyframe for
-                    // video. RDPKit hears it was not shown, so a session none of whose frames
-                    // decode, such as video in an H.264 profile VideoToolbox refuses, ends at the
-                    // connection timeout instead of staying on "Connecting…".
-                    try completion.requirePresented()
+                    let metricsChanged = controller.publishRenderMetricsSnapshotIfNeeded(
+                        force: shouldForceMetricsSnapshot,
+                        at: decodedAt
+                    )
+                    let presentationChanged = controller.presentDecodedFrame(presentation)
+                    if decodeErrorCleared || metricsChanged || presentationChanged {
+                        controller.render()
+                    }
                 },
+                onFrameDecodeFailed: { [weak self] receivedAt, errorDescription in
+                    guard let controller = self else {
+                        return
+                    }
+                    // Video waiting for a keyframe fails every frame with the same error.
+                    let decodeErrorChanged = controller.previewDecodeError != errorDescription
+                    controller.previewDecodeError = errorDescription
+                    controller.renderMetricsStore.recordDecodeFailure(
+                        receivedAt: receivedAt,
+                        errorDescription: errorDescription
+                    )
+                    let metricsChanged = controller.publishRenderMetricsSnapshotIfNeeded(at: receivedAt)
+                    if decodeErrorChanged || metricsChanged {
+                        controller.render()
+                    }
+                },
+                onWireReceive: { [weak self] sample in
+                    guard let controller = self else {
+                        return
+                    }
+                    controller.renderMetricsStore.recordWireReceive(sample)
+                    if controller.publishRenderMetricsSnapshotIfNeeded(at: sample.receivedAt) {
+                        controller.render()
+                    }
+                },
+                onEnd: { nextReport in
+                    // The report's first frame is shown only when the session presented none.
+                    let firstFrameDecodeResult = (nextReport.presentedFrameCount ?? 0) > 0
+                        ? nil
+                        : nextReport.rdpGraphicsFirstFrame.map(decodeReportFirstFrame)
+                    sink.apply { controller in
+                        controller.flushPendingFramePresentation()
+                        controller.publishRenderMetricsSnapshotIfNeeded(force: true)
+                        controller.report = nextReport
+                        controller.updateGraphicsPathSummary()
+                        let certificateHost = controller.serverCertificateInfo?.host ?? target.host
+                        if let certificateTrusted = nextReport.certificateTrusted {
+                            controller.serverCertificateInfo = RDPServerCertificateInfo(
+                                trusted: certificateTrusted,
+                                sha256: nextReport.certificateSHA256,
+                                warnings: nextReport.warnings,
+                                host: certificateHost
+                            )
+                        }
+                        controller.certificateTrustedByApp = controller.trustedCertificateStore.isTrusted(
+                            host: certificateHost,
+                            port: target.port,
+                            sha256: nextReport.certificateSHA256
+                        )
+                        if controller.previewFrame == nil {
+                            controller.previewFrame = nextReport.rdpGraphicsFirstFrame.map(RDPFrameMetadata.init)
+                        }
+                        if controller.hasPresentedFrame == false,
+                           let firstFrameDecodeResult
+                        {
+                            switch firstFrameDecodeResult {
+                            case let .decoded(presentation, receivedAt, decodedAt, timing):
+                                controller.renderMetricsStore.recordDecodedFrame(
+                                    presentation.frame,
+                                    receivedAt: receivedAt,
+                                    decodedAt: decodedAt,
+                                    timing: timing
+                                )
+                                controller.publishRenderMetricsSnapshotIfNeeded(force: true, at: decodedAt)
+                                controller.applyFramePresentation(presentation)
+                            case let .failed(receivedAt, errorDescription):
+                                controller.previewDecodeError = errorDescription
+                                controller.renderMetricsStore.recordDecodeFailure(
+                                    receivedAt: receivedAt,
+                                    errorDescription: errorDescription
+                                )
+                                controller.publishRenderMetricsSnapshotIfNeeded(force: true, at: receivedAt)
+                            }
+                        }
+                        // After the report's first frame had its chance to be shown.
+                        controller.sessionEndReason = RDPSessionEndReason(
+                            report: nextReport,
+                            showedDesktop: controller.hasPresentedFrame
+                        )
+                        controller.legacyCredSSPConsent.connectionEnded(
+                            target,
+                            failure: nextReport.failure,
+                            redirectionDepth: nextReport.redirectionDepth
+                        )
+                        controller.detachSessionChannels()
+                        controller.isConnecting = false
+                        controller.activeSession = nil
+                        controller.lookUpRequestedPassword()
+                        controller.render()
+                        if controller.sessionEndReason?.offersCredentials == true {
+                            controller.offerCredentials()
+                        }
+                    }
+                }
+            )
+        ) { run in
+            let sessionConfiguration = configuration
+            return RDPSessionClient().run(
+                configuration: sessionConfiguration,
+                // A frame that fails to decode leaves stale pixels, not a broken session, so the
+                // session goes on, acknowledges it, and asks the server for a keyframe for video.
+                onGraphicsFrame: run.onGraphicsFrame,
                 onInputReady: { session in
                     let persistence = rdpCredentialPersistenceOnceReady(
                         credentialPersistenceRequest,
@@ -989,91 +1027,11 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                         controller.render()
                     }
                 },
-                onWireReceive: { sample in
-                    wireReceiveCoalescer.record(sample)
-                },
-                liveReport: liveReport,
-                cancellation: cancellation
+                onWireReceive: run.onWireReceive,
+                liveReport: run.liveReport,
+                cancellation: run.cancellation
             )
-            guard cancellation.isCancelled == false else {
-                return
-            }
-            let finalWireReceiveSample = wireReceiveCoalescer.takePendingSample()
-            // The report's first frame is shown only when the session presented none.
-            let firstFrameDecodeResult = didPresentFrame.withLock { $0 }
-                ? nil
-                : nextReport.rdpGraphicsFirstFrame.map(decodeReportFirstFrame)
-            sink.apply { controller in
-                if let finalWireReceiveSample {
-                    controller.renderMetricsStore.recordWireReceive(finalWireReceiveSample)
-                }
-                controller.flushPendingFramePresentation()
-                controller.publishRenderMetricsSnapshotIfNeeded(force: true)
-                controller.report = nextReport
-                controller.updateGraphicsPathSummary()
-                let certificateHost = controller.serverCertificateInfo?.host ?? target.host
-                if let certificateTrusted = nextReport.certificateTrusted {
-                    controller.serverCertificateInfo = RDPServerCertificateInfo(
-                        trusted: certificateTrusted,
-                        sha256: nextReport.certificateSHA256,
-                        warnings: nextReport.warnings,
-                        host: certificateHost
-                    )
-                }
-                controller.certificateTrustedByApp = controller.trustedCertificateStore.isTrusted(
-                    host: certificateHost,
-                    port: target.port,
-                    sha256: nextReport.certificateSHA256
-                )
-                if controller.previewFrame == nil {
-                    controller.previewFrame = nextReport.rdpGraphicsFirstFrame.map(RDPFrameMetadata.init)
-                }
-                if controller.hasPresentedFrame == false,
-                   let firstFrameDecodeResult
-                {
-                    switch firstFrameDecodeResult {
-                    case let .decoded(presentation, receivedAt, decodedAt, timing):
-                        controller.renderMetricsStore.recordDecodedFrame(
-                            presentation.frame,
-                            receivedAt: receivedAt,
-                            decodedAt: decodedAt,
-                            timing: timing
-                        )
-                        controller.publishRenderMetricsSnapshotIfNeeded(force: true, at: decodedAt)
-                        controller.applyFramePresentation(presentation)
-                    case let .failed(receivedAt, errorDescription):
-                        controller.previewDecodeError = errorDescription
-                        controller.renderMetricsStore.recordDecodeFailure(
-                            receivedAt: receivedAt,
-                            errorDescription: errorDescription
-                        )
-                        controller.publishRenderMetricsSnapshotIfNeeded(force: true, at: receivedAt)
-                    }
-                }
-                // After the report's first frame had its chance to be shown.
-                controller.sessionEndReason = RDPSessionEndReason(
-                    report: nextReport,
-                    showedDesktop: controller.hasPresentedFrame
-                )
-                controller.legacyCredSSPConsent.connectionEnded(
-                    target,
-                    failure: nextReport.failure,
-                    redirectionDepth: nextReport.redirectionDepth
-                )
-                controller.detachSessionChannels()
-                controller.isConnecting = false
-                controller.activeConnectionID = nil
-                controller.activeCancellation = nil
-                controller.lookUpRequestedPassword()
-                controller.render()
-                if controller.sessionEndReason?.offersCredentials == true {
-                    controller.offerCredentials()
-                }
-            }
         }
-        sessionThread.name = "RDPClient session"
-        sessionThread.qualityOfService = .userInitiated
-        sessionThread.start()
     }
 
     @discardableResult
@@ -1239,12 +1197,11 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
     }
 
     func cancelConnection(shouldRecordCancellation: Bool = true) {
-        let shouldRecordCancellation = shouldRecordCancellation && (isConnecting || activeConnectionID != nil)
-        activeCancellation?.cancel()
+        let shouldRecordCancellation = shouldRecordCancellation && (isConnecting || activeSession != nil)
+        activeSession?.cancel()
         detachSessionChannels()
         resetFramePresentationState()
-        activeCancellation = nil
-        activeConnectionID = nil
+        activeSession = nil
         if shouldRecordCancellation {
             sessionEndReason = .cancelled
         }
@@ -1873,26 +1830,22 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
 
 private final class RDPRemoteSessionMainActorSink: @unchecked Sendable {
     weak var controller: RDPRemoteSessionViewController?
-    let connectionID: UUID
+    let session: RDPLiveSession
 
-    init(controller: RDPRemoteSessionViewController, connectionID: UUID) {
+    init(controller: RDPRemoteSessionViewController, session: RDPLiveSession) {
         self.controller = controller
-        self.connectionID = connectionID
+        self.session = session
     }
 
-    /// Runs `operation` on the main queue in submission order, so frames and audio stay ordered.
-    /// The block keeps the sink alive: the session thread releases it right after submitting
-    /// the final update. The sink holds the controller weakly, so this forms no cycle.
+    /// Runs `operation` on the main queue in submission order, so frames and audio stay
+    /// ordered, unless the session was cancelled by then. The sink holds the controller weakly,
+    /// so this forms no cycle.
     func apply(_ operation: @escaping @MainActor (RDPRemoteSessionViewController) -> Void) {
-        DispatchQueue.main.async {
-            MainActor.assumeIsolated {
-                guard let controller = self.controller,
-                      controller.acceptsConnectionEvent(id: self.connectionID)
-                else {
-                    return
-                }
-                operation(controller)
+        session.deliver { [self] in
+            guard let controller else {
+                return
             }
+            operation(controller)
         }
     }
 }

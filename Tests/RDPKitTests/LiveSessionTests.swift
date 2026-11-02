@@ -1,0 +1,210 @@
+import Foundation
+@testable import RDPKit
+import Testing
+
+/// What a live session handed the application, in the order it did.
+private final class Received: @unchecked Sendable {
+    let lock = NSLock()
+    var events: [String] = []
+    var endedOnMainThread: Bool?
+    var ended = DispatchSemaphore(value: 0)
+
+    func append(_ event: String) {
+        lock.withLock { events.append(event) }
+    }
+
+    var snapshot: [String] {
+        lock.withLock { events }
+    }
+}
+
+/// The end is recorded through `deliver`, as an application hands its main-thread part over.
+private func events(_ received: Received, of session: RDPLiveSession) -> RDPLiveSession.Events {
+    RDPLiveSession.Events(
+        onFrameDecoded: { presentation, _, _, _ in
+            received.append("decoded \(presentation.frame.frameID ?? 0)")
+        },
+        onFrameDecodeFailed: { _, _ in
+            received.append("failed")
+        },
+        onWireReceive: { sample in
+            received.append("wire \(sample.byteCount)")
+        },
+        onEnd: { report in
+            received.lock.withLock { received.endedOnMainThread = Thread.isMainThread }
+            session.deliver {
+                received.append("end \(report.status)")
+                received.ended.signal()
+            }
+        }
+    )
+}
+
+/// Waits on a thread of its own, so the main queue that delivers the events keeps running.
+private func wait(for semaphore: DispatchSemaphore) async -> Bool {
+    await withCheckedContinuation { continuation in
+        Thread.detachNewThread {
+            continuation.resume(returning: semaphore.wait(timeout: .now() + 10) == .success)
+        }
+    }
+}
+
+/// Waits on the calling thread, as a test that must hold the main actor does.
+private func blockingWait(for semaphore: DispatchSemaphore) -> Bool {
+    semaphore.wait(timeout: .now() + 10) == .success
+}
+
+/// Runs what the main queue holds, such as the events delivered so far.
+@MainActor
+private func drainMainQueue() async {
+    await withCheckedContinuation { continuation in
+        DispatchQueue.main.async {
+            continuation.resume()
+        }
+    }
+}
+
+private func report(status: String) -> RDPConnectionReport {
+    RDPConnectionReport(
+        status: status,
+        stage: "rdp-graphics-dynamic-channel",
+        target: "example.test:3389",
+        passwordConfigured: false,
+        requestedProtocols: ["tls"],
+        requestHex: "",
+        warnings: []
+    )
+}
+
+private func bitmapFrame(id: UInt32) -> RDPGraphicsFrameSnapshot {
+    RDPGraphicsFrameSnapshot(
+        frameID: id,
+        surfaceID: 1,
+        codecID: RDPGFXCodecID.uncompressed,
+        codecName: "surface-bgra",
+        pixelFormat: 32,
+        destinationRect: RDPFrameRect(left: 0, top: 0, right: 1, bottom: 1),
+        regionRects: [RDPFrameRect(left: 0, top: 0, right: 1, bottom: 1)],
+        encodedVideoData: Data(),
+        contentKind: .bitmap,
+        decodedBitmapData: Data([0, 0, 0, 255]),
+        decodedBitmapBytesPerRow: 4
+    )
+}
+
+/// A P-frame with no keyframe before it, which VideoToolbox cannot decode.
+private func undecodableVideoFrame(id: UInt32) -> RDPGraphicsFrameSnapshot {
+    let rect = RDPFrameRect(left: 0, top: 0, right: 4, bottom: 4)
+    return RDPGraphicsFrameSnapshot(
+        frameID: id,
+        surfaceID: 1,
+        codecID: RDPGFXCodecID.avc420,
+        codecName: "avc420",
+        pixelFormat: 32,
+        destinationRect: rect,
+        regionRects: [rect],
+        encodedVideoData: Data([0x00, 0x00, 0x01, 0x01, 0xFF])
+    )
+}
+
+/// The session runs on a named thread of its own; a decoded frame reaches the application and
+/// the session goes on, a frame that fails to decode is reported to it and to the session as
+/// not presented, wire samples are coalesced with the last one sent before the end, and work
+/// handed to `deliver` keeps its place among the events. The end comes on the session thread.
+@Test(.timeLimit(.minutes(1)))
+func liveSessionDecodesFramesAndDeliversEventsInOrder() async throws {
+    let received = Received()
+    let session = RDPLiveSession(threadName: "Test session")
+    let threadName = Locked<String?>(nil)
+    let notPresented = Locked<String?>(nil)
+    session.start(events: events(received, of: session)) { run in
+        threadName.withLock { $0 = Thread.current.name }
+        #expect(Thread.isMainThread == false)
+        #expect(run.liveReport === session.liveReport)
+        #expect(run.cancellation === session.cancellation)
+        try? run.onGraphicsFrame(bitmapFrame(id: 1))
+        session.deliver {
+            received.append("delivered")
+        }
+        do {
+            try run.onGraphicsFrame(undecodableVideoFrame(id: 2))
+        } catch let error as RDPGraphicsFrameNotPresented {
+            notPresented.withLock { $0 = error.reason }
+        } catch {
+            Issue.record("unexpected error \(error)")
+        }
+        run.onWireReceive(RDPWireReceiveSample(byteCount: 10, receivedAt: Date()))
+        run.onWireReceive(RDPWireReceiveSample(byteCount: 20, receivedAt: Date()))
+        return report(status: "success")
+    }
+
+    #expect(await wait(for: received.ended))
+    await drainMainQueue()
+    #expect(threadName.value == "Test session")
+    #expect(notPresented.value != nil)
+    #expect(received.snapshot == ["decoded 1", "delivered", "failed", "wire 30", "end success"])
+    #expect(received.endedOnMainThread == false)
+}
+
+/// Once `cancel()` returns nothing more reaches the application, not even what the session
+/// delivered before it that had not run yet, and the session sees its cancellation and gets no
+/// end.
+@MainActor
+@Test(.timeLimit(.minutes(1)))
+func aCancelledLiveSessionDeliversNothingMore() async throws {
+    let received = Received()
+    let session = RDPLiveSession()
+    let delivered = DispatchSemaphore(value: 0)
+    let proceed = DispatchSemaphore(value: 0)
+    let finished = DispatchSemaphore(value: 0)
+    let sawCancellation = Locked(false)
+    session.start(events: events(received, of: session)) { run in
+        session.deliver {
+            received.append("before cancel")
+        }
+        delivered.signal()
+        proceed.wait()
+        sawCancellation.withLock { $0 = run.cancellation.isCancelled }
+        try? run.onGraphicsFrame(bitmapFrame(id: 1))
+        session.deliver {
+            received.append("after cancel")
+        }
+        run.onWireReceive(RDPWireReceiveSample(byteCount: 10, receivedAt: Date()))
+        finished.signal()
+        return report(status: "cancelled")
+    }
+
+    // The main actor waits here, so the delivery is still queued when the session is cancelled.
+    #expect(blockingWait(for: delivered))
+    session.cancel()
+    proceed.signal()
+    #expect(await wait(for: finished))
+    // Long enough for an end, which would come right after `run` returns.
+    try await Task.sleep(for: .milliseconds(300))
+    await drainMainQueue()
+    #expect(sawCancellation.value)
+    #expect(received.snapshot == [])
+}
+
+/// A session cancelled through its cancellation, as a certificate the application refuses on
+/// the session thread cancels it, still delivers what it hands over, such as why, but ends
+/// with no end of its own.
+@Test(.timeLimit(.minutes(1)))
+func aSessionCancelledThroughItsCancellationStillDelivers() async throws {
+    let received = Received()
+    let session = RDPLiveSession()
+    let finished = DispatchSemaphore(value: 0)
+    session.start(events: events(received, of: session)) { run in
+        run.cancellation.cancel()
+        session.deliver {
+            received.append("refused")
+        }
+        finished.signal()
+        return report(status: "cancelled")
+    }
+
+    #expect(await wait(for: finished))
+    try await Task.sleep(for: .milliseconds(300))
+    await drainMainQueue()
+    #expect(received.snapshot == ["refused"])
+}
