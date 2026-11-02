@@ -44,6 +44,18 @@ public enum RDPFrameDecodeCompletion: Equatable, Sendable {
     case failed(errorDescription: String)
     case cancelled
 
+    /// Ends an `onGraphicsFrame` handler by how the frame decoded: returns when it did, throws
+    /// `RDPGraphicsFrameNotPresented` when it failed, so the session goes on, acknowledges the
+    /// frame and, for video, asks for a keyframe
+    /// (``RDPConnectionConfiguration/recoversVideoWithLayoutResend``), and throws
+    /// ``RDPFrameDecodeQueueError/cancelled`` for a cancelled decode, which ends the session.
+    public func requirePresented() throws {
+        if case let .failed(errorDescription) = self {
+            throw RDPGraphicsFrameNotPresented(reason: errorDescription)
+        }
+        try requireDecoded()
+    }
+
     public func requireDecoded() throws {
         switch self {
         case .decoded:

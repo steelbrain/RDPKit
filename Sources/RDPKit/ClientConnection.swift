@@ -102,6 +102,9 @@ final class RDPClientConnection {
     var hasPresentedFrame = false
     /// Why the handler last could not show a frame, for the error when none is shown in time.
     var frameNotPresentedReason: String?
+    var keyframeRequests = RDPKeyframeRequestThrottle()
+    /// A keyframe request is due and waits for a Display Control session that sends.
+    var isKeyframeRequestHeld = false
     /// Created on first use at the current desktop size, again after a resize.
     private var primarySurfaceStorage: RDPPrimarySurfaceCompositor?
     var fastPathReassembler = RDPFastPathOutputFragmentReassembler(

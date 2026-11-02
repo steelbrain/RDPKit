@@ -262,6 +262,7 @@ extension RDPClientConnection {
         pendingDisplayControlSession = nil
         displayControlSession = session
         callbacks.onDisplayControlReady?(session)
+        sendHeldKeyframeRequest()
     }
 
     private func handleDisplayControl(_ message: Data, channelID: UInt32, packet: Data) {

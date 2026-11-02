@@ -40,8 +40,6 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
     private var keyboard = MacRDPWindowsKeyboard.unitedStates
     private var displayControlSession: RDPDisplayControlSession?
     private var displayControlMessage: String?
-    /// A keyframe asked for before Display Control was ready, asked for once it is.
-    private var isKeyframeRequestPending = false
     private var autoApplyViewerSize = true
     /// The desktop the last connection asked for.
     private var requestedDesktop: RDPConnectDesktop?
@@ -792,7 +790,6 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                     controller.render()
                 }
             }
-            var keyframeRequests = RDPKeyframeRequestThrottle()
             let didPresentFrame = OSAllocatedUnfairLock(initialState: false)
             // Which remote copy a clipboard handler is called for, so the bridge can drop one
             // that a publish on the main thread replaced before the copy got there.
@@ -870,11 +867,12 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                             cancellation.isCancelled == false
                         }
                     )
-                    try keyframeRequests.finishGraphicsFrame(frame, decoded: completion, at: Date()) {
-                        sink.apply { controller in
-                            controller.requestKeyframe()
-                        }
-                    }
+                    // A frame that fails to decode leaves stale pixels, not a broken session, so
+                    // the session goes on, acknowledges it, and asks the server for a keyframe for
+                    // video. RDPKit hears it was not shown, so a session none of whose frames
+                    // decode, such as video in an H.264 profile VideoToolbox refuses, ends at the
+                    // connection timeout instead of staying on "Connecting…".
+                    try completion.requirePresented()
                 },
                 onInputReady: { session in
                     let persistence = rdpCredentialPersistenceOnceReady(
@@ -906,9 +904,6 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                         // A server redirection's target has not been sent the layout the first server got.
                         controller.cancelPendingDisplayResize(resetLastRequestedSize: true)
                         controller.scheduleAutoDisplaySizeUpdate()
-                        if controller.isKeyframeRequestPending {
-                            controller.requestKeyframe()
-                        }
                         controller.render()
                     }
                 },
@@ -1282,7 +1277,6 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         inputSession = nil
         displayControlSession = nil
         displayControlMessage = nil
-        isKeyframeRequestPending = false
         clipboard.detach()
         remoteAudioPlayer.reset()
         audioMessage = nil
@@ -1341,20 +1335,6 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         displayResize.recordSent(request)
         displayControlMessage = "Resize requested: \(request.label)."
         formError = nil
-        render()
-    }
-
-    /// Windows and gnome-remote-desktop send no keyframe by themselves, but answer the monitor
-    /// layout sent again with one: the one last sent, or the one the session started with. A
-    /// request with no Display Control session to send it, such as for a first frame that fails
-    /// to decode, waits for the next session.
-    private func requestKeyframe() {
-        guard let displayControlSession, (try? displayControlSession.resendLayout()) == true else {
-            isKeyframeRequestPending = true
-            return
-        }
-        isKeyframeRequestPending = false
-        displayControlMessage = "Video failed to decode; asked the server for a fresh picture."
         render()
     }
 

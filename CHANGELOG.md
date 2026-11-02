@@ -4,6 +4,10 @@
 
 ### Breaking changes
 
+- The session asks the server for a keyframe itself after video fails to
+  decode: an app that resends a layout for one, as RDPClient did, turns
+  `RDPConnectionConfiguration.recoversVideoWithLayoutResend` off or drops its
+  own, so the server is not asked twice.
 - `RDPDisplayControlSession.send(_:)` for an `RDPMonitorLayout` returns a
   discardable `Bool`.
 - `onDisplayControlReady` runs before `onGraphicsFrame` gets the first frame,
@@ -50,6 +54,16 @@
   server's Monitor Layout PDU without sending a layout. Windows 11 and
   gnome-remote-desktop send their desktop; KRdp sends the size the client asked
   for, not the one it streams.
+- Keyframe recovery: once the frame handler throws
+  `RDPGraphicsFrameNotPresented` for a video frame, as the new
+  `RDPFrameDecodeCompletion.requirePresented()` does for a failed decode, the
+  session sends `RDPDisplayControlSession.requestKeyframe()`'s layout, which
+  keeps the server's desktop as it is: the layout last sent while it is
+  unanswered, otherwise the server's monitors at the scale last sent. It sends
+  at most one every 3 seconds and 3 until video decodes again, holds one until
+  Display Control is handed out, and `rdpKeyframeRequestCount` counts them.
+  Windows 11 answered with a ResetGraphics and an IDR 0.23 s later, the
+  desktop unchanged (observed live).
 - `RDPDisplayControlSession.isLastSentLayoutPending` says whether the layout
   last sent is still unanswered, until the next ResetGraphics, and frames'
   `graphicsResetCount`, also on `RDPFrameMetadata` and the session, counts

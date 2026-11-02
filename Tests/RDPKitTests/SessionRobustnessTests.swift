@@ -966,6 +966,7 @@ enum KRdpCapture {
         frameCaptureLimit: Int? = 1,
         timeoutSeconds: Int = 10,
         guardSeconds: Double = 20,
+        recoversVideoWithLayoutResend: Bool = true,
         onEnd: (@Sendable (Channel) -> Void)? = nil,
         onTrailingClientPacket: (@Sendable (Channel, Data) -> Void)? = nil,
         onGraphicsFrame: RDPGraphicsFrameHandler? = nil,
@@ -1011,6 +1012,7 @@ enum KRdpCapture {
                 graphicsFrameCaptureLimit: frameCaptureLimit,
                 desktopWidth: 1280,
                 desktopHeight: 720,
+                recoversVideoWithLayoutResend: recoversVideoWithLayoutResend,
                 clipboardEnabled: false,
                 graphicsCapabilityProfile: .avcThinClient
             ),

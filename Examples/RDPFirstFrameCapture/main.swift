@@ -56,11 +56,16 @@ private enum FirstFrameCapture {
                     // Freeze the transcript the moment video frames start flowing:
                     // it captures the whole negotiation up to, but not past, here.
                     wireTranscript?.stop()
-                    try finishCapturedFrame(decodeQueue.submitAndWait(
+                    // A frame that failed to decode is not shown, but the session goes on, so a
+                    // later frame can still decode, and RDPKit asks the server for a keyframe
+                    // for failed video: until `--settle-seconds` ends or, while no frame has
+                    // decoded, until `--timeout-seconds` passes. The last failure is reported
+                    // when no frame decodes. A cancelled decode ends the session.
+                    try decodeQueue.submitAndWait(
                         frame,
                         receivedAt: Date(),
                         shouldContinue: { cancellation.isCancelled == false }
-                    ))
+                    ).requirePresented()
                 },
                 wireTranscript: wireTranscript,
                 cancellation: cancellation

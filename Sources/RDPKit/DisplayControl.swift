@@ -610,6 +610,24 @@ final class RDPDisplayLayoutRecord: @unchecked Sendable {
         }
     }
 
+    /// The layout that asks the server for a keyframe and keeps its desktop as it is: the one
+    /// last sent while the server has not answered it, otherwise the server's monitors at the
+    /// scale last sent, or the connect layout's. nil without monitors, or when Display Control
+    /// cannot ask for them exactly, such as for a monitor of odd width.
+    func keyframeRequestLayout() -> RDPMonitorLayout? {
+        let (sent, isPending, monitors) = lock.withLock { (sentLayout, isSentLayoutPending, self.monitors) }
+        if isPending, let sent {
+            return sent
+        }
+        let scaled = sent ?? connectLayout
+        let primary = scaled.monitors.first { $0.flags & RDPDisplayControlMonitorFlags.primary != 0 } ?? scaled.monitors.first
+        let scaleFactors = RDPDisplayScaleFactors(
+            desktopScaleFactor: primary?.desktopScaleFactor ?? 100,
+            deviceScaleFactor: primary?.deviceScaleFactor ?? 100
+        )
+        return try? RDPMonitorLayout(remoteMonitors: monitors, scaleFactors: scaleFactors)
+    }
+
     /// Records a ResetGraphics and the monitors it laid out.
     func noteResetGraphics(monitors: [RDPRemoteMonitor], issues: RDPRemoteMonitorLayoutIssues) {
         lock.withLock {
@@ -756,8 +774,9 @@ public final class RDPDisplayControlSession: Sendable {
     }
 
     /// Sends ``lastSentLayout`` again, or ``connectLayout`` before one, the way `send(_:)`
-    /// sends a layout; for a fresh picture from the server, such as a keyframe after video
-    /// fails to decode (``RDPVideoDecodeError/awaitingKeyframe(surfaceID:)``).
+    /// sends a layout; for a fresh picture from the server. For a keyframe after video fails to
+    /// decode (``RDPVideoDecodeError/awaitingKeyframe(surfaceID:)``), ``requestKeyframe()`` does
+    /// not ask again for a layout the server has since replaced, and the session sends it itself.
     ///
     /// Windows 11 and gnome-remote-desktop 51 send no keyframe of their own after a decoder
     /// loses its pictures, but answer a layout sent again, even unchanged, with one, for two
@@ -771,6 +790,22 @@ public final class RDPDisplayControlSession: Sendable {
     @discardableResult
     public func resendLayout() throws -> Bool {
         try send(lastSentLayout ?? connectLayout)
+    }
+
+    /// Asks the server for a keyframe with a layout that keeps its desktop as it is:
+    /// ``lastSentLayout`` while ``isLastSentLayoutPending``, otherwise ``serverMonitors`` at the
+    /// scale ``lastSentLayout``, or ``connectLayout``, gives its primary monitor. Unlike
+    /// ``resendLayout()``, it never asks again for a layout the server has since replaced, such
+    /// as after the user changed its resolution there. Returns false when there is no such
+    /// layout, as without monitors or for a monitor of odd width, or once the session
+    /// ``isEnded``; throws as `send(_:)` does. The session sends one itself after video fails
+    /// to decode unless ``RDPConnectionConfiguration/recoversVideoWithLayoutResend`` is off.
+    @discardableResult
+    public func requestKeyframe() throws -> Bool {
+        guard let layout = layouts.keyframeRequestLayout() else {
+            return false
+        }
+        return try send(layout)
     }
 
     func end() {

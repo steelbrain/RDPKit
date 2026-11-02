@@ -144,6 +144,9 @@ public struct RDPConnectionReport: Encodable, Equatable, Sendable {
     /// How many frame acknowledgements the session sent: RDPGFX_FRAME_ACKNOWLEDGE_PDU
     /// ([MS-RDPEGFX] 2.2.2.13) and TS_FRAME_ACKNOWLEDGE_PDU ([MS-RDPRFX] 2.2.3.3).
     public var rdpGraphicsFrameAcknowledgeCount: Int?
+    /// How many layouts the session sent through Display Control to ask for a keyframe after
+    /// video failed to decode (``RDPConnectionConfiguration/recoversVideoWithLayoutResend``).
+    public var rdpKeyframeRequestCount: Int?
     public var rdpGraphicsFrames: [RDPGraphicsFrameSnapshot]?
     public var rdpGraphicsFirstFrame: RDPGraphicsFrameSnapshot?
     public var rdpRemoteTerminationErrorInfo: UInt32?
@@ -254,6 +257,7 @@ public struct RDPConnectionReport: Encodable, Equatable, Sendable {
         rdpGraphicsFailureUpdateMessageCount: Int? = nil,
         rdpGraphicsFrameAcknowledgeHexes: [String]? = nil,
         rdpGraphicsFrameAcknowledgeCount: Int? = nil,
+        rdpKeyframeRequestCount: Int? = nil,
         rdpGraphicsFrames: [RDPGraphicsFrameSnapshot]? = nil,
         rdpGraphicsFirstFrame: RDPGraphicsFrameSnapshot? = nil,
         rdpRemoteTerminationErrorInfo: UInt32? = nil,
@@ -361,6 +365,7 @@ public struct RDPConnectionReport: Encodable, Equatable, Sendable {
         self.rdpGraphicsFailureUpdateMessageCount = rdpGraphicsFailureUpdateMessageCount
         self.rdpGraphicsFrameAcknowledgeHexes = rdpGraphicsFrameAcknowledgeHexes
         self.rdpGraphicsFrameAcknowledgeCount = rdpGraphicsFrameAcknowledgeCount
+        self.rdpKeyframeRequestCount = rdpKeyframeRequestCount
         self.rdpGraphicsFrames = rdpGraphicsFrames
         self.rdpGraphicsFirstFrame = rdpGraphicsFirstFrame ?? rdpGraphicsFrames?.first
         self.rdpRemoteTerminationErrorInfo = rdpRemoteTerminationErrorInfo

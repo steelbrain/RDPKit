@@ -33,6 +33,15 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
     /// 3840x2400 monitor (observed live), so with RDPGFX a frame's
     /// ``RDPGraphicsFrameSnapshot/monitors`` are the ones to trust.
     public var receivesServerMonitorLayout: Bool
+    /// Asks the server for a keyframe after video fails to decode, which Windows 11 and
+    /// gnome-remote-desktop send no other way: once the frame handler throws
+    /// `RDPGraphicsFrameNotPresented` for a video frame, as
+    /// ``RDPFrameDecodeCompletion/requirePresented()`` does, the session sends
+    /// ``RDPDisplayControlSession/requestKeyframe()``'s layout, which keeps the desktop as it
+    /// is, once Display Control is handed out. At most one every 3 seconds, and 3 until video
+    /// decodes again; ``RDPConnectionReport/rdpKeyframeRequestCount`` counts them. Turn it off
+    /// to ask in the app instead.
+    public var recoversVideoWithLayoutResend: Bool
     /// Joins cliprdr. Joining sends the Format List [MS-RDPECLIP] 1.3.2.1 requires at startup, of
     /// what the client has published, empty until it publishes; Windows 11 takes that as the
     /// client's copy and empties the server's clipboard (observed live; gnome-remote-desktop 51
@@ -101,6 +110,7 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
         physicalSize: RDPDisplayPhysicalSize? = nil,
         monitorLayout: RDPMonitorLayout? = nil,
         receivesServerMonitorLayout: Bool = false,
+        recoversVideoWithLayoutResend: Bool = true,
         clipboardEnabled: Bool = true,
         audioPlaybackEnabled: Bool = false,
         earlyUserAuthorizationEnabled: Bool = false,
@@ -127,6 +137,7 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
         self.physicalSize = physicalSize?.isValid == true ? physicalSize : nil
         self.monitorLayout = Self.validMonitorLayout(monitorLayout)
         self.receivesServerMonitorLayout = receivesServerMonitorLayout
+        self.recoversVideoWithLayoutResend = recoversVideoWithLayoutResend
         self.clipboardEnabled = clipboardEnabled
         self.audioPlaybackEnabled = audioPlaybackEnabled
         self.earlyUserAuthorizationEnabled = earlyUserAuthorizationEnabled
@@ -160,6 +171,7 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
         physicalSize: RDPDisplayPhysicalSize? = nil,
         monitorLayout: RDPMonitorLayout? = nil,
         receivesServerMonitorLayout: Bool = false,
+        recoversVideoWithLayoutResend: Bool = true,
         clipboardEnabled: Bool = true,
         audioPlaybackEnabled: Bool = false,
         earlyUserAuthorizationEnabled: Bool = false,
@@ -188,6 +200,7 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
             physicalSize: physicalSize,
             monitorLayout: monitorLayout,
             receivesServerMonitorLayout: receivesServerMonitorLayout,
+            recoversVideoWithLayoutResend: recoversVideoWithLayoutResend,
             clipboardEnabled: clipboardEnabled,
             audioPlaybackEnabled: audioPlaybackEnabled,
             earlyUserAuthorizationEnabled: earlyUserAuthorizationEnabled,

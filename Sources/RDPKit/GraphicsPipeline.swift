@@ -453,8 +453,14 @@ extension RDPClientConnection {
             do {
                 try callbacks.onGraphicsFrame?(frame)
                 presented = true
+                if frame.contentKind == .video {
+                    videoFrameWasPresented()
+                }
             } catch let notPresented as RDPGraphicsFrameNotPresented {
                 frameNotPresentedReason = notPresented.reason
+                if frame.contentKind == .video {
+                    videoFrameWasNotPresented()
+                }
             } catch {
                 throw RDPConnectionError.graphicsFrameHandler(error)
             }
