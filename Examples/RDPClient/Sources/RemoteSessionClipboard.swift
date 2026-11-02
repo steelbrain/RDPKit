@@ -21,8 +21,13 @@ final class RDPRemoteSessionClipboard {
             quarantineAgentName: "RDPClient"
         )
         let limits = bridge.downloadLimits
+        let maximumLocalFileByteCount = bridge.maximumLocalFileByteCount
         bridge.onEvent = { [weak self] event in
-            self?.message = Self.message(for: event, limits: limits)
+            self?.message = Self.message(
+                for: event,
+                limits: limits,
+                maximumLocalFileByteCount: maximumLocalFileByteCount
+            )
         }
     }
 
@@ -50,7 +55,8 @@ final class RDPRemoteSessionClipboard {
     }
 
     var temporarySharingButtonTitle: String {
-        bridge.temporarySharingSecondsRemaining.map { "Sharing \($0)s" } ?? "Share for 30s"
+        bridge.temporarySharingSecondsRemaining.map { "Sharing \($0)s" }
+            ?? "Share for \(Int(bridge.temporarySharingDuration))s"
     }
 
     func attach(_ session: any RDPPasteboardClipboardSession) {
@@ -99,10 +105,11 @@ final class RDPRemoteSessionClipboard {
         bridge.receiveFileList(descriptorList, copyNumber: copyNumber)
     }
 
-    /// The status line for `event`, of a bridge with `limits`.
+    /// The status line for `event`, of a bridge with `limits` and `maximumLocalFileByteCount`.
     static func message(
         for event: RDPPasteboardClipboard.Event,
-        limits: RDPClipboardDownloadLimits = RDPClipboardDownloadLimits()
+        limits: RDPClipboardDownloadLimits = RDPClipboardDownloadLimits(),
+        maximumLocalFileByteCount: Int = RDPClipboardLocalFile.defaultMaximumTotalByteCount
     ) -> String {
         switch event {
         case .localTextShared:
@@ -122,7 +129,7 @@ final class RDPRemoteSessionClipboard {
             case .unreadable:
                 "Local file clipboard could not be read; remote clipboard cleared."
             case .totalByteLimitExceeded:
-                "Local clipboard files exceed 32 MiB; remote clipboard cleared."
+                "Local clipboard files exceed \(mebibytes(maximumLocalFileByteCount)) MiB; remote clipboard cleared."
             }
         case .pasteboardAccessDenied:
             "Clipboard access is off for RDPClient in System Settings."
@@ -184,6 +191,10 @@ final class RDPRemoteSessionClipboard {
     }
 
     private static func mebibytes(_ byteCount: UInt64) -> UInt64 {
+        byteCount / (1024 * 1024)
+    }
+
+    private static func mebibytes(_ byteCount: Int) -> Int {
         byteCount / (1024 * 1024)
     }
 

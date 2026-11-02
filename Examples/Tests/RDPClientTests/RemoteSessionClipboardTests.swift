@@ -78,6 +78,7 @@ private func settle(_ server: RDPClipboardTestServer) async {
         .localFilesShared(count: 1),
         .localFilesShared(count: 3),
         .localFilesNotShared(.unreadable(URL(fileURLWithPath: "/tmp/a.txt"))),
+        .localFilesNotShared(.totalByteLimitExceeded),
         .pasteboardAccessDenied,
         .upToDate,
         .remoteTextCopied,
@@ -101,6 +102,7 @@ private func settle(_ server: RDPClipboardTestServer) async {
         "Local file synced.",
         "3 local files synced.",
         "Local file clipboard could not be read; remote clipboard cleared.",
+        "Local clipboard files exceed 32 MiB; remote clipboard cleared.",
         "Clipboard access is off for RDPClient in System Settings.",
         "Clipboard is up to date.",
         "Remote text copied.",
@@ -126,4 +128,9 @@ private func settle(_ server: RDPClipboardTestServer) async {
         == "Remote clipboard has more than 20 files.")
     #expect(RDPRemoteSessionClipboard.message(for: .downloadFailed(.totalByteLimitExceeded), limits: limits)
         == "Remote files exceed 8 MiB.")
+    let local = RDPRemoteSessionClipboard.message(
+        for: .localFilesNotShared(.totalByteLimitExceeded),
+        maximumLocalFileByteCount: 4 * 1024 * 1024
+    )
+    #expect(local == "Local clipboard files exceed 4 MiB; remote clipboard cleared.")
 }

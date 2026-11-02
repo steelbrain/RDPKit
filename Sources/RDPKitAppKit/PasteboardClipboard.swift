@@ -72,7 +72,9 @@ public final class RDPPasteboardClipboard {
         /// The pasteboard's files went to the server, for a new copy or ``syncNow()``.
         case localFilesShared(count: Int)
         /// The pasteboard's files could not be read or sent, for a new copy or
-        /// ``syncNow()``; the server's clipboard stays empty.
+        /// ``syncNow()``; the server's clipboard stays empty. A
+        /// ``RDPClipboardLocalFileReadError/totalByteLimitExceeded`` means they hold more than
+        /// ``RDPPasteboardClipboard/maximumLocalFileByteCount`` together.
         case localFilesNotShared(RDPClipboardLocalFileReadError)
         /// macOS denies reading the pasteboard, as the user can choose in System Settings, so
         /// nothing goes and the server keeps its copy. Once until a read works again, and for
@@ -134,8 +136,12 @@ public final class RDPPasteboardClipboard {
     /// What a copy of the server's files may hold, and how it is fetched, for the app to name
     /// the limits a copy went over.
     public let downloadLimits: RDPClipboardDownloadLimits
+    /// The most the pasteboard's files may hold together for the server to get them, for the
+    /// app to name the limit a copy went over. They are read into memory before they go.
+    public let maximumLocalFileByteCount: Int
     private let quarantineAgentName: String
-    private let temporarySharingDuration: TimeInterval
+    /// How long ``startTemporarySharing()`` shares, for the app to name it.
+    public let temporarySharingDuration: TimeInterval
     private let now: @MainActor () -> Date
     private let pasteboardAccessIsDenied: @MainActor () -> Bool
     /// Whether the app heard that the pasteboard cannot be read since it last could.
@@ -165,6 +171,9 @@ public final class RDPPasteboardClipboard {
     ///     ``removeStaleDownloadDirectories(in:changedBefore:keeping:)`` clears what earlier
     ///     runs left there.
     ///   - downloadLimits: What a copy of the server's files may hold and how it is fetched.
+    ///   - maximumLocalFileByteCount: The most the pasteboard's files may hold together for
+    ///     the server to get them: 32 MiB by default, as much as the default `downloadLimits`
+    ///     downloads, whatever `downloadLimits` is.
     ///   - quarantineAgentName: The app named in each downloaded file's quarantine mark,
     ///     which has Gatekeeper check the file before it opens, as for a browser download;
     ///     the process's name by default.
@@ -177,6 +186,7 @@ public final class RDPPasteboardClipboard {
         pasteboard: NSPasteboard = .general,
         downloadRoot: URL,
         downloadLimits: RDPClipboardDownloadLimits = RDPClipboardDownloadLimits(),
+        maximumLocalFileByteCount: Int = RDPClipboardLocalFile.defaultMaximumTotalByteCount,
         quarantineAgentName: String = ProcessInfo.processInfo.processName,
         temporarySharingDuration: TimeInterval = 30,
         now: @escaping @MainActor () -> Date = { Date() },
@@ -186,6 +196,7 @@ public final class RDPPasteboardClipboard {
         self.pasteboard = pasteboard
         self.downloadRoot = downloadRoot
         self.downloadLimits = downloadLimits
+        self.maximumLocalFileByteCount = maximumLocalFileByteCount
         self.quarantineAgentName = quarantineAgentName
         self.temporarySharingDuration = temporarySharingDuration
         self.now = now
@@ -549,14 +560,17 @@ public final class RDPPasteboardClipboard {
             // when sharing turns on, nor applied should it reach this thread late. A remote copy
             // made during the read is newer still, and wins: RDPKit then does not offer the files.
             let copyNumber = session.beginLocalCopy()
-            // Reading up to 32 MiB, or a file iCloud has to download first, on the main thread
-            // would stall the window and its input. A newer local copy, remote copy, or sharing
+            // Reading up to `maximumLocalFileByteCount`, or a file iCloud has to download first,
+            // on the main thread would stall the window and its input. A newer local copy, remote copy, or sharing
             // turned off cancels the publish at once; RDPKit's read stops before the next MiB it
             // reads, and a file iCloud still has to download blocks it until it is available.
             localFileReadAnnounces = announce
+            let maximumByteCount = maximumLocalFileByteCount
             localFileRead = Task { [weak self] in
                 let read = Task.detached(priority: .userInitiated) {
-                    Result { try RDPClipboardLocalFile.read(contentsOf: fileURLs) }
+                    Result {
+                        try RDPClipboardLocalFile.read(contentsOf: fileURLs, maximumTotalByteCount: maximumByteCount)
+                    }
                 }
                 let files = await withTaskCancellationHandler {
                     await read.value

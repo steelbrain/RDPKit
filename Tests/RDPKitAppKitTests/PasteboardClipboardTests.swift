@@ -349,6 +349,21 @@ final class PasteboardClipboardTests: XCTestCase {
         XCTAssertTrue(clipboard.isSharingEnabled)
     }
 
+    /// The app sets how long a temporary share lasts, and reads it back to name it.
+    func testTemporaryShareLastsTheBridgesDuration() async throws {
+        XCTAssertEqual(makeClipboard().temporarySharingDuration, 30)
+        let clipboard = makeClipboard(isSharingEnabled: false, temporarySharingDuration: 10)
+        XCTAssertEqual(clipboard.temporarySharingDuration, 10)
+        try await connectServer(to: clipboard)
+        clipboard.startTemporarySharing()
+        now += 9
+        clipboard.poll()
+        XCTAssertTrue(clipboard.isTemporarySharingActive)
+        now += 2
+        clipboard.poll()
+        XCTAssertFalse(clipboard.isSharingEnabled)
+    }
+
     func testTurningSharingOffClearsTheServerClipboard() async throws {
         pasteboard.clearContents()
         pasteboard.setString("local", forType: .string)
@@ -1322,6 +1337,33 @@ final class PasteboardClipboardTests: XCTestCase {
         XCTAssertNil(shared)
     }
 
+    /// The app sets the limit on the pasteboard's files, and reads it back to name it.
+    func testLocalFilesGoUpToTheBridgesOwnLimit() async throws {
+        XCTAssertEqual(makeClipboard().maximumLocalFileByteCount, RDPClipboardLocalFile.defaultMaximumTotalByteCount)
+        let first = try makeLocalFile(named: "first.bin", contents: Data(count: 10))
+        let second = try makeLocalFile(named: "second.bin", contents: Data(count: 10))
+        let third = try makeLocalFile(named: "third.bin", contents: Data(count: 1))
+        let clipboard = makeClipboard(maximumLocalFileByteCount: 20)
+        XCTAssertEqual(clipboard.maximumLocalFileByteCount, 20)
+        let server = try await connectServer(to: clipboard)
+        var events: [RDPPasteboardClipboard.Event] = []
+        clipboard.onEvent = { events.append($0) }
+
+        pasteboard.clearContents()
+        pasteboard.writeObjects([first as NSURL, second as NSURL])
+        clipboard.poll()
+        try await XCTUnwrap(clipboard.localFileReadTask).value
+        XCTAssertEqual(events, [.localFilesShared(count: 2)])
+        let shared = await server.pasteFiles()
+        XCTAssertEqual(shared?.map(\.descriptor.fileName), ["first.bin", "second.bin"])
+
+        pasteboard.clearContents()
+        pasteboard.writeObjects([first as NSURL, second as NSURL, third as NSURL])
+        clipboard.poll()
+        try await XCTUnwrap(clipboard.localFileReadTask).value
+        XCTAssertEqual(events.last, .localFilesNotShared(.totalByteLimitExceeded))
+    }
+
     /// A copy the server announces during the read is newer than the files,
     /// which RDPKit then does not offer, though the copy reaches the main
     /// thread only after the read: it lands on the pasteboard.
@@ -2033,12 +2075,18 @@ final class PasteboardClipboardTests: XCTestCase {
 
     // MARK: - Helpers
 
-    private func makeClipboard(isSharingEnabled: Bool = true) -> RDPPasteboardClipboard {
+    private func makeClipboard(
+        isSharingEnabled: Bool = true,
+        maximumLocalFileByteCount: Int = RDPClipboardLocalFile.defaultMaximumTotalByteCount,
+        temporarySharingDuration: TimeInterval = 30
+    ) -> RDPPasteboardClipboard {
         RDPPasteboardClipboard(
             isSharingEnabled: isSharingEnabled,
             pasteboard: pasteboard,
             downloadRoot: downloadRoot,
+            maximumLocalFileByteCount: maximumLocalFileByteCount,
             quarantineAgentName: "RDPeek",
+            temporarySharingDuration: temporarySharingDuration,
             now: { self.now },
             pasteboardAccessIsDenied: { self.deniesPasteboardAccess }
         )

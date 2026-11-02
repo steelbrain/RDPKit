@@ -279,7 +279,8 @@
   replaced, sends nothing while macOS denies reading the pasteboard, and clears
   the copy it sent when the server's clipboard is emptied, also while sharing
   is off. `onEvent` reports what happened for the app to word, with
-  `downloadLimits` to name the limits a copy went over, and
+  `downloadLimits` and `maximumLocalFileByteCount` to name the limits a copy
+  went over and `temporarySharingDuration` how long a share lasts, and
   `removeStaleDownloadDirectories(in:changedBefore:keeping:)` clears what
   earlier runs left. RDPClient now uses it.
 - `RDPConnectionReport.targetHost` and `targetPort` give `target` apart, and
