@@ -230,12 +230,36 @@ func clipboardTestServerRecordsTheClientsCopiesAndPastesItsFiles() async throws 
     #expect(server.clientCopies == [.empty, .files, .text, .other, .empty])
     #expect(await server.pasteFiles() == nil)
 
-    // A file shorter than its descriptor says runs out of bytes, and the paste fails.
+    // A file shorter than its descriptor says runs out of bytes, and the paste fails, rather
+    // than asking for the missing bytes again forever.
     let hello = Data("hello".utf8)
     var descriptor = RDPClipboardLocalFile(fileName: "short.txt", contents: hello).descriptor
     descriptor.fileSize = 10
     server.session.publishLocalFiles([RDPClipboardLocalFile(descriptor: descriptor, contents: hello)])
-    #expect(await server.pasteFiles() == nil)
+    #expect(try await pasteFiles(from: server, within: .seconds(10)) == nil)
+}
+
+private struct PasteDidNotEnd: Error {}
+
+/// `server.pasteFiles()`, or `PasteDidNotEnd` once `limit` passes, so a paste that never ends
+/// fails its test instead of holding up the whole run: the paste cannot be cancelled.
+private func pasteFiles(
+    from server: RDPClipboardTestServer,
+    within limit: Duration
+) async throws -> [RDPClipboardLocalFile]? {
+    let pasted = Locked<[RDPClipboardLocalFile]??>(nil)
+    Task {
+        let files = await server.pasteFiles()
+        pasted.withLock { $0 = .some(files) }
+    }
+    let deadline = ContinuousClock.now + limit
+    while ContinuousClock.now < deadline {
+        if let files = pasted.withLock({ $0 }) {
+            return files
+        }
+        try await Task.sleep(for: .milliseconds(5))
+    }
+    throw PasteDidNotEnd()
 }
 
 /// A paste of files the client's copy does not offer answers nil without asking the session
