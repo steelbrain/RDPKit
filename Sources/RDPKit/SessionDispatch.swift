@@ -275,6 +275,7 @@ extension RDPClientConnection {
             packet = information.packet
             clientRandom = information.pdu.clientRandom
             premasterSecret = information.pdu.premasterSecret
+            presentedStoredClientLicense = true
         } else {
             let newLicenseRequest = try RDPClientNewLicenseRequestPDU(
                 channelID: ioChannelID,
@@ -293,8 +294,11 @@ extension RDPClientConnection {
     }
 
     /// The license to present: the provider's, asked for once per connection, or the
-    /// configuration's.
+    /// configuration's; none once the server's licensing failed with it.
     private func storedClientLicenseToPresent() -> RDPStoredClientLicense? {
+        guard !configuration.omitsStoredClientLicense else {
+            return nil
+        }
         guard let provider = callbacks.storedClientLicenseProvider else {
             return configuration.storedClientLicense
         }

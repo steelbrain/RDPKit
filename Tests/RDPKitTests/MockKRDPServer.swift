@@ -77,6 +77,11 @@ final class MockKRDPServer: LoopbackTestServer {
         /// How many times `redirectLikeGnomeHandover` hands the session over, each time with
         /// new credentials, like gnome's system daemon to the greeter and the greeter to the user.
         var gnomeHandoverCount = 1
+        /// The first connection whose presented license the rejecting licensing behaviors turn
+        /// down; earlier ones take it.
+        var firstConnectionRejectingStoredClientLicense = 1
+        /// The Set Error Info code `serverLicenseRequestEndingOnStoredClientLicense` ends with.
+        var storedClientLicenseEndingErrorInfo: UInt32 = 0x0000_0105
         /// Whether the server selects RDSTLS when a reconnect asks for it; if not, it selects
         /// `securityProtocol`.
         var rdSTLSSupported = true
@@ -203,6 +208,8 @@ enum MockKRDPGraphicsBehavior: Equatable {
     case sendFastPathEmptyFramesBeforeFirstFrame
     case closeAfterFirstFrame
     case setErrorInfoThenCloseAfterFirstFrame
+    /// Set Error Info ERRINFO_LICENSE_BAD_CLIENT_LICENSE after the first frame, then a close.
+    case setLicensingErrorInfoThenCloseAfterFirstFrame
     /// gnome-remote-desktop 51 when its session ends: Set Error Info
     /// ERRINFO_RPC_INITIATED_DISCONNECT and a user-requested Disconnect Provider
     /// Ultimatum right behind the frame, then a close that does not wait for the
@@ -266,6 +273,15 @@ enum MockKRDPAutoDetectBehavior {
     case noReplyRequestOnly
 }
 
+/// A stored license matching the mock's License Request.
+let mockStoredClientLicense = RDPStoredClientLicense(
+    version: 0x0006_0001,
+    scope: "localhost",
+    companyName: "Microsoft Corporation",
+    productID: "A02",
+    licenseInfo: Data([0x30, 0x82, 0x01, 0x02])
+)
+
 /// The license `MockKRDPLicensingBehavior.serverLicenseRequestThenNewLicense` issues.
 let mockIssuedClientLicense = RDPStoredClientLicense(
     version: 0x0006_0001,
@@ -288,6 +304,13 @@ enum MockKRDPLicensingBehavior {
     /// A License Request whose key leaves the premaster secret readable, then a New License
     /// for `mockIssuedClientLicense`, sealed with the keys the client derived.
     case serverLicenseRequestThenNewLicense
+    /// A License Request answering a presented license with a Licensing Error Message,
+    /// ERR_INVALID_CLIENT and ST_TOTAL_ABORT ([MS-RDPBCGR] 2.2.1.12.1.3), and a request for a
+    /// new one with a Demand Active.
+    case serverLicenseRequestRejectingStoredClientLicense
+    /// The same, ending the connection with Set Error Info ERRINFO_LICENSE_BAD_CLIENT_LICENSE
+    /// in place of the Licensing Error Message.
+    case serverLicenseRequestEndingOnStoredClientLicense
     case noLicenseServerError
     case disconnectInsteadOfLicensing
 }
@@ -403,6 +426,8 @@ struct MockKRDPServerTranscript: Equatable, Sendable {
     var clientInfo: Data?
     /// The ClientMachineName of a Client New License Request, without its terminator.
     var licenseMachineName: String?
+    /// The Client License Information PDUs received, over every connection.
+    var presentedClientLicenseCount = 0
     /// The Workstation of the NTLM AUTHENTICATE_MESSAGE, as sent.
     var ntlmWorkstation: Data?
     /// The MCS Connect Initial's client data blocks, headers included, in the order sent.
@@ -996,6 +1021,22 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
                 transcript.withLock { $0.licenseMachineName = machineName }
             } else {
                 try MockKRDPFixtures.expectClientLicenseInformation(request.userData)
+                transcript.withLock { $0.presentedClientLicenseCount += 1 }
+                switch options.licensingBehavior {
+                case _ where connectionIndex < options.firstConnectionRejectingStoredClientLicense:
+                    break
+                case .serverLicenseRequestRejectingStoredClientLicense:
+                    write(MockKRDPFixtures.licenseError(code: 0x0000_0008, stateTransition: 0x0000_0001), context: context)
+                    stage = .done
+                    return
+                case .serverLicenseRequestEndingOnStoredClientLicense:
+                    write(MockKRDPFixtures.setErrorInfo(options.storedClientLicenseEndingErrorInfo), context: context)
+                    context.close(promise: nil)
+                    stage = .done
+                    return
+                default:
+                    break
+                }
             }
             write(MockKRDPFixtures.demandActive(), context: context)
             stage = .confirmActive
@@ -1070,7 +1111,12 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
                 // ERRINFO_DISCONNECTED_BY_OTHERCONNECTION, then TCP close.
                 write(MockKRDPFixtures.setErrorInfo(0x0000_0005), context: context)
             }
-            if [.closeAfterFirstFrame, .setErrorInfoThenCloseAfterFirstFrame].contains(options.graphicsBehavior) {
+            if options.graphicsBehavior == .setLicensingErrorInfoThenCloseAfterFirstFrame {
+                write(MockKRDPFixtures.setErrorInfo(0x0000_0105), context: context)
+            }
+            if [.closeAfterFirstFrame, .setErrorInfoThenCloseAfterFirstFrame, .setLicensingErrorInfoThenCloseAfterFirstFrame]
+                .contains(options.graphicsBehavior)
+            {
                 context.close(promise: nil)
             }
             stage = .done
@@ -1157,7 +1203,9 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
         case .serverLicenseRequest:
             write(MockKRDPFixtures.serverLicenseRequest(), context: context)
             stage = .clientNewLicenseRequest
-        case .serverLicenseRequestWithStoredClientLicense:
+        case .serverLicenseRequestWithStoredClientLicense,
+             .serverLicenseRequestRejectingStoredClientLicense,
+             .serverLicenseRequestEndingOnStoredClientLicense:
             write(MockKRDPFixtures.serverLicenseRequest(), context: context)
             stage = .clientLicenseInformation
         case .serverLicenseRequestX509:
@@ -2568,6 +2616,7 @@ private enum MockKRDPFixtures {
              .sendFragmentedCompressedCapsConfirmFirstFrame,
              .closeAfterFirstFrame,
              .setErrorInfoThenCloseAfterFirstFrame,
+             .setLicensingErrorInfoThenCloseAfterFirstFrame,
              .endSessionLikeGnomeAfterFirstFrame:
             [graphicsDynamicPacket(segmentedGraphicsData(avc420FrameMessages()))]
         case .sendPointerUpdatesBeforeFirstFrame:

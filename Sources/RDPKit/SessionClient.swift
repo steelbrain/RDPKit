@@ -141,13 +141,14 @@ public struct RDPSessionClient: Sendable {
         }
     }
 
-    /// Connects, following up to two server redirections ([MS-RDPBCGR] 3.1.5.2).
+    /// Connects, following up to two server redirections ([MS-RDPBCGR] 3.1.5.2), and connects
+    /// again once without the stored client license when the server's licensing fails with it.
     private func session(
-        configuration: RDPConnectionConfiguration,
+        configuration initialConfiguration: RDPConnectionConfiguration,
         callbacks: RDPSessionCallbacks,
         onConnectionError: (RDPClientConnection, Error) throws -> RDPConnectionReport
     ) rethrows -> RDPConnectionReport {
-        var configuration = configuration
+        var configuration = initialConfiguration
         while true {
             let connection = RDPClientConnection(configuration: configuration, callbacks: callbacks)
             let negotiated: Bool
@@ -160,9 +161,20 @@ public struct RDPSessionClient: Sendable {
                 return connection.finishReport()
             }
             let report = connection.runSession()
-            // A run cancelled during the redirect returns the session that ran.
-            guard !callbacks.isCancelled,
-                  let redirection = connection.redirection,
+            // A run cancelled during the redirect or the license retry returns the session that ran.
+            guard !callbacks.isCancelled else {
+                return report
+            }
+            // A stored license the server no longer takes would fail every connection until the
+            // application dropped it. The run starts over as the application connected, so a
+            // redirection's one-time credentials are not used again; the omission carries through
+            // a redirection, and nothing is presented to fail a second time.
+            if connection.storedClientLicenseWasRejected {
+                configuration = initialConfiguration
+                configuration.omitsStoredClientLicense = true
+                continue
+            }
+            guard let redirection = connection.redirection,
                   configuration.redirectionDepth < 2,
                   let redirected = configuration.redirected(by: redirection)
             else {

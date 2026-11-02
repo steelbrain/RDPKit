@@ -992,6 +992,102 @@ struct MockKRDPServerTests {
         #expect(licensed.transcript.licenseMachineName == nil)
     }
 
+    /// A stored license the server's licensing fails with, by a Licensing Error Message or by
+    /// ending the connection for a licensing reason, is presented once: the run connects again
+    /// from the start without it, asks for a new license, and says so in its report. The
+    /// provider is not asked again.
+    @Test(arguments: [
+        MockKRDPLicensingBehavior.serverLicenseRequestRejectingStoredClientLicense,
+        .serverLicenseRequestEndingOnStoredClientLicense,
+    ])
+    func clientConnectsAgainWithoutAStoredLicenseTheServerRejects(_ behavior: MockKRDPLicensingBehavior) throws {
+        let calls = Locked(0)
+        let liveReport = RDPLiveConnectionReport()
+        let run = try runMock(.init(licensingBehavior: behavior), client: {
+            RDPSessionClient().run(
+                configuration: $0,
+                storedClientLicenseProvider: {
+                    calls.withLock { $0 += 1 }
+                    return mockStoredClientLicense
+                },
+                liveReport: liveReport
+            )
+        })
+
+        #expect(run.report.status == "success", "\(run.report.error ?? "")")
+        #expect(run.connectionCount == 2)
+        #expect(calls.value == 1)
+        #expect(run.transcript.presentedClientLicenseCount == 1)
+        #expect(run.transcript.licenseMachineName != nil)
+        #expect(run.report.rdpStoredClientLicenseRejected == true)
+        #expect(run.report.redirectionDepth == 0)
+        #expect(liveReport.snapshot == run.report)
+    }
+
+    /// A rejection on a redirection's target starts the run over as the application connected,
+    /// not at the target with the redirection's credentials.
+    @Test func clientStartsOverWithoutAStoredLicenseARedirectionTargetRejects() throws {
+        let run = try runMock(
+            .init(
+                licensingBehavior: .serverLicenseRequestRejectingStoredClientLicense,
+                redirectionBehavior: .redirectFirstConnection,
+                firstConnectionRejectingStoredClientLicense: 2
+            ),
+            { $0.storedClientLicense = mockStoredClientLicense }
+        )
+
+        #expect(run.report.status == "success", "\(run.report.error ?? "")")
+        #expect(run.connectionCount == 3)
+        #expect(run.transcript.presentedClientLicenseCount == 2)
+        #expect(run.report.redirectionDepth == 0)
+        #expect(run.report.rdpStoredClientLicenseRejected == true)
+    }
+
+    /// A connection that presented a stored license and ended before activation for another
+    /// reason than licensing ends the run.
+    @Test func clientKeepsAnEndForAnotherReasonAfterPresentingAStoredLicense() throws {
+        var options = MockKRDPServer.Options(licensingBehavior: .serverLicenseRequestEndingOnStoredClientLicense)
+        // ERRINFO_SERVER_DENIED_CONNECTION
+        options.storedClientLicenseEndingErrorInfo = 0x0000_0007
+        let run = try runMock(options) { $0.storedClientLicense = mockStoredClientLicense }
+
+        #expect(run.connectionCount == 1)
+        #expect(run.report.failure == .serverTermination(termination: RDPRemoteTermination(errorInfo: 0x0000_0007)))
+        #expect(run.report.rdpStoredClientLicenseRejected == nil)
+    }
+
+    /// Only a rejection before the session activates connects again: a session that ran and
+    /// then ended for a licensing reason ends there.
+    @Test func clientKeepsTheEndOfASessionThatRanAfterPresentingAStoredLicense() throws {
+        let run = try runMock(
+            .init(
+                graphicsBehavior: .setLicensingErrorInfoThenCloseAfterFirstFrame,
+                licensingBehavior: .serverLicenseRequestWithStoredClientLicense
+            ),
+            {
+                $0.storedClientLicense = mockStoredClientLicense
+                $0.graphicsFrameCaptureLimit = nil
+            }
+        )
+
+        #expect(run.connectionCount == 1)
+        #expect(run.transcript.presentedClientLicenseCount == 1)
+        #expect(run.report.rdpGraphicsFirstFrame != nil)
+        #expect(run.report.failure == .serverTermination(termination: RDPRemoteTermination(errorInfo: 0x0000_0105)))
+        #expect(run.report.rdpStoredClientLicenseRejected == nil)
+    }
+
+    /// A licensing failure without a stored license presented is the run's failure.
+    @Test func clientWithoutAStoredLicenseKeepsALicensingFailure() throws {
+        let run = try runMock(.init(licensingBehavior: .noLicenseServerError)) {
+            $0.storedClientLicense = mockStoredClientLicense
+        }
+
+        #expect(run.connectionCount == 1)
+        #expect(run.report.failure == .licensing(errorCode: 0x0000_0006))
+        #expect(run.report.rdpStoredClientLicenseRejected == nil)
+    }
+
     @Test func clientSendsClientLicenseInformationForMatchingStoredLicense() throws {
         let run = try runMock(.init(licensingBehavior: .serverLicenseRequestWithStoredClientLicense)) {
             $0.storedClientLicense = RDPStoredClientLicense(

@@ -73,6 +73,13 @@ public struct RDPConnectionReport: Encodable, Equatable, Sendable {
     public var rdpLicensingResponseType: String?
     public var rdpLicensingErrorCode: UInt32?
     public var rdpIssuedClientLicense: RDPStoredClientLicense?
+    /// True when the server's licensing failed, or the server ended the connection for a
+    /// licensing reason, after the client presented its stored license and before the session
+    /// activated, and the run connected again from the start without it, as it does once;
+    /// nil otherwise. A license the server issues then reaches `onClientLicenseIssued` to replace
+    /// the stored one; while none does, the next run presents the stored one again, and costs a
+    /// connection more, unless the application drops it.
+    public var rdpStoredClientLicenseRejected: Bool?
     /// The latest auto-reconnect cookie the server sent, for reconnecting to the session
     /// through ``RDPConnectionConfiguration/autoReconnectCookie``. It is a secret, and
     /// the report's encoding keeps only its logon ID.
@@ -222,6 +229,7 @@ public struct RDPConnectionReport: Encodable, Equatable, Sendable {
         rdpLicensingResponseType: String? = nil,
         rdpLicensingErrorCode: UInt32? = nil,
         rdpIssuedClientLicense: RDPStoredClientLicense? = nil,
+        rdpStoredClientLicenseRejected: Bool? = nil,
         rdpAutoReconnectCookie: RDPAutoReconnectCookie? = nil,
         rdpLogonNotification: RDPLogonNotification? = nil,
         rdpLogonErrorInfo: RDPLogonErrorInfo? = nil,
@@ -331,6 +339,7 @@ public struct RDPConnectionReport: Encodable, Equatable, Sendable {
         self.rdpLicensingResponseType = rdpLicensingResponseType
         self.rdpLicensingErrorCode = rdpLicensingErrorCode
         self.rdpIssuedClientLicense = rdpIssuedClientLicense
+        self.rdpStoredClientLicenseRejected = rdpStoredClientLicenseRejected
         self.rdpAutoReconnectCookie = rdpAutoReconnectCookie
         self.rdpLogonNotification = rdpLogonNotification
         self.rdpLogonErrorInfo = rdpLogonErrorInfo

@@ -102,6 +102,9 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
     /// RDSTLS beside TLS and CredSSP, and authenticates with these when the target selects it.
     var redirectionRDSTLSCredentials: RDPRDSTLSPasswordCredentials?
     var redirectionDepth: Int
+    /// Set when the run connects again after the server's licensing failed with the stored
+    /// license: neither `storedClientLicense` nor the provider's is presented.
+    var omitsStoredClientLicense = false
 
     public init(
         host: String,

@@ -44,6 +44,8 @@ final class RDPClientConnection {
     var licenseKeys: RDPLicenseKeys?
     /// What `storedClientLicenseProvider` returned, once it was asked.
     var providedClientLicense: RDPStoredClientLicense??
+    /// The Client License Information PDU presented a stored license.
+    var presentedStoredClientLicense = false
     var sawConnectTimeAutoDetect = false
     var autoDetectMeter = RDPAutoDetectBandwidthMeter()
     var share: RDPActiveShare?
@@ -145,6 +147,9 @@ final class RDPClientConnection {
             rdpGraphicsCapabilityProfile: configuration.graphicsCapabilityProfile,
             warnings: []
         ))
+        if configuration.omitsStoredClientLicense {
+            report.rdpStoredClientLicenseRejected = true
+        }
         callbacks.liveReport?.follow(reportStorage)
     }
 
@@ -239,6 +244,23 @@ final class RDPClientConnection {
             return end(.negotiation(code: failureCode), "RDP negotiation failed with \(failureCode)")
         case nil:
             return end(.unsupportedSecurityProtocol, "standard RDP security is not supported")
+        }
+    }
+
+    /// The server's licensing failed, or the server ended the connection for a licensing reason
+    /// (`RDPRemoteTermination.Category.licensing`), after this connection presented a stored
+    /// license and before the session activated.
+    var storedClientLicenseWasRejected: Bool {
+        guard presentedStoredClientLicense, report.rdpDemandActiveShareID == nil else {
+            return false
+        }
+        return switch report.failure {
+        case .licensing:
+            true
+        case let .serverTermination(termination):
+            termination.category == .licensing
+        default:
+            false
         }
     }
 

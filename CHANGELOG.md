@@ -158,6 +158,12 @@
   as it arrives. The deadline for the connection's next step starts once
   either returns, so a Keychain prompt takes none of it. RDPClient reads and
   saves its Keychain license through them.
+- A run whose stored client license the server's licensing fails with, by a
+  Licensing Error Message or by ending the connection for a licensing reason,
+  before the session activates, connects again once from the start without
+  it, so a license the server no longer takes does not fail every connection
+  until the application drops it. `RDPConnectionReport.rdpStoredClientLicenseRejected`
+  says so; a license the server issues then reaches `onClientLicenseIssued`.
 
 ### Security
 
