@@ -972,8 +972,7 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
             case .close:
                 context.close(promise: nil)
             case .reset:
-                (context.channel as? SocketOptionProvider)?.setSoLinger(linger(l_onoff: 1, l_linger: 0))
-                    .whenComplete { _ in context.close(promise: nil) }
+                resetConnection(context: context)
             case .silence:
                 break
             case let .bytes(bytes):
@@ -1391,6 +1390,13 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
         }
     }
 
+    /// Closes the connection with SO_LINGER 0, which resets it.
+    private func resetConnection(context: ChannelHandlerContext) {
+        let boundContext = NIOLoopBound(context, eventLoop: context.eventLoop)
+        (context.channel as? SocketOptionProvider)?.setSoLinger(linger(l_onoff: 1, l_linger: 0))
+            .whenComplete { _ in boundContext.value.close(promise: nil) }
+    }
+
     private func handleCredSSP(_ message: Data, context: ChannelHandlerContext) throws {
         guard let credSSPServer else {
             throw MockKRDPServerError.invalidClientPDU
@@ -1403,8 +1409,7 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
                 tls.writeAndFlush(NIOAny(context.channel.allocator.buffer(string: "not a TLS record")), promise: nil)
             }
             if options.credSSPCloseResets {
-                (context.channel as? SocketOptionProvider)?.setSoLinger(linger(l_onoff: 1, l_linger: 0))
-                    .whenComplete { _ in context.close(promise: nil) }
+                resetConnection(context: context)
             } else {
                 context.close(promise: nil)
             }
