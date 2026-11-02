@@ -1156,6 +1156,13 @@ private final class ClipboardPublishRace: @unchecked Sendable {
     session.publishLocalUnicodeText("newer")
     _ = try session.receive(RDPClipboardPDU.parse(from: formatList))
     #expect(try lastResponseFlags(afterRequesting: RDPClipboardFormatID.unicodeText) == RDPClipboardMessageFlags.responseOK)
+
+    // The server's clipboard restarts before it answers that list, and never will: once it
+    // has answered the list announcing the copy again, its own list still retires the copy.
+    _ = try session.receive(RDPClipboardPDU(messageType: RDPClipboardMessageType.monitorReady))
+    _ = try session.receive(RDPClipboardPDU.parse(from: formatListResponse))
+    _ = try session.receive(RDPClipboardPDU.parse(from: formatList))
+    #expect(try lastResponseFlags(afterRequesting: RDPClipboardFormatID.unicodeText) == RDPClipboardMessageFlags.responseFail)
     _ = try channel.finish()
 }
 

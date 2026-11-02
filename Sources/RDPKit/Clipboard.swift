@@ -1111,10 +1111,12 @@ public final class RDPClipboardSession: @unchecked Sendable {
             return nil
         }
         if pdu.header.messageType == RDPClipboardMessageType.monitorReady {
-            // A server whose clipboard restarted answers no request made before.
+            // A server whose clipboard restarted answers no request made before, and no Format
+            // List: one left counted would keep every later server list from retiring the local copy.
             lock.withLock {
                 formatDataRequests = []
                 isAwaitingFormatData = false
+                unansweredFormatListCount = 0
             }
             respondToMonitorReady()
             return .ready
