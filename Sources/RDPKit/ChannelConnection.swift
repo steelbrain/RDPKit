@@ -28,7 +28,8 @@ extension RDPClientConnection {
             keyboard: configuration.clientKeyboard,
             monitorLayout: configuration.connectionMonitorLayout(
                 extendedClientDataSupported: extendedClientDataSupported
-            )
+            ),
+            requestsMonitorLayoutPDU: configuration.receivesServerMonitorLayout
         )
         // The desktop is the one asked for until a Demand Active sets one.
         resizeDesktop(width: mcsConfiguration.desktopWidth, height: mcsConfiguration.desktopHeight)

@@ -692,11 +692,14 @@ public final class RDPDisplayControlSession: Sendable {
     /// fails to decode (``RDPVideoDecodeError/awaitingKeyframe(surfaceID:)``).
     ///
     /// Windows 11 and gnome-remote-desktop 51 send no keyframe of their own after a decoder
-    /// loses its pictures, but answer a single monitor's layout sent again, even unchanged, by
-    /// resetting graphics and sending one within about 0.3 s; a Refresh Rect or Suppress
-    /// Output does not get one from Windows 11, which repaints into the same stream (observed
-    /// live). KRdp 6.8's H.264 has a keyframe every 100 frames and forces none, and FreeRDP
-    /// 3.32's shadow server has no Display Control but sends a keyframe about every 17 s.
+    /// loses its pictures, but answer a layout sent again, even unchanged, with one, for two
+    /// monitors as for one: Windows 11 within about 0.3 s, gnome-remote-desktop 51 by
+    /// resetting graphics, within about 0.3 s while video plays and about 2.5 s on an idle
+    /// desktop. A Refresh Rect or Suppress Output does not get one from Windows 11, which
+    /// repaints into the same stream.
+    /// KRdp 6.8.1 streaming an existing monitor did not answer a layout at all; its H.264 has a
+    /// keyframe every 100 frames and forces none. FreeRDP 3.32's shadow server has no Display
+    /// Control but sends a keyframe about every 17 s. (All observed live.)
     @discardableResult
     public func resendLayout() throws -> Bool {
         try send(lastSentLayout ?? connectLayout)

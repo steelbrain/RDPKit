@@ -67,7 +67,7 @@ private enum ClientEarlyCapabilityFlags {
             flags |= supportDynamicVirtualChannelGraphics
         }
         // The client records the Monitor Layout PDU ([MS-RDPBCGR] 2.2.12.1) a server then sends.
-        if configuration.monitorLayout != nil {
+        if configuration.monitorLayout != nil || configuration.requestsMonitorLayoutPDU {
             flags |= supportMonitorLayoutPDU
         }
         return flags
@@ -130,6 +130,8 @@ struct MCSConnectInitialConfiguration: Equatable, Sendable {
     /// The monitors for Client Monitor Data and Client Monitor Extended Data, extended client
     /// data blocks a server takes only with EXTENDED_CLIENT_DATA_SUPPORTED ([MS-RDPBCGR] 2.2.1.3).
     var monitorLayout: RDPMonitorLayout?
+    /// Asks for the server's Monitor Layout PDU without `monitorLayout`, which asks for it anyway.
+    var requestsMonitorLayoutPDU: Bool
 
     /// With `monitorLayout`, the desktop is its bounding box, at most the 32,766 pixels each way
     /// Client Monitor Data allows ([MS-RDPBCGR] 2.2.1.3.6); `desktopWidth` and `desktopHeight` go
@@ -148,7 +150,8 @@ struct MCSConnectInitialConfiguration: Equatable, Sendable {
         advertiseMessageChannel: Bool = false,
         redirectedSessionID: UInt32? = nil,
         keyboard: RDPClientKeyboard = RDPClientKeyboard(),
-        monitorLayout: RDPMonitorLayout? = nil
+        monitorLayout: RDPMonitorLayout? = nil,
+        requestsMonitorLayoutPDU: Bool = false
     ) {
         precondition(!channels.isEmpty)
         precondition(channels.count <= 31)
@@ -172,6 +175,7 @@ struct MCSConnectInitialConfiguration: Equatable, Sendable {
         self.redirectedSessionID = redirectedSessionID
         self.keyboard = keyboard
         self.monitorLayout = monitorLayout
+        self.requestsMonitorLayoutPDU = requestsMonitorLayoutPDU
     }
 }
 

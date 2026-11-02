@@ -25,6 +25,14 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
     /// whose monitors form separate groups is dropped, as Windows 11 makes one monitor of their
     /// bounding box; Display Control can ask for it once the session runs.
     public var monitorLayout: RDPMonitorLayout?
+    /// Asks the server for its Monitor Layout PDU ([MS-RDPBCGR] 2.2.12.1) with no
+    /// ``monitorLayout``, which asks for it anyway, by setting RNS_UD_CS_SUPPORT_MONITOR_LAYOUT_PDU
+    /// in the Client Core Data. ``RDPConnectionReport/rdpMonitorLayout`` then holds the
+    /// monitors the server sends. Windows 11 and gnome-remote-desktop 51 send the desktop they
+    /// make; KRdp 6.8.1 sends the one the client asked for, 1280x720, while streaming a
+    /// 3840x2400 monitor (observed live), so with RDPGFX a frame's
+    /// ``RDPGraphicsFrameSnapshot/monitors`` are the ones to trust.
+    public var receivesServerMonitorLayout: Bool
     /// Joins cliprdr. Joining sends the Format List [MS-RDPECLIP] 1.3.2.1 requires at startup, of
     /// what the client has published, empty until it publishes; Windows 11 takes that as the
     /// client's copy and empties the server's clipboard (observed live; gnome-remote-desktop 51
@@ -77,6 +85,7 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
         scaleFactors: RDPDisplayScaleFactors = RDPDisplayScaleFactors(desktopScaleFactor: 100, deviceScaleFactor: 100),
         physicalSize: RDPDisplayPhysicalSize? = nil,
         monitorLayout: RDPMonitorLayout? = nil,
+        receivesServerMonitorLayout: Bool = false,
         clipboardEnabled: Bool = true,
         audioPlaybackEnabled: Bool = false,
         earlyUserAuthorizationEnabled: Bool = false,
@@ -101,6 +110,7 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
         self.scaleFactors = scaleFactors.clamped
         self.physicalSize = physicalSize?.isValid == true ? physicalSize : nil
         self.monitorLayout = Self.validMonitorLayout(monitorLayout)
+        self.receivesServerMonitorLayout = receivesServerMonitorLayout
         self.clipboardEnabled = clipboardEnabled
         self.audioPlaybackEnabled = audioPlaybackEnabled
         self.earlyUserAuthorizationEnabled = earlyUserAuthorizationEnabled
@@ -131,6 +141,7 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
         scaleFactors: RDPDisplayScaleFactors = RDPDisplayScaleFactors(desktopScaleFactor: 100, deviceScaleFactor: 100),
         physicalSize: RDPDisplayPhysicalSize? = nil,
         monitorLayout: RDPMonitorLayout? = nil,
+        receivesServerMonitorLayout: Bool = false,
         clipboardEnabled: Bool = true,
         audioPlaybackEnabled: Bool = false,
         earlyUserAuthorizationEnabled: Bool = false,
@@ -157,6 +168,7 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
             scaleFactors: scaleFactors,
             physicalSize: physicalSize,
             monitorLayout: monitorLayout,
+            receivesServerMonitorLayout: receivesServerMonitorLayout,
             clipboardEnabled: clipboardEnabled,
             audioPlaybackEnabled: audioPlaybackEnabled,
             earlyUserAuthorizationEnabled: earlyUserAuthorizationEnabled,

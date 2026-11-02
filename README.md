@@ -223,7 +223,11 @@ let report = client.run(
   keyframe after video fails to decode
 - Connect-time multi-monitor layouts in Client Monitor Data and Client Monitor
   Extended Data, up to 32,766 x 32,766 pixels, and the server's Monitor Layout
-  PDU in the report, live through `RDPLiveConnectionReport`
+  PDU in the report, live through `RDPLiveConnectionReport`, also without a
+  layout through `receivesServerMonitorLayout`
+- The server's monitors in each frame, with `monitorLayoutIssues` for a layout
+  RDPKit cut to the graphics output or that overlaps, lacks one primary
+  monitor, or leaves part of the output uncovered
 - Connect-time desktop and device scale factors and physical size, for servers
   without display control
 - HiDPI-aware display scale models for Apple clients

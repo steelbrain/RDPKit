@@ -70,7 +70,8 @@ public struct RDPConnectionReport: Encodable, Equatable, Sendable {
     /// The monitors of the server's latest Monitor Layout PDU ([MS-RDPBCGR] 2.2.12.1), where
     /// they are in the desktop as a frame's ``RDPGraphicsFrameSnapshot/monitors`` are in the
     /// graphics output. Servers send one to a client that sent a
-    /// ``RDPConnectionConfiguration/monitorLayout``, and an ``RDPLiveConnectionReport``'s
+    /// ``RDPConnectionConfiguration/monitorLayout`` or set
+    /// ``RDPConnectionConfiguration/receivesServerMonitorLayout``, and an ``RDPLiveConnectionReport``'s
     /// snapshot holds it as soon as it arrives. Windows 11 and gnome-remote-desktop 51 send it
     /// right after each Demand Active, so before `onInputReady` hands out that activation's
     /// input session (observed live). In a session without RDPGFX, whose frames carry no

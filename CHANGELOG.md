@@ -21,6 +21,10 @@
   graphics output, monitors that overlap, no or several primary monitors, or
   part of the output on no monitor. KRdp's exclusive right and bottom edges
   count as exact: KRdp 6.8 always sends one monitor.
+- `RDPConnectionConfiguration.receivesServerMonitorLayout` asks for the
+  server's Monitor Layout PDU without sending a layout. Windows 11 and
+  gnome-remote-desktop send their desktop; KRdp sends the size the client asked
+  for, not the one it streams.
 - `RDPDisplayControlSession.resendLayout()` sends `lastSentLayout` again, or
   `connectLayout`, the layout the connection started with. Windows 11 and
   gnome-remote-desktop answer it with a keyframe, which they send no other way

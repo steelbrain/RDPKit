@@ -319,6 +319,24 @@ struct MockKRDPServerTests {
         #expect(run.report.rdpMonitorLayout == nil)
     }
 
+    /// receivesServerMonitorLayout asks for the Monitor Layout PDU and sends no monitor data.
+    @Test func clientAsksForTheServersMonitorLayoutWithoutALayout() throws {
+        let run = try runMock(
+            .init(licensingBehavior: .validClientThenDemandActiveWithMonitorLayout),
+            { $0.receivesServerMonitorLayout = true }
+        )
+        let blocks = run.transcript.clientDataBlocks
+
+        #expect(run.report.status == "success")
+        #expect(blocks.map { $0.littleEndianUInt16(at: 0) } == [0xC001, 0xC004, 0xC002, 0xC003, 0xC006])
+        // RNS_UD_CS_SUPPORT_MONITOR_LAYOUT_PDU (0x0040) beside the flags sent without it.
+        #expect(blocks.first?.littleEndianUInt16(at: 144) == 0x01EF)
+        #expect(run.report.rdpMonitorLayout == [
+            RDPRemoteMonitor(rect: RDPFrameRect(left: 0, top: 0, right: 1280, bottom: 720), isPrimary: true),
+        ])
+        #expect(run.report.rdpMonitorLayoutIssues == [])
+    }
+
     /// The auto-reconnect cookie ends the Client Info PDU ([MS-RDPBCGR] 2.2.1.11.1.1.1). A wire
     /// transcript records the client's PDUs, and so its cookie, by length only.
     @Test func clientSendsItsAutoReconnectCookie() throws {
