@@ -11,9 +11,9 @@ Use this boundary when making changes:
 
 - Code needed by macOS, iOS, tvOS, Mac Catalyst, visionOS, and third-party
   clients belongs in `Sources/RDPKit`.
-- AppKit views, Mac keyboard handling and pasteboard bridging that any macOS
-  client reuses, such as the input view, belong in `Sources/RDPKitAppKit`,
-  guarded by `#if os(macOS)`.
+- What any macOS client reuses belongs in `Sources/RDPKitAppKit`, guarded by
+  `#if os(macOS)`: the input and video views, Mac keyboard handling, frame
+  presentation and pacing, and pasteboard bridging.
 - In-memory server stand-ins for applications' tests belong in
   `Sources/RDPKitTesting`.
 - macOS app UI, Keychain wiring, AppKit windowing, and app preferences belong in
@@ -26,9 +26,10 @@ The library should prefer Apple primitives and Apple-maintained Swift packages:
 VideoToolbox, CoreMedia, CoreVideo, AVFoundation, Security, SwiftNIO, and
 SwiftNIO SSL. Do not add FreeRDP or another native RDP stack as a dependency.
 
-Windows RDP and KDE KRdp compatibility remain primary validation targets. Treat
-RDPGFX, AVC420/H.264, AVC444/H.264, HEVC/H.265, frame acknowledgements, display
-resize, keyboard, pointer, clipboard, and audio as first-class library concerns.
+Windows RDP, KDE KRdp and GNOME Remote Desktop compatibility remain primary
+validation targets. Treat RDPGFX, AVC420/H.264, AVC444/H.264, HEVC/H.265, frame
+acknowledgements, display resize, keyboard, pointer, clipboard, and audio as
+first-class library concerns.
 
 ## Cursor Behavior
 
