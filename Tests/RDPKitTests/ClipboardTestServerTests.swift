@@ -238,6 +238,28 @@ func clipboardTestServerRecordsTheClientsCopiesAndPastesItsFiles() async throws 
     #expect(await server.pasteFiles() == nil)
 }
 
+/// A paste of files the client's copy does not offer answers nil without asking the session
+/// for anything: with stepping on, no message waits to be handed over.
+@Test(.timeLimit(.minutes(1)))
+func clipboardTestServerAsksNothingForFilesTheClientDidNotOffer() async throws {
+    let server = try await RDPClipboardTestServer()
+    server.session.publishLocalUnicodeText("text")
+    await server.settle()
+    server.isStepping = true
+    let finished = Locked(false)
+    let paste = Task {
+        let files = await server.pasteFiles()
+        finished.withLock { $0 = true }
+        return files
+    }
+    while !finished.withLock({ $0 }), server.heldMessageCount == 0 {
+        try await Task.sleep(for: .milliseconds(5))
+    }
+    #expect(server.heldMessageCount == 0)
+    server.isStepping = false
+    #expect(await paste.value == nil)
+}
+
 /// A server copy offers any formats, which the session fetches by name, and a server that
 /// fails format data requests leaves its copy unavailable.
 @Test(.timeLimit(.minutes(1)))
