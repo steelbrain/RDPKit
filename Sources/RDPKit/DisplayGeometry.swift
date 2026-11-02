@@ -14,17 +14,26 @@ public struct RDPRemoteDisplayViewport: Equatable, Sendable {
     public var sourceRect: CGRect?
     public var bounds: CGRect
     public var coordinateOrigin: RDPLocalCoordinateOrigin
+    /// The screen's pixels per point of ``bounds``, such as the window's `backingScaleFactor`.
+    /// When set, ``contentRect`` moves by less than a pixel onto a whole one, so letterboxing
+    /// does not blur a desktop shown one to one, and keeps its size, so the scale stays the same
+    /// in both directions. Whole pixels are counted from ``bounds``' coordinate origin, which
+    /// must sit on one, as it does in a view that fills its window. nil, or a factor that is not
+    /// positive, leaves ``contentRect`` where aspect-fit puts it.
+    public var backingScaleFactor: CGFloat?
 
     public init(
         remotePixelSize: CGSize,
         sourceRect: CGRect? = nil,
         bounds: CGRect,
-        coordinateOrigin: RDPLocalCoordinateOrigin
+        coordinateOrigin: RDPLocalCoordinateOrigin,
+        backingScaleFactor: CGFloat? = nil
     ) {
         self.remotePixelSize = remotePixelSize
         self.sourceRect = sourceRect
         self.bounds = bounds
         self.coordinateOrigin = coordinateOrigin
+        self.backingScaleFactor = backingScaleFactor
     }
 
     /// Shows `frame`, or only `monitor` of it, one of the frame's
@@ -33,7 +42,8 @@ public struct RDPRemoteDisplayViewport: Equatable, Sendable {
         frame: RDPFrameMetadata,
         monitor: RDPRemoteMonitor? = nil,
         bounds: CGRect,
-        coordinateOrigin: RDPLocalCoordinateOrigin
+        coordinateOrigin: RDPLocalCoordinateOrigin,
+        backingScaleFactor: CGFloat? = nil
     ) {
         self.init(
             remotePixelSize: CGSize(width: Int(frame.width), height: Int(frame.height)),
@@ -41,12 +51,13 @@ public struct RDPRemoteDisplayViewport: Equatable, Sendable {
                 CGRect(x: Int($0.rect.left), y: Int($0.rect.top), width: Int($0.rect.width), height: Int($0.rect.height))
             },
             bounds: bounds,
-            coordinateOrigin: coordinateOrigin
+            coordinateOrigin: coordinateOrigin,
+            backingScaleFactor: backingScaleFactor
         )
     }
 
     /// Where the view draws the shown part of the remote desktop: aspect-fit and centred in
-    /// ``bounds``.
+    /// ``bounds``, on a whole screen pixel when ``backingScaleFactor`` is set.
     public var contentRect: CGRect {
         guard let shownRect = shownRemoteRect,
               bounds.origin.x.isFinite,
@@ -62,20 +73,26 @@ public struct RDPRemoteDisplayViewport: Equatable, Sendable {
         let scale = min(bounds.width / shownRect.width, bounds.height / shownRect.height)
         let width = shownRect.width * scale
         let height = shownRect.height * scale
-        return CGRect(
+        let fitted = CGRect(
             x: bounds.midX - width / 2,
             y: bounds.midY - height / 2,
             width: width,
             height: height
         )
+        guard let backingScaleFactor, backingScaleFactor.isFinite, backingScaleFactor > 0 else {
+            return fitted
+        }
+        let onPixel = { (value: CGFloat) in (value * backingScaleFactor).rounded() / backingScaleFactor }
+        return CGRect(x: onPixel(fitted.minX), y: onPixel(fitted.minY), width: width, height: height)
     }
 
     public func remotePoint(from localPoint: CGPoint) -> RDPRemotePoint? {
         remotePoint(from: localPoint, contentRect: contentRect)
     }
 
-    /// Maps `localPoint` with the desktop drawn in `contentRect` rather than in ``contentRect``:
-    /// a view that aligns ``contentRect`` to the screen's pixels passes the rect it draws in.
+    /// Maps `localPoint` with the desktop drawn in `contentRect` rather than in ``contentRect``,
+    /// for a view that places the desktop itself; ``backingScaleFactor`` aligns it to the
+    /// screen's pixels without one.
     ///
     /// The edge the remote desktop starts at is inside and the opposite one outside. With
     /// ``RDPLocalCoordinateOrigin/bottomLeft`` that puts the top edge inside and the bottom
@@ -114,6 +131,35 @@ public struct RDPRemoteDisplayViewport: Equatable, Sendable {
             x: clampedRemoteCoordinate(shownRect.minX + xRatio * shownRect.width, from: shownRect.minX, to: shownRect.maxX),
             y: clampedRemoteCoordinate(shownRect.minY + yRatio * shownRect.height, from: shownRect.minY, to: shownRect.maxY)
         )
+    }
+
+    /// The remote pixel nearest `localPoint`, for a drag, or a button released, past the
+    /// desktop: a point outside ``contentRect`` first stops on its edge, by the convention
+    /// ``remotePoint(from:contentRect:)`` counts edges by, so a drag below a
+    /// ``RDPLocalCoordinateOrigin/bottomLeft`` view reaches the bottom row. nil only when nothing
+    /// is shown or `localPoint` is not finite.
+    public func nearestRemotePoint(from localPoint: CGPoint) -> RDPRemotePoint? {
+        nearestRemotePoint(from: localPoint, contentRect: contentRect)
+    }
+
+    /// ``nearestRemotePoint(from:)`` with the desktop drawn in `contentRect`.
+    public func nearestRemotePoint(from localPoint: CGPoint, contentRect: CGRect) -> RDPRemotePoint? {
+        guard localPoint.x.isFinite,
+              localPoint.y.isFinite,
+              [contentRect.minX, contentRect.minY, contentRect.width, contentRect.height].allSatisfy(\.isFinite),
+              contentRect.width > 0,
+              contentRect.height > 0
+        else {
+            return nil
+        }
+        let x = min(max(localPoint.x, contentRect.minX), contentRect.maxX.nextDown)
+        let y = switch coordinateOrigin {
+        case .topLeft:
+            min(max(localPoint.y, contentRect.minY), contentRect.maxY.nextDown)
+        case .bottomLeft:
+            min(max(localPoint.y, contentRect.minY.nextUp), contentRect.maxY)
+        }
+        return remotePoint(from: CGPoint(x: x, y: y), contentRect: contentRect)
     }
 
     /// ``sourceRect`` within the remote desktop, or the whole desktop; nil when nothing of it

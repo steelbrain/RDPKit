@@ -170,3 +170,62 @@ import Testing
     #expect(viewport.contentRect == .zero)
     #expect(viewport.remotePoint(from: CGPoint(x: 0, y: 0), contentRect: viewport.bounds) == nil)
 }
+
+/// Display Control makes desktop widths even, so a desktop shown one to one in a view a pixel
+/// wider sits half a pixel off; with the screen's scale the content moves onto a whole pixel,
+/// keeps its size, and points map to the desktop where it is drawn.
+@Test func remoteDisplayViewportPutsTheDesktopOnAWholePixel() {
+    var viewport = RDPRemoteDisplayViewport(
+        remotePixelSize: CGSize(width: 1_000, height: 700),
+        bounds: CGRect(x: 0, y: 0, width: 1_001, height: 700),
+        coordinateOrigin: .bottomLeft
+    )
+    #expect(viewport.contentRect == CGRect(x: 0.5, y: 0, width: 1_000, height: 700))
+
+    viewport.backingScaleFactor = 1
+    #expect(viewport.contentRect == CGRect(x: 1, y: 0, width: 1_000, height: 700))
+    #expect(viewport.remotePoint(from: CGPoint(x: 1, y: 700)) == RDPRemotePoint(x: 0, y: 0))
+    #expect(viewport.remotePoint(from: CGPoint(x: 0.75, y: 350)) == nil)
+    #expect(viewport.remotePoint(from: CGPoint(x: 1_000.75, y: 0.25)) == RDPRemotePoint(x: 999, y: 699))
+
+    // On a Retina screen the desktop is 500.5 points wide in a view 1,001 pixels wide.
+    viewport.bounds = CGRect(x: 0, y: 0, width: 500.5, height: 350)
+    viewport.backingScaleFactor = 2
+    #expect(viewport.contentRect == CGRect(x: 0.5, y: 0, width: 500, height: 350))
+
+    for factor: CGFloat? in [nil, 0, -1, .nan, .infinity] {
+        viewport.backingScaleFactor = factor
+        #expect(viewport.contentRect == CGRect(x: 0.25, y: 0, width: 500, height: 350))
+    }
+}
+
+/// A drag past the desktop lands on its nearest pixel, the row the view's origin is away from
+/// included, whatever the origin, and within the shown part when only part is shown.
+@Test func remoteDisplayViewportMapsAPointPastTheDesktopToItsNearestPixel() {
+    var viewport = RDPRemoteDisplayViewport(
+        remotePixelSize: CGSize(width: 1_000, height: 700),
+        bounds: CGRect(x: 0, y: 0, width: 1_000, height: 800),
+        coordinateOrigin: .bottomLeft,
+        backingScaleFactor: 1
+    )
+    let desktop = viewport.contentRect
+    #expect(desktop == CGRect(x: 0, y: 50, width: 1_000, height: 700))
+    #expect(viewport.remotePoint(from: CGPoint(x: desktop.midX, y: desktop.minY)) == nil)
+    #expect(viewport.nearestRemotePoint(from: CGPoint(x: desktop.midX, y: desktop.minY)) == RDPRemotePoint(x: 500, y: 699))
+    #expect(viewport.nearestRemotePoint(from: CGPoint(x: -1_000, y: -1_000)) == RDPRemotePoint(x: 0, y: 699))
+    #expect(viewport.nearestRemotePoint(from: CGPoint(x: 5_000, y: 5_000)) == RDPRemotePoint(x: 999, y: 0))
+    #expect(viewport.nearestRemotePoint(from: CGPoint(x: 300.5, y: 400.5))
+        == viewport.remotePoint(from: CGPoint(x: 300.5, y: 400.5)))
+    #expect(viewport.nearestRemotePoint(from: CGPoint(x: CGFloat.nan, y: 0)) == nil)
+
+    viewport.coordinateOrigin = .topLeft
+    #expect(viewport.nearestRemotePoint(from: CGPoint(x: desktop.midX, y: desktop.maxY + 10)) == RDPRemotePoint(x: 500, y: 699))
+    #expect(viewport.nearestRemotePoint(from: CGPoint(x: desktop.midX, y: desktop.minY - 10)) == RDPRemotePoint(x: 500, y: 0))
+
+    viewport.sourceRect = CGRect(x: 100, y: 10, width: 60, height: 40)
+    #expect(viewport.nearestRemotePoint(from: CGPoint(x: 5_000, y: 5_000)) == RDPRemotePoint(x: 159, y: 49))
+    #expect(viewport.nearestRemotePoint(from: CGPoint(x: -5_000, y: -5_000)) == RDPRemotePoint(x: 100, y: 10))
+
+    viewport.remotePixelSize = .zero
+    #expect(viewport.nearestRemotePoint(from: CGPoint(x: 0, y: 0)) == nil)
+}

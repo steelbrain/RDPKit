@@ -60,6 +60,12 @@
   such as one of its monitors: `init(frame:monitor:bounds:coordinateOrigin:)`
   maps input within an `RDPRemoteMonitor`, and the factory crops the picture to
   it.
+- `RDPRemoteDisplayViewport.backingScaleFactor` puts `contentRect` on a whole
+  screen pixel, keeping its size, so a desktop shown one to one in a view of
+  odd width is not drawn half a pixel off and blurred; `remotePoint(from:)`
+  maps where it is drawn. `nearestRemotePoint(from:)` maps a point past the
+  desktop, such as a drag's, to its nearest pixel by the viewport's own edge
+  convention, so a drag below a `.bottomLeft` view reaches the bottom row.
 - The report's `rdpLogonNotification` says the server notified that a user
   logged on, and `rdpLogonErrorInfo` holds its latest logon error
   notification, as sent. Without Network Level Authentication a server

@@ -217,7 +217,7 @@ private func placeOnePixelWiderThanTheDesktop(_ view: NSView) -> (window: NSWind
     #expect(desktop.size == CGSize(width: 1000 / scale, height: 700 / scale))
     #expect(desktopPixels.minX == desktopPixels.minX.rounded())
     #expect(desktopPixels.minY == desktopPixels.minY.rounded())
-    #expect(desktop == canvas.backingAlignedDesktopRect(of: viewport))
+    #expect(desktop == canvas.desktopViewport(showing: frame).contentRect)
     #expect(canvas.displayView.layer?.sublayers?.first?.frame == canvas.displayView.bounds)
     #expect(canvas.window === window)
 }
@@ -239,9 +239,7 @@ private final class RecordedPointerInput: RDPInputEventSending {
     view.inputSession = input
     let frame = frameMetadata(width: 1000, height: 700)
     view.rdpFrame = frame
-    let desktop = view.backingAlignedDesktopRect(
-        of: RDPRemoteDisplayViewport(frame: frame, bounds: view.bounds, coordinateOrigin: .bottomLeft)
-    )
+    let desktop = view.desktopViewport(showing: frame).contentRect
     let quarterPixel = 0.25 / scale
     func move(to location: CGPoint) throws {
         view.mouseMoved(with: try #require(NSEvent.mouseEvent(
@@ -276,9 +274,7 @@ private final class RecordedPointerInput: RDPInputEventSending {
     view.inputSession = input
     let frame = frameMetadata(width: 1000, height: 700)
     view.rdpFrame = frame
-    let desktop = view.backingAlignedDesktopRect(
-        of: RDPRemoteDisplayViewport(frame: frame, bounds: view.bounds, coordinateOrigin: .bottomLeft)
-    )
+    let desktop = view.desktopViewport(showing: frame).contentRect
     func drag(to location: CGPoint) throws {
         view.mouseDragged(with: try #require(NSEvent.mouseEvent(
             with: .leftMouseDragged,

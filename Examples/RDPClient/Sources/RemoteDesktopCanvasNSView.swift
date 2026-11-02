@@ -88,9 +88,7 @@ final class RemoteDesktopCanvasNSView: NSView {
         guard let frame = inputView.rdpFrame else {
             return bounds
         }
-        return backingAlignedDesktopRect(
-            of: RDPRemoteDisplayViewport(frame: frame, bounds: bounds, coordinateOrigin: .bottomLeft)
-        )
+        return desktopViewport(showing: frame).contentRect
     }
 
     private func configure() {
@@ -149,17 +147,16 @@ final class RemoteDesktopCanvasNSView: NSView {
 }
 
 extension NSView {
-    /// `viewport`'s desktop on whole screen pixels. Display Control makes desktop widths even, so
-    /// a desktop sized to a view of odd width would be centered half a pixel off and blurred. The
-    /// origin and size are aligned separately, so a desktop shown at 1:1 keeps its size.
-    func backingAlignedDesktopRect(of viewport: RDPRemoteDisplayViewport) -> CGRect {
-        let contentRect = viewport.contentRect
-        guard contentRect.isEmpty == false else {
-            return contentRect
-        }
-        return backingAlignedRect(
-            contentRect,
-            options: [.alignMinXNearest, .alignMinYNearest, .alignWidthNearest, .alignHeightNearest]
+    /// Where this view, which fills its window, shows `frame`: on whole screen pixels, as
+    /// Display Control makes desktop widths even and a desktop sized to a view of odd width
+    /// would otherwise sit half a pixel off and blur. The canvas draws and the input view maps
+    /// with the same viewport, so the pointer lands where the desktop is drawn.
+    func desktopViewport(showing frame: RDPFrameMetadata) -> RDPRemoteDisplayViewport {
+        RDPRemoteDisplayViewport(
+            frame: frame,
+            bounds: bounds,
+            coordinateOrigin: .bottomLeft,
+            backingScaleFactor: window?.backingScaleFactor
         )
     }
 }
