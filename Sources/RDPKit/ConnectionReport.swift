@@ -23,6 +23,11 @@ public struct RDPConnectionReport: Encodable, Equatable, Sendable {
     /// took the logon and handed the session on, so a failure here is the
     /// target's, not that server's.
     public var redirectionDepth: Int
+    /// The TCP connect attempt under way, or the one that connected or failed, from 1;
+    /// above 1 after ``RDPConnectionConfiguration/connectAttempts`` retried. Nil before the
+    /// first. An ``RDPLiveConnectionReport`` shows it as it changes, so an app can say it is
+    /// trying again.
+    public var connectAttempt: Int?
     /// The configured credentials' user name and `domain` or, with none, those a Server
     /// Redirection named with its password cookie, which the reconnect's Client Info PDU
     /// carries.

@@ -23,6 +23,18 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
     public var port: UInt16
     public var credentials: RDPCredentials?
     public var timeoutSeconds: Int
+    /// How many times to try the TCP connect, ``connectRetryDelay`` seconds apart, while it
+    /// fails before the server answers: the host or its network cannot be reached, it does not
+    /// answer in time, or it fails without a category. 1, the default, tries once. On Apple
+    /// platforms the first connection into the local network can fail as unreachable while the
+    /// system asks the user to allow local network access, which a later try gets past. A
+    /// refused connection, one the system does not permit, or a host name that does not
+    /// resolve fails at once. Nothing has gone to the server when a TCP connect fails, so a
+    /// Server Redirection's target is tried the same way. ``RDPConnectionReport/connectAttempt``
+    /// says which try is under way.
+    public var connectAttempts = 1
+    /// The seconds between connect attempts; see ``connectAttempts``.
+    public var connectRetryDelay: TimeInterval = 1
     public var hideCertificateWarnings: Bool
     public var graphicsFrameCaptureLimit: Int?
     public var desktopWidth: UInt16

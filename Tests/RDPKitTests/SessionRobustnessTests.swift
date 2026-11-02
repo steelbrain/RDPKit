@@ -890,7 +890,10 @@ func liveSessionEndsNormallyOnlyForReasonsThatAreNoFailure(
     close(socketFD)
     try #require(bound)
 
-    let configuration = RDPConnectionConfiguration(host: "127.0.0.1", port: UInt16(bigEndian: address.sin_port))
+    var configuration = RDPConnectionConfiguration(host: "127.0.0.1", port: UInt16(bigEndian: address.sin_port))
+    // A refused connection is not tried again.
+    configuration.connectAttempts = 3
+    configuration.connectRetryDelay = 30
     let error = #expect(throws: RDPConnectionError.self) {
         try RDPSessionClient().connect(configuration: configuration)
     }
@@ -899,6 +902,7 @@ func liveSessionEndsNormallyOnlyForReasonsThatAreNoFailure(
 
     let report = RDPSessionClient().run(configuration: configuration)
     #expect(report.connectionStage == .negotiation)
+    #expect(report.connectAttempt == 1)
     #expect(report.failure == error?.failure)
     // connect's error carries the report run returns, from the configured server.
     #expect(error?.report == report)

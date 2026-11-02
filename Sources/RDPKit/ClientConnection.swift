@@ -217,12 +217,21 @@ final class RDPClientConnection {
     /// Returns false when the negotiation response ends the connection; the
     /// reason is in `report.failure` and `report.error`.
     func negotiate() throws -> Bool {
-        let transport = try RDPTransport.connect(
-            host: configuration.host,
-            port: configuration.port,
-            timeoutSeconds: configuration.timeoutSeconds,
-            callbacks: callbacks
-        )
+        let configuration = configuration
+        let callbacks = callbacks
+        let transport = try connectRetrying(
+            attempts: configuration.connectAttempts,
+            delay: configuration.connectRetryDelay,
+            callbacks: callbacks,
+            onAttempt: { report.connectAttempt = $0 }
+        ) {
+            try RDPTransport.connect(
+                host: configuration.host,
+                port: configuration.port,
+                timeoutSeconds: configuration.timeoutSeconds,
+                callbacks: callbacks
+            )
+        }
         self.transport = transport
         let request = configuration.connectionRequest
         try transport.send(request.encodedTPKT())
