@@ -181,6 +181,11 @@ final class RDPTransportReader: ChannelDuplexHandler, RemovableChannelHandler {
         parseReceivedMessages()
     }
 
+    /// Whether the server sent bytes no receive has taken yet: queued messages or part of one.
+    var hasBufferedInput: Bool {
+        !messages.isEmpty || (received?.readableBytes ?? 0) > 0
+    }
+
     func next(_ promise: EventLoopPromise<Data>) {
         if let message = messages.popFirst() {
             promise.succeed(message)
@@ -669,6 +674,16 @@ final class RDPTransport {
         let handshake = channel.eventLoop.makePromise(of: Void.self)
         let tls = NIOLoopBoundBox.makeEmptyBox(valueType: NIOSSLClientHandler.self, eventLoop: channel.eventLoop)
         channel.eventLoop.execute {
+            // Nothing comes between the X.224 Connection Confirm and the TLS handshake the
+            // client starts ([MS-RDPBCGR] 3.2.5.3.2). Bytes already here came in plaintext:
+            // received after the handshake, they would pass as messages TLS protected.
+            guard !reader.value.hasBufferedInput else {
+                handshake.fail(RDPConnectionError.protocolViolation(
+                    "server sent data after the X.224 Connection Confirm, before the TLS handshake"
+                ))
+                channel.close(promise: nil)
+                return
+            }
             do {
                 let handler = try NIOSSLClientHandler(context: context, serverHostname: serverHostname) { chain, verified in
                     reader.value.presentedCertificates = chain

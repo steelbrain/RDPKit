@@ -266,6 +266,43 @@ private let tpkt = Data([0x03, 0x00, 0x00, 0x07, 0x02, 0xF0, 0x80])
     #expect(error.map(String.init(describing:)) == "TLS failed: connection closed before the TLS handshake completed")
 }
 
+/// Nothing comes between the X.224 Connection Confirm and the TLS handshake ([MS-RDPBCGR]
+/// 3.2.5.3.2). A message or part of one sent with the confirm came in plaintext, so the
+/// handshake fails instead of the message passing later as one TLS protected.
+@Test(arguments: [tpkt, Data(tpkt.prefix(3))])
+func startingTLSRejectsDataSentAfterTheConnectionConfirm(extra: Data) throws {
+    // Selects PROTOCOL_SSL ([MS-RDPBCGR] 2.2.1.2).
+    let confirm = Data([
+        0x03, 0x00, 0x00, 0x13, 0x0E, 0xD0, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x02, 0x00, 0x08, 0x00, 0x01, 0x00, 0x00, 0x00,
+    ])
+    let server = try ServerBootstrap(group: MultiThreadedEventLoopGroup.singleton)
+        .childChannelInitializer { channel in
+            channel.eventLoop.makeCompletedFuture {
+                try channel.pipeline.syncOperations.addHandler(AnsweringHandler(answer: confirm + extra))
+            }
+        }
+        .bind(host: "127.0.0.1", port: 0)
+        .wait()
+    defer { server.close(promise: nil) }
+    let transport = try RDPTransport.connect(
+        host: "127.0.0.1",
+        port: UInt16(try #require(server.localAddress?.port)),
+        timeoutSeconds: 10,
+        callbacks: RDPSessionCallbacks()
+    )
+    defer { transport.close() }
+    try transport.send(X224ConnectionRequest().encodedTPKT())
+    #expect(try transport.receive(timeout: .seconds(10)) == confirm)
+
+    let error = #expect(throws: RDPConnectionError.self) {
+        try transport.startTLS(serverHostname: nil)
+    }
+    #expect(error?.failure == .protocolViolation)
+    #expect(error.map(String.init(describing:))
+        == "server sent data after the X.224 Connection Confirm, before the TLS handshake")
+}
+
 /// A receive whose deadline has passed by the time the event loop gets to it, behind other
 /// tasks, still times out: its timeout is scheduled once the wait exists.
 @Test func aReceiveQueuedBehindOtherTasksStillTimesOut() throws {
