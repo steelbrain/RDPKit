@@ -8,8 +8,9 @@ import Foundation
 /// Redirection's target, which the user never agreed to.
 ///
 /// Connect with ``connect(to:)``'s answer as `legacyCredSSP`, tell it how the connection
-/// ended with ``connectionEnded(_:report:)``, show ``offer`` when there is one, and call
-/// ``allow()`` when the user agrees, before connecting again.
+/// ended with ``connectionEnded(report:)``, show ``offer`` when there is one, and call
+/// ``allow()`` when the user agrees, before connecting again. ``reset()`` forgets an offer and
+/// an agreement, as when the user cancels instead.
 public struct RDPLegacyCredSSPConsent: Equatable, Sendable {
     public struct Offer: Equatable, Sendable {
         public var target: RDPConnectionTarget
@@ -22,9 +23,11 @@ public struct RDPLegacyCredSSPConsent: Equatable, Sendable {
         }
     }
 
-    /// The server the last connection was refused for, until the next connection starts.
+    /// The server the last connection was refused for, until the user agrees or the next
+    /// connection starts.
     public private(set) var offer: Offer?
-    private var allowedTarget: RDPConnectionTarget?
+    /// The server the user agreed to the old version for, until the next connection starts.
+    public private(set) var allowedTarget: RDPConnectionTarget?
 
     public init() {}
 
@@ -59,13 +62,30 @@ public struct RDPLegacyCredSSPConsent: Equatable, Sendable {
         connectionEnded(target, failure: report.failure, redirectionDepth: report.redirectionDepth)
     }
 
-    /// The user agreed to the offer: the next connection to its target allows the old version.
-    /// Returns false without an offer.
+    /// ``connectionEnded(_:report:)`` for the server the report's connection went to, its
+    /// `targetHost` and `targetPort`: the configured one when nothing is offered otherwise, as
+    /// only a connection no Server Redirection led to gets an offer.
+    public mutating func connectionEnded(report: RDPConnectionReport) {
+        guard let target = try? RDPConnectionTarget(host: report.targetHost, port: report.targetPort) else {
+            return
+        }
+        connectionEnded(target, report: report)
+    }
+
+    /// The user agreed to the offer: the next connection to its target allows the old version,
+    /// and the offer is taken. Returns false without an offer.
     public mutating func allow() -> Bool {
         guard let offer else {
             return false
         }
         allowedTarget = offer.target
+        self.offer = nil
         return true
+    }
+
+    /// Forgets the offer and the agreement, as when the user cancels.
+    public mutating func reset() {
+        offer = nil
+        allowedTarget = nil
     }
 }

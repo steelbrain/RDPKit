@@ -16,8 +16,14 @@ import Testing
 
     consent.connectionEnded(serverA, failure: .legacyCredSSPVersion(version: 3), redirectionDepth: 0)
     #expect(consent.offer == RDPLegacyCredSSPConsent.Offer(target: serverA, version: 3))
+    #expect(consent.allowedTarget == nil)
     #expect(consent.allow() == true)
+    // Agreeing takes the offer, so it is not made again while the connection starts.
+    #expect(consent.offer == nil)
+    #expect(consent.allowedTarget == serverA)
+    #expect(consent.allow() == false)
     #expect(consent.connect(to: serverA) == true)
+    #expect(consent.allowedTarget == nil)
     #expect(consent.offer == nil)
     // The next connection, to the same server too, refuses it again.
     #expect(consent.connect(to: serverA) == false)
@@ -54,4 +60,39 @@ import Testing
     report.redirectionDepth = 0
     consent.connectionEnded(serverA, report: report)
     #expect(consent.offer == RDPLegacyCredSSPConsent.Offer(target: serverA, version: 4))
+}
+
+/// A report names the server it was refused for, the configured one when no redirection led
+/// elsewhere; a reset forgets an offer and an agreement.
+@Test func legacyCredSSPConsentTakesTheServerFromTheReportAndResets() throws {
+    var report = RDPConnectionReport(
+        status: "failure",
+        stage: "credssp",
+        target: "a.example:3390",
+        targetHost: "a.example",
+        targetPort: 3390,
+        passwordConfigured: true,
+        requestedProtocols: ["tls", "credssp"],
+        requestHex: "",
+        warnings: []
+    )
+    report.failure = .legacyCredSSPVersion(version: 3)
+    let server = try RDPConnectionTarget(host: "a.example", port: 3390)
+    var consent = RDPLegacyCredSSPConsent()
+    consent.connectionEnded(report: report)
+    #expect(consent.offer == RDPLegacyCredSSPConsent.Offer(target: server, version: 3))
+
+    consent.reset()
+    #expect(consent.offer == nil)
+    consent.connectionEnded(report: report)
+    let allowed = consent.allow()
+    #expect(allowed)
+    consent.reset()
+    #expect(consent.allowedTarget == nil)
+    #expect(consent.connect(to: server) == false)
+
+    // A report without a host to name offers nothing.
+    report.targetHost = " "
+    consent.connectionEnded(report: report)
+    #expect(consent.offer == nil)
 }

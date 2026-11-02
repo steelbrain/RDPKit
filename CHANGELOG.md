@@ -29,7 +29,9 @@
   way. `RDPLegacyCredSSPConsent` keeps that rule for an app: it offers the
   old version only after the server connected to answered with it, and
   allows it only for the next connection to that server once the user
-  agrees. RDPClient offers Connect Anyway with it.
+  agrees. `connectionEnded(report:)` reads the server from the report,
+  `allow()` takes the offer, `allowedTarget` says what was agreed to, and
+  `reset()` forgets both. RDPClient offers Connect Anyway with it.
 - `RDPVideoToolboxFrameDecoder` throws the new
   `RDPVideoDecodeError.needsCompositor(_:)` for `.surfaceCopy` and `.alpha`
   snapshots, which it took for empty video samples that stalled the surface's

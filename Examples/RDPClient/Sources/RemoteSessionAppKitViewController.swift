@@ -500,7 +500,8 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                 action: .allowLegacyCredSSP
             )
         }
-        guard usesLegacyCredSSP else {
+        // Agreed to, while the connection it is for starts, or once it has.
+        guard usesLegacyCredSSP || legacyCredSSPConsent.allowedTarget != nil else {
             return nil
         }
         return RDPAppKitNoticeState(
@@ -882,7 +883,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                             report: nextReport,
                             showedDesktop: controller.hasPresentedFrame
                         )
-                        controller.legacyCredSSPConsent.connectionEnded(target, report: nextReport)
+                        controller.legacyCredSSPConsent.connectionEnded(report: nextReport)
                         controller.detachSessionChannels()
                         controller.isConnecting = false
                         controller.activeSession = nil
