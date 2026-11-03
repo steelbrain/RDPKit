@@ -409,6 +409,9 @@ func aLiveSessionDeliversTheServersLayoutOncePerConnection() async throws {
 @Test(.timeLimit(.minutes(1)))
 func mainQueueWorkOffTheMainThreadStopsSayingWhy() async {
     let result = await #expect(processExitsWith: .failure, observing: [\.standardErrorContent]) {
+        // The trap exits the child rather than crashing it, so this stop on purpose leaves no
+        // crash report behind on every run.
+        _ = signal(SIGTRAP) { _ in _exit(EXIT_FAILURE) }
         await withCheckedContinuation { finished in
             Thread.detachNewThread {
                 runOnMainQueueAsMainActor("RDPLiveSession") {}
