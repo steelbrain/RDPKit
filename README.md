@@ -477,6 +477,7 @@ Sources/RDPKitTesting/                In-memory server stand-ins for app tests
 Tests/RDPKitTests/                    Unit and mock-server integration tests
 Tests/RDPKitAppKitTests/              View, frame clock, keyboard and pasteboard
                                       tests
+Tests/RDPKitTestMemoryLimit/          Memory limit for the test processes
 Scripts/                              CI checks and keyboard table capture
 Examples/Package.swift                SwiftPM example app and tool manifest
 Examples/RDPClient/                   Native macOS viewer shell
@@ -505,6 +506,11 @@ Run the Swift style gate:
 ```sh
 swiftlint lint --strict
 ```
+
+The whole suite stays under 2 GiB of memory, and a test process that passes
+8 GiB stops, saying why: a test that grows without bound fails instead of
+running the Mac out of memory. `RDPKIT_TEST_MEMORY_LIMIT_GIB` sets another
+limit, and `0` turns it off.
 
 The mock server tests exercise the library without a live desktop. Live
 compatibility should still be validated against real RDP servers when changing

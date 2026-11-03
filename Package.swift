@@ -53,11 +53,17 @@ let package = Package(
                 .product(name: "NIOEmbedded", package: "swift-nio"),
             ]
         ),
+        // Stops a test process whose memory grows without bound; every test target links it.
+        .target(
+            name: "RDPKitTestMemoryLimit",
+            path: "Tests/RDPKitTestMemoryLimit"
+        ),
         .testTarget(
             name: "RDPKitTests",
             dependencies: [
                 "RDPKit",
                 "RDPKitTesting",
+                "RDPKitTestMemoryLimit",
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOEmbedded", package: "swift-nio"),
                 .product(name: "NIOPosix", package: "swift-nio"),
@@ -69,7 +75,7 @@ let package = Package(
         ),
         .testTarget(
             name: "RDPKitAppKitTests",
-            dependencies: ["RDPKit", "RDPKitAppKit", "RDPKitTesting"]
+            dependencies: ["RDPKit", "RDPKitAppKit", "RDPKitTesting", "RDPKitTestMemoryLimit"]
         ),
     ]
 )
