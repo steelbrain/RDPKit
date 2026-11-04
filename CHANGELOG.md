@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### Additions
+
+- Shared drives report changes. A directory change notification from the
+  server completes once a change in its folder, or under it when the server
+  watches the tree, is reported, with STATUS_NOTIFY_ENUM_DIR, which tells the
+  server to list the folder again. A change that comes while no notification
+  waits completes the handle's next one. On macOS and Mac Catalyst one
+  FSEvents stream per drive reports changes while a handle watches. On iOS,
+  tvOS and visionOS a kqueue watch on each watched folder reports files
+  added to it, removed from it or renamed in it, but not writes to its files
+  or changes in its subfolders; up to 32 folders are watched at once across
+  all drives, and another is watched once one of its drive's watches stops.
+  Closing a handle completes the notifications waiting on it with
+  STATUS_NOTIFY_CLEANUP, which frees their CompletionIds on the server; they
+  used to wait forever. A folder marked for deletion completes those on it
+  with STATUS_DELETE_PENDING, and refuses new ones so.
+
 ## 0.7.0
 
 ### Breaking changes

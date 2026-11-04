@@ -44,6 +44,10 @@ enum RDPDriveMinorFunction {
 /// The NTSTATUS values a drive answers with ([MS-ERREF] 2.3.1).
 enum RDPNTStatus {
     static let success: UInt32 = 0x0000_0000
+    /// A change notification completed because its handle closed.
+    static let notifyCleanup: UInt32 = 0x0000_010B
+    /// A change notification completed without saying what changed: enumerate the directory again.
+    static let notifyEnumDir: UInt32 = 0x0000_010C
     static let noMoreFiles: UInt32 = 0x8000_0006
     static let unsuccessful: UInt32 = 0xC000_0001
     static let invalidParameter: UInt32 = 0xC000_000D
@@ -54,6 +58,7 @@ enum RDPNTStatus {
     static let objectNameNotFound: UInt32 = 0xC000_0034
     static let objectNameCollision: UInt32 = 0xC000_0035
     static let objectPathNotFound: UInt32 = 0xC000_003A
+    static let deletePending: UInt32 = 0xC000_0056
     static let diskFull: UInt32 = 0xC000_007F
     static let insufficientResources: UInt32 = 0xC000_009A
     static let mediaWriteProtected: UInt32 = 0xC000_00A2
@@ -191,7 +196,7 @@ enum RDPDriveRequest: Equatable, Sendable {
     case queryVolumeInformation(informationClass: UInt32)
     case setVolumeInformation(length: UInt32)
     case queryDirectory(informationClass: UInt32, initialQuery: Bool, path: String)
-    case notifyChangeDirectory
+    case notifyChangeDirectory(watchTree: Bool)
     case deviceControl
     case lockControl
     case unsupported
@@ -243,7 +248,11 @@ enum RDPDriveRequest: Equatable, Sendable {
                 let path = try decodePath(cursor.readData(count: pathLength))
                 return .queryDirectory(informationClass: informationClass, initialQuery: initialQuery, path: path)
             case RDPDriveMinorFunction.notifyChangeDirectory:
-                return .notifyChangeDirectory
+                // WatchTree, then CompletionFilter ([MS-RDPEFS] 2.2.3.3.11), which a drive
+                // reporting directories, not what changed in them, has no use for.
+                let watchTree = try cursor.readUInt8() != 0
+                _ = try cursor.readLittleEndianUInt32()
+                return .notifyChangeDirectory(watchTree: watchTree)
             default:
                 return .unsupported
             }

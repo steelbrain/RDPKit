@@ -374,7 +374,8 @@ let report = client.run(
 - Drive redirection: `sharedDrives` shows local folders on the server as
   `\\tsclient\<name>`. The server can read, write, create, rename, and delete
   inside a shared folder and nowhere else; links that point outside it are
-  refused.
+  refused. The server hears when files are added, removed or renamed in a
+  folder it watches.
 
 ### Audio
 

@@ -312,7 +312,8 @@ final class RDPDeviceRedirectionSession: @unchecked Sendable {
     private let computerName: String
     private let chunkSize: RDPStaticVirtualChannelChunkSize
     private let drives: [RDPSharedDriveDevice]
-    private let ioQueue = DispatchQueue(label: "RDPKit.device-redirection")
+    /// Serves the drives, and gets FSEvents' reports of their changes.
+    private let ioQueue: DispatchQueue
     /// Drive I/O waits on it, so a server that stops reading stops the reads it asked for.
     private let replyBudget = RDPPendingByteBudget()
     /// Requests queued for drive I/O and not yet served. The connection thread waits for room
@@ -351,9 +352,22 @@ final class RDPDeviceRedirectionSession: @unchecked Sendable {
         self.channel = channel
         self.computerName = computerName
         self.chunkSize = chunkSize
-        self.drives = drives.enumerated().map { RDPSharedDriveDevice(deviceID: UInt32($0.offset + 1), drive: $0.element) }
+        let ioQueue = DispatchQueue(label: "RDPKit.device-redirection")
+        self.ioQueue = ioQueue
+        self.drives = drives.enumerated().map {
+            RDPSharedDriveDevice(deviceID: UInt32($0.offset + 1), drive: $0.element, queue: ioQueue)
+        }
         self.pendingEventHandler = pendingEventHandler
         self.isCancelled = isCancelled
+        for drive in self.drives {
+            // Weak: the session holds the drives.
+            drive.notificationCompletionHandler = { [weak self] completion in
+                guard let self else {
+                    return
+                }
+                replyBudget.write(packets(completion.encoded()), to: channel)
+            }
+        }
     }
 
     @discardableResult

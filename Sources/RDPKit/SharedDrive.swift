@@ -35,6 +35,16 @@ struct RDPDriveFailure: Error, Equatable {
 /// checked again before each use, so a rename that moves a link into their place
 /// cannot take them outside. Only regular files and directories are served. Only
 /// the device redirection session's I/O queue uses a device.
+///
+/// A change notification waits until a change in the directory, or under it when the
+/// server watches the tree, is reported. It completes with STATUS_NOTIFY_ENUM_DIR and no
+/// entries, which has the server list the directory again, as an SMB2 server answers a
+/// notification whose changes do not fit ([MS-FSA] 2.1.5.11.1). On macOS and Mac Catalyst
+/// one FSEvents stream per drive reports changes while a handle watches. Elsewhere a kqueue
+/// watch on each watched directory reports entries added, removed or renamed in it, but not
+/// writes to its files, nor changes in its subdirectories to a handle that watches the
+/// tree. A directory that cannot be watched, as when the watches' descriptors run out, is
+/// watched once one of the drive's watches stops.
 final class RDPSharedDriveDevice: @unchecked Sendable {
     /// A larger read is answered with fewer bytes, which [MS-RDPEFS] 2.2.1.5.3 allows;
     /// the server sizes reads, and this bounds what one request makes the client hold.
@@ -47,6 +57,12 @@ final class RDPSharedDriveDevice: @unchecked Sendable {
     /// the query ends, so without a bound a server could make the client hold a copy of a
     /// large directory for each of the handles it may open.
     static let maximumListingByteCount = 64 * 1024 * 1024
+    /// The change notifications a drive's handles may have waiting together: a server holds
+    /// one for each handle it watches, and each that waits costs the client memory.
+    static let maximumWaitingNotificationCount = 4096
+    /// Length 0 and the optional Padding: a change notification's reply, which says nothing
+    /// of what changed ([MS-RDPEFS] 2.2.3.4.11).
+    static let notificationReplyBody = Data(count: 5)
 
     let deviceID: UInt32
     let drive: RDPSharedDrive
@@ -58,32 +74,77 @@ final class RDPSharedDriveDevice: @unchecked Sendable {
     private let listingByteLimit: Int
     /// What the listings of `openFiles` hold, in `listingByteCount(of:)` bytes.
     private var listingByteCount = 0
+    /// The queue the device is used on, where changes are reported.
+    private let queue: DispatchQueue
+    private let changeSource: RDPSharedDriveChangeSource
+    private let watchDescriptorBudget: RDPSharedDriveDescriptorBudget
+    /// The change notifications waiting on `openFiles`.
+    private var waitingNotificationCount = 0
+    /// With `.directoryWatches`, one for each directory a handle watches, by its identity.
+    private var directoryWatches: [RDPFileIdentity: RDPSharedDriveDirectoryWatch] = [:]
+    #if os(macOS) || targetEnvironment(macCatalyst)
+    /// With `.fsEvents`, runs while a handle watches.
+    private var changeStream: RDPSharedDriveChangeStream?
+    #endif
+    /// Gets the replies to change notifications, which come after their requests, from the
+    /// I/O queue: once a change comes, or the handle closes. Set before the device is used.
+    var notificationCompletionHandler: (RDPDeviceIOCompletion) -> Void = { _ in }
 
     init(
         deviceID: UInt32,
         drive: RDPSharedDrive,
+        queue: DispatchQueue,
         descriptorBudget: RDPSharedDriveDescriptorBudget = .shared,
-        listingByteLimit: Int = maximumListingByteCount
+        listingByteLimit: Int = maximumListingByteCount,
+        changeSource: RDPSharedDriveChangeSource = .platformDefault,
+        watchDescriptorBudget: RDPSharedDriveDescriptorBudget = .directoryWatches
     ) {
         self.deviceID = deviceID
         self.drive = drive
+        self.queue = queue
         self.descriptorBudget = descriptorBudget
         self.listingByteLimit = listingByteLimit
+        self.changeSource = changeSource
+        self.watchDescriptorBudget = watchDescriptorBudget
     }
 
     /// The session's end closes the server's handles, deleting what they had pending, as
     /// closing each would.
     deinit {
+        #if os(macOS) || targetEnvironment(macCatalyst)
+        // Stopped on its queue, which it reports on; deinit can run on any thread.
+        if let changeStream {
+            self.changeStream = nil
+            queue.async {
+                changeStream.stop()
+            }
+        }
+        #endif
         closeAllFiles()
     }
 
     /// Closes every handle, as the session's end does: for a server starting device
-    /// redirection over, which has forgotten them.
+    /// redirection over, which has forgotten them, and their change notifications.
     func closeAllFiles() {
         for file in openFiles.values {
             release(file)
         }
         openFiles = [:]
+        stopWatchingIfUnwatched()
+    }
+
+    /// Whether FSEvents reports the folder's changes, for tests.
+    var isWatchingFolder: Bool {
+        #if os(macOS) || targetEnvironment(macCatalyst)
+        changeStream != nil
+        #else
+        false
+        #endif
+    }
+
+    /// The directories watched one by one, for tests.
+    var watchedDirectoryCount: Int {
+        directoryWatches.count
     }
 
     /// Resolves the shared folder, so a drive is announced only while it exists.
@@ -102,7 +163,11 @@ final class RDPSharedDriveDevice: @unchecked Sendable {
     func completion(for request: RDPDeviceIORequest) -> RDPDeviceIOCompletion? {
         let body: Data
         do {
-            guard let reply = try reply(to: RDPDriveRequest.parse(request), fileID: request.fileID) else {
+            guard let reply = try reply(
+                to: RDPDriveRequest.parse(request),
+                fileID: request.fileID,
+                completionID: request.completionID
+            ) else {
                 return nil
             }
             body = reply
@@ -130,7 +195,7 @@ final class RDPSharedDriveDevice: @unchecked Sendable {
     }
 
     /// The success body, nil for a request left pending, or a thrown `RDPDriveFailure`.
-    private func reply(to request: RDPDriveRequest, fileID: UInt32) throws -> Data? {
+    private func reply(to request: RDPDriveRequest, fileID: UInt32, completionID: UInt32) throws -> Data? {
         switch request {
         case let .create(desiredAccess, disposition, options, path):
             return try create(desiredAccess: desiredAccess, disposition: disposition, options: options, path: path)
@@ -158,10 +223,8 @@ final class RDPSharedDriveDevice: @unchecked Sendable {
             throw RDPDriveFailure(status: RDPNTStatus.notSupported)
         case let .queryDirectory(informationClass, initialQuery, path):
             return try queryDirectory(fileID, informationClass: informationClass, initialQuery: initialQuery, path: path)
-        case .notifyChangeDirectory:
-            // Completing a change notification tells Windows the directory changed or
-            // the handle is gone; it stays pending, as in FreeRDP's drive channel,
-            // until the server closes the handle.
+        case let .notifyChangeDirectory(watchTree):
+            try waitForChange(fileID, watchTree: watchTree, completionID: completionID)
             return nil
         case .deviceControl:
             // OutputBufferLength 0, as FreeRDP's drive channel answers every IOCTL.
@@ -276,6 +339,8 @@ final class RDPSharedDriveDevice: @unchecked Sendable {
             information = RDPDriveCreateInformation.superseded
         }
         file.deletePending = deleteOnClose
+        // [MS-FSA] 2.1.5.1.1, 2.1.5.1.2: a directory opened to be deleted takes no change notification.
+        file.isMarkedDeleted = deleteOnClose && file.isDirectory
 
         let fileID = allocateFileID()
         openFiles[fileID] = file
@@ -319,12 +384,20 @@ final class RDPSharedDriveDevice: @unchecked Sendable {
         guard let file = openFiles.removeValue(forKey: fileID) else {
             throw RDPDriveFailure.invalidHandle
         }
+        // The change notifications still waiting complete first, with STATUS_NOTIFY_CLEANUP and
+        // no entries ([MS-FSA] "Server Requests Closing an Open", [MS-RDPEFS] 3.2.5.2.24),
+        // which frees their CompletionIds on the server ([MS-RDPEFS] 2.2.1.4).
+        for completionID in file.changeNotification?.waitingCompletionIDs ?? [] {
+            completeNotification(completionID, status: RDPNTStatus.notifyCleanup)
+        }
         release(file)
+        stopWatchingIfUnwatched()
     }
 
     /// Closes a handle's descriptor and deletes its entry if a delete is pending.
     private func release(_ file: RDPSharedDriveOpenFile) {
         listingByteCount -= file.listingByteCount
+        waitingNotificationCount -= file.changeNotification?.waitingCompletionIDs.count ?? 0
         if let descriptor = file.descriptor {
             Darwin.close(descriptor)
             descriptorBudget.release()
@@ -467,6 +540,9 @@ final class RDPSharedDriveDevice: @unchecked Sendable {
                 }
             }
             openFiles[fileID]?.deletePending = deletePending
+            if deletePending, file.isDirectory {
+                markDeleted(fileID)
+            }
         case RDPDriveInformationClass.fileRename:
             // RDP_FILE_RENAME_INFORMATION: ReplaceIfExists, RootDirectory (one byte each),
             // FileNameLength, FileName ([MS-RDPEFS] 2.2.3.3.9.1).
@@ -702,6 +778,186 @@ final class RDPSharedDriveDevice: @unchecked Sendable {
             return try FileManager.default.contentsOfDirectory(atPath: path).isEmpty
         } catch {
             throw RDPDriveFailure(status: RDPNTStatus.accessDenied)
+        }
+    }
+
+    // MARK: Change notifications
+
+    /// Has the request wait for a change in the handle's directory, or with `watchTree` under
+    /// it; one that came since the handle's last request completes it at once. The handle's
+    /// first request sets what it watches until it closes ([MS-FSA] 2.1.5.11).
+    private func waitForChange(_ fileID: UInt32, watchTree: Bool, completionID: UInt32) throws {
+        guard var file = openFiles[fileID] else {
+            throw RDPDriveFailure.invalidHandle
+        }
+        guard file.isDirectory else {
+            throw RDPDriveFailure(status: RDPNTStatus.invalidParameter)
+        }
+        guard !file.isMarkedDeleted else {
+            throw RDPDriveFailure(status: RDPNTStatus.deletePending)
+        }
+        guard waitingNotificationCount < Self.maximumWaitingNotificationCount else {
+            throw RDPDriveFailure(status: RDPNTStatus.insufficientResources)
+        }
+        var notification = file.changeNotification ?? RDPSharedDriveChangeNotification(watchTree: watchTree)
+        notification.waitingCompletionIDs.append(completionID)
+        waitingNotificationCount += 1
+        file.changeNotification = notification
+        openFiles[fileID] = file
+        startWatching(file)
+        if notification.hasUnreportedChange {
+            reportChange(to: fileID)
+        }
+    }
+
+    /// A directory's delete is pending through `fileID`: that handle takes no change
+    /// notification any more, and those waiting on the directory, through any handle, end
+    /// with STATUS_DELETE_PENDING ([MS-FSA] 2.1.5.15.3).
+    private func markDeleted(_ fileID: UInt32) {
+        guard let identity = openFiles[fileID]?.targetIdentity else {
+            return
+        }
+        openFiles[fileID]?.isMarkedDeleted = true
+        for openFileID in openFiles.keys.sorted() {
+            guard let file = openFiles[openFileID], file.isDirectory, file.targetIdentity == identity,
+                  let notification = file.changeNotification
+            else {
+                continue
+            }
+            openFiles[openFileID]?.changeNotification = nil
+            waitingNotificationCount -= notification.waitingCompletionIDs.count
+            for completionID in notification.waitingCompletionIDs {
+                completeNotification(completionID, status: RDPNTStatus.deletePending)
+            }
+        }
+        stopWatchingIfUnwatched()
+    }
+
+    /// Reports `changes` to the handles they concern. FSEvents calls it on the I/O queue.
+    func receive(_ changes: [RDPSharedDriveChange]) {
+        reportChange { file, notification in
+            // Compared as FSEvents reports paths: with links resolved, in the case on disk.
+            let directory = file.targetPath == rootPath ? rootPath : realPath(file.targetPath)
+            return changes.contains { $0.concerns(directory, watchTree: notification.watchTree) }
+        }
+    }
+
+    /// A directory watch saw what the directory `identity` holds change, or the directory
+    /// go away, which stopped the watch.
+    private func receiveChange(inDirectory identity: RDPFileIdentity, isGone: Bool) {
+        reportChange { file, _ in
+            file.targetIdentity == identity
+        }
+        if isGone {
+            directoryWatches[identity] = nil
+            watchUnwatchedDirectories()
+        }
+    }
+
+    /// Reports a change to the handles that `concerns` picks: each completes its oldest
+    /// waiting notification, as a notification takes every change since the last ([MS-FSA]
+    /// 2.1.5.11.1), or keeps the change for its next.
+    private func reportChange(
+        where concerns: (RDPSharedDriveOpenFile, RDPSharedDriveChangeNotification) -> Bool
+    ) {
+        for fileID in openFiles.keys.sorted() {
+            guard let file = openFiles[fileID], let notification = file.changeNotification,
+                  !notification.hasUnreportedChange, concerns(file, notification)
+            else {
+                continue
+            }
+            openFiles[fileID]?.changeNotification?.hasUnreportedChange = true
+            reportChange(to: fileID)
+        }
+    }
+
+    /// Completes the handle's oldest waiting notification with its unreported change, if one waits.
+    private func reportChange(to fileID: UInt32) {
+        guard var notification = openFiles[fileID]?.changeNotification,
+              notification.hasUnreportedChange,
+              !notification.waitingCompletionIDs.isEmpty
+        else {
+            return
+        }
+        let completionID = notification.waitingCompletionIDs.removeFirst()
+        notification.hasUnreportedChange = false
+        openFiles[fileID]?.changeNotification = notification
+        waitingNotificationCount -= 1
+        completeNotification(completionID, status: RDPNTStatus.notifyEnumDir)
+    }
+
+    private func completeNotification(_ completionID: UInt32, status: UInt32) {
+        notificationCompletionHandler(RDPDeviceIOCompletion(
+            deviceID: deviceID,
+            completionID: completionID,
+            status: status,
+            body: Self.notificationReplyBody
+        ))
+    }
+
+    /// Has changes reported for `file`, a directory with a notification. A directory that
+    /// cannot be watched now is tried again by its handle's next notification, and once one
+    /// of the drive's directory watches stops.
+    private func startWatching(_ file: RDPSharedDriveOpenFile) {
+        switch changeSource {
+        case .none:
+            return
+        case .directoryWatches:
+            let identity = file.targetIdentity
+            guard directoryWatches[identity] == nil else {
+                return
+            }
+            directoryWatches[identity] = RDPSharedDriveDirectoryWatch(
+                path: file.targetPath,
+                identity: identity,
+                queue: queue,
+                descriptorBudget: watchDescriptorBudget
+            ) { [weak self] isGone in
+                self?.receiveChange(inDirectory: identity, isGone: isGone)
+            }
+        #if os(macOS) || targetEnvironment(macCatalyst)
+        case .fsEvents:
+            guard changeStream == nil, let rootPath else {
+                return
+            }
+            changeStream = RDPSharedDriveChangeStream(path: rootPath, queue: queue) { [weak self] changes in
+                self?.receive(changes)
+            }
+        #endif
+        }
+    }
+
+    /// Stops the watches of directories no handle watches any more, and FSEvents once none does.
+    private func stopWatchingIfUnwatched() {
+        if !directoryWatches.isEmpty {
+            let watched = Set(openFiles.values.lazy.filter { $0.changeNotification != nil }.map(\.targetIdentity))
+            let unwatched = directoryWatches.keys.filter { !watched.contains($0) }
+            for identity in unwatched {
+                directoryWatches.removeValue(forKey: identity)?.stop()
+            }
+            if !unwatched.isEmpty {
+                watchUnwatchedDirectories()
+            }
+        }
+        #if os(macOS) || targetEnvironment(macCatalyst)
+        guard let changeStream, !openFiles.values.contains(where: { $0.changeNotification != nil }) else {
+            return
+        }
+        changeStream.stop()
+        self.changeStream = nil
+        #endif
+    }
+
+    /// Watches, as far as the descriptors allow, the directories that handles watch but no
+    /// directory watch reports on.
+    private func watchUnwatchedDirectories() {
+        for fileID in openFiles.keys.sorted() {
+            guard let file = openFiles[fileID], file.changeNotification != nil,
+                  directoryWatches[file.targetIdentity] == nil
+            else {
+                continue
+            }
+            startWatching(file)
         }
     }
 
@@ -958,6 +1214,11 @@ struct RDPSharedDriveOpenFile {
     var listingIndex = 0
     /// What `listing` counts in its device's `listingByteCount`.
     var listingByteCount = 0
+    /// Set by the handle's first change notification.
+    var changeNotification: RDPSharedDriveChangeNotification?
+    /// A directory's delete was pending through this handle, which then takes no change
+    /// notification, even once the delete is taken back ([MS-FSA] 2.1.1.6).
+    var isMarkedDeleted = false
 
     init(path: String, entryIdentity: RDPFileIdentity, targetPath: String, targetIdentity: RDPFileIdentity, isDirectory: Bool) {
         self.path = path
@@ -973,8 +1234,18 @@ struct RDPSharedDriveOpenFile {
     }
 }
 
+/// What a directory handle watches, and the server's requests that wait for a change
+/// ([MS-FSA] 2.1.5.11).
+struct RDPSharedDriveChangeNotification {
+    var watchTree: Bool
+    /// Oldest first: they complete in the order they came ([MS-FSA] 2.1.5.11.1).
+    var waitingCompletionIDs: [UInt32] = []
+    /// A change came that no notification has reported yet.
+    var hasUnreportedChange = false
+}
+
 /// The device and inode of a file system item, which a rename keeps.
-struct RDPFileIdentity: Equatable {
+struct RDPFileIdentity: Hashable {
     var device: dev_t
     var inode: ino_t
 
@@ -984,11 +1255,15 @@ struct RDPFileIdentity: Equatable {
     }
 }
 
-/// The descriptors every shared drive holds together, kept well below the 256 an app may
-/// have open by default (launchd's soft limit), so a server cannot take the descriptors the
-/// session and the app need.
+/// The descriptors every shared drive holds together. The two budgets, 96 descriptors, stay
+/// well below the 256 an app may have open by default (launchd's soft limit), so a server
+/// cannot take the descriptors the session and the app need.
 final class RDPSharedDriveDescriptorBudget: @unchecked Sendable {
+    /// For the files the server opens.
     static let shared = RDPSharedDriveDescriptorBudget(maximumCount: 64)
+    /// For directory watches, apart so that watching does not take the descriptors files
+    /// need.
+    static let directoryWatches = RDPSharedDriveDescriptorBudget(maximumCount: 32)
 
     private let maximumCount: Int
     private let lock = NSLock()

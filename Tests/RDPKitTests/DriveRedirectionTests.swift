@@ -58,6 +58,15 @@ import Testing
     ))
     #expect(query == .queryDirectory(informationClass: 3, initialQuery: true, path: "\\docs\\*"))
 
+    for watchTree in [false, true] {
+        let notify = try RDPDriveRequest.parse(driveRequest(
+            major: RDPDriveMajorFunction.directoryControl,
+            minor: RDPDriveMinorFunction.notifyChangeDirectory,
+            body: notifyBody(watchTree: watchTree)
+        ))
+        #expect(notify == .notifyChangeDirectory(watchTree: watchTree))
+    }
+
     #expect(throws: RDPDecodeError.self) {
         try RDPDriveRequest.parse(driveRequest(major: RDPDriveMajorFunction.read, body: Data([1, 2])))
     }
@@ -527,6 +536,7 @@ import Testing
         let device = RDPSharedDriveDevice(
             deviceID: 2,
             drive: RDPSharedDrive(name: "Shared", url: drive.root),
+            queue: DispatchQueue(label: "driveDeletesPendingEntriesWhenTheSessionEnds"),
             descriptorBudget: RDPSharedDriveDescriptorBudget(maximumCount: 4)
         )
         device.resolveRoot()
@@ -566,30 +576,263 @@ import Testing
         == RDPNTStatus.noSuchFile)
 }
 
-@Test func driveLeavesChangeNotificationsPendingAndAnswersOtherRequests() throws {
+@Test func driveAnswersDeviceControlAndVolumeQueries() throws {
     let drive = try TemporaryDrive()
     let root = drive.create("", disposition: RDPDriveCreateDisposition.open)
 
-    #expect(drive.device.completion(for: driveRequest(
-        fileID: root.fileID,
-        major: RDPDriveMajorFunction.directoryControl,
-        minor: RDPDriveMinorFunction.notifyChangeDirectory,
-        body: Data(count: 32)
-    )) == nil)
-    let control = try #require(drive.device.completion(for: driveRequest(
+    let control = try #require(drive.completion(for: driveRequest(
         fileID: root.fileID,
         major: RDPDriveMajorFunction.deviceControl,
         body: Data(count: 32)
     )))
     #expect(control.status == RDPNTStatus.success)
     #expect(control.body == Data(count: 4))
-    let volume = try #require(drive.device.completion(for: driveRequest(
+    let volume = try #require(drive.completion(for: driveRequest(
         major: RDPDriveMajorFunction.queryVolumeInformation,
         body: volumeQueryBody(informationClass: RDPDriveVolumeInformationClass.size)
     )))
     #expect(volume.status == RDPNTStatus.success)
     #expect(volume.body.littleEndianUInt32(at: 0) == 24)
     #expect(drive.close(999).status == RDPDriveFailure.invalidHandle.status)
+}
+
+// MARK: Change notifications
+
+/// A change notification waits for a change in its directory and completes with
+/// STATUS_NOTIFY_ENUM_DIR and no entries. A handle's notifications complete one per change,
+/// oldest first, and a change no notification waits for completes the next at once.
+@Test func driveCompletesAChangeNotificationOnceItsDirectoryChanges() throws {
+    let drive = try TemporaryDrive()
+    try FileManager.default.createDirectory(at: drive.root.appendingPathComponent("docs"), withIntermediateDirectories: false)
+    let rootPath = try #require(drive.device.rootPath)
+    let root = drive.create("", disposition: RDPDriveCreateDisposition.open)
+    let docs = drive.create("\\docs", disposition: RDPDriveCreateDisposition.open, options: RDPDriveCreateOptions.directoryFile)
+
+    #expect(drive.notify(root.fileID, completionID: 11).status == TemporaryDrive.pending)
+    #expect(drive.notify(root.fileID, completionID: 12).status == TemporaryDrive.pending)
+    #expect(drive.notify(docs.fileID, completionID: 21).status == TemporaryDrive.pending)
+    #expect(drive.notificationReplies.value.isEmpty)
+
+    // A change inside docs changes nothing the root holds.
+    drive.receive([.directory(rootPath + "/docs")])
+    #expect(drive.notificationReplies.value == [enumerateDirectory(21)])
+    drive.receive([.directory(rootPath)])
+    #expect(drive.notificationReplies.value == [enumerateDirectory(21), enumerateDirectory(11)])
+    drive.receive([.directory(rootPath)])
+    #expect(drive.notificationReplies.value == [enumerateDirectory(21), enumerateDirectory(11), enumerateDirectory(12)])
+
+    // No notification waits on the root: its next one gets the change.
+    drive.receive([.directory(rootPath), .directory(rootPath)])
+    #expect(drive.notificationReplies.value.count == 3)
+    #expect(drive.notify(root.fileID, completionID: 13).status == TemporaryDrive.pending)
+    #expect(drive.notificationReplies.value.last == enumerateDirectory(13))
+    #expect(drive.notify(root.fileID, completionID: 14).status == TemporaryDrive.pending)
+    #expect(drive.notificationReplies.value.count == 4)
+}
+
+/// WatchTree has a notification hear of changes anywhere under its directory; the handle's
+/// first notification sets it until the handle closes.
+@Test func driveChangeNotificationsWatchTheTreeWhenAsked() throws {
+    let drive = try TemporaryDrive()
+    try FileManager.default.createDirectory(
+        at: drive.root.appendingPathComponent("docs/inner"),
+        withIntermediateDirectories: true
+    )
+    let rootPath = try #require(drive.device.rootPath)
+    let tree = drive.create("", disposition: RDPDriveCreateDisposition.open)
+    let docs = drive.create("\\docs", disposition: RDPDriveCreateDisposition.open)
+    _ = drive.notify(tree.fileID, watchTree: true, completionID: 1)
+    _ = drive.notify(docs.fileID, completionID: 2)
+
+    drive.receive([.directory(rootPath + "/docs/inner")])
+    #expect(drive.notificationReplies.value == [enumerateDirectory(1)])
+    // FSEvents could not tell what changed under the root, which holds docs.
+    drive.receive([.tree(rootPath)])
+    #expect(drive.notificationReplies.value == [enumerateDirectory(1), enumerateDirectory(2)])
+
+    // The root's change waited for its next notification. Asking for no tree then changes
+    // nothing: the first notification's WatchTree holds.
+    _ = drive.notify(tree.fileID, watchTree: false, completionID: 3)
+    #expect(drive.notificationReplies.value.last == enumerateDirectory(3))
+    _ = drive.notify(tree.fileID, watchTree: false, completionID: 4)
+    _ = drive.notify(docs.fileID, completionID: 5)
+    drive.receive([.directory(rootPath + "/docs/inner"), .directory(rootPath + "/elsewhere")])
+    #expect(drive.notificationReplies.value.count == 4)
+    #expect(drive.notificationReplies.value.last == enumerateDirectory(4))
+    drive.receive([.everything])
+    #expect(drive.notificationReplies.value.count == 5)
+    #expect(drive.notificationReplies.value.last == enumerateDirectory(5))
+}
+
+/// Closing a handle completes the notifications still waiting on it with
+/// STATUS_NOTIFY_CLEANUP, before the close's own reply. A server that starts over has
+/// forgotten them, so their handles close without a reply.
+@Test func driveCompletesWaitingChangeNotificationsWhenItsHandleCloses() throws {
+    let drive = try TemporaryDrive()
+    let rootPath = try #require(drive.device.rootPath)
+    let root = drive.create("", disposition: RDPDriveCreateDisposition.open)
+    let other = drive.create("", disposition: RDPDriveCreateDisposition.open)
+    _ = drive.notify(root.fileID, completionID: 31)
+    _ = drive.notify(root.fileID, completionID: 32)
+    _ = drive.notify(other.fileID, completionID: 41)
+
+    #expect(drive.close(root.fileID).status == RDPNTStatus.success)
+    let cleanup = { (completionID: UInt32) in
+        RDPDeviceIOCompletion(deviceID: 1, completionID: completionID, status: RDPNTStatus.notifyCleanup, body: Data(count: 5))
+    }
+    #expect(drive.notificationReplies.value == [cleanup(31), cleanup(32)])
+    drive.receive([.directory(rootPath)])
+    #expect(drive.notificationReplies.value == [cleanup(31), cleanup(32), enumerateDirectory(41)])
+
+    _ = drive.notify(other.fileID, completionID: 42)
+    drive.queue.sync { drive.device.closeAllFiles() }
+    drive.receive([.everything])
+    #expect(drive.notificationReplies.value.count == 3)
+}
+
+/// A directory whose delete is pending ends the notifications waiting on it with
+/// STATUS_DELETE_PENDING, and the handle it is pending through takes no more.
+@Test func driveEndsChangeNotificationsOnADirectoryBeingDeleted() throws {
+    let drive = try TemporaryDrive()
+    try FileManager.default.createDirectory(at: drive.root.appendingPathComponent("gone"), withIntermediateDirectories: false)
+    let watching = drive.create("\\gone", disposition: RDPDriveCreateDisposition.open)
+    let deleting = drive.create("\\gone", disposition: RDPDriveCreateDisposition.open)
+    _ = drive.notify(watching.fileID, completionID: 1)
+    _ = drive.notify(deleting.fileID, completionID: 2)
+
+    #expect(drive.setDisposition(deleting.fileID).status == RDPNTStatus.success)
+    let deletePending = { (completionID: UInt32) in
+        RDPDeviceIOCompletion(deviceID: 1, completionID: completionID, status: RDPNTStatus.deletePending, body: Data(count: 5))
+    }
+    #expect(drive.notificationReplies.value == [deletePending(1), deletePending(2)])
+    #expect(drive.notify(deleting.fileID, completionID: 3).status == RDPNTStatus.deletePending)
+    #expect(drive.notify(watching.fileID, completionID: 4).status == TemporaryDrive.pending)
+
+    let opened = drive.create(
+        "\\gone",
+        disposition: RDPDriveCreateDisposition.open,
+        options: RDPDriveCreateOptions.deleteOnClose
+    )
+    #expect(drive.notify(opened.fileID, completionID: 5).status == RDPNTStatus.deletePending)
+}
+
+@Test func driveRefusesChangeNotificationsItCannotWaitFor() throws {
+    let drive = try TemporaryDrive()
+    let file = drive.create("\\a.txt", disposition: RDPDriveCreateDisposition.create)
+    #expect(drive.notify(file.fileID, completionID: 1) == TemporaryDrive.Reply(status: RDPNTStatus.invalidParameter, body: Data(count: 5)))
+    #expect(drive.notify(999, completionID: 2).status == RDPDriveFailure.invalidHandle.status)
+
+    let root = drive.create("", disposition: RDPDriveCreateDisposition.open)
+    for completionID in 0 ..< UInt32(RDPSharedDriveDevice.maximumWaitingNotificationCount) {
+        _ = drive.notify(root.fileID, completionID: completionID)
+    }
+    #expect(drive.notify(root.fileID, completionID: 99_999).status == RDPNTStatus.insufficientResources)
+    // Closing the handle frees room for more.
+    _ = drive.close(root.fileID)
+    #expect(drive.notificationReplies.value.count == RDPSharedDriveDevice.maximumWaitingNotificationCount)
+    let again = drive.create("", disposition: RDPDriveCreateDisposition.open)
+    #expect(drive.notify(again.fileID, completionID: 1).status == TemporaryDrive.pending)
+}
+
+#if os(macOS) || targetEnvironment(macCatalyst)
+/// FSEvents reports a change made on the Mac while a handle watches, to a notification on a
+/// directory the server named in another case, and stops once no handle watches.
+@Test(.timeLimit(.minutes(1)))
+func driveReportsAChangeFSEventsSees() throws {
+    let drive = try TemporaryDrive(changeSource: .fsEvents)
+    try FileManager.default.createDirectory(at: drive.root.appendingPathComponent("docs"), withIntermediateDirectories: false)
+    let isCaseSensitive = try drive.root.resourceValues(forKeys: [.volumeSupportsCaseSensitiveNamesKey])
+        .volumeSupportsCaseSensitiveNames == true
+    let docs = drive.create(isCaseSensitive ? "\\docs" : "\\DOCS", disposition: RDPDriveCreateDisposition.open)
+    #expect(docs.status == RDPNTStatus.success)
+    #expect(!drive.queue.sync { drive.device.isWatchingFolder })
+
+    _ = drive.notify(docs.fileID, completionID: 5)
+    #expect(drive.queue.sync { drive.device.isWatchingFolder })
+    try Data("new".utf8).write(to: drive.root.appendingPathComponent("docs/new.txt"))
+    let deadline = Date() + 30
+    while drive.notificationReplies.value.isEmpty, Date() < deadline {
+        Thread.sleep(forTimeInterval: 0.01)
+    }
+    #expect(drive.notificationReplies.value == [enumerateDirectory(5)])
+
+    _ = drive.close(docs.fileID)
+    #expect(!drive.queue.sync { drive.device.isWatchingFolder })
+}
+#endif
+
+/// Where there is no FSEvents, a kqueue watch on each watched directory, shared by its
+/// handles, reports entries added to it, removed or renamed, to the handles on it only: a
+/// handle that watches the tree hears nothing from its subdirectories. Watches stop with
+/// their handles or once their directory is gone, and a directory past the descriptor budget
+/// is watched once one stops.
+@Test(.timeLimit(.minutes(1)))
+func driveReportsChangesItsDirectoryWatchesSee() throws {
+    let watchBudget = RDPSharedDriveDescriptorBudget(maximumCount: 2)
+    let drive = try TemporaryDrive(changeSource: .directoryWatches, watchDescriptorBudget: watchBudget)
+    for name in ["docs/inner", "other", "gone"] {
+        try FileManager.default.createDirectory(at: drive.root.appendingPathComponent(name), withIntermediateDirectories: true)
+    }
+    let replies = { drive.notificationReplies.value.map(\.completionID) }
+    func waitForReplies(_ count: Int) {
+        let deadline = Date() + 30
+        while replies().count < count, Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+    }
+    func write(_ path: String) throws {
+        try Data("new".utf8).write(to: drive.root.appendingPathComponent(path))
+    }
+
+    let root = drive.create("", disposition: RDPDriveCreateDisposition.open)
+    let docs = drive.create("\\docs", disposition: RDPDriveCreateDisposition.open)
+    let docsAgain = drive.create("\\docs", disposition: RDPDriveCreateDisposition.open)
+    let other = drive.create("\\other", disposition: RDPDriveCreateDisposition.open)
+    #expect(drive.notify(root.fileID, watchTree: true, completionID: 1).status == TemporaryDrive.pending)
+    _ = drive.notify(docs.fileID, completionID: 2)
+    _ = drive.notify(docsAgain.fileID, completionID: 3)
+    #expect(drive.queue.sync { drive.device.watchedDirectoryCount } == 2)
+    // The budget is spent: other's notification waits unwatched.
+    _ = drive.notify(other.fileID, completionID: 4)
+    #expect(drive.queue.sync { drive.device.watchedDirectoryCount } == 2)
+
+    // A file added in docs/inner changes what docs holds no more than what the root does.
+    try write("docs/inner/new.txt")
+    try write("docs/new.txt")
+    waitForReplies(2)
+    #expect(replies() == [2, 3])
+    try write("new.txt")
+    waitForReplies(3)
+    #expect(replies() == [2, 3, 1])
+    try write("other/new.txt")
+
+    // Closing docs' last handle stops its watch, and other is watched in its place.
+    _ = drive.close(docs.fileID)
+    _ = drive.close(docsAgain.fileID)
+    #expect(drive.queue.sync { drive.device.watchedDirectoryCount } == 2)
+    try FileManager.default.moveItem(
+        at: drive.root.appendingPathComponent("other/new.txt"),
+        to: drive.root.appendingPathComponent("other/renamed.txt")
+    )
+    waitForReplies(4)
+    #expect(replies() == [2, 3, 1, 4])
+
+    // A watched directory deleted on the Mac reports the change and stops its watch.
+    let gone = drive.create("\\gone", disposition: RDPDriveCreateDisposition.open)
+    _ = drive.notify(gone.fileID, completionID: 6)
+    _ = drive.close(root.fileID)
+    #expect(drive.queue.sync { drive.device.watchedDirectoryCount } == 2)
+    try FileManager.default.removeItem(at: drive.root.appendingPathComponent("gone"))
+    waitForReplies(5)
+    #expect(replies() == [2, 3, 1, 4, 6])
+    #expect(drive.queue.sync { drive.device.watchedDirectoryCount } == 1)
+
+    drive.queue.sync { drive.device.closeAllFiles() }
+    #expect(drive.queue.sync { drive.device.watchedDirectoryCount } == 0)
+}
+
+private func enumerateDirectory(_ completionID: UInt32) -> RDPDeviceIOCompletion {
+    RDPDeviceIOCompletion(deviceID: 1, completionID: completionID, status: RDPNTStatus.notifyEnumDir, body: Data(count: 5))
 }
 
 // MARK: Session
@@ -657,6 +900,50 @@ import Testing
     #expect(sent[5].payload.littleEndianUInt32(at: 8) == RDPNTStatus.unsuccessful)
     #expect(sent[6].payload.littleEndianUInt32(at: 8) == RDPNTStatus.success)
     #expect(FileManager.default.fileExists(atPath: drive.root.appendingPathComponent("hello.txt").path))
+}
+
+/// The server hears a change notification end before the close of its handle.
+@Test func deviceRedirectionSessionCompletesChangeNotificationsBeforeTheirHandleCloses() throws {
+    let drive = try TemporaryDrive()
+    let loopback = try LoopbackDriveSession(drives: [RDPSharedDrive(name: "Docs", url: drive.root)])
+    defer { loopback.close() }
+    let session = loopback.session
+    for packet: [UInt8] in [
+        [0x72, 0x44, 0x6E, 0x49, 0x01, 0x00, 0x0C, 0x00, 0x78, 0x56, 0x34, 0x12],
+        [0x72, 0x44, 0x50, 0x53],
+        [0x72, 0x44, 0x43, 0x43, 0x01, 0x00, 0x0C, 0x00, 0x78, 0x56, 0x34, 0x12],
+        [0x72, 0x44, 0x4C, 0x55],
+    ] {
+        try session.receive(RDPDeviceRedirectionPDU.parse(from: Data(packet)))
+    }
+    // The drive is announced from the I/O queue.
+    session.waitForDriveIO()
+    try session.receive(deviceIORequestPDU(driveRequest(
+        completionID: 1,
+        major: RDPDriveMajorFunction.create,
+        body: createBody(path: "", disposition: RDPDriveCreateDisposition.open)
+    )))
+    try session.receive(deviceIORequestPDU(driveRequest(
+        fileID: 1,
+        completionID: 2,
+        major: RDPDriveMajorFunction.directoryControl,
+        minor: RDPDriveMinorFunction.notifyChangeDirectory,
+        body: notifyBody(watchTree: true)
+    )))
+    try session.receive(deviceIORequestPDU(driveRequest(
+        fileID: 1,
+        completionID: 3,
+        major: RDPDriveMajorFunction.close,
+        body: Data(count: 32)
+    )))
+
+    let completions = try loopback.sentPDUs().filter { $0.typeName == "rdpdr-device-io-completion" }
+    // DeviceId, CompletionId, IoStatus, then the reply: Length 0 and Padding for the notification.
+    #expect(completions.map(\.payload.rdpHexString) == [
+        "01 00 00 00 01 00 00 00 00 00 00 00 01 00 00 00 01",
+        "01 00 00 00 02 00 00 00 0b 01 00 00 00 00 00 00 00",
+        "01 00 00 00 03 00 00 00 00 00 00 00 00 00 00 00 00",
+    ])
 }
 
 /// A server that starts device redirection over gets the drives again, and the handles it
@@ -950,15 +1237,25 @@ private final class ReceivingHandler: ChannelInboundHandler, Sendable {
     }
 }
 
-/// A shared folder in a temporary directory, removed when the test ends.
+/// A shared folder in a temporary directory, removed when the test ends. Its device runs each
+/// request on `queue`, as a session's I/O queue does, where FSEvents reports too.
 private final class TemporaryDrive {
+    /// The status `Reply` has for a request left pending.
+    static let pending: UInt32 = 0xFFFF_FFFF
+
     let base: URL
     let root: URL
     let device: RDPSharedDriveDevice
+    let queue = DispatchQueue(label: "TemporaryDrive")
+    /// The replies to change notifications, in the order they went.
+    let notificationReplies = Locked<[RDPDeviceIOCompletion]>([])
 
+    /// With `changeSource` `.none`, changes come only from `receive(_:)`.
     init(
         descriptorBudget: RDPSharedDriveDescriptorBudget = RDPSharedDriveDescriptorBudget(maximumCount: 64),
-        listingByteLimit: Int = RDPSharedDriveDevice.maximumListingByteCount
+        listingByteLimit: Int = RDPSharedDriveDevice.maximumListingByteCount,
+        changeSource: RDPSharedDriveChangeSource = .none,
+        watchDescriptorBudget: RDPSharedDriveDescriptorBudget = RDPSharedDriveDescriptorBudget(maximumCount: 32)
     ) throws {
         base = FileManager.default.temporaryDirectory.appendingPathComponent("rdpkit-drive-\(UUID().uuidString)")
         root = base.appendingPathComponent("shared", isDirectory: true)
@@ -966,9 +1263,16 @@ private final class TemporaryDrive {
         device = RDPSharedDriveDevice(
             deviceID: 1,
             drive: RDPSharedDrive(name: "Shared", url: root),
+            queue: queue,
             descriptorBudget: descriptorBudget,
-            listingByteLimit: listingByteLimit
+            listingByteLimit: listingByteLimit,
+            changeSource: changeSource,
+            watchDescriptorBudget: watchDescriptorBudget
         )
+        let replies = notificationReplies
+        device.notificationCompletionHandler = { completion in
+            replies.withLock { $0.append(completion) }
+        }
         device.resolveRoot()
     }
 
@@ -976,7 +1280,7 @@ private final class TemporaryDrive {
         try? FileManager.default.removeItem(at: base)
     }
 
-    struct Reply {
+    struct Reply: Equatable {
         var status: UInt32
         var body: Data
         var fileID: UInt32 {
@@ -1051,6 +1355,25 @@ private final class TemporaryDrive {
         )
     }
 
+    func notify(_ fileID: UInt32, watchTree: Bool = false, completionID: UInt32) -> Reply {
+        send(
+            fileID: fileID,
+            completionID: completionID,
+            major: RDPDriveMajorFunction.directoryControl,
+            minor: RDPDriveMinorFunction.notifyChangeDirectory,
+            body: notifyBody(watchTree: watchTree)
+        )
+    }
+
+    /// Reports `changes` as FSEvents does, on the I/O queue.
+    func receive(_ changes: [RDPSharedDriveChange]) {
+        queue.sync { device.receive(changes) }
+    }
+
+    func completion(for request: RDPDeviceIORequest) -> RDPDeviceIOCompletion? {
+        queue.sync { device.completion(for: request) }
+    }
+
     /// The names a directory query returns, one per request until STATUS_NO_MORE_FILES.
     func listing(_ fileID: UInt32, pattern: String) -> [String] {
         var names: [String] = []
@@ -1068,9 +1391,15 @@ private final class TemporaryDrive {
         return names
     }
 
-    private func send(fileID: UInt32, major: UInt32, minor: UInt32 = 0, body: Data) -> Reply {
-        guard let completion = device.completion(for: driveRequest(fileID: fileID, major: major, minor: minor, body: body)) else {
-            return Reply(status: 0xFFFF_FFFF, body: Data())
+    private func send(fileID: UInt32, completionID: UInt32 = 7, major: UInt32, minor: UInt32 = 0, body: Data) -> Reply {
+        guard let completion = completion(for: driveRequest(
+            fileID: fileID,
+            completionID: completionID,
+            major: major,
+            minor: minor,
+            body: body
+        )) else {
+            return Reply(status: Self.pending, body: Data())
         }
         return Reply(status: completion.status, body: completion.body)
     }
@@ -1079,11 +1408,19 @@ private final class TemporaryDrive {
 private func driveRequest(
     deviceID: UInt32 = 1,
     fileID: UInt32 = 0,
+    completionID: UInt32 = 7,
     major: UInt32,
     minor: UInt32 = 0,
     body: Data
 ) -> RDPDeviceIORequest {
-    RDPDeviceIORequest(deviceID: deviceID, fileID: fileID, completionID: 7, majorFunction: major, minorFunction: minor, body: body)
+    RDPDeviceIORequest(
+        deviceID: deviceID,
+        fileID: fileID,
+        completionID: completionID,
+        majorFunction: major,
+        minorFunction: minor,
+        body: body
+    )
 }
 
 private extension RDPDeviceIORequest {
@@ -1146,6 +1483,14 @@ private func queryDirectoryBody(informationClass: UInt32, initialQuery: Bool, pa
     body.appendLittleEndianUInt32(UInt32(pathData.count))
     body.append(Data(count: 23))
     body.append(pathData)
+    return body
+}
+
+/// WatchTree, CompletionFilter (FILE_NOTIFY_CHANGE_FILE_NAME and _DIR_NAME), Padding.
+private func notifyBody(watchTree: Bool) -> Data {
+    var body = Data([watchTree ? 1 : 0])
+    body.appendLittleEndianUInt32(0x0000_0003)
+    body.append(Data(count: 27))
     return body
 }
 
