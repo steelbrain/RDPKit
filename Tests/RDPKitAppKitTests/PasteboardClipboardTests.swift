@@ -29,7 +29,11 @@ private func toastText(for event: RDPPasteboardClipboard.Event) -> String? {
         case .unreadable:
             "Local file clipboard could not be read; remote clipboard cleared"
         case .totalByteLimitExceeded:
-            "Local clipboard files exceed 32 MiB; remote clipboard cleared"
+            "Local clipboard files exceed the size limit; remote clipboard cleared"
+        case .fileTooLarge:
+            "Local file is larger than the remote computer takes; remote clipboard cleared"
+        case .filesNotSupported:
+            "Remote computer takes no files; remote clipboard cleared"
         }
     case .pasteboardAccessDenied:
         "Clipboard access is off for RDPeek in System Settings"
@@ -50,7 +54,7 @@ private func toastText(for event: RDPPasteboardClipboard.Event) -> String? {
         case .invalidFileIndex:
             "Remote file index is not valid"
         case .totalByteLimitExceeded:
-            "Remote files exceed 32 MiB"
+            "Remote files exceed the size limit"
         case .fileCountLimitExceeded:
             "Remote copy has more than 1,000 files"
         }
@@ -73,7 +77,7 @@ private func toastText(for event: RDPPasteboardClipboard.Event) -> String? {
         case .incomplete:
             "Remote file transfer was incomplete"
         case .totalByteLimitExceeded:
-            "Remote files exceed 32 MiB"
+            "Remote files exceed the size limit"
         case .folderNotCreated:
             "Remote files could not be prepared"
         case .notSaved:
@@ -103,17 +107,21 @@ private final class PacedSession: RDPPasteboardClipboardSession, @unchecked Send
     /// When set, each file write waits for it, having said it started in `writeStarted`.
     private let writeGate: DispatchSemaphore?
     let writeStarted = Shared(false)
+    /// When set, the largest file the server takes, in place of what the session says.
+    private let serverMaximumFileByteCount: UInt64??
 
     init(
         server: RDPClipboardTestServer,
         fetchesBeforeReturning: Bool = false,
         endsDownloadsOnceCancelled: Bool = false,
-        writeGate: DispatchSemaphore? = nil
+        writeGate: DispatchSemaphore? = nil,
+        maximumFileByteCount: UInt64?? = nil
     ) {
         self.server = server
         self.fetchesBeforeReturning = fetchesBeforeReturning
         self.endsDownloadsOnceCancelled = endsDownloadsOnceCancelled
         self.writeGate = writeGate
+        serverMaximumFileByteCount = maximumFileByteCount
     }
 
     private var session: RDPClipboardSession {
@@ -155,6 +163,10 @@ private final class PacedSession: RDPPasteboardClipboardSession, @unchecked Send
         session.withdrawLocalCopy()
     }
 
+    var maximumFileByteCount: UInt64? {
+        serverMaximumFileByteCount ?? session.maximumFileByteCount
+    }
+
     /// RDPKit's download, which, when told to, ends only once its task is
     /// cancelled, however RDPKit ended it.
     func downloadRemoteFiles(
@@ -162,7 +174,7 @@ private final class PacedSession: RDPPasteboardClipboardSession, @unchecked Send
         copyNumber: Int,
         into directory: URL,
         progress: (@Sendable (RDPClipboardDownloadProgress) async -> Void)?,
-        writeFile: @Sendable (Data, URL) throws -> Void
+        finishFile: @Sendable (URL) throws -> Void
     ) async throws -> RDPClipboardDownload {
         let outcome: Result<RDPClipboardDownload, any Error>
         do {
@@ -171,16 +183,17 @@ private final class PacedSession: RDPPasteboardClipboardSession, @unchecked Send
                 copyNumber: copyNumber,
                 into: directory,
                 progress: progress,
-                writeFile: { [writeGate, writeStarted] data, fileURL in
+                finishFile: { [writeGate, writeStarted] fileURL in
                     guard let writeGate else {
-                        return try writeFile(data, fileURL)
+                        return try finishFile(fileURL)
                     }
                     writeStarted.modify { $0 = true }
                     writeGate.wait()
-                    // The write lands after the folder was removed, as it can while
+                    // The file lands after the folder was removed, as it can while
                     // FileManager removes it: between its listing and its rmdir.
                     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-                    try writeFile(data, fileURL)
+                    try Data(count: 10).write(to: fileURL)
+                    try finishFile(fileURL)
                 }
             ))
         } catch {
@@ -1319,35 +1332,60 @@ final class PasteboardClipboardTests: XCTestCase {
         )
     }
 
-    /// RDPKit checks each file's size before it reads it, so files over
-    /// 32 MiB together are refused unread; the empty copy that began the
-    /// read stays on the server.
-    func testLocalFilesOverTheLimitAreRefusedUnread() async throws {
-        let small = try makeLocalFile(named: "small.bin", contents: Data(count: 10))
+    /// Files go whatever their size, read from disk as the server asks: no limit holds them back
+    /// by default.
+    func testLocalFilesOfAnySizeGoByDefault() async throws {
         let large = try makeLocalFile(named: "large.bin", contents: Data())
         let handle = try FileHandle(forWritingTo: large)
-        try handle.truncate(atOffset: 32 * 1024 * 1024)
+        try handle.truncate(atOffset: 5 * 1024 * 1024 * 1024)
         try handle.close()
         let clipboard = makeClipboard()
-        var toasts: [String] = []
-        clipboard.onEvent = { event in toastText(for: event).map { toasts.append($0) } }
+        var events: [RDPPasteboardClipboard.Event] = []
+        clipboard.onEvent = { events.append($0) }
         let server = try await connectServer(to: clipboard)
-        let attachPublishes = publishes(on: server).count
 
         pasteboard.clearContents()
-        pasteboard.writeObjects([small as NSURL, large as NSURL])
+        pasteboard.writeObjects([large as NSURL])
         clipboard.poll()
         try await XCTUnwrap(clipboard.localFileReadTask).value
 
-        XCTAssertEqual(toasts, ["Local clipboard files exceed 32 MiB; remote clipboard cleared"])
-        XCTAssertEqual(Array(publishes(on: server).dropFirst(attachPublishes)), [.empty])
-        let shared = await server.pasteFiles()
-        XCTAssertNil(shared)
+        XCTAssertEqual(events, [.localFilesShared(count: 1)])
+        XCTAssertEqual(server.session.maximumFileByteCount, .max)
+    }
+
+    /// A server that takes no files, as KRdp does not, or a file larger than it takes, such as
+    /// one over 4 GiB without huge file support, is said; the empty copy that began the read
+    /// stays on the server.
+    func testLocalFilesTheServerDoesNotTakeAreRefused() async throws {
+        let small = try makeLocalFile(named: "small.bin", contents: Data(count: 10))
+        let large = try makeLocalFile(named: "large.bin", contents: Data(count: 11))
+        for (maximumFileByteCount, toast) in [
+            (UInt64?.none, "Remote computer takes no files; remote clipboard cleared"),
+            (UInt64(10), "Local file is larger than the remote computer takes; remote clipboard cleared"),
+        ] {
+            let clipboard = makeClipboard()
+            var toasts: [String] = []
+            clipboard.onEvent = { event in toastText(for: event).map { toasts.append($0) } }
+            let server = try await connectServer(to: clipboard, attachesOnReady: false)
+            clipboard.attach(PacedSession(server: server, maximumFileByteCount: .some(maximumFileByteCount)))
+            await settle(server)
+            let attachPublishes = publishes(on: server).count
+
+            pasteboard.clearContents()
+            pasteboard.writeObjects([small as NSURL, large as NSURL])
+            clipboard.poll()
+            await clipboard.localFileReadTask?.value
+
+            XCTAssertEqual(toasts, [toast])
+            XCTAssertEqual(Array(publishes(on: server).dropFirst(attachPublishes)), [.empty])
+            let shared = await server.pasteFiles()
+            XCTAssertNil(shared)
+        }
     }
 
     /// The app sets the limit on the pasteboard's files, and reads it back to name it.
     func testLocalFilesGoUpToTheBridgesOwnLimit() async throws {
-        XCTAssertEqual(makeClipboard().maximumLocalFileByteCount, RDPClipboardLocalFile.defaultMaximumTotalByteCount)
+        XCTAssertEqual(makeClipboard().maximumLocalFileByteCount, .max)
         let first = try makeLocalFile(named: "first.bin", contents: Data(count: 10))
         let second = try makeLocalFile(named: "second.bin", contents: Data(count: 10))
         let third = try makeLocalFile(named: "third.bin", contents: Data(count: 1))
@@ -1402,8 +1440,9 @@ final class PasteboardClipboardTests: XCTestCase {
     // MARK: - Remote files
 
     /// RDPKit downloads a remote copy of files from the server, asking its
-    /// size and then ranges of at most 512 KiB, into a folder of the
-    /// download's own, and the bridge writes each file quarantined.
+    /// size and then ranges from 512 KiB, which double while the server
+    /// answers them in full at once, into a folder of the download's own,
+    /// and the bridge marks each file quarantined.
     func testRemoteFileIsDownloadedThroughRDPKitQuarantined() async throws {
         let clipboard = makeClipboard()
         let server = try await connectServer(to: clipboard)
@@ -1418,11 +1457,11 @@ final class PasteboardClipboardTests: XCTestCase {
         server.copyFiles([RDPClipboardLocalFile(fileName: "big.bin", contents: contents)])
         try await finishLastDownload(from: server)
 
-        // Its size, then three ranges.
-        XCTAssertEqual(server.fileRequestCount, 4)
-        XCTAssertEqual(requests.value.map(\.isSizeRequest), [true, false, false, false])
-        XCTAssertEqual(requests.value.dropFirst().map(\.position), [0, 512 * 1024, 1024 * 1024])
-        XCTAssertEqual(requests.value.dropFirst().map(\.byteCount), [512 * 1024, 512 * 1024, 1_500_000 - 1024 * 1024])
+        // Its size, then two ranges: the second may ask for 1 MiB.
+        XCTAssertEqual(server.fileRequestCount, 3)
+        XCTAssertEqual(requests.value.map(\.isSizeRequest), [true, false, false])
+        XCTAssertEqual(requests.value.dropFirst().map(\.position), [0, 512 * 1024])
+        XCTAssertEqual(requests.value.dropFirst().map(\.byteCount), [512 * 1024, 1_500_000 - 512 * 1024])
         let fileURL = try XCTUnwrap(copiedFileURL())
         XCTAssertEqual(
             fileURL.deletingLastPathComponent().deletingLastPathComponent().resolvingSymlinksInPath(),
@@ -1448,10 +1487,10 @@ final class PasteboardClipboardTests: XCTestCase {
     /// Each way a download from the server fails is said, but the session's
     /// end, which is news of its own. Either way its folder goes and
     /// nothing lands on the pasteboard. RDPKit times a request out after
-    /// two minutes, holds the sizes the server answers to 32 MiB, and
-    /// stops at a file the bridge could not write.
+    /// two minutes, holds the sizes the server answers to the limit the
+    /// app set, here 32 MiB, and stops at a file the bridge could not write.
     func testAFailedDownloadSaysWhy() async throws {
-        let clipboard = makeClipboard()
+        let clipboard = makeClipboard(downloadLimits: RDPClipboardDownloadLimits(maximumTotalByteCount: 32 * 1024 * 1024))
         var toasts: [String] = []
         let whileDownloading = DownloadHook()
         clipboard.onEvent = { event in
@@ -1486,7 +1525,7 @@ final class PasteboardClipboardTests: XCTestCase {
             descriptor: RDPClipboardFileDescriptorW(flags: 0, fileAttributes: 0, fileSize: 0, fileName: "big.bin"),
             contents: Data(count: 32 * 1024 * 1024 + 1)
         )])
-        try await expectFailure(saying: "Remote files exceed 32 MiB")
+        try await expectFailure(saying: "Remote files exceed the size limit")
 
         // A folder the file cannot be written to.
         whileDownloading.run = {
@@ -1796,12 +1835,12 @@ final class PasteboardClipboardTests: XCTestCase {
         XCTAssertEqual(toasts, ["Downloading file 1 of 2", "Downloading file 2 of 2", "2 remote files copied"])
     }
 
-    /// Remote files whose declared sizes pass 32 MiB together are refused
-    /// before a download starts, as are more than 1,000 files, whose
-    /// folders do not count: each costs a round trip and a write, and all
-    /// of them are pasted side by side.
+    /// Remote files whose declared sizes pass the limit the app set, here
+    /// 32 MiB, together are refused before a download starts, as are more
+    /// than 1,000 files, whose folders do not count: each costs a round
+    /// trip and a write, and all of them are pasted side by side.
     func testARemoteCopyOverTheLimitsIsRefusedBeforeItsDownload() async throws {
-        let clipboard = makeClipboard()
+        let clipboard = makeClipboard(downloadLimits: RDPClipboardDownloadLimits(maximumTotalByteCount: 32 * 1024 * 1024))
         var toasts: [String] = []
         clipboard.onEvent = { event in toastText(for: event).map { toasts.append($0) } }
         let server = try await connectServer(to: clipboard)
@@ -1821,7 +1860,7 @@ final class PasteboardClipboardTests: XCTestCase {
         await settle(server)
         server.copyFiles(makeFiles(count: 1001))
         await settle(server)
-        XCTAssertEqual(toasts, ["Remote files exceed 32 MiB", "Remote copy has more than 1,000 files"])
+        XCTAssertEqual(toasts, ["Remote files exceed the size limit", "Remote copy has more than 1,000 files"])
         XCTAssertNil(clipboard.fileDownloadTask)
         XCTAssertEqual(server.fileRequestCount, 0)
         XCTAssertEqual(downloadRootContents(), [])
@@ -2085,13 +2124,15 @@ final class PasteboardClipboardTests: XCTestCase {
 
     private func makeClipboard(
         isSharingEnabled: Bool = true,
-        maximumLocalFileByteCount: Int = RDPClipboardLocalFile.defaultMaximumTotalByteCount,
+        downloadLimits: RDPClipboardDownloadLimits = RDPClipboardDownloadLimits(),
+        maximumLocalFileByteCount: Int = .max,
         temporarySharingDuration: TimeInterval = 30
     ) -> RDPPasteboardClipboard {
         RDPPasteboardClipboard(
             isSharingEnabled: isSharingEnabled,
             pasteboard: pasteboard,
             downloadRoot: downloadRoot,
+            downloadLimits: downloadLimits,
             maximumLocalFileByteCount: maximumLocalFileByteCount,
             quarantineAgentName: "RDPeek",
             temporarySharingDuration: temporarySharingDuration,

@@ -10,7 +10,7 @@ import Testing
     #expect(RDPClipboardCapabilitiesPDU().encoded() == hexData("""
     07 00 00 00 10 00 00 00
     01 00 00 00
-    01 00 0c 00 02 00 00 00 06 00 00 00
+    01 00 0c 00 02 00 00 00 26 00 00 00
     """))
 }
 
@@ -2423,6 +2423,38 @@ func clipboardSessionRestartGoesBackToFetchingOn(formatID: UInt32) throws {
         .range(streamID: 9, data: Data([4, 5])),
         .failure(streamID: 10),
     ])
+    _ = try channel.finish()
+}
+
+/// Each range of a published file that goes to the server reports how far its paste is; a
+/// size, or a request the session fails, reports nothing.
+@Test func clipboardSessionReportsThePasteProgressOfEachRangeItSends() throws {
+    let channel = EmbeddedChannel()
+    let session = RDPClipboardSession(userChannelID: 1006, staticChannelID: 1007, channel: channel)
+    session.publishLocalFiles([
+        RDPClipboardLocalFile(fileName: "Folder", contents: Data(), fileAttributes: RDPClipboardFileAttributes.directory),
+        RDPClipboardLocalFile(fileName: "Folder/notes:1.txt", contents: Data([1, 2, 3, 4, 5])),
+    ])
+    func progress(_ sentByteCount: UInt64) -> RDPClipboardEvent {
+        .localFilePasteProgress(RDPClipboardLocalFilePasteProgress(
+            fileOffset: 1,
+            fileCount: 2,
+            fileName: "Folder\\notes_1.txt",
+            sentByteCount: sentByteCount,
+            fileByteCount: 5
+        ))
+    }
+
+    #expect(session.respondToFileContentsRequest(.size(streamID: 1, fileIndex: 1)) == nil)
+    #expect(session.respondToFileContentsRequest(.range(streamID: 2, fileIndex: 1, position: 0, requestedByteCount: 2)) == progress(2))
+    #expect(try session.receive(RDPClipboardPDU.parse(from: RDPClipboardFileContentsRequestPDU.range(
+        streamID: 3,
+        fileIndex: 1,
+        position: 2,
+        requestedByteCount: 0x1000
+    ).encoded())) == progress(5))
+    #expect(session.respondToFileContentsRequest(.range(streamID: 4, fileIndex: 1, position: 6, requestedByteCount: 1)) == nil)
+    #expect(session.respondToFileContentsRequest(.range(streamID: 5, fileIndex: 2, position: 0, requestedByteCount: 1)) == nil)
     _ = try channel.finish()
 }
 

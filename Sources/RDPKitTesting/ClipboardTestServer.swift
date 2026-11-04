@@ -88,7 +88,8 @@ public final class RDPClipboardTestServer: @unchecked Sendable {
         onClipboardContent: RDPClipboardContentHandler? = nil,
         onClipboardFileGroupDescriptor: RDPClipboardFileGroupDescriptorHandler? = nil,
         onClipboardFileContents: RDPClipboardFileContentsHandler? = nil,
-        onClipboardRemoteCopyUnavailable: RDPClipboardRemoteCopyUnavailableHandler? = nil
+        onClipboardRemoteCopyUnavailable: RDPClipboardRemoteCopyUnavailableHandler? = nil,
+        onClipboardLocalFilePasteProgress: RDPClipboardLocalFilePasteProgressHandler? = nil
     ) async throws {
         let channel = NIOAsyncTestingChannel()
         try await channel.connect(to: SocketAddress(ipAddress: "127.0.0.1", port: 3389))
@@ -98,7 +99,8 @@ public final class RDPClipboardTestServer: @unchecked Sendable {
             onContent: onClipboardContent,
             onFileGroupDescriptor: onClipboardFileGroupDescriptor,
             onFileContents: onClipboardFileContents,
-            onRemoteCopyUnavailable: onClipboardRemoteCopyUnavailable
+            onRemoteCopyUnavailable: onClipboardRemoteCopyUnavailable,
+            onLocalFilePasteProgress: onClipboardLocalFilePasteProgress
         )
         // The session's hooks reach the server, which does not exist until the session does.
         let relay = Relay()
@@ -109,7 +111,9 @@ public final class RDPClipboardTestServer: @unchecked Sendable {
             handlers: handlers,
             fetchesRemoteCopies: fetchesRemoteCopies,
             sentPayloadHandler: { relay.server?.sessionSent($0) },
-            pendingEventHandler: { relay.server?.deliverPendingEvent() }
+            pendingEventHandler: { relay.server?.deliverPendingEvent() },
+            // On the session's thread, so `settle()` waits for the reads too.
+            scheduleFileRead: { read in relay.server?.perform(read) }
         )
         relay.server = self
         for message in RDPClipboardServerEnd.startMessages {
@@ -215,8 +219,10 @@ public final class RDPClipboardTestServer: @unchecked Sendable {
 
     /// Pastes the client's files on the server, once what is under way has settled: reads its
     /// file list, then each file through the session's file contents answers, a size and then
-    /// ranges of 4096 bytes, a folder's size 0 as the session answers it. Nil when the client's last copy offers no files, or the client fails a
-    /// request. One paste at a time.
+    /// ranges of 4096 bytes, a folder's size 0 as the session answers it. Nil when the client's
+    /// last copy offers no files, or the client fails a request. One paste at a time. It returns
+    /// once the last range arrives, which can be before `onClipboardLocalFilePasteProgress` has
+    /// its report: `settle()` waits for that too.
     public func pasteFiles() async -> [RDPClipboardLocalFile]? {
         await settle()
         return await withCheckedContinuation { continuation in
@@ -376,7 +382,9 @@ public final class RDPClipboardTestServer: @unchecked Sendable {
 
     private func deliverPendingEvent() {
         perform { [self] in
-            handlers.deliver(session.takePendingEvent(), from: session)
+            while let event = session.takePendingEvent() {
+                handlers.deliver(event, from: session)
+            }
         }
     }
 

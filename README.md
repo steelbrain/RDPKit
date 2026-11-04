@@ -345,11 +345,12 @@ let report = client.run(
   applies remote copies on another thread drop one its own publish replaced on
   the way.
 - Remote file downloads: `downloadPlan(limits:)` plans a remote copy's files
-  within `RDPClipboardDownloadLimits` (32 MiB, 1000 files, two minutes per
+  within `RDPClipboardDownloadLimits` (any size, 1000 files, two minutes per
   request by default), and `RDPClipboardSession.downloadRemoteFiles` fetches
   them into a folder, asking again for the rest of a range the server answers
   short, and ends once a newer copy replaces the one downloading or the
-  connection closes.
+  connection closes. `RDPClipboardSession.maximumFileByteCount` is the largest
+  file the server's clipboard takes.
 - `RDPKitAppKit`'s `RDPPasteboardClipboard` for macOS bridges the pasteboard
   and a session's clipboard: it publishes the user's text and files as they
   copy them, puts the server's text and downloaded files (quarantined) on the
@@ -360,10 +361,12 @@ let report = client.run(
   have no timeout, so to give one up, ignore answers for its stream ID and use
   a new one, below `RDPClipboardSession.firstDownloadStreamID`, for the next
   request.
-- Local file copies: `RDPClipboardLocalFile.read(contentsOf:)` reads files
-  within a byte limit, and `beginLocalCopy()` with
+- Local file copies: `RDPClipboardLocalFile(fileURL:)` publishes a file read
+  from disk as the server asks, and `RDPClipboardLocalFile.read(contentsOf:)`
+  reads files within a byte limit. `beginLocalCopy()` with
   `publishLocalFiles(_:forCopy:)` replaces the server's copy at once while they
   are read, then offers them unless a newer copy came in between.
+  `onClipboardLocalFilePasteProgress` reports how far a paste is.
 - Local-to-remote and remote-to-local clipboard file transfer plumbing. Local
   file names are relative paths (`\` or `/` separates folders) made valid on
   Windows before they are offered: forbidden characters, device names such as

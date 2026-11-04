@@ -69,6 +69,11 @@ public typealias RDPClipboardFileGroupDescriptorHandler = @Sendable (
 /// nothing then.
 public typealias RDPClipboardRemoteCopyUnavailableHandler = @Sendable (_ isEmpty: Bool, _ copyNumber: Int) -> Void
 public typealias RDPClipboardFileContentsHandler = @Sendable (RDPClipboardFileContentsResponse) -> Void
+/// Called as the server pastes files this client published, once each range it asks for of
+/// one is on its way, so an app can show the paste's progress. Nothing reports a paste's end:
+/// once it is done, or the user cancels it on the server, the server asks for nothing more. A
+/// file has gone whole once `sentByteCount` reaches `fileByteCount`.
+public typealias RDPClipboardLocalFilePasteProgressHandler = @Sendable (RDPClipboardLocalFilePasteProgress) -> Void
 public typealias RDPAudioSampleHandler = @Sendable (RDPAudioSample) -> Void
 /// How long the sample `onAudioSample` is about to get will wait before it is heard: the
 /// audio queued ahead of it and the output's latency, as `RDPAudioPlayer.playbackDelay`
@@ -118,6 +123,7 @@ struct RDPSessionCallbacks {
     var onClipboardFileGroupDescriptor: RDPClipboardFileGroupDescriptorHandler?
     var onClipboardFileContents: RDPClipboardFileContentsHandler?
     var onClipboardRemoteCopyUnavailable: RDPClipboardRemoteCopyUnavailableHandler?
+    var onClipboardLocalFilePasteProgress: RDPClipboardLocalFilePasteProgressHandler?
     var onAudioSample: RDPAudioSampleHandler?
     var audioPlaybackDelay: RDPAudioPlaybackDelayHandler?
     var onCertificate: RDPServerCertificateHandler?

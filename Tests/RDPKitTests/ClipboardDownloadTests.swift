@@ -126,7 +126,17 @@ private func waitUntil(_ condition: () -> Bool) async throws {
     }
 }
 
-private let writeNothing: @Sendable (Data, URL) throws -> Void = { _, _ in }
+/// A new folder in the temporary directory, for a test to remove once done.
+private func makeDownloadDirectory() throws -> URL {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    return directory
+}
+
+/// The names in `directory`, hidden ones included, sorted.
+private func entries(of directory: URL) throws -> [String] {
+    try FileManager.default.contentsOfDirectory(atPath: directory.path).sorted()
+}
 
 /// Each file gets a stream, a size request and as many range requests as the server's short
 /// answers take; folders are left out and each file is written under the name planning gave it.
@@ -137,8 +147,7 @@ func clipboardDownloadAsksForTheRestOfShortRangesAndWritesEachFile() async throw
     let server = ClipboardFileServer(contents: [Data(), large, Data(), Data([1, 2, 3, 4, 5])], maximumRangeByteCount: 300)
     let channel = NIOAsyncTestingChannel()
     let (session, copyNumber) = try await makeSession(holding: list, on: server, channel: channel)
-    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
-    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let directory = try makeDownloadDirectory()
     defer { try? FileManager.default.removeItem(at: directory) }
     let reports = Locked<[RDPClipboardDownloadProgress]>([])
 
@@ -158,6 +167,8 @@ func clipboardDownloadAsksForTheRestOfShortRangesAndWritesEachFile() async throw
         leavesOutFolders: true
     ))
     #expect(try download.fileURLs.map { try Data(contentsOf: $0) } == [large, Data(), Data([1, 2, 3, 4, 5])])
+    // No partial file is left.
+    #expect(try entries(of: directory) == names.sorted())
 
     let first = RDPClipboardSession.firstDownloadStreamID
     #expect(server.requests == [
@@ -203,16 +214,20 @@ func clipboardDownloadEndsOnAnAnswerItCannotUse() async throws {
         let server = ClipboardFileServer(contents: [Data(count: 10)], answer: answer)
         let channel = NIOAsyncTestingChannel()
         let (session, copyNumber) = try await makeSession(holding: list, on: server, channel: channel)
-        let wrote = Locked(false)
+        let directory = try makeDownloadDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let finished = Locked(false)
         await #expect(throws: error) {
             try await session.downloadRemoteFiles(
                 list.downloadPlan(),
                 copyNumber: copyNumber,
-                into: URL(fileURLWithPath: "/nonexistent"),
-                writeFile: { _, _ in wrote.withLock { $0 = true } }
+                into: directory,
+                finishFile: { _ in finished.withLock { $0 = true } }
             )
         }
-        #expect(!wrote.value)
+        #expect(!finished.value)
+        // The partial file is removed.
+        #expect(try entries(of: directory).isEmpty)
         try await channel.close()
     }
 }
@@ -225,17 +240,20 @@ func clipboardDownloadStopsWhereTheAnsweredSizesPassTheByteLimit() async throws 
     let server = ClipboardFileServer(contents: [Data(count: 600), Data(count: 600)])
     let channel = NIOAsyncTestingChannel()
     let (session, copyNumber) = try await makeSession(holding: list, on: server, channel: channel)
+    let directory = try makeDownloadDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
     let written = Locked<[String]>([])
 
     await #expect(throws: RDPClipboardDownloadError.totalByteLimitExceeded) {
         try await session.downloadRemoteFiles(
             list.downloadPlan(limits: RDPClipboardDownloadLimits(maximumTotalByteCount: 1_000)),
             copyNumber: copyNumber,
-            into: URL(fileURLWithPath: "/downloads"),
-            writeFile: { _, url in written.withLock { $0.append(url.lastPathComponent) } }
+            into: directory,
+            finishFile: { url in written.withLock { $0.append(url.lastPathComponent) } }
         )
     }
     #expect(written.value == ["a.txt"])
+    #expect(try entries(of: directory) == ["a.txt"])
     #expect(server.requests.last == .size(streamID: RDPClipboardSession.firstDownloadStreamID + 1, fileIndex: 1))
     try await channel.close()
 
@@ -248,16 +266,15 @@ func clipboardDownloadStopsWhereTheAnsweredSizesPassTheByteLimit() async throws 
         try await largeSession.downloadRemoteFiles(
             largeList.downloadPlan(limits: RDPClipboardDownloadLimits(maximumTotalByteCount: 1_000)),
             copyNumber: largeCopyNumber,
-            into: URL(fileURLWithPath: "/downloads"),
-            writeFile: writeNothing
+            into: directory
         )
     }
     #expect(largeServer.requests.count == 1)
     try await largeChannel.close()
 }
 
-/// More files than the limit, folders not counted, fail planning; an error the application's
-/// writer throws ends the download.
+/// More files than the limit, folders not counted, fail planning; an error `finishFile` throws
+/// ends the download, and leaves the file it got.
 @Test(.timeLimit(.minutes(1)))
 func clipboardDownloadLimitsTheFileCountAndEndsOnAWriteError() async throws {
     let list = fileList([("a.txt", Data([1])), ("b.txt", Data([2])), ("c.txt", Data([3]))], folders: ["photos"])
@@ -273,16 +290,28 @@ func clipboardDownloadLimitsTheFileCountAndEndsOnAWriteError() async throws {
     let channel = NIOAsyncTestingChannel()
     let (session, copyNumber) = try await makeSession(holding: list, on: server, channel: channel)
 
-    struct DiskFull: Error {}
-    await #expect(throws: DiskFull.self) {
+    let directory = try makeDownloadDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    struct NotMarked: Error {}
+    await #expect(throws: NotMarked.self) {
         try await session.downloadRemoteFiles(
             list.downloadPlan(),
             copyNumber: copyNumber,
-            into: URL(fileURLWithPath: "/downloads"),
-            writeFile: { _, _ in throw DiskFull() }
+            into: directory,
+            finishFile: { _ in throw NotMarked() }
         )
     }
     #expect(server.requests.count == 2)
+    #expect(try entries(of: directory) == ["a.txt"])
+
+    // A folder that is not there cannot take the file.
+    await #expect(throws: POSIXError.self) {
+        try await session.downloadRemoteFiles(
+            list.downloadPlan(),
+            copyNumber: copyNumber,
+            into: directory.appendingPathComponent("missing", isDirectory: true)
+        )
+    }
     try await channel.close()
 }
 
@@ -294,16 +323,18 @@ func clipboardDownloadGivesUpOnARequestLeftUnanswered() async throws {
     let server = ClipboardFileServer(contents: [Data([1])]) { _, _ in nil }
     let channel = NIOAsyncTestingChannel()
     let (session, copyNumber) = try await makeSession(holding: list, on: server, channel: channel)
+    let directory = try makeDownloadDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
 
     let download = Task {
-        try await session.downloadRemoteFiles(list.downloadPlan(), copyNumber: copyNumber, into: URL(fileURLWithPath: "/downloads"), writeFile: writeNothing)
+        try await session.downloadRemoteFiles(list.downloadPlan(), copyNumber: copyNumber, into: directory)
     }
     try await waitUntil { server.requests.count == 1 }
     await channel.testingEventLoop.advanceTime(by: .seconds(119))
     #expect(await outcome(of: download, within: 0.2) == nil)
 
     let retried = Task {
-        try await session.downloadRemoteFiles(list.downloadPlan(), copyNumber: copyNumber, into: URL(fileURLWithPath: "/downloads"), writeFile: writeNothing)
+        try await session.downloadRemoteFiles(list.downloadPlan(), copyNumber: copyNumber, into: directory)
     }
     try await waitUntil { server.requests.count == 2 }
     await channel.testingEventLoop.advanceTime(by: .seconds(120))
@@ -324,16 +355,13 @@ func clipboardDownloadTimesEachRequestOnItsOwn() async throws {
     let server = ClipboardFileServer(contents: [file]) { _, _ in nil }
     let channel = NIOAsyncTestingChannel()
     let (session, copyNumber) = try await makeSession(holding: list, on: server, channel: channel)
-    let written = Locked<Data?>(nil)
+    let directory = try makeDownloadDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
 
+    // Ranges that stay 1 KiB, as each answer comes after 110 seconds on the loop's clock.
     let plan = try list.downloadPlan(limits: RDPClipboardDownloadLimits(rangeByteCount: 1024))
     let download = Task {
-        try await session.downloadRemoteFiles(
-            plan,
-            copyNumber: copyNumber,
-            into: URL(fileURLWithPath: "/downloads"),
-            writeFile: { data, _ in written.withLock { $0 = data } }
-        )
+        try await session.downloadRemoteFiles(plan, copyNumber: copyNumber, into: directory)
     }
     // The size, then four ranges, each answered 110 seconds after it was asked for.
     for index in 0 ..< 5 {
@@ -344,7 +372,7 @@ func clipboardDownloadTimesEachRequestOnItsOwn() async throws {
     }
     let result = try #require(await outcome(of: download))
     #expect(try result.get().fileURLs.map(\.lastPathComponent) == ["slow.bin"])
-    #expect(written.value == file)
+    #expect(try Data(contentsOf: directory.appendingPathComponent("slow.bin")) == file)
     try await channel.close()
 }
 
@@ -362,8 +390,10 @@ func clipboardDownloadEndsOnceANewerCopyReplacesItsOwn() async throws {
         let server = ClipboardFileServer(contents: [Data([1])]) { _, _ in nil }
         let channel = NIOAsyncTestingChannel()
         let (session, copyNumber) = try await makeSession(holding: list, on: server, channel: channel)
+        let directory = try makeDownloadDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
         let download = Task {
-            try await session.downloadRemoteFiles(list.downloadPlan(), copyNumber: copyNumber, into: URL(fileURLWithPath: "/downloads"), writeFile: writeNothing)
+            try await session.downloadRemoteFiles(list.downloadPlan(), copyNumber: copyNumber, into: directory)
         }
         try await waitUntil { server.requests.count == 1 }
         try replace(session)
@@ -371,7 +401,7 @@ func clipboardDownloadEndsOnceANewerCopyReplacesItsOwn() async throws {
         #expect(throws: RDPClipboardDownloadError.replaced) { try result.get() }
 
         await #expect(throws: RDPClipboardDownloadError.replaced) {
-            try await session.downloadRemoteFiles(list.downloadPlan(), copyNumber: copyNumber, into: URL(fileURLWithPath: "/downloads"), writeFile: writeNothing)
+            try await session.downloadRemoteFiles(list.downloadPlan(), copyNumber: copyNumber, into: directory)
         }
         #expect(server.requests.count == 1)
         try await channel.close()
@@ -386,9 +416,11 @@ func clipboardDownloadEndsWithTheConnectionOrItsTask() async throws {
     let server = ClipboardFileServer(contents: [Data([1])]) { _, _ in nil }
     let channel = NIOAsyncTestingChannel()
     let (session, copyNumber) = try await makeSession(holding: list, on: server, channel: channel)
+    let directory = try makeDownloadDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
 
     let cancelled = Task {
-        try await session.downloadRemoteFiles(list.downloadPlan(), copyNumber: copyNumber, into: URL(fileURLWithPath: "/downloads"), writeFile: writeNothing)
+        try await session.downloadRemoteFiles(list.downloadPlan(), copyNumber: copyNumber, into: directory)
     }
     try await waitUntil { server.requests.count == 1 }
     cancelled.cancel()
@@ -396,14 +428,14 @@ func clipboardDownloadEndsWithTheConnectionOrItsTask() async throws {
     #expect(throws: CancellationError.self) { try cancellation.get() }
 
     let closed = Task {
-        try await session.downloadRemoteFiles(list.downloadPlan(), copyNumber: copyNumber, into: URL(fileURLWithPath: "/downloads"), writeFile: writeNothing)
+        try await session.downloadRemoteFiles(list.downloadPlan(), copyNumber: copyNumber, into: directory)
     }
     try await waitUntil { server.requests.count == 2 }
     try await channel.close()
     let result = try #require(await outcome(of: closed))
     #expect(throws: RDPClipboardDownloadError.sessionEnded) { try result.get() }
     await #expect(throws: RDPClipboardDownloadError.sessionEnded) {
-        try await session.downloadRemoteFiles(list.downloadPlan(), copyNumber: copyNumber, into: URL(fileURLWithPath: "/downloads"), writeFile: writeNothing)
+        try await session.downloadRemoteFiles(list.downloadPlan(), copyNumber: copyNumber, into: directory)
     }
     #expect(server.requests.count == 2)
 }
@@ -436,8 +468,9 @@ func clipboardDownloadEndsWithTheConnectionOrItsTask() async throws {
     #expect(try fileList([("Docs/a.txt", Data())]).downloadPlan().leavesOutFolders)
 }
 
-/// A download whose task is cancelled after the last answer writes nothing more and returns
-/// nothing: neither the file whose bytes arrived nor, once a file is written, the result.
+/// A download whose task is cancelled after the last answer finishes nothing more and returns
+/// nothing: the file whose bytes arrived does not get its name, and once a file is finished,
+/// the result does not come.
 @Test(.timeLimit(.minutes(1)))
 func clipboardDownloadCancelledAfterTheLastAnswerWritesNothingMore() async throws {
     for cancelsInWrite in [false, true] {
@@ -445,21 +478,23 @@ func clipboardDownloadCancelledAfterTheLastAnswerWritesNothingMore() async throw
         let server = ClipboardFileServer(contents: [Data([1, 2])])
         let channel = NIOAsyncTestingChannel()
         let (session, copyNumber) = try await makeSession(holding: list, on: server, channel: channel)
-        let writes = Locked(0)
+        let directory = try makeDownloadDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let finishes = Locked(0)
         let plan = try list.downloadPlan()
         // Its own task, which the download cancels from within.
         let download = Task {
             try await session.downloadRemoteFiles(
                 plan,
                 copyNumber: copyNumber,
-                into: URL(fileURLWithPath: "/downloads"),
+                into: directory,
                 progress: { report in
                     if !cancelsInWrite, report.receivedByteCount == 2 {
                         withUnsafeCurrentTask { $0?.cancel() }
                     }
                 },
-                writeFile: { _, _ in
-                    writes.withLock { $0 += 1 }
+                finishFile: { _ in
+                    finishes.withLock { $0 += 1 }
                     if cancelsInWrite {
                         withUnsafeCurrentTask { $0?.cancel() }
                     }
@@ -468,7 +503,8 @@ func clipboardDownloadCancelledAfterTheLastAnswerWritesNothingMore() async throw
         }
         let result = try #require(await outcome(of: download))
         #expect(throws: CancellationError.self) { try result.get() }
-        #expect(writes.value == (cancelsInWrite ? 1 : 0))
+        #expect(finishes.value == (cancelsInWrite ? 1 : 0))
+        #expect(try entries(of: directory) == (cancelsInWrite ? ["a.txt"] : []))
         try await channel.close()
     }
 }
@@ -481,19 +517,85 @@ func clipboardDownloadAwaitsEachReport() async throws {
     let server = ClipboardFileServer(contents: [Data([1]), Data([2])])
     let channel = NIOAsyncTestingChannel()
     let (session, copyNumber) = try await makeSession(holding: list, on: server, channel: channel)
+    let directory = try makeDownloadDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
     let reports = Locked<[RDPClipboardDownloadProgress]>([])
 
     _ = try await session.downloadRemoteFiles(
         list.downloadPlan(),
         copyNumber: copyNumber,
-        into: URL(fileURLWithPath: "/downloads"),
+        into: directory,
         progress: { report in
             try? await Task.sleep(for: .milliseconds(20))
             await MainActor.run { reports.withLock { $0.append(report) } }
-        },
-        writeFile: writeNothing
+        }
     )
 
     #expect(reports.value.map { [$0.fileOffset, Int($0.receivedByteCount)] } == [[0, 0], [0, 0], [0, 1], [1, 0], [1, 0], [1, 1]])
+    try await channel.close()
+}
+
+/// Ranges answered in full at once double, up to the most the limits allow, and the next
+/// download of the session starts where the last left off; a short answer grows nothing.
+@Test(.timeLimit(.minutes(1)))
+func clipboardDownloadRangesGrowWhileTheServerAnswersQuickly() async throws {
+    let file = Data((0 ..< 20_000).map { UInt8(truncatingIfNeeded: $0 * 3) })
+    let list = fileList([("a.bin", file)])
+    let server = ClipboardFileServer(contents: [file])
+    let channel = NIOAsyncTestingChannel()
+    let (session, copyNumber) = try await makeSession(holding: list, on: server, channel: channel)
+    let directory = try makeDownloadDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let plan = try list.downloadPlan(limits: RDPClipboardDownloadLimits(rangeByteCount: 512, maximumRangeByteCount: 4096))
+    func rangeRequests() -> [[UInt64]] {
+        server.requests.filter { $0.flags & RDPClipboardFileContentsFlags.range != 0 }
+            .map { [$0.position, UInt64($0.requestedByteCount)] }
+    }
+
+    let download = try await session.downloadRemoteFiles(plan, copyNumber: copyNumber, into: directory)
+    #expect(try Data(contentsOf: download.fileURLs[0]) == file)
+    #expect(rangeRequests() == [
+        [0, 512], [512, 1024], [1536, 2048], [3584, 4096], [7680, 4096], [11776, 4096], [15872, 4096], [19968, 32],
+    ])
+
+    _ = try await session.downloadRemoteFiles(plan, copyNumber: copyNumber, into: directory)
+    #expect(rangeRequests().dropFirst(8) == [[0, 4096], [4096, 4096], [8192, 4096], [12288, 4096], [16384, 3616]])
+    try await channel.close()
+
+    // A server that caps its answers keeps the ranges as they start.
+    let cappingServer = ClipboardFileServer(contents: [file], maximumRangeByteCount: 500)
+    let cappingChannel = NIOAsyncTestingChannel()
+    let (cappingSession, cappingCopyNumber) = try await makeSession(holding: list, on: cappingServer, channel: cappingChannel)
+    _ = try await cappingSession.downloadRemoteFiles(plan, copyNumber: cappingCopyNumber, into: directory)
+    #expect(Set(cappingServer.requests.dropFirst().prefix(30).map(\.requestedByteCount)) == [512])
+    try await cappingChannel.close()
+}
+
+/// A range answered after more than 4 seconds halves the next, down to where ranges start.
+@Test(.timeLimit(.minutes(1)))
+func clipboardDownloadRangesShrinkOnceAnAnswerIsSlow() async throws {
+    let file = Data((0 ..< 4096).map { UInt8($0 % 251) })
+    let list = fileList([("slow.bin", file)])
+    let server = ClipboardFileServer(contents: [file]) { _, _ in nil }
+    let channel = NIOAsyncTestingChannel()
+    let (session, copyNumber) = try await makeSession(holding: list, on: server, channel: channel)
+    let directory = try makeDownloadDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let plan = try list.downloadPlan(limits: RDPClipboardDownloadLimits(rangeByteCount: 512, maximumRangeByteCount: 4096))
+
+    let download = Task {
+        try await session.downloadRemoteFiles(plan, copyNumber: copyNumber, into: directory)
+    }
+    // The size, then ranges of which the second and the third are slow, on the loop's clock.
+    for (index, slowSeconds) in [0, 0, 5, 5, 0, 0, 0].enumerated() {
+        try await waitUntil { server.requests.count == index + 1 }
+        await channel.testingEventLoop.advanceTime(by: .seconds(Int64(slowSeconds)))
+        _ = try session.receive(RDPClipboardPDU.parse(from: server.answer(server.requests[index]).encoded()))
+    }
+    let result = try #require(await outcome(of: download))
+    #expect(try result.get().fileURLs.count == 1)
+    #expect(server.requests.dropFirst().map { [$0.position, UInt64($0.requestedByteCount)] } == [
+        [0, 512], [512, 1024], [1536, 512], [2048, 512], [2560, 1024], [3584, 512],
+    ])
     try await channel.close()
 }

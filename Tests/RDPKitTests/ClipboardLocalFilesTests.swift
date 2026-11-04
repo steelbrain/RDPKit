@@ -187,3 +187,168 @@ private func hasBytesToRead(_ fileHandle: FileHandle) -> Bool {
     #expect(!session.serverHoldsLocalCopy)
     _ = try channel.finish()
 }
+
+/// A file on disk is published under the name `read(contentsOf:)` gives it, with the size it
+/// has, and none of its bytes; a folder, a file that is not there and a URL that names no file
+/// each fail.
+@Test func localFilesOnDiskKeepTheirNameAndSizeOnly() throws {
+    let directory = try directory(with: ["a\\b.txt": Data("hello".utf8), "empty.bin": Data()])
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let url = directory.appendingPathComponent("a\\b.txt")
+    let missing = directory.appendingPathComponent("missing.txt")
+    let web = try #require(URL(string: "https://example.com/notes.txt"))
+
+    let file = try RDPClipboardLocalFile(fileURL: url)
+    #expect(file.descriptor.fileName == "a_b.txt")
+    #expect(file.descriptor.fileSize == 5)
+    #expect(file.contents.isEmpty)
+    #expect(file.fileURL == url.standardizedFileURL)
+    #expect(try RDPClipboardLocalFile(fileURL: url) == file)
+    #expect(try RDPClipboardLocalFile(fileURL: directory.appendingPathComponent("empty.bin")).descriptor.fileSize == 0)
+    #expect(RDPClipboardLocalFile(fileName: "a_b.txt", contents: Data("hello".utf8)).fileURL == nil)
+    // A limit the size is checked against before any byte is read.
+    #expect(try RDPClipboardLocalFile(fileURL: url, maximumByteCount: 5) == file)
+    #expect(throws: RDPClipboardLocalFileReadError.fileTooLarge(url)) {
+        try RDPClipboardLocalFile(fileURL: url, maximumByteCount: 4)
+    }
+
+    #expect(throws: RDPClipboardLocalFileReadError.notARegularFile(directory)) {
+        try RDPClipboardLocalFile(fileURL: directory)
+    }
+    #expect(throws: RDPClipboardLocalFileReadError.unreadable(missing)) {
+        try RDPClipboardLocalFile(fileURL: missing)
+    }
+    #expect(throws: RDPClipboardLocalFileReadError.invalidFileName(web)) {
+        try RDPClipboardLocalFile(fileURL: web)
+    }
+}
+
+/// What a session sent in answer to file contents requests, in order, of the whole messages
+/// in `sent`.
+private func fileContentsResponses(_ sent: Locked<[Data]>) throws -> [RDPClipboardFileContentsResponse] {
+    try sent.value.compactMap { try RDPClipboardFileContentsResponse.parseIfPresent(from: RDPClipboardPDU.parse(from: $0)) }
+}
+
+/// The ranges of a file on disk are read where the session schedules them, in order, and
+/// answered there, each with its progress queued for the session's thread, the newest of a file
+/// only. A range past the file's end, a file shorter than it was published, and one put in its
+/// place, are refused.
+@Test func aSessionReadsTheRangesOfAFileOnDiskWhereItSchedulesThem() throws {
+    let contents = Data((0 ..< 10_000).map { UInt8(truncatingIfNeeded: $0 * 7) })
+    let directory = try directory(with: ["large.bin": contents])
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let url = directory.appendingPathComponent("large.bin")
+    let channel = EmbeddedChannel()
+    let sent = Locked<[Data]>([])
+    let reads = Locked<[@Sendable () -> Void]>([])
+    let session = RDPClipboardSession(
+        userChannelID: 1006,
+        staticChannelID: 1007,
+        channel: channel,
+        sentPayloadHandler: { payload in sent.withLock { $0.append(payload) } },
+        scheduleFileRead: { read in reads.withLock { $0.append(read) } }
+    )
+    session.publishLocalFiles([try RDPClipboardLocalFile(fileURL: url)])
+    func runReads() {
+        for read in reads.withLock({ reads in defer { reads = [] }; return reads }) {
+            read()
+        }
+    }
+    func progress(_ sentByteCount: UInt64) -> RDPClipboardEvent {
+        .localFilePasteProgress(RDPClipboardLocalFilePasteProgress(
+            fileOffset: 0,
+            fileCount: 1,
+            fileName: "large.bin",
+            sentByteCount: sentByteCount,
+            fileByteCount: 10_000
+        ))
+    }
+
+    // The size goes at once.
+    #expect(session.respondToFileContentsRequest(.size(streamID: 1, fileIndex: 0)) == nil)
+    #expect(try fileContentsResponses(sent) == [.fileSize(streamID: 1, byteCount: 10_000)])
+    #expect(session.respondToFileContentsRequest(.range(streamID: 2, fileIndex: 0, position: 0, requestedByteCount: 4096)) == nil)
+    #expect(session.respondToFileContentsRequest(.range(streamID: 3, fileIndex: 0, position: 8192, requestedByteCount: 0x10000)) == nil)
+    #expect(session.respondToFileContentsRequest(.range(streamID: 4, fileIndex: 0, position: 10_001, requestedByteCount: 1)) == nil)
+    #expect(try fileContentsResponses(sent).count == 1)
+    runReads()
+    #expect(try fileContentsResponses(sent).dropFirst() == [
+        .range(streamID: 2, data: contents.prefix(4096)),
+        .range(streamID: 3, data: contents.suffix(from: 8192)),
+        .failure(streamID: 4),
+    ])
+    #expect(session.takePendingEvent() == progress(10_000))
+    #expect(session.takePendingEvent() == nil)
+
+    // Shorter than published.
+    try contents.prefix(5_000).write(to: url)
+    #expect(session.respondToFileContentsRequest(.range(streamID: 5, fileIndex: 0, position: 4096, requestedByteCount: 4096)) == nil)
+    runReads()
+    #expect(try fileContentsResponses(sent).last == .failure(streamID: 5))
+
+    // Another file in its place, as long as it was.
+    try FileManager.default.removeItem(at: url)
+    try contents.write(to: url)
+    #expect(session.respondToFileContentsRequest(.range(streamID: 6, fileIndex: 0, position: 0, requestedByteCount: 1)) == nil)
+    runReads()
+    #expect(try fileContentsResponses(sent).last == .failure(streamID: 6))
+    #expect(session.takePendingEvent() == nil)
+    _ = try channel.finish()
+}
+
+/// Range requests for files on disk wait to be read up to a limit, past which they are refused
+/// at once.
+@Test func aSessionRefusesRangesOfFilesOnDiskPastTheWaitingLimit() throws {
+    let directory = try directory(with: ["notes.txt": Data("notes".utf8)])
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let channel = EmbeddedChannel()
+    let sent = Locked<[Data]>([])
+    let reads = Locked<[@Sendable () -> Void]>([])
+    let session = RDPClipboardSession(
+        userChannelID: 1006,
+        staticChannelID: 1007,
+        channel: channel,
+        sentPayloadHandler: { payload in sent.withLock { $0.append(payload) } },
+        scheduleFileRead: { read in reads.withLock { $0.append(read) } }
+    )
+    session.publishLocalFiles([try RDPClipboardLocalFile(fileURL: directory.appendingPathComponent("notes.txt"))])
+    let limit = RDPClipboardSession.maximumWaitingFileReadCount
+    for streamID in 0 ... UInt32(limit) {
+        session.respondToFileContentsRequest(.range(streamID: streamID, fileIndex: 0, position: 0, requestedByteCount: 5))
+    }
+    #expect(reads.value.count == limit)
+    #expect(try fileContentsResponses(sent) == [.failure(streamID: UInt32(limit))])
+
+    // Each read done makes room for another.
+    reads.withLock { $0.removeFirst() }()
+    session.respondToFileContentsRequest(.range(streamID: 100, fileIndex: 0, position: 0, requestedByteCount: 5))
+    #expect(reads.value.count == limit)
+    #expect(try fileContentsResponses(sent).count == 2)
+    _ = try channel.finish()
+}
+
+/// The largest file the server's clipboard takes follows the capabilities it sent before its
+/// Monitor Ready: none without CB_STREAM_FILECLIP_ENABLED or capabilities, 4 GiB less a byte
+/// without CB_HUGE_FILE_SUPPORT_ENABLED, any size with both.
+@Test func clipboardSessionSaysTheLargestFileTheServerTakes() throws {
+    let stream = RDPClipboardCapabilityFlags.streamFileClipEnabled
+    let huge = RDPClipboardCapabilityFlags.hugeFileSupportEnabled
+    let cases: [(UInt32?, UInt64?)] = [
+        (nil, nil),
+        (0, nil),
+        (huge, nil),
+        (stream | RDPClipboardCapabilityFlags.useLongFormatNames, UInt64(UInt32.max)),
+        (stream | huge, .max),
+    ]
+    for (serverFlags, maximumFileByteCount) in cases {
+        let channel = EmbeddedChannel()
+        let session = RDPClipboardSession(userChannelID: 1006, staticChannelID: 1007, channel: channel)
+        if let serverFlags {
+            _ = try session.receive(RDPClipboardPDU.parse(from: RDPClipboardCapabilitiesPDU(generalFlags: serverFlags).encoded()))
+        }
+        #expect(session.maximumFileByteCount == nil)
+        _ = try session.receive(RDPClipboardPDU(messageType: RDPClipboardMessageType.monitorReady))
+        #expect(session.maximumFileByteCount == maximumFileByteCount)
+        _ = try channel.finish()
+    }
+}

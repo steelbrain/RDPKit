@@ -109,7 +109,7 @@ final class RDPRemoteSessionClipboard {
     static func message(
         for event: RDPPasteboardClipboard.Event,
         limits: RDPClipboardDownloadLimits = RDPClipboardDownloadLimits(),
-        maximumLocalFileByteCount: Int = RDPClipboardLocalFile.defaultMaximumTotalByteCount
+        maximumLocalFileByteCount: Int = .max
     ) -> String {
         switch event {
         case .localTextShared:
@@ -130,6 +130,10 @@ final class RDPRemoteSessionClipboard {
                 "Local file clipboard could not be read; remote clipboard cleared."
             case .totalByteLimitExceeded:
                 "Local clipboard files exceed \(mebibytes(maximumLocalFileByteCount)) MiB; remote clipboard cleared."
+            case .fileTooLarge:
+                "Local file is larger than the remote computer takes; remote clipboard cleared."
+            case .filesNotSupported:
+                "The remote computer takes no files; remote clipboard cleared."
             }
         case .pasteboardAccessDenied:
             "Clipboard access is off for RDPClient in System Settings."

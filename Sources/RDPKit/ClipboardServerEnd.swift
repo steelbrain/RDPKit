@@ -9,6 +9,7 @@ package struct RDPClipboardHandlers: Sendable {
     package var onFileGroupDescriptor: RDPClipboardFileGroupDescriptorHandler?
     package var onFileContents: RDPClipboardFileContentsHandler?
     package var onRemoteCopyUnavailable: RDPClipboardRemoteCopyUnavailableHandler?
+    package var onLocalFilePasteProgress: RDPClipboardLocalFilePasteProgressHandler?
 
     package init(
         onReady: RDPClipboardSessionHandler? = nil,
@@ -16,7 +17,8 @@ package struct RDPClipboardHandlers: Sendable {
         onContent: RDPClipboardContentHandler? = nil,
         onFileGroupDescriptor: RDPClipboardFileGroupDescriptorHandler? = nil,
         onFileContents: RDPClipboardFileContentsHandler? = nil,
-        onRemoteCopyUnavailable: RDPClipboardRemoteCopyUnavailableHandler? = nil
+        onRemoteCopyUnavailable: RDPClipboardRemoteCopyUnavailableHandler? = nil,
+        onLocalFilePasteProgress: RDPClipboardLocalFilePasteProgressHandler? = nil
     ) {
         self.onReady = onReady
         self.onText = onText
@@ -24,6 +26,7 @@ package struct RDPClipboardHandlers: Sendable {
         self.onFileGroupDescriptor = onFileGroupDescriptor
         self.onFileContents = onFileContents
         self.onRemoteCopyUnavailable = onRemoteCopyUnavailable
+        self.onLocalFilePasteProgress = onLocalFilePasteProgress
     }
 
     /// Hands `event` to its handler, a remote copy with its number.
@@ -45,6 +48,8 @@ package struct RDPClipboardHandlers: Sendable {
             onRemoteCopyUnavailable?(isEmpty, clipboard.deliveredRemoteCopyNumber)
         case let .fileContents(contents):
             onFileContents?(contents)
+        case let .localFilePasteProgress(progress):
+            onLocalFilePasteProgress?(progress)
         case nil:
             break
         }
@@ -54,13 +59,15 @@ package struct RDPClipboardHandlers: Sendable {
 extension RDPClipboardSession {
     /// A session over `channel`, made as a connection makes one: it fetches rich formats when
     /// `handlers` has `onContent`, and file lists when it has `onFileGroupDescriptor`.
-    /// `sentPayloadHandler` gets each message it sends, whole.
+    /// `sentPayloadHandler` gets each message it sends, whole, and `scheduleFileRead` runs
+    /// the reads of published files on disk.
     package static func make(
         channel: Channel,
         handlers: RDPClipboardHandlers,
         fetchesRemoteCopies: Bool,
         sentPayloadHandler: @escaping @Sendable (Data) -> Void,
-        pendingEventHandler: @escaping @Sendable () -> Void
+        pendingEventHandler: @escaping @Sendable () -> Void,
+        scheduleFileRead: @escaping @Sendable (@escaping @Sendable () -> Void) -> Void
     ) -> RDPClipboardSession {
         RDPClipboardSession(
             userChannelID: 1007,
@@ -70,7 +77,8 @@ extension RDPClipboardSession {
             requestsFileLists: handlers.onFileGroupDescriptor != nil,
             fetchesRemoteCopies: fetchesRemoteCopies,
             sentPayloadHandler: sentPayloadHandler,
-            pendingEventHandler: pendingEventHandler
+            pendingEventHandler: pendingEventHandler,
+            scheduleFileRead: scheduleFileRead
         )
     }
 

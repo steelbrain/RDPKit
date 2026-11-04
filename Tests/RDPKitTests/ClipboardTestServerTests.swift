@@ -42,17 +42,17 @@ func clipboardTestServerAnswersDownloads() async throws {
     server.copyFiles(files)
     await server.settle()
     let (list, copyNumber) = try #require(lists.value.last)
-    let written = Locked<[String: Data]>([:])
+    let directory = try makeDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
 
     let download = try await server.session.downloadRemoteFiles(
-        list.downloadPlan(limits: RDPClipboardDownloadLimits(rangeByteCount: 512)),
+        list.downloadPlan(limits: RDPClipboardDownloadLimits(rangeByteCount: 512, maximumRangeByteCount: 512)),
         copyNumber: copyNumber,
-        into: URL(fileURLWithPath: "/downloads"),
-        writeFile: { data, url in written.withLock { $0[url.lastPathComponent] = data } }
+        into: directory
     )
 
     #expect(download.fileURLs.map(\.lastPathComponent) == ["a.txt", "b.bin"])
-    #expect(written.value == ["a.txt": Data("first".utf8), "b.bin": large])
+    #expect(try download.fileURLs.map { try Data(contentsOf: $0) } == [Data("first".utf8), large])
     // A size and a range for the first file, a size and four ranges for the second.
     #expect(server.fileRequestCount == 7)
 
@@ -61,8 +61,7 @@ func clipboardTestServerAnswersDownloads() async throws {
         try await server.session.downloadRemoteFiles(
             list.downloadPlan(),
             copyNumber: copyNumber,
-            into: URL(fileURLWithPath: "/downloads"),
-            writeFile: { _, _ in }
+            into: directory
         )
     }
     while server.fileRequestCount == 7 {
@@ -77,8 +76,7 @@ func clipboardTestServerAnswersDownloads() async throws {
         try await server.session.downloadRemoteFiles(
             list.downloadPlan(),
             copyNumber: copyNumber,
-            into: URL(fileURLWithPath: "/downloads"),
-            writeFile: { _, _ in }
+            into: directory
         )
     }
 }
@@ -153,15 +151,11 @@ func clipboardTestServerAnswersFileRequestsAsTold() async throws {
     server.copyFiles([RDPClipboardLocalFile(fileName: "a.bin", contents: contents)])
     await server.settle()
     let (list, copyNumber) = try #require(lists.value.last)
+    let directory = try makeDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
     @Sendable func download() async throws -> Data? {
-        let written = Locked<Data?>(nil)
-        _ = try await server.session.downloadRemoteFiles(
-            list.downloadPlan(),
-            copyNumber: copyNumber,
-            into: URL(fileURLWithPath: "/downloads"),
-            writeFile: { data, _ in written.withLock { $0 = data } }
-        )
-        return written.value
+        let download = try await server.session.downloadRemoteFiles(list.downloadPlan(), copyNumber: copyNumber, into: directory)
+        return try download.fileURLs.first.map { try Data(contentsOf: $0) }
     }
 
     let requests = Locked<[RDPClipboardTestServer.FileRequest]>([])
@@ -237,6 +231,31 @@ func clipboardTestServerRecordsTheClientsCopiesAndPastesItsFiles() async throws 
     descriptor.fileSize = 10
     server.session.publishLocalFiles([RDPClipboardLocalFile(descriptor: descriptor, contents: hello)])
     #expect(try await pasteFiles(from: server, within: .seconds(10)) == nil)
+}
+
+/// The server's paste of the client's files reaches `onClipboardLocalFilePasteProgress` range by
+/// range.
+@Test(.timeLimit(.minutes(1)))
+func clipboardTestServerReportsThePasteProgressOfTheClientsFiles() async throws {
+    let reports = Locked<[RDPClipboardLocalFilePasteProgress]>([])
+    let server = try await RDPClipboardTestServer(onClipboardLocalFilePasteProgress: { progress in
+        reports.withLock { $0.append(progress) }
+    })
+    server.session.publishLocalFiles([
+        RDPClipboardLocalFile(fileName: "notes.txt", contents: Data("notes".utf8)),
+        RDPClipboardLocalFile(fileName: "empty.txt", contents: Data()),
+        RDPClipboardLocalFile(fileName: "large.bin", contents: Data(count: 10_000)),
+    ])
+    #expect(await server.pasteFiles()?.count == 3)
+    // The paste ends with the last range, before its report is handed over.
+    await server.settle()
+    // The test server asks for each size, then for ranges of 4096 bytes, and no range of an empty file.
+    #expect(reports.value == [
+        RDPClipboardLocalFilePasteProgress(fileOffset: 0, fileCount: 3, fileName: "notes.txt", sentByteCount: 5, fileByteCount: 5),
+        RDPClipboardLocalFilePasteProgress(fileOffset: 2, fileCount: 3, fileName: "large.bin", sentByteCount: 4096, fileByteCount: 10_000),
+        RDPClipboardLocalFilePasteProgress(fileOffset: 2, fileCount: 3, fileName: "large.bin", sentByteCount: 8192, fileByteCount: 10_000),
+        RDPClipboardLocalFilePasteProgress(fileOffset: 2, fileCount: 3, fileName: "large.bin", sentByteCount: 10_000, fileByteCount: 10_000),
+    ])
 }
 
 private struct PasteDidNotEnd: Error {}
@@ -381,3 +400,30 @@ func clipboardTestServerSettlesWithTheMainQueue() async throws {
     #expect(server.isSettled)
 }
 
+/// A file on disk pastes through the test server, which waits for its reads as for any work.
+@Test(.timeLimit(.minutes(1)))
+func clipboardTestServerPastesAFileOnDisk() async throws {
+    let contents = Data((0 ..< 10_000).map { UInt8(truncatingIfNeeded: $0 * 13) })
+    let directory = try makeDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let url = directory.appendingPathComponent("large.bin")
+    try contents.write(to: url)
+    let reports = Locked<[UInt64]>([])
+    let server = try await RDPClipboardTestServer(onClipboardLocalFilePasteProgress: { progress in
+        reports.withLock { $0.append(progress.sentByteCount) }
+    })
+    #expect(server.session.maximumFileByteCount == .max)
+
+    server.session.publishLocalFiles([try RDPClipboardLocalFile(fileURL: url)])
+    let pasted = try #require(await server.pasteFiles())
+    #expect(pasted.map(\.contents) == [contents])
+    await server.settle()
+    #expect(reports.value.last == 10_000)
+}
+
+/// A new folder in the temporary directory, for a test to remove once done.
+private func makeDirectory() throws -> URL {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    return directory
+}

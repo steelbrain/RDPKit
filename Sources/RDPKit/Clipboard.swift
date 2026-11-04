@@ -56,7 +56,10 @@ enum RDPClipboardMessageFlags {
 
 enum RDPClipboardCapabilityFlags {
     static let useLongFormatNames: UInt32 = 0x0000_0002
+    /// Files go both ways, through File Contents Requests ([MS-RDPECLIP] 2.2.2.1.1.1).
     static let streamFileClipEnabled: UInt32 = 0x0000_0004
+    /// Files may be larger than 4,294,967,295 bytes.
+    static let hugeFileSupportEnabled: UInt32 = 0x0000_0020
 }
 
 private enum RDPClipboardCapabilitySetType {
@@ -225,6 +228,7 @@ struct RDPClipboardTemporaryDirectoryPDU: Equatable, Sendable {
 struct RDPClipboardCapabilitiesPDU: Equatable, Sendable {
     static let defaultGeneralFlags: UInt32 = RDPClipboardCapabilityFlags.useLongFormatNames
         | RDPClipboardCapabilityFlags.streamFileClipEnabled
+        | RDPClipboardCapabilityFlags.hugeFileSupportEnabled
 
     var version: UInt32
     var generalFlags: UInt32
@@ -721,9 +725,19 @@ public struct RDPClipboardFileDescriptorW: Equatable, Sendable {
     }
 }
 
+/// A file this client publishes: its bytes in `contents`, or, made with
+/// ``init(fileURL:maximumByteCount:)``, on disk, read a range at a time as the server asks for them.
 public struct RDPClipboardLocalFile: Equatable, Sendable {
     public var descriptor: RDPClipboardFileDescriptorW
+    /// The file's bytes; empty for a file on disk.
     public var contents: Data
+    /// The file on disk the server reads, nil for one held in `contents`.
+    let fileReference: RDPClipboardLocalFileReference?
+
+    /// The file ranges are read from, as ``init(fileURL:maximumByteCount:)`` got it; nil for one in `contents`.
+    public var fileURL: URL? {
+        fileReference?.url
+    }
 
     public init(
         fileName: String,
@@ -739,11 +753,19 @@ public struct RDPClipboardLocalFile: Equatable, Sendable {
             fileName: fileName
         )
         self.contents = contents
+        fileReference = nil
     }
 
     public init(descriptor: RDPClipboardFileDescriptorW, contents: Data) {
         self.descriptor = descriptor
         self.contents = contents
+        fileReference = nil
+    }
+
+    init(descriptor: RDPClipboardFileDescriptorW, fileReference: RDPClipboardLocalFileReference) {
+        self.descriptor = descriptor
+        contents = Data()
+        self.fileReference = fileReference
     }
 
     /// `files` under names Windows accepts and tells apart, as `publishLocalFiles` offers them.
@@ -997,12 +1019,23 @@ public final class RDPClipboardSession: @unchecked Sendable {
     /// publish until a server copy the session takes retires it. A restart of the server's
     /// clipboard leaves it as it is, as it leaves the local content.
     private var isOfferingPublishedCopy = false
-    /// The requests of ``downloadRemoteFiles(_:copyNumber:into:progress:writeFile:)``
+    /// The requests of ``downloadRemoteFiles(_:copyNumber:into:progress:finishFile:)``
     /// that wait for an answer, by stream.
     private var fileContentsWaiters: [UInt32: RDPClipboardFileContentsWaiter] = [:]
     private var lastDownloadStreamID = UInt32.max
-    /// Set once the connection has closed, so no download waits for an answer again.
-    private var areDownloadsEnded = false
+    /// The range size downloads have grown or shrunk to, which the next download starts from.
+    private var adaptedDownloadRangeByteCount: UInt32?
+    /// Set once the connection has closed, so no download waits for an answer again, and no
+    /// published file is read for the server.
+    private var isClosed = false
+    /// Runs the reads of published files on disk, one at a time, in the order the server asked.
+    private let scheduleFileRead: @Sendable (@escaping @Sendable () -> Void) -> Void
+    /// Range requests for files on disk not yet answered; past
+    /// `maximumWaitingFileReadCount`, a request is refused rather than queued.
+    private var waitingFileReadCount = 0
+    /// The progress of pastes from files on disk, not yet handed over, oldest first, one per
+    /// file of the copy.
+    private var pendingPasteProgress: [RDPClipboardLocalFilePasteProgress] = []
 
     init(
         userChannelID: UInt16,
@@ -1016,7 +1049,8 @@ public final class RDPClipboardSession: @unchecked Sendable {
         sentMessageHandler: RDPClipboardSentMessageHandler? = nil,
         sentPayloadHandler: (@Sendable (Data) -> Void)? = nil,
         pendingEventHandler: @escaping @Sendable () -> Void = {},
-        isCancelled: @escaping @Sendable () -> Bool = { false }
+        isCancelled: @escaping @Sendable () -> Bool = { false },
+        scheduleFileRead: (@Sendable (@escaping @Sendable () -> Void) -> Void)? = nil
     ) {
         self.userChannelID = userChannelID
         self.staticChannelID = staticChannelID
@@ -1031,6 +1065,8 @@ public final class RDPClipboardSession: @unchecked Sendable {
         self.sentPayloadHandler = sentPayloadHandler
         self.pendingEventHandler = pendingEventHandler
         self.isCancelled = isCancelled
+        let fileQueue = DispatchQueue(label: "RDPKit.RDPClipboardSession.files", qos: .userInitiated)
+        self.scheduleFileRead = scheduleFileRead ?? { fileQueue.async(execute: $0) }
         channel.closeFuture.whenComplete { [weak self] _ in
             self?.endDownloads()
         }
@@ -1107,12 +1143,21 @@ public final class RDPClipboardSession: @unchecked Sendable {
         return queuedEvent
     }
 
-    /// The event turning fetching on found for a copy announced while it was off, once; nil
-    /// when there is none, or a newer copy, local or remote, has replaced that one since.
+    /// The next event another thread queued, once: what turning fetching on found for a copy
+    /// announced while it was off, unless a newer copy, local or remote, has replaced that one
+    /// since, then the progress of pastes from files on disk; nil when there is none.
     package func takePendingEvent() -> RDPClipboardEvent? {
         lock.withLock {
-            defer { pendingEvent = nil }
-            return pendingEvent.flatMap { deliverable($0.event, of: $0.copyID) }
+            if let pending = pendingEvent {
+                pendingEvent = nil
+                if let event = deliverable(pending.event, of: pending.copyID) {
+                    return event
+                }
+            }
+            guard !pendingPasteProgress.isEmpty else {
+                return nil
+            }
+            return .localFilePasteProgress(pendingPasteProgress.removeFirst())
         }
     }
 
@@ -1290,8 +1335,7 @@ public final class RDPClipboardSession: @unchecked Sendable {
             return nil
         }
         if let request = try RDPClipboardFileContentsRequestPDU.parseIfPresent(from: pdu) {
-            respondToFileContentsRequest(request)
-            return nil
+            return respondToFileContentsRequest(request)
         }
         if let response = try RDPClipboardFileContentsResponse.parseIfPresent(from: pdu) {
             guard response.streamID < Self.firstDownloadStreamID else {
@@ -1471,6 +1515,24 @@ public final class RDPClipboardSession: @unchecked Sendable {
         serverGeneralFlags & RDPClipboardCapabilitiesPDU.defaultGeneralFlags
     }
 
+    /// The largest file the server's clipboard takes or gives, as the capabilities it sent before
+    /// its Monitor Ready say ([MS-RDPECLIP] 2.2.2.1.1.1), so it is known when `onClipboardReady`
+    /// runs: nil when it transfers no files, as a server that does not advertise
+    /// CB_STREAM_FILECLIP_ENABLED, or sends no capabilities, cannot. KRdp 6.8 copies only text.
+    /// 4,294,967,295 bytes, unless it also advertises CB_HUGE_FILE_SUPPORT_ENABLED, which this
+    /// client does: then any size. Files go through File Contents Requests one range at a time,
+    /// so no file is held in memory whole. A server can still fail ranges it advertises:
+    /// GNOME Remote Desktop 51 takes files of any size, but fails each range of a file it
+    /// copies whose offset has bit 31 set, from 2 GiB to 4 GiB and so on, so its files over
+    /// 2 GiB do not download.
+    public var maximumFileByteCount: UInt64? {
+        let flags = lock.withLock { negotiatedGeneralFlags }
+        guard flags & RDPClipboardCapabilityFlags.streamFileClipEnabled != 0 else {
+            return nil
+        }
+        return flags & RDPClipboardCapabilityFlags.hugeFileSupportEnabled != 0 ? .max : UInt64(UInt32.max)
+    }
+
     private func sendFormatListResponse(ok: Bool) {
         send(RDPClipboardPDU(
             messageType: RDPClipboardMessageType.formatListResponse,
@@ -1539,7 +1601,7 @@ public final class RDPClipboardSession: @unchecked Sendable {
         formatDataRequests += requests.map { RDPClipboardFormatDataRequestSlot(copyID: remoteCopyID, response: $0) }
     }
 
-    /// The first stream ID ``downloadRemoteFiles(_:copyNumber:into:progress:writeFile:)``
+    /// The first stream ID ``downloadRemoteFiles(_:copyNumber:into:progress:finishFile:)``
     /// uses; the answers to streams from it up never reach `onClipboardFileContents`, so an
     /// application's own requests use streams below it.
     public static let firstDownloadStreamID: UInt32 = 0x8000_0000
@@ -1585,7 +1647,7 @@ public final class RDPClipboardSession: @unchecked Sendable {
     /// ``RDPClipboardDownloadError/replaced`` once a newer copy has replaced remote copy
     /// `copyNumber`. Callers hold `lock`.
     private func checkDownloadLocked(of copyNumber: Int) throws {
-        guard !areDownloadsEnded else {
+        guard !isClosed else {
             throw RDPClipboardDownloadError.sessionEnded
         }
         guard remoteCopyID == copyNumber else {
@@ -1601,9 +1663,41 @@ public final class RDPClipboardSession: @unchecked Sendable {
         }
     }
 
+    /// The size of a download's next range: the one the session's downloads adapted to, kept
+    /// within `range`, or its least.
+    func downloadRangeByteCount(within range: ClosedRange<UInt32>) -> UInt32 {
+        lock.withLock { adaptedDownloadRangeByteCount.map { min(max($0, range.lowerBound), range.upperBound) } ?? range.lowerBound }
+    }
+
+    /// Doubles the range size after a range of `byteCount` answered in full within
+    /// `fastRangeAnswerDuration`, and halves it after one answered in more than
+    /// `slowRangeAnswerDuration`, within `range`. A short answer, as at a file's end or from a
+    /// server that caps its answers, does not grow it.
+    func adaptDownloadRangeByteCount(
+        _ byteCount: UInt32,
+        within range: ClosedRange<UInt32>,
+        answeredInFull: Bool,
+        after duration: TimeAmount
+    ) {
+        let adapted: UInt32
+        if duration > Self.slowRangeAnswerDuration {
+            adapted = byteCount / 2
+        } else if answeredInFull, duration < Self.fastRangeAnswerDuration {
+            adapted = byteCount.multipliedReportingOverflow(by: 2).overflow ? range.upperBound : byteCount * 2
+        } else {
+            return
+        }
+        lock.withLock { adaptedDownloadRangeByteCount = min(max(adapted, range.lowerBound), range.upperBound) }
+    }
+
+    /// The time on the channel's event loop, which a test's loop sets.
+    var eventLoopNow: NIODeadline {
+        channel.eventLoop.now
+    }
+
     private func endDownloads() {
         let waiters = lock.withLock {
-            areDownloadsEnded = true
+            isClosed = true
             defer { fileContentsWaiters = [:] }
             return Array(fileContentsWaiters.values)
         }
@@ -1692,13 +1786,21 @@ public final class RDPClipboardSession: @unchecked Sendable {
         return data.flatMap { $0.count <= RDPClipboardLimits.maximumFormatDataByteCount ? $0 : nil }
     }
 
-    func respondToFileContentsRequest(_ request: RDPClipboardFileContentsRequestPDU) {
+    /// Requests for ranges of files on disk that may wait to be read; Windows 11 and GNOME
+    /// Remote Desktop 51 ask for one range at a time.
+    static let maximumWaitingFileReadCount = 64
+
+    /// Answers the server's request for a published file's size or a range of its bytes, and
+    /// returns the paste's progress once a range is on its way. A range of a file on disk is
+    /// read and sent off this thread, and its progress handed over as a pending event.
+    @discardableResult
+    func respondToFileContentsRequest(_ request: RDPClipboardFileContentsRequestPDU) -> RDPClipboardEvent? {
         guard case let .files(files) = currentContent(),
               request.fileIndex >= 0,
               Int(request.fileIndex) < files.count
         else {
             send(RDPClipboardFileContentsResponse.failure(streamID: request.streamID).encoded())
-            return
+            return nil
         }
 
         let file = files[Int(request.fileIndex)]
@@ -1707,7 +1809,26 @@ public final class RDPClipboardSession: @unchecked Sendable {
                 streamID: request.streamID,
                 byteCount: file.descriptor.fileSize
             ).encoded())
-            return
+            return nil
+        }
+        if let fileReference = file.fileReference {
+            let isQueued = lock.withLock {
+                guard waitingFileReadCount < Self.maximumWaitingFileReadCount else {
+                    return false
+                }
+                waitingFileReadCount += 1
+                return true
+            }
+            guard isQueued else {
+                send(RDPClipboardFileContentsResponse.failure(streamID: request.streamID).encoded())
+                return nil
+            }
+            let fileCount = files.count
+            scheduleFileRead { [self] in
+                sendRange(request, of: file, at: fileReference, fileCount: fileCount)
+                lock.withLock { waitingFileReadCount -= 1 }
+            }
+            return nil
         }
 
         // cbRequested is an upper bound; a range that runs past the end of the
@@ -1715,7 +1836,7 @@ public final class RDPClipboardSession: @unchecked Sendable {
         // channel message holds returns as many as it does.
         guard request.position <= UInt64(file.contents.count) else {
             send(RDPClipboardFileContentsResponse.failure(streamID: request.streamID).encoded())
-            return
+            return nil
         }
         let lowerBound = file.contents.startIndex + Int(request.position)
         let byteCount = min(
@@ -1727,6 +1848,55 @@ public final class RDPClipboardSession: @unchecked Sendable {
             streamID: request.streamID,
             data: file.contents.subdata(in: lowerBound ..< lowerBound + byteCount)
         ).encoded(), waitingForRoom: true)
+        return .localFilePasteProgress(RDPClipboardLocalFilePasteProgress(
+            fileOffset: Int(request.fileIndex),
+            fileCount: files.count,
+            fileName: file.descriptor.fileName,
+            sentByteCount: request.position + UInt64(byteCount),
+            fileByteCount: UInt64(file.contents.count)
+        ))
+    }
+
+    /// Reads the range `request` asks for of the published file at `fileReference`, up to the
+    /// size it was published with, and sends it, or a failure when the file no longer holds
+    /// it; then queues the paste's progress. Nothing goes once the connection has closed.
+    private func sendRange(
+        _ request: RDPClipboardFileContentsRequestPDU,
+        of file: RDPClipboardLocalFile,
+        at fileReference: RDPClipboardLocalFileReference,
+        fileCount: Int
+    ) {
+        guard !lock.withLock({ isClosed }) else {
+            return
+        }
+        let fileByteCount = file.descriptor.fileSize
+        guard request.position <= fileByteCount,
+              let data = try? fileReference.read(
+                  Int(min(
+                      UInt64(request.requestedByteCount),
+                      fileByteCount - request.position,
+                      UInt64(RDPClipboardLimits.maximumFormatDataByteCount - 4)
+                  )),
+                  at: request.position
+              )
+        else {
+            send(RDPClipboardFileContentsResponse.failure(streamID: request.streamID).encoded())
+            return
+        }
+        send(RDPClipboardFileContentsResponse.range(streamID: request.streamID, data: data).encoded(), waitingForRoom: true)
+        let progress = RDPClipboardLocalFilePasteProgress(
+            fileOffset: Int(request.fileIndex),
+            fileCount: fileCount,
+            fileName: file.descriptor.fileName,
+            sentByteCount: request.position + UInt64(data.count),
+            fileByteCount: fileByteCount
+        )
+        lock.withLock {
+            // A file's newest progress replaces one not yet handed over.
+            pendingPasteProgress.removeAll { $0.fileOffset == progress.fileOffset && $0.fileName == progress.fileName }
+            pendingPasteProgress.append(progress)
+        }
+        pendingEventHandler()
     }
 
     /// The Format List makes this client the Shared Clipboard Owner (MS-RDPECLIP 1.3.2.2.1), so
@@ -1868,6 +2038,8 @@ package enum RDPClipboardEvent: Equatable, Sendable {
     /// came back empty.
     case remoteCopyUnavailable(isEmpty: Bool)
     case fileContents(RDPClipboardFileContentsResponse)
+    /// A range of a file this client published went to the server, which is pasting it.
+    case localFilePasteProgress(RDPClipboardLocalFilePasteProgress)
 }
 
 private func encodedClipboardUnicodeText(_ text: String) -> Data {

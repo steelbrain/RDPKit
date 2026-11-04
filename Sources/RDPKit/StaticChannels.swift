@@ -109,9 +109,13 @@ extension RDPClientConnection {
     }
 
     /// Delivers the event turning `fetchesRemoteCopies` on queued, if it still holds.
+    /// Hands over every event another thread queued; wakes coalesce, so one can bring several.
     func deliverPendingClipboardEvent() {
-        if let clipboard {
-            deliver(clipboard.takePendingEvent(), from: clipboard)
+        guard let clipboard else {
+            return
+        }
+        while let event = clipboard.takePendingEvent() {
+            deliver(event, from: clipboard)
         }
     }
 
@@ -122,7 +126,8 @@ extension RDPClientConnection {
             onContent: callbacks.onClipboardContent,
             onFileGroupDescriptor: callbacks.onClipboardFileGroupDescriptor,
             onFileContents: callbacks.onClipboardFileContents,
-            onRemoteCopyUnavailable: callbacks.onClipboardRemoteCopyUnavailable
+            onRemoteCopyUnavailable: callbacks.onClipboardRemoteCopyUnavailable,
+            onLocalFilePasteProgress: callbacks.onClipboardLocalFilePasteProgress
         ).deliver(event, from: clipboard)
     }
 

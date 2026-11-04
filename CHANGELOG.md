@@ -2,8 +2,52 @@
 
 ## Unreleased
 
+### Breaking changes
+
+- Clipboard files have no size limit by default. A published file can be
+  read from disk as the server asks for it, and a download writes each range
+  to disk as it arrives, so neither is held in memory:
+  - `downloadRemoteFiles(_:copyNumber:into:progress:finishFile:)` replaces
+    `writeFile: (Data, URL)`. The download writes each file itself, under a
+    hidden name in the folder until it is whole, and hands `finishFile` its
+    URL once it has its name; a file cut short is removed. An app that set a
+    quarantine mark in `writeFile` sets it in `finishFile`.
+    `RDPPasteboardClipboardSession` requires the new signature and
+    `maximumFileByteCount`.
+  - `RDPClipboardDownloadLimits.maximumTotalByteCount` is unlimited by
+    default, was 32 MiB. The 1,000-file limit stays.
+  - `RDPPasteboardClipboard.maximumLocalFileByteCount` is unlimited by
+    default, was 32 MiB, and the bridge publishes the pasteboard's files
+    with `RDPClipboardLocalFile(fileURL:maximumByteCount:)`.
+- New `RDPClipboardLocalFileReadError` cases, which an exhaustive `switch`
+  handles: `fileTooLarge(_:)`, a file larger than the server takes, and
+  `filesNotSupported`, a server that takes no files, which
+  `RDPPasteboardClipboard` reports as `localFilesNotShared` before it reads
+  any file. KRdp 6.8 takes no files, and dropped those it was offered without
+  a word.
+- The client advertises CB_HUGE_FILE_SUPPORT_ENABLED in its clipboard
+  capabilities, echoing it only to a server that does, as Windows 11 and
+  GNOME Remote Desktop 51 do.
+
 ### Additions
 
+- `RDPClipboardSession.maximumFileByteCount`: the largest file the server's
+  clipboard takes, from the capabilities it sent before its Monitor Ready:
+  nil without CB_STREAM_FILECLIP_ENABLED, 4,294,967,295 bytes without
+  CB_HUGE_FILE_SUPPORT_ENABLED, any size with both.
+- `RDPClipboardLocalFile(fileURL:maximumByteCount:)` publishes a file on disk.
+  The session reads each range the server asks for from the file on a queue
+  of its own, and fails the request once the file is gone, replaced or
+  shorter than it was published; `fileURL` says which file it is.
+- Downloads size their ranges to the server: they start at
+  `RDPClipboardDownloadLimits.rangeByteCount`, 512 KiB, double after a range
+  answered in full within a second, up to the new `maximumRangeByteCount`,
+  8 MiB, and halve after one that takes over 4 seconds. The session keeps
+  the size for its next download. Windows 11 and GNOME Remote Desktop 51
+  answer 8 MiB ranges in full; KRdp 6.8 transfers no files. GNOME Remote
+  Desktop 51 fails each range of its own files whose offset has bit 31 set,
+  so its files over 2 GiB stop with `RDPClipboardDownloadError.refused` at
+  2 GiB.
 - Shared drives report changes. A directory change notification from the
   server completes once a change in its folder, or under it when the server
   watches the tree, is reported, with STATUS_NOTIFY_ENUM_DIR, which tells the
@@ -39,6 +83,11 @@
   queue its handlers hand work to, such as the main one, are both done.
   `settle()` followed by a wait for the main queue can miss server work that
   begins and ends during that wait.
+- `onClipboardLocalFilePasteProgress`, on `run`, `connect` and
+  `RDPClipboardTestServer`, reports each range of a published file that goes
+  to the server as it pastes: an `RDPClipboardLocalFilePasteProgress` with
+  the file's name and place in the list, the bytes sent of it and its size,
+  so an app can show how far the paste is.
 
 ## 0.7.0
 

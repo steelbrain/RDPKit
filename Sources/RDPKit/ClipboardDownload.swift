@@ -1,30 +1,48 @@
 import Foundation
+import NIOCore
 
-/// What ``RDPClipboardSession/downloadRemoteFiles(_:copyNumber:into:progress:writeFile:)``
+/// What ``RDPClipboardSession/downloadRemoteFiles(_:copyNumber:into:progress:finishFile:)``
 /// takes on at most.
 public struct RDPClipboardDownloadLimits: Equatable, Sendable {
-    /// The files' bytes together, as their size answers say.
+    /// The files' bytes together, as their size answers say; no limit by default, as each range
+    /// goes to disk as it comes.
     public var maximumTotalByteCount: UInt64
     /// Each file costs a round trip and a write, and all of them are pasted side by side.
     public var maximumFileCount: Int
-    /// The most one range request asks for; servers may send less, and the rest is asked for
-    /// again. Half a MiB arrives within the default timeout down to about 4 KB/s, and costs a
-    /// round trip per range: 64 for 32 MiB.
+    /// The most the first range request of a session asks for, and the least any does; servers
+    /// may send less, and the rest is asked for again. Half a MiB arrives within the default
+    /// timeout down to about 4 KB/s.
     public var rangeByteCount: UInt32
+    /// The most a range request asks for once answers come quickly: a range answered in full
+    /// within a second doubles the next, up to this, and one that takes over 4 seconds halves
+    /// it, down to `rangeByteCount`. The session keeps the size for its next download. Each
+    /// range is held in memory until it is written. Windows 11 and GNOME Remote Desktop 51
+    /// answer 8 MiB ranges in full.
+    public var maximumRangeByteCount: UInt32
     /// How long a request may go unanswered: long enough for a range on a slow link, or for a
     /// server that fetches a cloud file first.
     public var requestTimeout: TimeInterval
 
     public init(
-        maximumTotalByteCount: UInt64 = 32 * 1_024 * 1_024,
+        maximumTotalByteCount: UInt64 = .max,
         maximumFileCount: Int = 1_000,
         rangeByteCount: UInt32 = 512 * 1_024,
-        requestTimeout: TimeInterval = 120
+        requestTimeout: TimeInterval = 120,
+        maximumRangeByteCount: UInt32 = 8 * 1_024 * 1_024
     ) {
         self.maximumTotalByteCount = maximumTotalByteCount
         self.maximumFileCount = maximumFileCount
         self.rangeByteCount = max(1, rangeByteCount)
         self.requestTimeout = requestTimeout
+        self.maximumRangeByteCount = maximumRangeByteCount
+    }
+
+    /// The range sizes a download asks for: from `rangeByteCount` to `maximumRangeByteCount`,
+    /// which a channel message must hold.
+    var rangeByteCounts: ClosedRange<UInt32> {
+        let lowerBound = max(1, rangeByteCount)
+        let ceiling = UInt32(RDPClipboardLimits.maximumFormatDataByteCount - 4)
+        return min(lowerBound, ceiling) ... min(max(lowerBound, maximumRangeByteCount), ceiling)
     }
 }
 
@@ -51,7 +69,7 @@ public struct RDPClipboardDownloadProgress: Equatable, Sendable {
 /// A download of a remote copy's files, planned before it starts, so an application can refuse
 /// the copy or show its first file before it makes a folder for it:
 /// ``RDPClipboardFileGroupDescriptorW/downloadPlan(limits:)`` makes one, and
-/// ``RDPClipboardSession/downloadRemoteFiles(_:copyNumber:into:progress:writeFile:)`` follows it.
+/// ``RDPClipboardSession/downloadRemoteFiles(_:copyNumber:into:progress:finishFile:)`` follows it.
 public struct RDPClipboardDownloadPlan: Equatable, Sendable {
     /// The files to download, folders left out, in the list's order, each under a name unique
     /// in the download that the Mac accepts.
@@ -135,15 +153,21 @@ public enum RDPClipboardDownloadError: Error, Equatable, CustomStringConvertible
 }
 
 extension RDPClipboardSession {
+    /// A range answered in full within this grows the next.
+    static let fastRangeAnswerDuration = TimeAmount.seconds(1)
+    /// A range answered after this shrinks the next.
+    static let slowRangeAnswerDuration = TimeAmount.seconds(4)
+
     /// Downloads the files `plan` holds into `directory`, which must exist, one after another:
-    /// asks for each file's size, then for its bytes in ranges of
-    /// ``RDPClipboardDownloadLimits/rangeByteCount``, asking again for the rest of a range the
-    /// server answers short ([MS-RDPECLIP] 2.2.5.3, 2.2.5.4), and hands each file to
-    /// `writeFile` with its URL in `directory`, under the name the plan gives it. The default
-    /// writes it atomically; an application passes its own to set a quarantine mark or place
-    /// folders. The download awaits `progress` for each report, so the reports arrive in order,
-    /// and the last before the download returns, also when `progress` hops to another actor,
-    /// such as the main one.
+    /// asks for each file's size, then for its bytes a range at a time, asking again for the
+    /// rest of a range the server answers short ([MS-RDPECLIP] 2.2.5.3, 2.2.5.4), and writes
+    /// each range as it comes to a hidden file in `directory`, which takes the name the plan
+    /// gives the file once it is whole. No file is held in memory: one range is. The ranges
+    /// grow while the server answers them quickly, as ``RDPClipboardDownloadLimits`` describes.
+    /// `finishFile` gets each file's URL once it has its name, before the next file starts,
+    /// for the application to set a quarantine mark or place folders. The download awaits
+    /// `progress` for each report, so the reports arrive in order, and the last before the
+    /// download returns, also when `progress` hops to another actor, such as the main one.
     ///
     /// `copyNumber` is the one the `onClipboardFileGroupDescriptor` handler got with the list.
     /// A newer copy, the server's or a publish, or turning
@@ -152,19 +176,19 @@ extension RDPClipboardSession {
     /// answer does not, so the application checks, once the download returns, that the copy is
     /// still the one to paste, as it would for any copy it handles on another thread. The
     /// connection closing ends it with ``RDPClipboardDownloadError/sessionEnded``, and
-    /// cancelling the task with `CancellationError`, also before a file is written. A
-    /// `writeFile` call under way when the task is cancelled still finishes, but the download
+    /// cancelling the task with `CancellationError`, also before a file takes its name. A
+    /// `finishFile` call under way when the task is cancelled still finishes, but the download
     /// returns only after it has and starts no other: an application that removes what a
     /// cancelled download wrote does so once the download has returned, not as it cancels.
     /// The answers to its requests do not reach `onClipboardFileContents`.
-    /// An error `writeFile` throws ends the download too. Files written before a failure stay
-    /// in `directory`.
+    /// An error writing a file, or one `finishFile` throws, ends the download too. The file
+    /// being downloaded when it ends is removed; files that had their names stay in `directory`.
     public func downloadRemoteFiles(
         _ plan: RDPClipboardDownloadPlan,
         copyNumber: Int,
         into directory: URL,
         progress: (@Sendable (RDPClipboardDownloadProgress) async -> Void)? = nil,
-        writeFile: @Sendable (Data, URL) throws -> Void = { try $0.write(to: $1, options: .atomic) }
+        finishFile: @Sendable (URL) throws -> Void = { _ in }
     ) async throws -> RDPClipboardDownload {
         let limits = plan.limits
         var fileURLs: [URL] = []
@@ -199,36 +223,88 @@ extension RDPClipboardSession {
             report.fileByteCount = byteCount
             await progress?(report)
 
-            var data = Data()
-            while UInt64(data.count) < byteCount {
-                let requestedByteCount = UInt32(min(UInt64(limits.rangeByteCount), byteCount - UInt64(data.count)))
-                let rangeAnswer = try await fileContents(
-                    of: .range(
-                        streamID: streamID,
-                        fileIndex: file.fileIndex,
-                        position: UInt64(data.count),
-                        requestedByteCount: requestedByteCount
-                    ),
-                    copyNumber: copyNumber,
-                    timeout: limits.requestTimeout
-                )
-                guard rangeAnswer.ok else {
-                    throw RDPClipboardDownloadError.refused
-                }
-                guard !rangeAnswer.data.isEmpty, rangeAnswer.data.count <= Int(requestedByteCount) else {
-                    throw RDPClipboardDownloadError.incomplete
-                }
-                data.append(rangeAnswer.data)
-                report.receivedByteCount = UInt64(data.count)
-                await progress?(report)
-            }
             let fileURL = directory.appendingPathComponent(file.fileName, isDirectory: false)
-            try Task.checkCancellation()
-            try writeFile(data, fileURL)
+            let partialFile = try RDPClipboardPartialDownload(in: directory)
+            do {
+                while report.receivedByteCount < byteCount {
+                    let rangeByteCount = downloadRangeByteCount(within: limits.rangeByteCounts)
+                    let requestedByteCount = UInt32(min(UInt64(rangeByteCount), byteCount - report.receivedByteCount))
+                    // The event loop's clock, which times the request out too.
+                    let requestedAt = eventLoopNow
+                    let rangeAnswer = try await fileContents(
+                        of: .range(
+                            streamID: streamID,
+                            fileIndex: file.fileIndex,
+                            position: report.receivedByteCount,
+                            requestedByteCount: requestedByteCount
+                        ),
+                        copyNumber: copyNumber,
+                        timeout: limits.requestTimeout
+                    )
+                    guard rangeAnswer.ok else {
+                        throw RDPClipboardDownloadError.refused
+                    }
+                    guard !rangeAnswer.data.isEmpty, rangeAnswer.data.count <= Int(requestedByteCount) else {
+                        throw RDPClipboardDownloadError.incomplete
+                    }
+                    adaptDownloadRangeByteCount(
+                        rangeByteCount,
+                        within: limits.rangeByteCounts,
+                        answeredInFull: requestedByteCount == rangeByteCount && rangeAnswer.data.count == Int(rangeByteCount),
+                        after: eventLoopNow - requestedAt
+                    )
+                    try partialFile.append(rangeAnswer.data)
+                    report.receivedByteCount += UInt64(rangeAnswer.data.count)
+                    await progress?(report)
+                }
+                try Task.checkCancellation()
+                try partialFile.finish(at: fileURL)
+            } catch {
+                partialFile.discard()
+                throw error
+            }
+            try finishFile(fileURL)
             fileURLs.append(fileURL)
         }
         try Task.checkCancellation()
         return RDPClipboardDownload(fileURLs: fileURLs, leavesOutFolders: plan.leavesOutFolders)
+    }
+}
+
+/// A file a download writes, under a hidden name in the download's folder until it is whole.
+final class RDPClipboardPartialDownload {
+    private let url: URL
+    private let fileHandle: FileHandle
+    private var isClosed = false
+
+    init(in directory: URL) throws {
+        url = directory.appendingPathComponent(".\(UUID().uuidString).download", isDirectory: false)
+        let descriptor = open(url.path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0o666)
+        guard descriptor >= 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        fileHandle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+    }
+
+    func append(_ data: Data) throws {
+        try fileHandle.write(contentsOf: data)
+    }
+
+    /// Closes the file and gives it `fileURL`'s name, in place of any file there.
+    func finish(at fileURL: URL) throws {
+        isClosed = true
+        try fileHandle.close()
+        guard rename(url.path, fileURL.path) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+    }
+
+    /// Removes the file, unless it has its name.
+    func discard() {
+        if !isClosed {
+            try? fileHandle.close()
+        }
+        unlink(url.path)
     }
 }
 
