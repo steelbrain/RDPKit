@@ -354,8 +354,10 @@ func clipboardTestServerStepsThroughItsMessages() async throws {
     #expect(await paste.value == nil)
 }
 
-/// What a handler hands the main queue, here a server action, is settled too by settling both
-/// until neither has work left, as `settle()` shows.
+/// What a handler hands the main queue, here a server action, is settled too by
+/// `settle(alongside:)`, also when the server takes it up and finishes it while the main queue
+/// still runs: a wait that only checks the server is settled afterwards misses what that work
+/// handed the main queue.
 @Test(.timeLimit(.minutes(1)))
 func clipboardTestServerSettlesWithTheMainQueue() async throws {
     let box = Locked<RDPClipboardTestServer?>(nil)
@@ -374,17 +376,8 @@ func clipboardTestServerSettlesWithTheMainQueue() async throws {
     defer { box.withLock { $0 = nil } }
 
     server.copyText("first")
-    await settleWithMainQueue(server)
+    await server.settle(alongside: .main)
     #expect(recorded.value == ["first", "second"])
     #expect(server.isSettled)
-}
-
-private func settleWithMainQueue(_ server: RDPClipboardTestServer) async {
-    repeat {
-        await server.settle()
-        await withCheckedContinuation { continuation in
-            DispatchQueue.main.async { continuation.resume() }
-        }
-    } while !server.isSettled
 }
 

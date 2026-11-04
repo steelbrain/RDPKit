@@ -68,6 +68,9 @@ public final class RDPClipboardTestServer: @unchecked Sendable {
     private var end = RDPClipboardServerEnd()
     private var fileRequestAnswerStorage: @Sendable (FileRequest) -> FileRequestAnswer = { _ in .answer }
     private var outstandingWork = 0
+    /// The work counted so far, so `settle(alongside:)` can tell work that began and ended
+    /// while it waited for its queue.
+    private var startedWorkCount = 0
     private var isSteppingStorage = false
     private var heldMessages: [Data] = []
     private var settleWaiters: [CheckedContinuation<Void, Never>] = []
@@ -286,19 +289,7 @@ public final class RDPClipboardTestServer: @unchecked Sendable {
 
     /// Waits until every server message sent so far, and the answers and handlers they set
     /// off, are done. A handler that hands work to another thread, such as the main one, is
-    /// done once it returns; work it hands the main queue may set off more on the server, so
-    /// a test settles both until neither has any left:
-    ///
-    /// ```swift
-    /// func settleWithMainQueue(_ server: RDPClipboardTestServer) async {
-    ///     repeat {
-    ///         await server.settle()
-    ///         await withCheckedContinuation { continuation in
-    ///             DispatchQueue.main.async { continuation.resume() }
-    ///         }
-    ///     } while !server.isSettled
-    /// }
-    /// ```
+    /// done once it returns; ``settle(alongside:)`` also waits for what handlers hand a queue.
     public func settle() async {
         await withCheckedContinuation { continuation in
             let isIdle = lock.withLock {
@@ -310,6 +301,28 @@ public final class RDPClipboardTestServer: @unchecked Sendable {
             }
             if isIdle {
                 continuation.resume()
+            }
+        }
+    }
+
+    /// Waits until the server and `queue`, such as the main one its handlers hand work to, are
+    /// both done, though each sets off more on the other: settles the server, then waits for
+    /// what `queue` holds, until a wait finds the server set nothing off meanwhile. Work that
+    /// `queue` hands itself again, or a task's next step, is not waited for.
+    public func settle(alongside queue: DispatchQueue) async {
+        while true {
+            await settle()
+            // Read while nothing is under way: any work after it counts, and all work before it
+            // has handed `queue` what it hands it.
+            guard let started = lock.withLock({ outstandingWork == 0 ? startedWorkCount : nil }) else {
+                continue
+            }
+            await withCheckedContinuation { continuation in
+                queue.async { continuation.resume() }
+            }
+            // Work that began and ended while `queue` ran may have handed it more.
+            if lock.withLock({ startedWorkCount == started }) {
+                return
             }
         }
     }
@@ -374,6 +387,7 @@ public final class RDPClipboardTestServer: @unchecked Sendable {
     /// Callers hold `lock`, so work runs in the order it was counted.
     private func performLocked(_ work: @escaping @Sendable () -> Void) {
         outstandingWork += 1
+        startedWorkCount += 1
         thread.async { [self] in
             work()
             let waiters = lock.withLock { () -> [CheckedContinuation<Void, Never>] in

@@ -2184,19 +2184,12 @@ final class PasteboardClipboardTests: XCTestCase {
 
     /// Waits until what the server set off is done, and the bridge has
     /// handled what it got on the main thread, and what that sent the
-    /// server in turn, as `RDPClipboardTestServer.settle()` shows; three
-    /// rounds at least, for a download's or a file read's next step there.
+    /// server in turn, with `RDPClipboardTestServer.settle(alongside:)`;
+    /// three times, for a download's or a file read's next step there.
     private func settle(_ server: RDPClipboardTestServer) async {
-        var rounds = 0
-        repeat {
-            await server.settle()
-            await withCheckedContinuation { continuation in
-                DispatchQueue.main.async {
-                    continuation.resume()
-                }
-            }
-            rounds += 1
-        } while rounds < 3 || server.isSettled == false
+        for _ in 0 ..< 3 {
+            await server.settle(alongside: .main)
+        }
     }
 
     /// Waits until the bridge has handled the end of the last download it

@@ -35,6 +35,10 @@
   and `Remove-Item` on Windows 11 are refused, while `Remove-Item -Force`,
   `rmdir /s` and the shell's delete clear the attribute and delete. A new
   folder with FILE_ATTRIBUTE_TEMPORARY gets STATUS_INVALID_PARAMETER.
+- `RDPClipboardTestServer.settle(alongside:)` waits until the server and a
+  queue its handlers hand work to, such as the main one, are both done.
+  `settle()` followed by a wait for the main queue can miss server work that
+  begins and ends during that wait.
 
 ## 0.7.0
 
