@@ -50,6 +50,7 @@ enum RDPNTStatus {
     static let notifyEnumDir: UInt32 = 0x0000_010C
     static let noMoreFiles: UInt32 = 0x8000_0006
     static let unsuccessful: UInt32 = 0xC000_0001
+    static let infoLengthMismatch: UInt32 = 0xC000_0004
     static let invalidParameter: UInt32 = 0xC000_000D
     static let noSuchFile: UInt32 = 0xC000_000F
     static let invalidDeviceRequest: UInt32 = 0xC000_0010
@@ -131,6 +132,7 @@ enum RDPDriveFileAttributes {
     static let hidden: UInt32 = 0x0000_0002
     static let directory: UInt32 = 0x0000_0010
     static let archive: UInt32 = 0x0000_0020
+    static let temporary: UInt32 = 0x0000_0100
 }
 
 /// DR_DEVICE_IOREQUEST: the header every I/O request starts with, then the
@@ -187,7 +189,7 @@ struct RDPDeviceIORequest: Equatable, Sendable {
 
 /// A drive I/O request's own fields ([MS-RDPEFS] 2.2.1.4, 2.2.3.3).
 enum RDPDriveRequest: Equatable, Sendable {
-    case create(desiredAccess: UInt32, disposition: UInt32, options: UInt32, path: String)
+    case create(desiredAccess: UInt32, disposition: UInt32, options: UInt32, attributes: UInt32, path: String)
     case close
     case read(length: UInt32, offset: UInt64)
     case write(offset: UInt64, data: Data)
@@ -207,12 +209,18 @@ enum RDPDriveRequest: Equatable, Sendable {
         case RDPDriveMajorFunction.create:
             let desiredAccess = try cursor.readLittleEndianUInt32()
             _ = try cursor.readLittleEndianUInt64() // AllocationSize
-            _ = try cursor.readLittleEndianUInt32() // FileAttributes
+            let attributes = try cursor.readLittleEndianUInt32()
             _ = try cursor.readLittleEndianUInt32() // SharedAccess
             let disposition = try cursor.readLittleEndianUInt32()
             let options = try cursor.readLittleEndianUInt32()
             let path = try readPath(&cursor)
-            return .create(desiredAccess: desiredAccess, disposition: disposition, options: options, path: path)
+            return .create(
+                desiredAccess: desiredAccess,
+                disposition: disposition,
+                options: options,
+                attributes: attributes,
+                path: path
+            )
         case RDPDriveMajorFunction.close:
             return .close
         case RDPDriveMajorFunction.read:

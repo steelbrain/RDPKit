@@ -197,8 +197,14 @@ final class RDPSharedDriveDevice: @unchecked Sendable {
     /// The success body, nil for a request left pending, or a thrown `RDPDriveFailure`.
     private func reply(to request: RDPDriveRequest, fileID: UInt32, completionID: UInt32) throws -> Data? {
         switch request {
-        case let .create(desiredAccess, disposition, options, path):
-            return try create(desiredAccess: desiredAccess, disposition: disposition, options: options, path: path)
+        case let .create(desiredAccess, disposition, options, attributes, path):
+            return try create(
+                desiredAccess: desiredAccess,
+                disposition: disposition,
+                options: options,
+                attributes: attributes,
+                path: path
+            )
         case .close:
             try close(fileID)
             return Data(count: 5)
@@ -239,7 +245,11 @@ final class RDPSharedDriveDevice: @unchecked Sendable {
 
     // MARK: Create and close
 
-    private func create(desiredAccess: UInt32, disposition: UInt32, options: UInt32, path: String) throws -> Data {
+    /// `attributes` are the request's FileAttributes. A file it creates, overwrites or
+    /// supersedes takes FILE_ATTRIBUTE_READONLY as its write permissions, as SetInformation
+    /// sets them ([MS-FSA] 2.1.5.1.1, 2.1.5.1.2); the handle still writes, as the one that made
+    /// it. Other attributes, and read-only on a folder, are not applied.
+    private func create(desiredAccess: UInt32, disposition: UInt32, options: UInt32, attributes: UInt32, path: String) throws -> Data {
         guard openFiles.count < Self.maximumOpenFileCount else {
             throw RDPDriveFailure(status: RDPNTStatus.tooManyOpenedFiles)
         }
@@ -249,6 +259,7 @@ final class RDPSharedDriveDevice: @unchecked Sendable {
         let components = try Self.components(of: path)
         let entryPath = try entry(for: components)
         let deleteOnClose = options & RDPDriveCreateOptions.deleteOnClose != 0
+        let readOnly = attributes & RDPDriveFileAttributes.readOnly != 0
         if deleteOnClose, components.isEmpty {
             throw RDPDriveFailure(status: RDPNTStatus.cannotDelete)
         }
@@ -275,6 +286,10 @@ final class RDPSharedDriveDevice: @unchecked Sendable {
             ].contains(disposition), isDirectory {
                 throw RDPDriveFailure(status: RDPNTStatus.fileIsADirectory)
             }
+            // [MS-FSA] 2.1.5.1.2: a read-only file is not deleted.
+            if deleteOnClose, !isDirectory, Self.isReadOnly(existing.info) {
+                throw RDPDriveFailure(status: RDPNTStatus.cannotDelete)
+            }
             file = RDPSharedDriveOpenFile(
                 path: entryPath,
                 entryIdentity: RDPFileIdentity(existing.entryInfo),
@@ -298,6 +313,12 @@ final class RDPSharedDriveDevice: @unchecked Sendable {
                     truncate: truncates,
                     readOnlyFallback: mayWrite && !wantsWrite && !truncates
                 )
+                // An overwritten file takes the attributes asked for; it was writable, or it
+                // would not have opened to be cut. Its bytes are already gone, so a file whose
+                // permissions this user may not change stays writable rather than fail.
+                if truncates, readOnly, let descriptor = file.descriptor {
+                    try? setReadOnly(true, descriptor: descriptor)
+                }
             }
         } else {
             guard [
@@ -311,6 +332,14 @@ final class RDPSharedDriveDevice: @unchecked Sendable {
             guard !components.isEmpty else {
                 throw RDPDriveFailure(status: RDPNTStatus.accessDenied)
             }
+            // [MS-FSA] 2.1.5.1.1: a new file both read-only and deleted on close, and a
+            // temporary directory.
+            if readOnly, deleteOnClose {
+                throw RDPDriveFailure(status: RDPNTStatus.cannotDelete)
+            }
+            if wantsDirectory, attributes & RDPDriveFileAttributes.temporary != 0 {
+                throw RDPDriveFailure(status: RDPNTStatus.invalidParameter)
+            }
             var info = stat()
             if wantsDirectory {
                 guard mkdir(entryPath, 0o777) == 0, lstat(entryPath, &info) == 0 else {
@@ -321,8 +350,9 @@ final class RDPSharedDriveDevice: @unchecked Sendable {
                 guard descriptorBudget.reserve() else {
                     throw RDPDriveFailure(status: RDPNTStatus.tooManyOpenedFiles)
                 }
-                // O_EXCL: the name is created here, never followed somewhere else.
-                let descriptor = Darwin.open(entryPath, O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC, 0o666)
+                // O_EXCL: the name is created here, never followed somewhere else. Read-only, it
+                // gets no write permission, which the descriptor that creates it does not need.
+                let descriptor = Darwin.open(entryPath, O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC, readOnly ? 0o444 : 0o666)
                 guard descriptor >= 0, fstat(descriptor, &info) == 0 else {
                     let failure = RDPDriveFailure.posix()
                     if descriptor >= 0 {
@@ -514,13 +544,33 @@ final class RDPSharedDriveDevice: @unchecked Sendable {
         var cursor = ByteCursor(buffer)
         switch informationClass {
         case RDPDriveInformationClass.fileBasic:
+            // FILE_BASIC_INFORMATION up to FileAttributes: the Reserved field after it, which
+            // the drive's own replies leave out ([MS-RDPEFS] 2.2.3.4.8), is not needed.
+            guard buffer.count >= 36 else {
+                throw RDPDriveFailure(status: RDPNTStatus.infoLengthMismatch)
+            }
             let creationTime = try cursor.readLittleEndianUInt64()
-            _ = try cursor.readLittleEndianUInt64() // LastAccessTime
+            let lastAccessTime = try cursor.readLittleEndianUInt64()
             let lastWriteTime = try cursor.readLittleEndianUInt64()
-            // ChangeTime and FileAttributes are not applied: the change time is the
-            // system's, and the attributes have no exact match in POSIX permissions.
+            // The change time is the system's, and the access time is not kept.
+            let changeTime = try cursor.readLittleEndianUInt64()
+            let attributes = try cursor.readLittleEndianUInt32()
+            // [MS-FSA] 2.1.5.15.2: no time below -2, no directory attribute on a file, and no
+            // temporary one on a directory.
+            guard [creationTime, lastAccessTime, lastWriteTime, changeTime].allSatisfy({ Int64(bitPattern: $0) >= -2 }),
+                  attributes & RDPDriveFileAttributes.directory == 0 || file.isDirectory,
+                  attributes & RDPDriveFileAttributes.temporary == 0 || !file.isDirectory
+            else {
+                throw RDPDriveFailure(status: RDPNTStatus.invalidParameter)
+            }
             _ = try verifiedTarget(of: file)
             try setTimes(of: file.targetPath, creationTime: creationTime, lastWriteTime: lastWriteTime)
+            // 0 leaves the attributes as they are ([MS-FSCC] 2.4.7). Of the rest only
+            // FILE_ATTRIBUTE_READONLY has a match in POSIX permissions, and only for a file:
+            // Windows does not honor it on a directory (File Attribute Constants).
+            if attributes != 0, !file.isDirectory, let descriptor = file.descriptor {
+                try setReadOnly(attributes & RDPDriveFileAttributes.readOnly != 0, descriptor: descriptor)
+            }
         case RDPDriveInformationClass.fileEndOfFile:
             try truncate(fileID, to: cursor.readLittleEndianUInt64(), onlyShrinking: false)
         case RDPDriveInformationClass.fileAllocation:
@@ -533,8 +583,13 @@ final class RDPSharedDriveDevice: @unchecked Sendable {
                     throw RDPDriveFailure(status: RDPNTStatus.cannotDelete)
                 }
                 // Refused now, as NTFS does, so the remote never thinks a directory with
-                // contents was deleted.
-                _ = try verifiedTarget(of: file)
+                // contents was deleted. A read-only file is not deleted ([MS-FSA] 2.1.5.15.3).
+                // Windows 11 clears the attribute first where it means to: Remove-Item -Force,
+                // rmdir /s and the shell's delete do, del and Remove-Item do not, as on NTFS.
+                let info = try verifiedTarget(of: file)
+                if !file.isDirectory, Self.isReadOnly(info) {
+                    throw RDPDriveFailure(status: RDPNTStatus.cannotDelete)
+                }
                 if file.isDirectory, try !isEmptyDirectory(file.targetPath) {
                     throw RDPDriveFailure(status: RDPNTStatus.directoryNotEmpty)
                 }
@@ -582,6 +637,23 @@ final class RDPSharedDriveDevice: @unchecked Sendable {
             throw underlying?.domain == NSPOSIXErrorDomain
                 ? RDPDriveFailure.posix(Int32(underlying?.code ?? 0))
                 : RDPDriveFailure(status: RDPNTStatus.accessDenied)
+        }
+    }
+
+    /// FILE_ATTRIBUTE_READONLY as the write permissions `information(from:)` reads it from:
+    /// set, nobody may write the file; cleared, its owner may again.
+    private func setReadOnly(_ readOnly: Bool, descriptor: Int32) throws {
+        var info = stat()
+        guard fstat(descriptor, &info) == 0 else {
+            throw RDPDriveFailure.posix()
+        }
+        let mode = info.st_mode & ~S_IFMT
+        let changed = readOnly ? mode & ~(S_IWUSR | S_IWGRP | S_IWOTH) : mode | S_IWUSR
+        guard changed != mode else {
+            return
+        }
+        guard fchmod(descriptor, changed) == 0 else {
+            throw RDPDriveFailure.posix()
         }
     }
 
@@ -1153,10 +1225,15 @@ final class RDPSharedDriveDevice: @unchecked Sendable {
         return body
     }
 
+    /// FILE_ATTRIBUTE_READONLY: its owner may not write it.
+    static func isReadOnly(_ info: stat) -> Bool {
+        info.st_mode & S_IWUSR == 0
+    }
+
     static func information(from info: stat, name: String) -> RDPDriveFileInformation {
         let isDirectory = info.isDirectory
         var attributes = isDirectory ? RDPDriveFileAttributes.directory : RDPDriveFileAttributes.archive
-        if info.st_mode & S_IWUSR == 0 {
+        if isReadOnly(info) {
             attributes |= RDPDriveFileAttributes.readOnly
         }
         if (name.hasPrefix(".") && name != "." && name != "..") || info.st_flags & UInt32(UF_HIDDEN) != 0 {

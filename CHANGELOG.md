@@ -18,6 +18,23 @@
   STATUS_NOTIFY_CLEANUP, which frees their CompletionIds on the server; they
   used to wait forever. A folder marked for deletion completes those on it
   with STATUS_DELETE_PENDING, and refuses new ones so.
+- Shared drives: setting FILE_ATTRIBUTE_READONLY on a file, as the Read-only
+  box of Windows' file properties does, takes its write permissions away,
+  and clearing it lets its owner write again. Other attributes, and
+  read-only on a folder, are still not applied. As [MS-FSA] 2.1.5.15.2 has
+  it, FileBasicInformation shorter than 36 bytes gets
+  STATUS_INFO_LENGTH_MISMATCH, and a time below -2, FILE_ATTRIBUTE_DIRECTORY
+  on a file or FILE_ATTRIBUTE_TEMPORARY on a folder
+  STATUS_INVALID_PARAMETER, before anything is set.
+- Shared drives: a file the server creates or overwrites with
+  FILE_ATTRIBUTE_READONLY in its create request is read-only, while the
+  handle that did so can still write, as [MS-FSA] 2.1.5.1 has it. Windows 11
+  sets it there, not with SetInformation, when it copies a read-only file to
+  the drive. Deleting a read-only file gets STATUS_CANNOT_DELETE until the
+  attribute is cleared ([MS-FSA] 2.1.5.1.2, 2.1.5.15.3). As on NTFS, `del`
+  and `Remove-Item` on Windows 11 are refused, while `Remove-Item -Force`,
+  `rmdir /s` and the shell's delete clear the attribute and delete. A new
+  folder with FILE_ATTRIBUTE_TEMPORARY gets STATUS_INVALID_PARAMETER.
 
 ## 0.7.0
 

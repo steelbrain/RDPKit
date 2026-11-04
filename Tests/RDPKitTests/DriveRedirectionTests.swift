@@ -41,9 +41,9 @@ import Testing
 @Test func driveRequestsParseTheirFields() throws {
     let create = try RDPDriveRequest.parse(driveRequest(
         major: RDPDriveMajorFunction.create,
-        body: createBody(path: "\\docs\\a.txt", disposition: RDPDriveCreateDisposition.openIf, options: 0x40)
+        body: createBody(path: "\\docs\\a.txt", disposition: RDPDriveCreateDisposition.openIf, options: 0x40, attributes: 0x21)
     ))
-    #expect(create == .create(desiredAccess: 0x0012_019F, disposition: 3, options: 0x40, path: "\\docs\\a.txt"))
+    #expect(create == .create(desiredAccess: 0x0012_019F, disposition: 3, options: 0x40, attributes: 0x21, path: "\\docs\\a.txt"))
 
     let write = try RDPDriveRequest.parse(driveRequest(major: RDPDriveMajorFunction.write, body: writeBody(
         offset: 7,
@@ -335,6 +335,154 @@ import Testing
     }
     #expect((try FileManager.default.attributesOfItem(atPath: path)[.modificationDate] as? Date)?.timeIntervalSince1970
         == 1_000_000_000)
+}
+
+/// FILE_ATTRIBUTE_READONLY sets a file's write permissions, which the drive reports it from;
+/// attributes 0 leave them, and a directory keeps its own.
+@Test func driveSetsTheReadOnlyAttributeAsWritePermissions() throws {
+    let drive = try TemporaryDrive()
+    let file = drive.create("\\a.txt", disposition: RDPDriveCreateDisposition.create)
+    let path = drive.root.appendingPathComponent("a.txt").path
+    try FileManager.default.setAttributes([.posixPermissions: 0o664], ofItemAtPath: path)
+    func setAttributes(_ fileID: UInt32, _ attributes: UInt32) -> UInt32 {
+        var basic = Data(count: 32) // CreationTime, LastAccessTime, LastWriteTime, ChangeTime: unchanged
+        basic.appendLittleEndianUInt32(attributes)
+        return drive.setInformation(fileID, informationClass: RDPDriveInformationClass.fileBasic, basic).status
+    }
+    func permissions(_ path: String) throws -> Int? {
+        (try FileManager.default.attributesOfItem(atPath: path)[.posixPermissions] as? NSNumber)?.intValue
+    }
+    func reportedAttributes(_ fileID: UInt32) -> UInt32 {
+        drive.queryInformation(fileID, informationClass: RDPDriveInformationClass.fileBasic).body.littleEndianUInt32(at: 36)
+    }
+
+    #expect(setAttributes(file.fileID, RDPDriveFileAttributes.readOnly | RDPDriveFileAttributes.archive) == RDPNTStatus.success)
+    #expect(try permissions(path) == 0o444)
+    #expect(reportedAttributes(file.fileID) == RDPDriveFileAttributes.readOnly | RDPDriveFileAttributes.archive)
+    #expect(setAttributes(file.fileID, 0) == RDPNTStatus.success)
+    #expect(try permissions(path) == 0o444)
+    // The handle opened for writing still writes, as on Windows.
+    #expect(drive.write(file.fileID, offset: 0, Data("a".utf8)).status == RDPNTStatus.success)
+    // FILE_ATTRIBUTE_NORMAL, or any attributes without READONLY, let the owner write again.
+    #expect(setAttributes(file.fileID, 0x0000_0080) == RDPNTStatus.success)
+    #expect(try permissions(path) == 0o644)
+    #expect(reportedAttributes(file.fileID) == RDPDriveFileAttributes.archive)
+
+    let folder = drive.root.appendingPathComponent("folder").path
+    try FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o755])
+    let directory = drive.create("\\folder", disposition: RDPDriveCreateDisposition.open)
+    #expect(setAttributes(directory.fileID, RDPDriveFileAttributes.readOnly | RDPDriveFileAttributes.directory) == RDPNTStatus.success)
+    #expect(try permissions(folder) == 0o755)
+
+    // FILE_BASIC_INFORMATION without its FileAttributes, and what [MS-FSA] 2.1.5.15.2 refuses.
+    #expect(drive.setInformation(file.fileID, informationClass: RDPDriveInformationClass.fileBasic, Data(count: 32)).status
+        == RDPNTStatus.infoLengthMismatch)
+    #expect(setAttributes(file.fileID, RDPDriveFileAttributes.directory) == RDPNTStatus.invalidParameter)
+    #expect(setAttributes(directory.fileID, RDPDriveFileAttributes.temporary) == RDPNTStatus.invalidParameter)
+    var tooEarly = Data()
+    tooEarly.appendLittleEndianUInt64(UInt64(bitPattern: -3))
+    tooEarly.append(Data(count: 28))
+    #expect(drive.setInformation(file.fileID, informationClass: RDPDriveInformationClass.fileBasic, tooEarly).status
+        == RDPNTStatus.invalidParameter)
+    #expect(try permissions(path) == 0o644)
+}
+
+/// FILE_ATTRIBUTE_READONLY in a create request makes the file it creates, overwrites or
+/// supersedes read-only, as SetInformation does, while the handle that made it still writes; a
+/// folder, a file only opened, and a new read-only file to delete on close are not.
+@Test func driveCreatesReadOnlyFilesAsAsked() throws {
+    let drive = try TemporaryDrive()
+    let readOnly = RDPDriveFileAttributes.readOnly | RDPDriveFileAttributes.archive
+    func permissions(_ name: String) throws -> Int? {
+        let path = drive.root.appendingPathComponent(name).path
+        return (try FileManager.default.attributesOfItem(atPath: path)[.posixPermissions] as? NSNumber)?.intValue
+    }
+
+    let created = drive.create("\\new.txt", disposition: RDPDriveCreateDisposition.create, attributes: readOnly)
+    #expect(created.status == RDPNTStatus.success)
+    #expect(try permissions("new.txt").map { $0 & 0o222 } == 0)
+    #expect(drive.write(created.fileID, offset: 0, Data("new".utf8)).status == RDPNTStatus.success)
+    #expect(drive.queryInformation(created.fileID, informationClass: RDPDriveInformationClass.fileBasic).body.littleEndianUInt32(at: 36)
+        == readOnly)
+    _ = drive.close(created.fileID)
+    #expect(try Data(contentsOf: drive.root.appendingPathComponent("new.txt")) == Data("new".utf8))
+    // Read-only now, it opens to be written no more.
+    #expect(drive.create("\\new.txt", disposition: RDPDriveCreateDisposition.open).status == RDPNTStatus.accessDenied)
+
+    for disposition in [RDPDriveCreateDisposition.overwriteIf, RDPDriveCreateDisposition.supersede] {
+        try Data("old".utf8).write(to: drive.root.appendingPathComponent("old.txt"))
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: drive.root.appendingPathComponent("old.txt").path)
+        let overwritten = drive.create("\\old.txt", disposition: disposition, attributes: readOnly)
+        #expect(overwritten.status == RDPNTStatus.success)
+        #expect(try permissions("old.txt") == 0o444)
+        #expect(drive.write(overwritten.fileID, offset: 0, Data("x".utf8)).status == RDPNTStatus.success)
+        _ = drive.close(overwritten.fileID)
+        try FileManager.default.removeItem(at: drive.root.appendingPathComponent("old.txt"))
+    }
+
+    // Opened, not overwritten, a file keeps its permissions.
+    try Data("kept".utf8).write(to: drive.root.appendingPathComponent("kept.txt"))
+    try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: drive.root.appendingPathComponent("kept.txt").path)
+    _ = drive.close(drive.create("\\kept.txt", disposition: RDPDriveCreateDisposition.openIf, attributes: readOnly).fileID)
+    #expect(try permissions("kept.txt") == 0o644)
+
+    let folder = drive.create("\\folder", disposition: RDPDriveCreateDisposition.create, options: RDPDriveCreateOptions.directoryFile, attributes: readOnly)
+    #expect(folder.status == RDPNTStatus.success)
+    #expect(try permissions("folder").map { $0 & 0o200 } == 0o200)
+
+    let deleted = drive.create("\\gone.txt", disposition: RDPDriveCreateDisposition.create, options: RDPDriveCreateOptions.deleteOnClose, attributes: readOnly)
+    #expect(deleted.status == RDPNTStatus.cannotDelete)
+    #expect(!FileManager.default.fileExists(atPath: drive.root.appendingPathComponent("gone.txt").path))
+}
+
+/// A read-only file is not deleted, on close or by SetInformation, until its attribute is
+/// cleared, as NTFS does ([MS-FSA] 2.1.5.1.2, 2.1.5.15.3). A folder's read-only is not
+/// honored, and a new folder may not be temporary ([MS-FSA] 2.1.5.1.1).
+@Test func driveDeletesNoReadOnlyFile() throws {
+    let drive = try TemporaryDrive()
+    let locked = drive.root.appendingPathComponent("locked.txt")
+    try Data("keep".utf8).write(to: locked)
+    try FileManager.default.setAttributes([.posixPermissions: 0o444], ofItemAtPath: locked.path)
+    let deleteAccess: UInt32 = 0x0011_0080 // DELETE, SYNCHRONIZE, FILE_READ_ATTRIBUTES
+
+    #expect(drive.create(
+        "\\locked.txt",
+        disposition: RDPDriveCreateDisposition.open,
+        options: RDPDriveCreateOptions.deleteOnClose,
+        access: deleteAccess
+    ).status == RDPNTStatus.cannotDelete)
+    let file = drive.create("\\locked.txt", disposition: RDPDriveCreateDisposition.open, access: deleteAccess)
+    #expect(file.status == RDPNTStatus.success)
+    #expect(drive.setDisposition(file.fileID).status == RDPNTStatus.cannotDelete)
+    #expect(FileManager.default.fileExists(atPath: locked.path))
+
+    // Cleared first, as Remove-Item -Force does, it is deleted.
+    var normal = Data(count: 32) // CreationTime, LastAccessTime, LastWriteTime, ChangeTime: unchanged
+    normal.appendLittleEndianUInt32(0x0000_0080)
+    #expect(drive.setInformation(file.fileID, informationClass: RDPDriveInformationClass.fileBasic, normal).status == RDPNTStatus.success)
+    #expect(drive.setDisposition(file.fileID).status == RDPNTStatus.success)
+    _ = drive.close(file.fileID)
+    #expect(!FileManager.default.fileExists(atPath: locked.path))
+
+    let folder = drive.root.appendingPathComponent("folder").path
+    try FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o555])
+    let directory = drive.create("\\folder", disposition: RDPDriveCreateDisposition.open, access: deleteAccess)
+    #expect(drive.queryInformation(directory.fileID, informationClass: RDPDriveInformationClass.fileBasic).body.littleEndianUInt32(at: 36)
+        == RDPDriveFileAttributes.directory | RDPDriveFileAttributes.readOnly)
+    #expect(drive.setDisposition(directory.fileID).status == RDPNTStatus.success)
+    _ = drive.close(directory.fileID)
+    #expect(!FileManager.default.fileExists(atPath: folder))
+
+    let temporary = drive.create(
+        "\\temporary",
+        disposition: RDPDriveCreateDisposition.create,
+        options: RDPDriveCreateOptions.directoryFile,
+        attributes: RDPDriveFileAttributes.temporary
+    )
+    #expect(temporary.status == RDPNTStatus.invalidParameter)
+    #expect(!FileManager.default.fileExists(atPath: drive.root.appendingPathComponent("temporary").path))
+    let temporaryFile = drive.create("\\temporary.txt", disposition: RDPDriveCreateDisposition.create, attributes: RDPDriveFileAttributes.temporary)
+    #expect(temporaryFile.status == RDPNTStatus.success)
 }
 
 @Test func driveDeletesOnCloseOnlyWhatNTFSWould() throws {
@@ -1292,12 +1440,19 @@ private final class TemporaryDrive {
         }
     }
 
-    func create(_ path: String, disposition: UInt32, options: UInt32 = 0, access: UInt32 = 0x0012_019F) -> Reply {
+    func create(
+        _ path: String,
+        disposition: UInt32,
+        options: UInt32 = 0,
+        access: UInt32 = 0x0012_019F,
+        attributes: UInt32 = 0
+    ) -> Reply {
         send(fileID: 0, major: RDPDriveMajorFunction.create, body: createBody(
             path: path,
             disposition: disposition,
             options: options,
-            access: access
+            access: access,
+            attributes: attributes
         ))
     }
 
@@ -1448,13 +1603,19 @@ private func deviceIORequestPDU(_ request: RDPDeviceIORequest) throws -> RDPDevi
     return try RDPDeviceRedirectionPDU.parse(from: data)
 }
 
-private func createBody(path: String, disposition: UInt32, options: UInt32 = 0, access: UInt32 = 0x0012_019F) -> Data {
+private func createBody(
+    path: String,
+    disposition: UInt32,
+    options: UInt32 = 0,
+    access: UInt32 = 0x0012_019F,
+    attributes: UInt32 = 0
+) -> Data {
     var pathData = Data(utf16LittleEndian: path)
     pathData.appendLittleEndianUInt16(0)
     var body = Data()
     body.appendLittleEndianUInt32(access)
     body.appendLittleEndianUInt64(0)
-    body.appendLittleEndianUInt32(0)
+    body.appendLittleEndianUInt32(attributes)
     body.appendLittleEndianUInt32(7)
     body.appendLittleEndianUInt32(disposition)
     body.appendLittleEndianUInt32(options)

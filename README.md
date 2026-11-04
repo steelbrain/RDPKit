@@ -375,7 +375,7 @@ let report = client.run(
   `\\tsclient\<name>`. The server can read, write, create, rename, and delete
   inside a shared folder and nowhere else; links that point outside it are
   refused. The server hears when files are added, removed or renamed in a
-  folder it watches.
+  folder it watches. A file's Read-only attribute is its write permissions.
 
 ### Audio
 
