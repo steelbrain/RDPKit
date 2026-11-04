@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.8.0
+
 ### Breaking changes
 
 - Clipboard files have no size limit by default: a published file is read
