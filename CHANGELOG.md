@@ -4,90 +4,37 @@
 
 ### Breaking changes
 
-- Clipboard files have no size limit by default. A published file can be
-  read from disk as the server asks for it, and a download writes each range
-  to disk as it arrives, so neither is held in memory:
-  - `downloadRemoteFiles(_:copyNumber:into:progress:finishFile:)` replaces
-    `writeFile: (Data, URL)`. The download writes each file itself, under a
-    hidden name in the folder until it is whole, and hands `finishFile` its
-    URL once it has its name; a file cut short is removed. An app that set a
-    quarantine mark in `writeFile` sets it in `finishFile`.
-    `RDPPasteboardClipboardSession` requires the new signature and
-    `maximumFileByteCount`.
-  - `RDPClipboardDownloadLimits.maximumTotalByteCount` is unlimited by
-    default, was 32 MiB. The 1,000-file limit stays.
-  - `RDPPasteboardClipboard.maximumLocalFileByteCount` is unlimited by
-    default, was 32 MiB, and the bridge publishes the pasteboard's files
-    with `RDPClipboardLocalFile(fileURL:maximumByteCount:)`.
-- New `RDPClipboardLocalFileReadError` cases, which an exhaustive `switch`
-  handles: `fileTooLarge(_:)`, a file larger than the server takes, and
-  `filesNotSupported`, a server that takes no files, which
-  `RDPPasteboardClipboard` reports as `localFilesNotShared` before it reads
-  any file. KRdp 6.8 takes no files, and dropped those it was offered without
-  a word.
-- The client advertises CB_HUGE_FILE_SUPPORT_ENABLED in its clipboard
-  capabilities, echoing it only to a server that does, as Windows 11 and
-  GNOME Remote Desktop 51 do.
+- Clipboard files have no size limit by default: a published file is read
+  from disk as the server asks for it, and a download writes each range to
+  disk. `RDPClipboardDownloadLimits.maximumTotalByteCount` and
+  `RDPPasteboardClipboard.maximumLocalFileByteCount` were 32 MiB.
+- `downloadRemoteFiles(_:copyNumber:into:progress:finishFile:)` replaces
+  `writeFile`: it writes each file itself and hands `finishFile` its URL, the
+  place to set a quarantine mark. `RDPPasteboardClipboardSession` requires it
+  and `maximumFileByteCount`.
+- `RDPClipboardLocalFileReadError` has new cases, `fileTooLarge(_:)` and
+  `filesNotSupported`.
+- The clipboard advertises CB_HUGE_FILE_SUPPORT_ENABLED to a server that
+  does.
 
 ### Additions
 
 - `RDPClipboardSession.maximumFileByteCount`: the largest file the server's
-  clipboard takes, from the capabilities it sent before its Monitor Ready:
-  nil without CB_STREAM_FILECLIP_ENABLED, 4,294,967,295 bytes without
-  CB_HUGE_FILE_SUPPORT_ENABLED, any size with both.
+  clipboard takes, nil when it takes none, as with KRdp 6.8.
 - `RDPClipboardLocalFile(fileURL:maximumByteCount:)` publishes a file on disk.
-  The session reads each range the server asks for from the file on a queue
-  of its own, and fails the request once the file is gone, replaced or
-  shorter than it was published; `fileURL` says which file it is.
-- Downloads size their ranges to the server: they start at
-  `RDPClipboardDownloadLimits.rangeByteCount`, 512 KiB, double after a range
-  answered in full within a second, up to the new `maximumRangeByteCount`,
-  8 MiB, and halve after one that takes over 4 seconds. The session keeps
-  the size for its next download. Windows 11 and GNOME Remote Desktop 51
-  answer 8 MiB ranges in full; KRdp 6.8 transfers no files. GNOME Remote
-  Desktop 51 fails each range of its own files whose offset has bit 31 set,
-  so its files over 2 GiB stop with `RDPClipboardDownloadError.refused` at
-  2 GiB.
-- Shared drives report changes. A directory change notification from the
-  server completes once a change in its folder, or under it when the server
-  watches the tree, is reported, with STATUS_NOTIFY_ENUM_DIR, which tells the
-  server to list the folder again. A change that comes while no notification
-  waits completes the handle's next one. On macOS and Mac Catalyst one
-  FSEvents stream per drive reports changes while a handle watches. On iOS,
-  tvOS and visionOS a kqueue watch on each watched folder reports files
-  added to it, removed from it or renamed in it, but not writes to its files
-  or changes in its subfolders; up to 32 folders are watched at once across
-  all drives, and another is watched once one of its drive's watches stops.
-  Closing a handle completes the notifications waiting on it with
-  STATUS_NOTIFY_CLEANUP, which frees their CompletionIds on the server; they
-  used to wait forever. A folder marked for deletion completes those on it
-  with STATUS_DELETE_PENDING, and refuses new ones so.
-- Shared drives: setting FILE_ATTRIBUTE_READONLY on a file, as the Read-only
-  box of Windows' file properties does, takes its write permissions away,
-  and clearing it lets its owner write again. Other attributes, and
-  read-only on a folder, are still not applied. As [MS-FSA] 2.1.5.15.2 has
-  it, FileBasicInformation shorter than 36 bytes gets
-  STATUS_INFO_LENGTH_MISMATCH, and a time below -2, FILE_ATTRIBUTE_DIRECTORY
-  on a file or FILE_ATTRIBUTE_TEMPORARY on a folder
-  STATUS_INVALID_PARAMETER, before anything is set.
-- Shared drives: a file the server creates or overwrites with
-  FILE_ATTRIBUTE_READONLY in its create request is read-only, while the
-  handle that did so can still write, as [MS-FSA] 2.1.5.1 has it. Windows 11
-  sets it there, not with SetInformation, when it copies a read-only file to
-  the drive. Deleting a read-only file gets STATUS_CANNOT_DELETE until the
-  attribute is cleared ([MS-FSA] 2.1.5.1.2, 2.1.5.15.3). As on NTFS, `del`
-  and `Remove-Item` on Windows 11 are refused, while `Remove-Item -Force`,
-  `rmdir /s` and the shell's delete clear the attribute and delete. A new
-  folder with FILE_ATTRIBUTE_TEMPORARY gets STATUS_INVALID_PARAMETER.
-- `RDPClipboardTestServer.settle(alongside:)` waits until the server and a
-  queue its handlers hand work to, such as the main one, are both done.
-  `settle()` followed by a wait for the main queue can miss server work that
-  begins and ends during that wait.
-- `onClipboardLocalFilePasteProgress`, on `run`, `connect` and
-  `RDPClipboardTestServer`, reports each range of a published file that goes
-  to the server as it pastes: an `RDPClipboardLocalFilePasteProgress` with
-  the file's name and place in the list, the bytes sent of it and its size,
-  so an app can show how far the paste is.
+- Download ranges grow from 512 KiB up to `maximumRangeByteCount`, 8 MiB,
+  while the server answers them quickly. GNOME Remote Desktop 51 fails its
+  own files past 2 GiB, which stop with `RDPClipboardDownloadError.refused`.
+- `onClipboardLocalFilePasteProgress` reports how far the server's paste of
+  published files is.
+- Shared drives report changes, so the server lists a folder again: FSEvents
+  on macOS and Mac Catalyst, a kqueue watch on each watched folder elsewhere.
+  Closing a handle completes the notifications waiting on it.
+- Shared drives apply FILE_ATTRIBUTE_READONLY, set later or at create, as a
+  file's write permissions, and refuse to delete a read-only file until it
+  is cleared, as NTFS does.
+- `RDPClipboardTestServer.settle(alongside:)` settles the server and a queue
+  its handlers hand work to, such as the main one.
 
 ## 0.7.0
 
