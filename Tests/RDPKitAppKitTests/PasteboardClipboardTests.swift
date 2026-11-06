@@ -35,6 +35,12 @@ private func toastText(for event: RDPPasteboardClipboard.Event) -> String? {
         case .filesNotSupported:
             "Remote computer takes no files; remote clipboard cleared"
         }
+    case let .localFilePasteProgress(progress):
+        progress.fileCount == 1
+            ? "Remote is pasting \(progress.fileName)"
+            : "Remote is pasting file \(progress.fileOffset + 1) of \(progress.fileCount)"
+    case let .localFilesPasted(count):
+        count == 1 ? "1 file pasted on remote" : "\(count) files pasted on remote"
     case .pasteboardAccessDenied:
         "Clipboard access is off for RDPeek in System Settings"
     case .upToDate:
@@ -1437,6 +1443,108 @@ final class PasteboardClipboardTests: XCTestCase {
         XCTAssertNil(clipboard.localFileReadTask, "The remote copy is newer than the files")
     }
 
+    /// The server's paste of the files the bridge shared says when each
+    /// file starts and when the last one with any bytes is whole, not each
+    /// range; the next paste of them is news again.
+    func testThePasteOfSharedFilesReportsEachFileAndItsEnd() async throws {
+        let large = Data(repeating: 7, count: 10_000)
+        let fileURLs = try [
+            makeLocalFile(named: "notes.txt", contents: Data("hello".utf8)),
+            makeLocalFile(named: "large.bin", contents: large),
+            makeLocalFile(named: "empty.txt", contents: Data()),
+        ]
+        let clipboard = try await shareFiles(at: fileURLs)
+        let server = try XCTUnwrap(servers.last)
+        var events: [RDPPasteboardClipboard.Event] = []
+        clipboard.onEvent = { events.append($0) }
+
+        for _ in 0 ..< 2 {
+            let shared = await server.pasteFiles()
+            XCTAssertEqual(shared?.map(\.contents), [Data("hello".utf8), large, Data()])
+            await settle(server)
+        }
+
+        let onePaste: [RDPPasteboardClipboard.Event] = [
+            .localFilePasteProgress(RDPClipboardLocalFilePasteProgress(
+                fileOffset: 0,
+                fileCount: 3,
+                fileName: "notes.txt",
+                sentByteCount: 5,
+                fileByteCount: 5
+            )),
+            .localFilePasteProgress(RDPClipboardLocalFilePasteProgress(
+                fileOffset: 1,
+                fileCount: 3,
+                fileName: "large.bin",
+                sentByteCount: 4_096,
+                fileByteCount: 10_000
+            )),
+            .localFilesPasted(count: 3),
+        ]
+        XCTAssertEqual(events, onePaste + onePaste)
+    }
+
+    /// A paste of many files says how far it is once per tenth of them, as
+    /// a download does.
+    func testThePasteOfManySharedFilesReportsOncePerTenthOfThem() async throws {
+        let fileURLs = try (0 ..< 20).map { try makeLocalFile(named: "\($0).txt", contents: Data("x".utf8)) }
+        let clipboard = try await shareFiles(at: fileURLs)
+        let server = try XCTUnwrap(servers.last)
+        var toasts: [String] = []
+        clipboard.onEvent = { event in toastText(for: event).map { toasts.append($0) } }
+
+        _ = await server.pasteFiles()
+        await settle(server)
+
+        XCTAssertEqual(
+            toasts,
+            stride(from: 1, through: 19, by: 2).map { "Remote is pasting file \($0) of 20" } + ["20 files pasted on remote"]
+        )
+    }
+
+    /// A report of a paste, on its way to the main thread, of files that a
+    /// newer copy replaced since, local or remote, or of a session the
+    /// bridge has left, is no news.
+    func testPasteReportsOfReplacedFilesAreDropped() async throws {
+        let fileURL = try makeLocalFile(named: "notes.txt", contents: Data("hello".utf8))
+        let clipboard = try await shareFiles(at: [fileURL])
+        let server = try XCTUnwrap(servers.last)
+        var pastes: [RDPPasteboardClipboard.Event] = []
+        clipboard.onEvent = { event in
+            switch event {
+            case .localFilePasteProgress, .localFilesPasted:
+                pastes.append(event)
+            default:
+                break
+            }
+        }
+        let report = RDPClipboardLocalFilePasteProgress(
+            fileOffset: 0,
+            fileCount: 1,
+            fileName: "notes.txt",
+            sentByteCount: 5,
+            fileByteCount: 5
+        )
+        clipboard.receiveLocalFilePasteProgress(report)
+        XCTAssertEqual(pastes, [.localFilesPasted(count: 1)])
+
+        pasteboard.clearContents()
+        pasteboard.setString("newer", forType: .string)
+        clipboard.poll()
+        clipboard.receiveLocalFilePasteProgress(report)
+
+        try await shareAgain([fileURL], with: clipboard)
+        server.copyText("remote")
+        await settle(server)
+        clipboard.receiveLocalFilePasteProgress(report)
+
+        try await shareAgain([fileURL], with: clipboard)
+        clipboard.detach()
+        clipboard.receiveLocalFilePasteProgress(report)
+
+        XCTAssertEqual(pastes, [.localFilesPasted(count: 1)])
+    }
+
     // MARK: - Remote files
 
     /// RDPKit downloads a remote copy of files from the server, asking its
@@ -2205,11 +2313,43 @@ final class PasteboardClipboardTests: XCTestCase {
                         clipboard.receiveRemoteCopyUnavailable(isEmpty: isEmpty, copyNumber: copyNumber)
                     }
                 }
+            },
+            onClipboardLocalFilePasteProgress: { progress in
+                onMainThread {
+                    handOff.run { clipboard.receiveLocalFilePasteProgress(progress) }
+                }
             }
         )
         servers.append(server)
         await settle(server)
         return server
+    }
+
+    /// A bridge, connected to a new test server, that shared the files at
+    /// `fileURLs` with it. Their read, which attaching starts, may be done
+    /// by the time the server has settled.
+    private func shareFiles(
+        at fileURLs: [URL],
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async throws -> RDPPasteboardClipboard {
+        pasteboard.clearContents()
+        pasteboard.writeObjects(fileURLs.map { $0 as NSURL })
+        let clipboard = makeClipboard()
+        let server = try await connectServer(to: clipboard)
+        await clipboard.localFileReadTask?.value
+        await settle(server)
+        XCTAssertEqual(server.clientCopies.last, .files, file: file, line: line)
+        return clipboard
+    }
+
+    /// Copies the files at `fileURLs` again, and waits until `clipboard`
+    /// has shared them.
+    private func shareAgain(_ fileURLs: [URL], with clipboard: RDPPasteboardClipboard) async throws {
+        pasteboard.clearContents()
+        pasteboard.writeObjects(fileURLs.map { $0 as NSURL })
+        clipboard.poll()
+        try await XCTUnwrap(clipboard.localFileReadTask).value
     }
 
     /// The copies the bridge published to `server`, empty ones included:

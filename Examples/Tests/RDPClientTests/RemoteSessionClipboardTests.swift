@@ -80,6 +80,14 @@ private func settle(_ server: RDPClipboardTestServer) async {
         .localFilesNotShared(.unreadable(URL(fileURLWithPath: "/tmp/a.txt"))),
         .localFilesNotShared(.fileTooLarge(URL(fileURLWithPath: "/tmp/a.txt"))),
         .localFilesNotShared(.filesNotSupported),
+        .localFilePasteProgress(RDPClipboardLocalFilePasteProgress(
+            fileOffset: 0, fileCount: 1, fileName: "a.txt", sentByteCount: 4096, fileByteCount: 8192
+        )),
+        .localFilePasteProgress(RDPClipboardLocalFilePasteProgress(
+            fileOffset: 1, fileCount: 4, fileName: "b.txt", sentByteCount: 4096, fileByteCount: 8192
+        )),
+        .localFilesPasted(count: 1),
+        .localFilesPasted(count: 4),
         .pasteboardAccessDenied,
         .upToDate,
         .remoteTextCopied,
@@ -105,6 +113,10 @@ private func settle(_ server: RDPClipboardTestServer) async {
         "Local file clipboard could not be read; remote clipboard cleared.",
         "Local file is larger than the remote computer takes; remote clipboard cleared.",
         "The remote computer takes no files; remote clipboard cleared.",
+        "Remote computer is pasting a.txt.",
+        "Remote computer is pasting local files: 2 of 4.",
+        "Local file pasted on the remote computer.",
+        "4 local files pasted on the remote computer.",
         "Clipboard access is off for RDPClient in System Settings.",
         "Clipboard is up to date.",
         "Remote text copied.",

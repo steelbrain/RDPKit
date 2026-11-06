@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Breaking changes
+
+- `RDPPasteboardClipboard.Event` has new cases, `localFilePasteProgress(_:)`
+  and `localFilesPasted(count:)`, which an exhaustive `switch` handles.
+
+### Additions
+
+- `RDPPasteboardClipboard.receiveLocalFilePasteProgress(_:)` takes what
+  `onClipboardLocalFilePasteProgress` reports, and says when the server starts
+  pasting each file the bridge shared, of many files once per tenth, and when
+  it has the last one whole. RDPClient shows both.
+
 ## 0.8.0
 
 ### Breaking changes

@@ -82,6 +82,15 @@ public final class RDPPasteboardClipboard {
         /// ``RDPClipboardLocalFileReadError/fileTooLarge(_:)`` that a file is larger than it
         /// takes: over 4 GiB, to a server without huge file support.
         case localFilesNotShared(RDPClipboardLocalFileReadError)
+        /// The server started pasting a file of the copy the bridge shared: the first, then
+        /// once per tenth of the files, as ``downloadProgress(_:)`` reports a download. It
+        /// comes once the file's first range has gone, and not for the range that ends the
+        /// paste, which is ``localFilesPasted(count:)``.
+        case localFilePasteProgress(RDPClipboardLocalFilePasteProgress)
+        /// The server got the last range of the last file with any bytes, of the `count` files
+        /// the bridge shared, so a paste that takes them in order is done. Nothing reports a
+        /// paste the user cancels on the server: it just asks for no more.
+        case localFilesPasted(count: Int)
         /// macOS denies reading the pasteboard, as the user can choose in System Settings, so
         /// nothing goes and the server keeps its copy. Once until a read works again, and for
         /// each ``syncNow()``.
@@ -160,6 +169,9 @@ public final class RDPPasteboardClipboard {
     /// Whether the running read reports its result even when it is no news, for a sync the
     /// user asked for.
     private var localFileReadAnnounces = false
+    /// The files the bridge last shared, while they are the server's copy, so its pastes of
+    /// them are reported.
+    private var sharedLocalFiles: SharedLocalFiles?
     private var temporarySharingExpiresAt: Date?
     private var fileDownload: FileDownload?
     /// The last download put on the pasteboard, and the pasteboard's change count once it was
@@ -463,6 +475,34 @@ public final class RDPPasteboardClipboard {
         fileDownload = FileDownload(id: id, task: task, directory: directory)
     }
 
+    /// How far the server's paste of the files the bridge shared is, from the
+    /// `onClipboardLocalFilePasteProgress` handler. RDPKit reports each range it sends; only a
+    /// file's start is news, of many files once per tenth, and the range that ends the paste.
+    /// A report of files a newer copy replaced since, on its way here, is dropped.
+    public func receiveLocalFilePasteProgress(_ progress: RDPClipboardLocalFilePasteProgress) {
+        guard session != nil, var files = sharedLocalFiles, progress.fileCount == files.count else {
+            return
+        }
+        let offset = progress.fileOffset
+        // A paste that ends with this range starts no file worth a report.
+        if offset == files.lastNonEmptyOffset, progress.sentByteCount >= progress.fileByteCount {
+            // The next paste of the copy is news again.
+            files.pastingOffset = nil
+            sharedLocalFiles = files
+            onEvent(.localFilesPasted(count: files.count))
+            return
+        }
+        guard files.pastingOffset != offset else {
+            return
+        }
+        files.pastingOffset = offset
+        sharedLocalFiles = files
+        guard offset == 0 || offset * 10 / files.count != (offset - 1) * 10 / files.count else {
+            return
+        }
+        onEvent(.localFilePasteProgress(progress))
+    }
+
     /// Removes the UUID-named folders in `directory` last changed before `cutoff`, other than
     /// those at `keptDirectoryPaths`, such as the folders of files still on the pasteboard:
     /// downloads earlier runs left, cut short by a crash or on the pasteboard at quit. Anything
@@ -659,6 +699,7 @@ public final class RDPPasteboardClipboard {
                 return
             }
             localCopyIsUnsent = false
+            sharedLocalFiles = SharedLocalFiles(files)
             if reportsResult {
                 onEvent(.localFilesShared(count: files.count))
             }
@@ -695,9 +736,12 @@ public final class RDPPasteboardClipboard {
         }
     }
 
+    /// Cancels the read of copied files under way, and forgets the files shared before: each
+    /// caller has a newer copy, local or remote, or another session take their place.
     private func cancelLocalFileRead() {
         localFileRead?.cancel()
         localFileRead = nil
+        sharedLocalFiles = nil
     }
 
     private static func fileURLs(on pasteboard: NSPasteboard) -> [URL] {
@@ -859,5 +903,21 @@ private struct FileDownload {
     let id: UUID
     let task: Task<Void, Never>
     let directory: URL
+}
+
+/// Files the bridge shared, which the server may paste.
+private struct SharedLocalFiles {
+    /// How many there are, as each report of a paste of them counts them.
+    let count: Int
+    /// The last with any bytes, whose last range ends a paste: the server asks for no range of
+    /// an empty file.
+    let lastNonEmptyOffset: Int?
+    /// The file the paste under way reported last.
+    var pastingOffset: Int?
+
+    init(_ files: [RDPClipboardLocalFile]) {
+        count = files.count
+        lastNonEmptyOffset = files.lastIndex { $0.descriptor.fileSize > 0 }
+    }
 }
 #endif

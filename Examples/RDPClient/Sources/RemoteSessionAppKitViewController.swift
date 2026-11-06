@@ -960,6 +960,12 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                         controller.render()
                     }
                 },
+                onClipboardLocalFilePasteProgress: { progress in
+                    recipient.deliver { controller in
+                        controller.clipboard.receiveLocalFilePasteProgress(progress)
+                        controller.render()
+                    }
+                },
                 onAudioSample: { sample in
                     recipient.deliver { controller in
                         guard controller.audioPlaybackEnabled else {

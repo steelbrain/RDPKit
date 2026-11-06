@@ -105,6 +105,10 @@ final class RDPRemoteSessionClipboard {
         bridge.receiveFileList(descriptorList, copyNumber: copyNumber)
     }
 
+    func receiveLocalFilePasteProgress(_ progress: RDPClipboardLocalFilePasteProgress) {
+        bridge.receiveLocalFilePasteProgress(progress)
+    }
+
     /// The status line for `event`, of a bridge with `limits` and `maximumLocalFileByteCount`.
     static func message(
         for event: RDPPasteboardClipboard.Event,
@@ -135,6 +139,12 @@ final class RDPRemoteSessionClipboard {
             case .filesNotSupported:
                 "The remote computer takes no files; remote clipboard cleared."
             }
+        case let .localFilePasteProgress(progress):
+            progress.fileCount == 1
+                ? "Remote computer is pasting \(progress.fileName)."
+                : "Remote computer is pasting local files: \(progress.fileOffset + 1) of \(progress.fileCount)."
+        case let .localFilesPasted(count):
+            count == 1 ? "Local file pasted on the remote computer." : "\(count) local files pasted on the remote computer."
         case .pasteboardAccessDenied:
             "Clipboard access is off for RDPClient in System Settings."
         case .upToDate:

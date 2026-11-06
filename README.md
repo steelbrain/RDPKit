@@ -354,8 +354,9 @@ let report = client.run(
 - `RDPKitAppKit`'s `RDPPasteboardClipboard` for macOS bridges the pasteboard
   and a session's clipboard: it publishes the user's text and files as they
   copy them, puts the server's text and downloaded files (quarantined) on the
-  pasteboard, shares for a while with `startTemporarySharing()`, and reports
-  what happened as `Event`s for the app to word. An emptied server clipboard
+  pasteboard, shares for a while with `startTemporarySharing()`, follows the
+  server's pastes of the files it shared, and reports what happened as
+  `Event`s for the app to word. An emptied server clipboard
   clears the copy it sent here, also while sharing is off.
 - File contents requests and responses, for an app that makes its own: they
   have no timeout, so to give one up, ignore answers for its stream ID and use
