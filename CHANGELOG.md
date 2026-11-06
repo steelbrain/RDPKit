@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.9.0
+
 ### Breaking changes
 
 - `RDPPasteboardClipboard.Event` has new cases, `localFilePasteProgress(_:)`

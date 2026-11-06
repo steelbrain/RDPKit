@@ -40,7 +40,7 @@ Or use the latest release tag for a pinned build:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/steelbrain/RDPKit.git", from: "0.8.0"),
+    .package(url: "https://github.com/steelbrain/RDPKit.git", from: "0.9.0"),
 ]
 ```
 
