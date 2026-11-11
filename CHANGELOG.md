@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.9.1
+
 ### Compatibility and fixes
 
 - xrdp no longer rejects the Client Info and closes the connection: it sets
