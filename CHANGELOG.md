@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Compatibility and fixes
+
+- xrdp no longer rejects the Client Info and closes the connection: it sets
+  INFO_MAXIMIZESHELL, which xrdp requires.
+
 ## 0.9.0
 
 ### Breaking changes

@@ -39,7 +39,7 @@ import Testing
     #expect(Data(pduData.prefix(22)) == Data([
         0x40, 0x00, 0x00, 0x00,
         0x09, 0x04, 0x00, 0x00,
-        0x5B, 0x41, 0x0A, 0x00,
+        0x7B, 0x41, 0x0A, 0x00,
         0x06, 0x00,
         0x10, 0x00,
         0x0C, 0x00,
@@ -73,7 +73,17 @@ import Testing
         | UInt32(pduData[10]) << 16
         | UInt32(pduData[11]) << 24
 
-    #expect(flags == 0x000A_4153)
+    #expect(flags == 0x000A_4173)
+}
+
+/// xrdp's first check of a Client Info: it closes the connection, logging
+/// "received wrong flags", unless INFO_MOUSE, INFO_DISABLECTRLALTDEL,
+/// INFO_UNICODE and INFO_MAXIMIZESHELL (its RDP_LOGON_NORMAL) are all set.
+@Test(arguments: [nil, RDPCredentials(username: "rdp-user", domain: nil, password: "secret")] as [RDPCredentials?])
+func clientInfoSetsFlagsXrdpRequires(credentials: RDPCredentials?) throws {
+    let pduData = try RDPClientInfoPDU(credentials: credentials).encodedPDUData()
+
+    #expect(pduData.littleEndianUInt32(at: 8) & 0x0000_0033 == 0x0000_0033)
 }
 
 @Test func clientInfoSendsRedirectionPasswordCookieVerbatim() throws {
@@ -151,7 +161,7 @@ import Testing
         | UInt32(pduData[10]) << 16
         | UInt32(pduData[11]) << 24
 
-    #expect(flags == 0x0002_4153)
+    #expect(flags == 0x0002_4173)
 }
 
 @Test func clientInfoUsesIPv6AddressFamilyForIPv6ClientAddress() throws {

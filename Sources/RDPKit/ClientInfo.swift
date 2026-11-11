@@ -131,6 +131,9 @@ struct RDPClientInfoPDU: Equatable, Sendable {
             flags |= RDPClientInfoFlags.autoLogon
         }
         flags |= RDPClientInfoFlags.unicode
+        // mstsc and FreeRDP set this too, and xrdp closes the connection
+        // unless it, mouse, disableCtrlAltDel and unicode are all set.
+        flags |= RDPClientInfoFlags.maximizeShell
         flags |= RDPClientInfoFlags.logonNotify
         flags |= RDPClientInfoFlags.enableWindowsKey
         flags |= RDPClientInfoFlags.forceEncryptedClientToServerPDU
@@ -151,6 +154,7 @@ private enum RDPClientInfoFlags {
     static let disableCtrlAltDel: UInt32 = 0x0000_0002
     static let autoLogon: UInt32 = 0x0000_0008
     static let unicode: UInt32 = 0x0000_0010
+    static let maximizeShell: UInt32 = 0x0000_0020
     static let logonNotify: UInt32 = 0x0000_0040
     static let enableWindowsKey: UInt32 = 0x0000_0100
     static let forceEncryptedClientToServerPDU: UInt32 = 0x0000_4000
