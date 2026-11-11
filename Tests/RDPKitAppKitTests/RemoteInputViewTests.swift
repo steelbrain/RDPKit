@@ -566,10 +566,10 @@ private func windowsTypes(
         "Read only \(letterCounts.count) Apple layouts; TISCreateInputSourceList should list every installed one"
     )
     #expect(letterCounts["US"] == 26, "Found \(letterCounts.count) Apple layouts")
+    // Slovenian-QWERTZ is mapped too, but macOS 26, which CI runs, does not install it.
     for name in [
         "ABC-AZERTY", "ABC-QWERTZ", "Albanian", "FinnishExtended", "German-DIN-2137", "Hungarian-QWERTY",
-        "Kabyle-AZERTY", "Latvian", "Lithuanian", "Lithuanian-LST1582", "Romanian", "Slovenian-QWERTZ",
-        "Turkish-Standard",
+        "Kabyle-AZERTY", "Latvian", "Lithuanian", "Lithuanian-LST1582", "Romanian", "Turkish-Standard",
     ] {
         #expect(letterCounts[name] != nil, "\(name) is not installed")
     }
