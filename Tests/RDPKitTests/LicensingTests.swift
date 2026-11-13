@@ -104,6 +104,23 @@ import Testing
     #expect(publicKey.keyByteCount == 264)
 }
 
+/// A Windows terminal server's licensing certificate names its RSA key by a
+/// signature algorithm, sha1WithRSA (1.3.14.3.2.15), not rsaEncryption.
+@Test func parsesServerLicenseRequestWithTerminalServerX509CertificateChain() throws {
+    let certificateDER = try #require(Data(base64Encoded: terminalServerCertificateBase64))
+    let certificate = MockKRDPTLS.rdpX509CertificateChain(certificateDER: certificateDER)
+    let license = try #require(try parseServerLicense(mcsSendDataIndication(
+        channelID: 1003,
+        userData: serverLicenseRequestUserData(certificatePayload: certificate)
+    )))
+    let publicKey = try #require(license.request?.serverCertificatePublicKey)
+
+    #expect(publicKey.publicExponent == 0x0001_0001)
+    #expect(publicKey.modulus.count == 256)
+    #expect(publicKey.modulus.suffix(8) == Data([0x27, 0x6D, 0xB5, 0xEF, 0x44, 0xD9, 0xC0, 0xBE]))
+    #expect(publicKey.keyByteCount == 264)
+}
+
 @Test func rejectsServerLicenseRequestWithMalformedCertificate() throws {
     var certificate = proprietaryServerCertificate()
     certificate[certificate.index(certificate.startIndex, offsetBy: 16)] = 0
@@ -814,3 +831,23 @@ private func readLicenseBlob(_ cursor: inout ByteCursor) throws -> (type: UInt16
     let length = try Int(cursor.readLittleEndianUInt16())
     return (type, try cursor.readData(count: length))
 }
+
+/// A self-signed certificate whose SubjectPublicKeyInfo algorithm is
+/// sha1WithRSA (1.3.14.3.2.15), as a Windows terminal server's is.
+private let terminalServerCertificateBase64 = [
+    "MIICrzCCAZegAwIBAgIBATANBgkqhkiG9w0BAQsFADAZMRcwFQYDVQQDDA5MaWNl",
+    "bnNlIFNlcnZlcjAgFw0yNjAxMDEwMDAwMDBaGA8yMTI1MTIwODAwMDAwMFowHzEd",
+    "MBsGA1UEAwwUbmNhY25faXBfdGNwOlRFUk1TUlYwggEeMAkGBSsOAwIPBQADggEP",
+    "ADCCAQoCggEBAL7A2UTvtW0ncd1ezT1sIdMfNiGB3qskyTJXf96K/q/e4VqvXgaO",
+    "p/T9IoZU57/NDYFZC5qUFdxgN3Dh0LnGqcnOJz03JQGOaV5CYU7uk8zPKg0xqaAm",
+    "MpCaYXji4gLW3bbOKVKbR84pc3X7GitDPGwUWacndWOgIYWiqep/jxIaDeXH+l5P",
+    "bFdla3SLu7raW6i8HzYPXkSYDUFNRmVPYBYPA4jS3Q3JprP0sgHH+PZsZEZ2XlCD",
+    "FbOo6lHzmN7DKIUK4AuJ7CvT8Rf8gkR7C7Je3N4uhSrpCCrqNom06zQa9TZOp89B",
+    "toN2M9xcPDA/1lvngfgV8VrQoqi0O9PqQGMCAwEAATANBgkqhkiG9w0BAQsFAAOC",
+    "AQEAeVr27DAQ0c9ClxfYqpQCzf3LN9K+Cphh/DCsMIhA4iUr5e8Vx/Hbub29eCEp",
+    "y+0/PG4w650pgjS9wnt/5EHPYYPC1M8I1h1vhskYDl9qNZe4LyPUADuBRKgCan+J",
+    "/4rm/5r1tnuPTAbtypxpqzZ7KPVvnWO1HFPqBNa5OPJs9+xbNEATPzDbMtDMpOEw",
+    "rU5bSo21F6lbo2JIrX8h3lD6jav2mZVfU6b+YAVxwWAnMUzFXhVP/FBZqcyfxK/S",
+    "bDbVEs0LX63Vq94JsyYMV6Tv9C39sqb8PEgG5bGL/0wc2EfuOJBKMyzdk6ZM6O/p",
+    "NiNMWLqZGbYypeK0veFNe0qtzA==",
+].joined()

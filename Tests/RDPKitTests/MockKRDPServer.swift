@@ -3941,7 +3941,10 @@ enum MockKRDPTLS {
         guard let certificate = try certificates().first else {
             throw MockKRDPServerError.invalidClientPDU
         }
-        let certificateDER = Data(try certificate.toDERBytes())
+        return rdpX509CertificateChain(certificateDER: Data(try certificate.toDERBytes()))
+    }
+
+    static func rdpX509CertificateChain(certificateDER: Data) -> Data {
         var chain = Data()
         chain.appendLittleEndianUInt32(2)
         chain.appendLittleEndianUInt32(UInt32(certificateDER.count))
