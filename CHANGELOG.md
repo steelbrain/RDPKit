@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Compatibility and fixes
+
+- A Windows Remote Desktop Session Host that licenses the connection no longer
+  fails it as a protocol violation: RDPKit reads the RSA key of the licensing
+  certificate itself. Security gives no key for that certificate, whose
+  SubjectPublicKeyInfo names a signature algorithm, not rsaEncryption.
+
 ## 0.9.1
 
 ### Compatibility and fixes
