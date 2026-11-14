@@ -371,29 +371,16 @@ private func parseX509ServerCertificateChainPublicKey(cursor: inout ByteCursor) 
     return try parseX509CertificateRSAPublicKey(terminalServerCertificate)
 }
 
-/// The RSA key of an X.509 certificate (RFC 5280 4.1), read from its DER.
-/// Security gives no key for a Windows terminal server's licensing certificate,
-/// whose SubjectPublicKeyInfo names a signature algorithm, sha1WithRSA
-/// (1.3.14.3.2.15) or md5WithRSAEncryption, not rsaEncryption; the key itself is
-/// a PKCS #1 RSAPublicKey either way.
+/// The RSA key of an X.509 certificate, whatever algorithm its
+/// SubjectPublicKeyInfo names. A Windows terminal server's licensing
+/// certificate names a signature algorithm, sha1WithRSA (1.3.14.3.2.15) or
+/// md5WithRSAEncryption, not rsaEncryption, so SecCertificateCopyKey gives no
+/// key for it; the key itself is a PKCS #1 RSAPublicKey either way.
 private func parseX509CertificateRSAPublicKey(_ certificateDER: Data) throws -> RDPRSAPublicKey {
-    var cursor = DERCursor(certificateDER)
-    var certificate = try DERCursor(cursor.readValue(tag: 0x30))
-    var tbsCertificate = try DERCursor(certificate.readValue(tag: 0x30))
-    // version, absent from a v1 certificate.
-    _ = try tbsCertificate.readValueIfPresent(tag: 0xA0)
-    // serialNumber, signature, issuer, validity, subject.
-    for tag: UInt8 in [0x02, 0x30, 0x30, 0x30, 0x30] {
-        _ = try tbsCertificate.readValue(tag: tag)
-    }
-    var subjectPublicKeyInfo = try DERCursor(tbsCertificate.readValue(tag: 0x30))
-    _ = try subjectPublicKeyInfo.readValue(tag: 0x30)
-    let subjectPublicKey = try subjectPublicKeyInfo.readValue(tag: 0x03)
-    // A BIT STRING starts with its count of unused bits: none in a key.
-    guard cursor.isAtEnd, subjectPublicKeyInfo.isAtEnd, subjectPublicKey.first == 0 else {
+    guard let subjectPublicKey = try? RDPCredSSPCertificate.subjectPublicKey(fromCertificateDER: certificateDER) else {
         throw RDPDecodeError.invalidMCSConnectResponseHeader
     }
-    return try parseDERPKCS1RSAPublicKey(Data(subjectPublicKey.dropFirst()))
+    return try parseDERPKCS1RSAPublicKey(subjectPublicKey)
 }
 
 private func parseDERPKCS1RSAPublicKey(_ der: Data) throws -> RDPRSAPublicKey {
@@ -601,14 +588,6 @@ private struct DERCursor {
         let end = bytes.index(start, offsetBy: length)
         offset += length
         return Data(bytes[start ..< end])
-    }
-
-    /// The value of the next element when it has `tag`, or nil, reading nothing.
-    mutating func readValueIfPresent(tag: UInt8) throws -> Data? {
-        guard remaining >= 1, bytes[bytes.index(bytes.startIndex, offsetBy: offset)] == tag else {
-            return nil
-        }
-        return try readValue(tag: tag)
     }
 
     private var remaining: Int {

@@ -832,7 +832,7 @@ private func readLicenseBlob(_ cursor: inout ByteCursor) throws -> (type: UInt16
     return (type, try cursor.readData(count: length))
 }
 
-/// A self-signed certificate whose SubjectPublicKeyInfo algorithm is
+/// A certificate whose SubjectPublicKeyInfo algorithm is
 /// sha1WithRSA (1.3.14.3.2.15), as a Windows terminal server's is.
 private let terminalServerCertificateBase64 = [
     "MIICrzCCAZegAwIBAgIBATANBgkqhkiG9w0BAQsFADAZMRcwFQYDVQQDDA5MaWNl",
