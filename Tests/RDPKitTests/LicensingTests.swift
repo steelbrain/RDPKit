@@ -104,11 +104,11 @@ import Testing
     #expect(publicKey.keyByteCount == 264)
 }
 
-/// A Windows terminal server's licensing certificate names its RSA key by a
-/// signature algorithm, sha1WithRSA (1.3.14.3.2.15), not rsaEncryption.
+/// Windows names the RSA key of the terminal server certificate by a signature
+/// algorithm, shaWithRSAEncryption (1.3.14.3.2.15); the license server
+/// certificate before it names its key rsaEncryption.
 @Test func parsesServerLicenseRequestWithTerminalServerX509CertificateChain() throws {
-    let certificateDER = try #require(Data(base64Encoded: terminalServerCertificateBase64))
-    let certificate = MockKRDPTLS.rdpX509CertificateChain(certificateDER: certificateDER)
+    let certificate = try #require(Data(base64Encoded: terminalServerCertificateChainBase64))
     let license = try #require(try parseServerLicense(mcsSendDataIndication(
         channelID: 1003,
         userData: serverLicenseRequestUserData(certificatePayload: certificate)
@@ -117,7 +117,8 @@ import Testing
 
     #expect(publicKey.publicExponent == 0x0001_0001)
     #expect(publicKey.modulus.count == 256)
-    #expect(publicKey.modulus.suffix(8) == Data([0x27, 0x6D, 0xB5, 0xEF, 0x44, 0xD9, 0xC0, 0xBE]))
+    // The terminal server's key, not the license server's.
+    #expect(publicKey.modulus.suffix(8) == Data([0xA6, 0x81, 0x58, 0xC6, 0xF0, 0x6B, 0x90, 0xC8]))
     #expect(publicKey.keyByteCount == 264)
 }
 
@@ -832,22 +833,52 @@ private func readLicenseBlob(_ cursor: inout ByteCursor) throws -> (type: UInt16
     return (type, try cursor.readData(count: length))
 }
 
-/// A certificate whose SubjectPublicKeyInfo algorithm is
-/// sha1WithRSA (1.3.14.3.2.15), as a Windows terminal server's is.
-private let terminalServerCertificateBase64 = [
-    "MIICrzCCAZegAwIBAgIBATANBgkqhkiG9w0BAQsFADAZMRcwFQYDVQQDDA5MaWNl",
-    "bnNlIFNlcnZlcjAgFw0yNjAxMDEwMDAwMDBaGA8yMTI1MTIwODAwMDAwMFowHzEd",
-    "MBsGA1UEAwwUbmNhY25faXBfdGNwOlRFUk1TUlYwggEeMAkGBSsOAwIPBQADggEP",
-    "ADCCAQoCggEBAL7A2UTvtW0ncd1ezT1sIdMfNiGB3qskyTJXf96K/q/e4VqvXgaO",
-    "p/T9IoZU57/NDYFZC5qUFdxgN3Dh0LnGqcnOJz03JQGOaV5CYU7uk8zPKg0xqaAm",
-    "MpCaYXji4gLW3bbOKVKbR84pc3X7GitDPGwUWacndWOgIYWiqep/jxIaDeXH+l5P",
-    "bFdla3SLu7raW6i8HzYPXkSYDUFNRmVPYBYPA4jS3Q3JprP0sgHH+PZsZEZ2XlCD",
-    "FbOo6lHzmN7DKIUK4AuJ7CvT8Rf8gkR7C7Je3N4uhSrpCCrqNom06zQa9TZOp89B",
-    "toN2M9xcPDA/1lvngfgV8VrQoqi0O9PqQGMCAwEAATANBgkqhkiG9w0BAQsFAAOC",
-    "AQEAeVr27DAQ0c9ClxfYqpQCzf3LN9K+Cphh/DCsMIhA4iUr5e8Vx/Hbub29eCEp",
-    "y+0/PG4w650pgjS9wnt/5EHPYYPC1M8I1h1vhskYDl9qNZe4LyPUADuBRKgCan+J",
-    "/4rm/5r1tnuPTAbtypxpqzZ7KPVvnWO1HFPqBNa5OPJs9+xbNEATPzDbMtDMpOEw",
-    "rU5bSo21F6lbo2JIrX8h3lD6jav2mZVfU6b+YAVxwWAnMUzFXhVP/FBZqcyfxK/S",
-    "bDbVEs0LX63Vq94JsyYMV6Tv9C39sqb8PEgG5bGL/0wc2EfuOJBKMyzdk6ZM6O/p",
-    "NiNMWLqZGbYypeK0veFNe0qtzA==",
+/// The Server Certificate of the Server License Request in MS-RDPELE 4.1: an
+/// X.509 chain with dwVersion 0x80000002, of a self-signed license server
+/// certificate and the terminal server certificate it signed.
+private let terminalServerCertificateChainBase64 = [
+    "AgAAgAIAAAD1AgAAMIIC8TCCAd2gAwIBAgIIAZ4kovKukIAwCQYFKw4DAh0FADAy",
+    "MTAwEwYDVQQDHgwAUgBPAEQARQBOAFQwGQYDVQQHHhIAVwBPAFIASwBHAFIATwBV",
+    "AFAwHhcNNzAwNTI3MDExMTAzWhcNNDkwNTI3MDExMTAzWjAyMTAwEwYDVQQDHgwA",
+    "UgBPAEQARQBOAFQwGQYDVQQHHhIAVwBPAFIASwBHAFIATwBVAFAwggEiMA0GCSqG",
+    "SIb3DQEBAQUAA4IBDwAwggEKAoIBAQCIrXyPi4J2Wr2Pb2IY4dmqQf3taAHGNDWw",
+    "KQTKSkocfoAU9453uCX/FkdvveI0PS4CuVPkM3WtcyiAoE38bMAiUxss+PUBYBl+",
+    "eRk5jbXOOVjdVSQ7VXtDwX8UL7BkOlSVK4hJDGEtrPhF9dqIGF+uQvh1xyZttbs5",
+    "b8xVGzIROI3k6USEETaiYXaqTLTjVQ/kd47e46nqt0GUAFiqyTSimMYBGnYUAajc",
+    "MHx3WiBxWqI/rxN+6P2EolvPJenHj6jyi4THBF5Tc04OiaM852hcJLeAUzxUyMFT",
+    "qnFxPTYV1mqdfd6u+eavV665AZZd4E3N7cjX8wEDOBC+fEJnAacjAgMBAAGjEzAR",
+    "MA8GA1UdEwQIMAYBAf8CAQAwCQYFKw4DAh0FAAOCAQEAgd3S0zPUo7aObn2f/XOf",
+    "MQvdQoI/fiHfKMxZymrAqT0wfeGR23drixDm/bw8o1hIwjbdoAv1jhPaewQIRLTy",
+    "qA0eCx0aP/mbS1pUxbO0A5N1s3JcPc9jDxXhZFjeUo2XeQ6kNNVmBVi4bnmyCYbV",
+    "8O3Ea0yrArgWXzvtiF/R3kTjc0ch9wPO4W0QD5XPfKJ6pr8g2+GTBMhear7IAV0n",
+    "sgMPZnXny+qNTpidIu0oQNJ9pEvvzL8BKm06Pr5HOPjqpMYwHV4lz/voPULdKeiZ",
+    "iZ6/Oe53Cdk+i1I2truLvQ2yUqoszzhOTc8dbV0lF6ws9vBlWsn+MVO08AyUTg1U",
+    "jv0EAAAwggT5MIID5aADAgECAgUBAAAAAjAJBgUrDgMCHQUAMDIxMDATBgNVBAMe",
+    "DABSAE8ARABFAE4AVDAZBgNVBAceEgBXAE8AUgBLAEcAUgBPAFUAUDAeFw0wNzA1",
+    "MjYxMjQ1NTNaFw0zODAxMTkwMzE0MDdaMIGSMYGPMCMGA1UEAx4cAG4AYwBhAGwA",
+    "cgBwAGMAOgBSAE8ARABFAE4AVDAjBgNVBAceHABuAGMAYQBsAHIAcABjADoAUgBP",
+    "AEQARQBOAFQwQwYDVQQFHjwAMQBCAGMASwBlAGIAaABwAFgAWgB0AEwAcQBPADcA",
+    "UwBRAG4AQgBwAFIAZgB1AGQAZABkAFkAPQANAAowggEeMAkGBSsOAwIPBQADggEP",
+    "ADCCAQoCggEBAMiQa/DGWIGmiRwO8vbZghJxpW5R2+AyZqqRdw6Iq0S305faeI8O",
+    "RCZGfxbUxmPrylXlTostpm2DlaeoavrQviaArqsKZJAyjN9c+PnQftFrOil+fb0C",
+    "o4Zs/aU1cdohtO6kl/OoshLbpCdXNskIIlxU95l7oy+4XNUWuBkna3GXFFvoHyPo",
+    "XLgbc0tuegMT/5fpYrlKoFEjw2wyPgLyY5cjHMV42Py3B0uwVg9038VWKOSW/SCO",
+    "ZVrmRe3BBT6rWFVAr+JHoExJo40542ZfkzNt+F/FVOX7VzreRRK1xwVLiB+0NQ98",
+    "wHUXxmfdSIDLCr6d9pNgZTTrl69lbd+/b1sCAwEAAaOCAb8wggG7MBQGCSsGAQQB",
+    "gjcSBAEB/wQEAQAFADA8BgkrBgEEAYI3EgIBAf8ELE0AaQBjAHIAbwBzAG8AZgB0",
+    "ACAAQwBvAHIAcABvAHIAYQB0AGkAbwBuAAAAMIHNBgkrBgEEAYI3EgUBAf8EgbwA",
+    "MAAAAQAAAAIAAAAJBAAAHABKAGYASgCwAAEAMwBkADIANgA3ADkANQA0AC0AZQBl",
+    "AGIANwAtADEAMQBkADEALQBiADkANABlAC0AMAAwAGMAMAA0AGYAYQAzADAAOAAw",
+    "AGQAAAAzAGQAMgA2ADcAOQA1ADQALQBlAGUAYgA3AC0AMQAxAGQAMQAtAGIAOQA0",
+    "AGUALQAwADAAYwAwADQAZgBhADMAMAA4ADAAZAAAAAAAABAAgGQAAAAAADBuBgkr",
+    "BgEEAYI3EgYBAf8EXgAwAAAAAA4APgBSAE8ARABFAE4AVAAAADcAOAA0ADQAMAAt",
+    "ADAAMAA2AC0ANQA4ADYANwAwADQANQAtADcAMAAzADQANwAAAFcATwBSAEsARwBS",
+    "AE8AVQBQAAAAAAAwJQYDVR0jAQH/BBswGaEQpA5SAE8ARABFAE4AVAAAAIIFAQAA",
+    "AAIwCQYFKw4DAh0FAAOCAQEALuvHDbgdRxGdCYibUdxF3VZR4tEjETmbLdrH/nrX",
+    "hOM9VHeXTRmSMGSgR8YvbZPSZHx2yCZFrVpEVOr2Syh3H3fq7HQCOGieeRRygzR0",
+    "YtLBDKQL8qmwOLt80K6+v3RHFqCi0/wdubomEAbvuh1DAU5Ob1bK4O7Q+U6mYmP/",
+    "2gvJFWFs7WsLxFhThg+MDBou38HyQ0jUrwp4NrJRMihswnV5P26ZZog+NNN/bZ0H",
+    "5GvrhOIKu8p9OkBxsL5HnxJYMWErm0qaSY/ltAz1BE08zrzSeRXZKPQjVnefOGQ+",
+    "A4iSBCZ2ubXfGdB4S3pgQCOR8RUiK7TnAlSpFiFbYJapXAAAAAAAAAAAAAAAAAAA",
+    "AAA=",
 ].joined()
