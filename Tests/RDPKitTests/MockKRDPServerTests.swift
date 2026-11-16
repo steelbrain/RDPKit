@@ -172,6 +172,8 @@ struct MockKRDPServerTests {
         #expect(run.report.selectedProtocols == ["credssp"])
         #expect(run.report.credentialsVerifiedBeforeActivation == true)
         #expect(run.transcript.credSSPMessages == ["ntlm-negotiate", "ntlm-authenticate", "credentials"])
+        #expect(run.transcript.credSSPClientVersions == [6, 6, 6])
+        #expect(run.report.credSSPVersion == 6)
         #expect(run.transcript.credSSPGates == [
             "raw-ntlm-negotiate-token",
             "initial-client-nonce",
@@ -216,6 +218,32 @@ struct MockKRDPServerTests {
         #expect(run.transcript.credSSPMessages == ["ntlm-negotiate", "ntlm-authenticate"])
     }
 
+    /// A server answering version 2 or 5 has no errorCode ([MS-CSSP] 2.2.1), so it closes on a
+    /// wrong password, which leaves the credentials in doubt.
+    @Test(arguments: [2, 5])
+    func aServerWithoutErrorCodeClosesOnAWrongPassword(version: Int) throws {
+        let run = try runMock(.init(securityProtocol: .credSSP(credentials: mockCredentials), credSSPVersion: version)) {
+            $0.credentials = RDPCredentials(username: mockCredentials.username, password: "wrong")
+            $0.legacyCredSSP = true
+        }
+
+        #expect(run.report.failure == .credSSPClosedAfterCredentials)
+        #expect(run.report.credSSPVersion == version)
+        #expect(run.transcript.credSSPMessages == ["ntlm-negotiate", "ntlm-authenticate"])
+    }
+
+    /// A server answering version 5, as a Windows Server 2008 with the 2018 update does, gets
+    /// the nonce-bound binding in TSRequests that keep the client's version, 6: FreeRDP's
+    /// drops a client whose version changes, and so does the mock.
+    @Test func clientKeepsItsCredSSPVersionWithAVersion5Server() throws {
+        let run = try runMock(.init(securityProtocol: .credSSP(credentials: mockCredentials), credSSPVersion: 5))
+
+        #expect(run.report.status == "success")
+        #expect(run.report.credSSPVersion == 5)
+        #expect(run.transcript.credSSPClientVersions == [6, 6, 6])
+        #expect(run.transcript.credSSPGates.contains("nonce-bound-pubkeyauth"))
+    }
+
     /// Below version 5 the client would send the certificate's raw public key sealed with the
     /// session key (CVE-2018-0886), so it stops before its AUTHENTICATE, as Windows clients do.
     @Test(arguments: [2, 3, 4])
@@ -226,7 +254,9 @@ struct MockKRDPServerTests {
         #expect(run.report.connectionStage == .credSSP)
         #expect(run.report.failure == .legacyCredSSPVersion(version: version))
         #expect(run.report.error?.contains("legacyCredSSP") == true)
+        #expect(run.report.credSSPVersion == nil)
         #expect(run.transcript.credSSPMessages == ["ntlm-negotiate"])
+        #expect(run.transcript.credSSPClientVersions == [6])
     }
 
     /// A server that drops below version 5 only in its pubKeyAuth answer is refused too.
@@ -234,92 +264,28 @@ struct MockKRDPServerTests {
         let run = try runMock(.init(securityProtocol: .credSSP(credentials: mockCredentials), credSSPBindingVersion: 2))
 
         #expect(run.report.failure == .legacyCredSSPVersion(version: 2))
+        #expect(run.report.credSSPVersion == 6)
         #expect(run.transcript.credSSPMessages == ["ntlm-negotiate", "ntlm-authenticate"])
     }
 
     /// With `legacyCredSSP` set, a server without the 2018 update gets the raw public key and
-    /// answers with it, its first byte plus one ([MS-CSSP] 3.1.5).
-    @Test func clientAuthenticatesWithCredSSPVersion3WhenLegacyIsAllowed() throws {
-        let run = try runMock(.init(securityProtocol: .credSSP(credentials: mockCredentials), credSSPVersion: 3)) {
+    /// answers with it, its first byte plus one ([MS-CSSP] 3.1.5), and one with it still gets
+    /// the nonce-bound binding. The client's TSRequests keep its version, 6, and nonce.
+    @Test(arguments: [2, 3, 4, 5, 6])
+    func clientAuthenticatesWithLegacyCredSSPWhenAllowed(version: Int) throws {
+        let run = try runMock(.init(securityProtocol: .credSSP(credentials: mockCredentials), credSSPVersion: version)) {
             $0.legacyCredSSP = true
         }
+        let (used, unused) = version < 5
+            ? ("legacy-pubkeyauth", "nonce-bound-pubkeyauth")
+            : ("nonce-bound-pubkeyauth", "legacy-pubkeyauth")
 
         #expect(run.report.status == "success")
+        #expect(run.report.credSSPVersion == version)
         #expect(run.transcript.credSSPMessages == ["ntlm-negotiate", "ntlm-authenticate", "credentials"])
-        #expect(run.transcript.credSSPGates.contains("legacy-pubkeyauth"))
-        #expect(!run.transcript.credSSPGates.contains("nonce-bound-pubkeyauth"))
-    }
-
-    /// A Windows Server 2008 answers with version 5 and completes only the binding of the
-    /// versions below it, for a client that started below version 5: it drops any other on
-    /// its AUTHENTICATE with no status, `legacyCredSSP` or not.
-    @Test(arguments: [false, true])
-    func aServerWithOnlyTheLegacyBindingClosesOnAVersion5Client(legacyCredSSP: Bool) throws {
-        let run = try runMock(.init(
-            securityProtocol: .credSSP(credentials: mockCredentials),
-            credSSPVersion: 5,
-            credSSPLegacyBindingOnly: true
-        )) {
-            $0.legacyCredSSP = legacyCredSSP
-        }
-
-        #expect(run.report.failure == .credSSPClosedAfterCredentials)
-        #expect(run.transcript.credSSPMessages == ["ntlm-negotiate", "ntlm-authenticate"])
-    }
-
-    /// With `legacyCredSSPFromStart` the client speaks version 3 from its NEGOTIATE on, with
-    /// no nonce, and that server signs in.
-    @Test func clientAuthenticatesWithVersion3FromTheStart() throws {
-        let run = try runMock(.init(
-            securityProtocol: .credSSP(credentials: mockCredentials),
-            credSSPVersion: 5,
-            credSSPLegacyBindingOnly: true
-        )) {
-            $0.legacyCredSSPFromStart = true
-        }
-
-        #expect(run.report.status == "success")
-        #expect(run.transcript.credSSPMessages == ["ntlm-negotiate", "ntlm-authenticate", "credentials"])
-        #expect(run.transcript.credSSPGates.contains("legacy-pubkeyauth"))
-        #expect(!run.transcript.credSSPGates.contains("initial-client-nonce"))
-        #expect(!run.transcript.credSSPGates.contains("nonce-bound-pubkeyauth"))
-    }
-
-    /// `legacyCredSSPFromStart` signs in to a server without the 2018 update too, at the
-    /// version it answers with when that is lower.
-    @Test(arguments: [2, 3])
-    func clientStartingAtVersion3AuthenticatesWithAnOlderServer(version: Int) throws {
-        let run = try runMock(.init(
-            securityProtocol: .credSSP(credentials: mockCredentials),
-            credSSPVersion: version,
-            credSSPLegacyBindingOnly: true
-        )) {
-            $0.legacyCredSSPFromStart = true
-        }
-
-        #expect(run.report.status == "success")
-        #expect(run.transcript.credSSPGates.contains("legacy-pubkeyauth"))
-    }
-
-    /// Like `legacyCredSSP`, it does not cover a Server Redirection's target, which gets the
-    /// version 6 exchange again and here drops it.
-    @Test func aRedirectionTargetIsNotStartedAtVersion3() throws {
-        let run = try runMock(.init(
-            securityProtocol: .credSSP(credentials: mockCredentials),
-            redirectionBehavior: .redirectFirstConnection,
-            credSSPVersion: 5,
-            credSSPLegacyBindingOnly: true
-        )) {
-            $0.legacyCredSSPFromStart = true
-        }
-
-        #expect(run.connectionCount == 2)
-        #expect(run.report.redirectionDepth == 1)
-        #expect(run.report.failure == .credSSPClosedAfterCredentials)
-        // The configured server's three messages, and the target's two at version 6.
-        #expect(run.transcript.credSSPMessages
-            == ["ntlm-negotiate", "ntlm-authenticate", "credentials", "ntlm-negotiate", "ntlm-authenticate"])
-        #expect(run.transcript.credSSPGates.contains("initial-client-nonce"))
+        #expect(run.transcript.credSSPClientVersions == [6, 6, 6])
+        #expect(run.transcript.credSSPGates.contains(used))
+        #expect(!run.transcript.credSSPGates.contains(unused))
     }
 
     /// Agreeing to CredSSP below version 5 covers the server connected to, not a Server

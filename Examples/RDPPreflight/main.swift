@@ -374,6 +374,9 @@ func printReport(
         if let certificateSHA256 = report.certificateSHA256 {
             print("certificate sha256: \(certificateSHA256)")
         }
+        if let credSSPVersion = report.credSSPVersion {
+            print("credssp version: \(credSSPVersion)")
+        }
         if let mcsConnectInitialHex = report.mcsConnectInitialHex {
             print("mcs connect initial: \(mcsConnectInitialHex)")
         }

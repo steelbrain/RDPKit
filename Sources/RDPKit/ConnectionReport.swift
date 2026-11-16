@@ -71,6 +71,12 @@ public struct RDPConnectionReport: Encodable, Equatable, Sendable {
     public var usedLegacyRSAKeyExchange: Bool?
     public var certificateTrusted: Bool?
     public var certificateSHA256: String?
+    /// The CredSSP version the server answered the client's NEGOTIATE with, up to the client's 6,
+    /// which picks how the client proves the TLS key: below 5 by sealing the raw public key, the
+    /// encryption oracle of CVE-2018-0886 that ``RDPConnectionConfiguration/legacyCredSSP``
+    /// allows. The client's TSRequests carry 6 whatever it is. Nil until the client goes on with
+    /// that answer; a version it refuses is the failure's.
+    public var credSSPVersion: Int?
     public var earlyUserAuthorizationResult: UInt32?
     public var mcsConnectInitialHex: String?
     public var mcsConnectResponseHex: String?
@@ -241,6 +247,7 @@ public struct RDPConnectionReport: Encodable, Equatable, Sendable {
         usedLegacyRSAKeyExchange: Bool? = nil,
         certificateTrusted: Bool? = nil,
         certificateSHA256: String? = nil,
+        credSSPVersion: Int? = nil,
         earlyUserAuthorizationResult: UInt32? = nil,
         mcsConnectInitialHex: String? = nil,
         mcsConnectResponseHex: String? = nil,
@@ -360,6 +367,7 @@ public struct RDPConnectionReport: Encodable, Equatable, Sendable {
         self.usedLegacyRSAKeyExchange = usedLegacyRSAKeyExchange
         self.certificateTrusted = certificateTrusted
         self.certificateSHA256 = certificateSHA256
+        self.credSSPVersion = credSSPVersion
         self.earlyUserAuthorizationResult = earlyUserAuthorizationResult
         self.mcsConnectInitialHex = mcsConnectInitialHex
         self.mcsConnectResponseHex = mcsConnectResponseHex
@@ -516,9 +524,9 @@ public enum RDPConnectionFailure: Encodable, Equatable, Sendable {
     case credSSP(status: RDPLogonStatus)
     /// The server closed or reset the connection during Network Level Authentication after
     /// the client proved its credentials, before answering them, and gave no NTSTATUS: a
-    /// CredSSP version 2 server, which has no errorCode to send ([MS-CSSP] 2.2.1), rejects a
-    /// sign-in this way, so the credentials may be wrong. A close before they go out is
-    /// `connectionClosed` or `connectionLost`.
+    /// server answering CredSSP version 2 or 5, the report's `credSSPVersion`, has no
+    /// errorCode to send ([MS-CSSP] 2.2.1) and rejects a sign-in this way, so the credentials
+    /// may be wrong. A close before they go out is `connectionClosed` or `connectionLost`.
     case credSSPClosedAfterCredentials
     /// The Early User Authorization Result denied access ([MS-RDPBCGR] 2.2.10.2).
     case earlyUserAuthorizationDenied

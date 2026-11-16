@@ -255,8 +255,7 @@ let report = client.run(
   (`legacyRSAKeyExchange`, from the start or as a fallback) for servers whose
   certificate lacks digitalSignature
 - CredSSP with NTLM Network Level Authentication and Early User Authorization;
-  CredSSP versions 2 to 4 only with `legacyCredSSP`, and version 3 from the
-  first message, for Windows Server 2008, with `legacyCredSSPFromStart`
+  CredSSP versions 2 to 4 only with `legacyCredSSP`
 - MCS connect, channel join, static virtual channels, and dynamic virtual
   channels
 - Connect-time and continuous bandwidth auto-detection, and reactivation after

@@ -2,13 +2,22 @@
 
 ## Unreleased
 
+### Compatibility and fixes
+
+- CredSSP TSRequests carry the client's version, 6, throughout, as FreeRDP's
+  do, instead of the lower version a server answered with, which now picks
+  only the public key binding. A server that answers 6 sees no change.
+  FreeRDP treats a peer whose version changes as an error, and a Windows
+  Server 2008 that answers version 5 dropped RDPKit's connection once its
+  AUTHENTICATE went from 6 to 5; whether that server signs in now is
+  untested. Thanks to @BrooklynBanana for reporting and measuring it (#10).
+
 ### Additions
 
-- `RDPConnectionConfiguration.legacyCredSSPFromStart` speaks CredSSP version 3
-  from the first TSRequest on. A Windows Server 2008 answers with version 5
-  and completes only the pre-2018 public key binding, and only for a client
-  whose first message was below version 5: otherwise it drops the connection
-  after the AUTHENTICATE with no status, `credSSPClosedAfterCredentials`.
+- `RDPConnectionReport.credSSPVersion`: the CredSSP version the server
+  answered the client's NEGOTIATE with, up to 6, below 5 when the client
+  proved the TLS key the pre-2018 way that `legacyCredSSP` allows
+  (CVE-2018-0886).
 
 ## 0.9.2
 

@@ -85,15 +85,16 @@ extension RDPClientConnection {
 
         // Windows RDP expects the version 5+ nonce in every TSRequest, the first included.
         let nonce = try RDPCredSSPNTLMContext.secureRandomData(count: 32)
-        var version = credSSPVersionLimit
+        // The version of the binding: the client's until the server answers, then the lower one.
+        var version = Self.credSSPClientVersion
         var inputToken: Data?
         while true {
             try callbacks.throwIfCancelled()
             let step = try ntlm.initialize(inputToken: inputToken)
             var request = RDPCredSSPTSRequest(
-                version: version,
+                version: Self.credSSPClientVersion,
                 negoTokens: step.outputToken.map { [$0] } ?? [],
-                clientNonce: version >= 5 ? nonce : nil
+                clientNonce: nonce
             )
             if step.isComplete {
                 request.pubKeyAuth = try ntlm.wrap(version >= 5
@@ -109,6 +110,7 @@ extension RDPClientConnection {
             let response = try receiveTSRequest()
             // Checked before the AUTHENTICATE and pubKeyAuth go out in the next request.
             version = try credSSPVersion(answering: response.version)
+            report.credSSPVersion = version
             guard let serverToken = response.negoTokens.last else {
                 throw RDPCredSSPError.missingToken
             }
@@ -131,9 +133,9 @@ extension RDPClientConnection {
         // The server answers the credentials in the next layer's format, or rejects them.
         try transport.setFraming(.credSSPResult(then: nextFraming))
         try transport.send(RDPCredSSPTSRequest(
-            version: version,
+            version: Self.credSSPClientVersion,
             authInfo: authInfo,
-            clientNonce: version >= 5 ? nonce : nil
+            clientNonce: nonce
         ).encoded())
     }
 
@@ -165,17 +167,18 @@ extension RDPClientConnection {
     /// whoever presented the certificate an encryption oracle (CVE-2018-0886), so only
     /// `legacyCredSSP` allows it.
     private func credSSPVersion(answering serverVersion: Int) throws -> Int {
-        guard serverVersion >= 5 || configuration.legacyCredSSP || configuration.legacyCredSSPFromStart else {
+        let version = min(serverVersion, Self.credSSPClientVersion)
+        guard version >= 5 || configuration.legacyCredSSP else {
             throw RDPCredSSPError.legacyVersion(serverVersion)
         }
-        return min(serverVersion, credSSPVersionLimit)
+        return version
     }
 
-    /// The highest version the client speaks: 3 with `legacyCredSSPFromStart`, for a server
-    /// that answers with version 5 and completes only the binding of the versions below it.
-    private var credSSPVersionLimit: Int {
-        configuration.legacyCredSSPFromStart ? 3 : 6
-    }
+    /// The version every TSRequest of the client's carries, as FreeRDP's do: a server's lower
+    /// one picks only the binding. FreeRDP treats a peer whose version changes as an error, and
+    /// a Windows Server 2008 that answers version 5 dropped the connection once the client's
+    /// AUTHENTICATE went from 6 to 5.
+    private static let credSSPClientVersion = 6
 
     private func receiveTSRequest() throws -> RDPCredSSPTSRequest {
         let response = try RDPCredSSPTSRequest.parse(receive("CredSSP response"))

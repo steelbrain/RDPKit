@@ -116,17 +116,6 @@ public struct RDPConnectionConfiguration: Sendable, Equatable {
     /// below version 5 is refused with that failure, the report's
     /// ``RDPConnectionReport/redirectionDepth`` above 0, as the user never agreed to it.
     public var legacyCredSSP: Bool
-    /// Speaks CredSSP version 3 from the first TSRequest on, with no nonce, whatever version
-    /// the server answers with. A Windows Server 2008 or 2008 R2 can answer with version 5
-    /// and still complete only the pre-2018 public key binding, and only when the client's
-    /// first message already was below version 5: it drops the connection on a version 5
-    /// pubKeyAuth with no status, which reads as
-    /// ``RDPConnectionFailure/credSSPClosedAfterCredentials``. The binding is the one
-    /// ``legacyCredSSP`` allows, with the same encryption oracle (CVE-2018-0886), and it is
-    /// used with every server here, an updated one included, so set this only for a
-    /// connection the user agreed to, after one without it failed that way. Like
-    /// ``legacyCredSSP`` it does not cover a Server Redirection's target.
-    public var legacyCredSSPFromStart = false
     /// Local folders the server sees as drives. Sharing one joins the rdpsnd channel too.
     public var sharedDrives: [RDPSharedDrive]
     /// The name servers show for this client, in session lists, for per-device licensing
