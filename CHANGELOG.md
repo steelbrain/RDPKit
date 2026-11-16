@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.9.2
+
 ### Compatibility and fixes
 
 - A Windows Remote Desktop Session Host that licenses the connection no longer
