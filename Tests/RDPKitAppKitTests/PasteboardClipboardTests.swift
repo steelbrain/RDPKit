@@ -894,6 +894,9 @@ final class PasteboardClipboardTests: XCTestCase {
         try await XCTUnwrap(clipboard.localFileReadTask).value
         var shared = await server.pasteFiles()
         XCTAssertEqual(shared?.map(\.contents), [Data("local".utf8)])
+        // The paste's report reaches the main thread after the paste.
+        await settle(server)
+        XCTAssertEqual(toasts, ["1 file pasted on remote"])
 
         // Nor does a remote copy that failed to arrive stop them.
         clipboard.detach()
@@ -905,9 +908,11 @@ final class PasteboardClipboardTests: XCTestCase {
         serverHandOff.release()
         try await XCTUnwrap(clipboard.localFileReadTask).value
         shared = await server.pasteFiles()
+        await settle(server)
         XCTAssertEqual(shared?.map(\.contents), [Data("local".utf8)])
         XCTAssertEqual(fileCopies(on: server), 2)
-        XCTAssertTrue(toasts.isEmpty)
+        // Neither older remote copy raised a toast; each paste did.
+        XCTAssertEqual(toasts, ["1 file pasted on remote", "1 file pasted on remote"])
     }
 
     /// Files copied while a remote copy the server announced before them is
