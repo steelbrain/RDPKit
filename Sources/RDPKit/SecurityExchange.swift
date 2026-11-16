@@ -85,7 +85,7 @@ extension RDPClientConnection {
 
         // Windows RDP expects the version 5+ nonce in every TSRequest, the first included.
         let nonce = try RDPCredSSPNTLMContext.secureRandomData(count: 32)
-        var version = 6
+        var version = credSSPVersionLimit
         var inputToken: Data?
         while true {
             try callbacks.throwIfCancelled()
@@ -165,10 +165,16 @@ extension RDPClientConnection {
     /// whoever presented the certificate an encryption oracle (CVE-2018-0886), so only
     /// `legacyCredSSP` allows it.
     private func credSSPVersion(answering serverVersion: Int) throws -> Int {
-        guard serverVersion >= 5 || configuration.legacyCredSSP else {
+        guard serverVersion >= 5 || configuration.legacyCredSSP || configuration.legacyCredSSPFromStart else {
             throw RDPCredSSPError.legacyVersion(serverVersion)
         }
-        return min(serverVersion, 6)
+        return min(serverVersion, credSSPVersionLimit)
+    }
+
+    /// The highest version the client speaks: 3 with `legacyCredSSPFromStart`, for a server
+    /// that answers with version 5 and completes only the binding of the versions below it.
+    private var credSSPVersionLimit: Int {
+        configuration.legacyCredSSPFromStart ? 3 : 6
     }
 
     private func receiveTSRequest() throws -> RDPCredSSPTSRequest {
