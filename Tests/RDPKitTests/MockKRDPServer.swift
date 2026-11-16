@@ -116,6 +116,10 @@ final class MockKRDPServer: LoopbackTestServer {
         var credSSPVersion = 6
         /// The version of the server's pubKeyAuth TSRequest, when not `credSSPVersion`.
         var credSSPBindingVersion: Int?
+        /// Answer with `credSSPVersion` and complete only the pre-2018 binding, and only for
+        /// a client whose first TSRequest was below version 5: any other gets the connection
+        /// closed on its AUTHENTICATE with no status, as a Windows Server 2008 does.
+        var credSSPLegacyBindingOnly = false
         /// The client's CredSSP message, 1 for its NEGOTIATE, 2 for its AUTHENTICATE and 3 for
         /// its credentials, on which the server closes the connection with no answer, as a
         /// server with no status to send does.
@@ -508,6 +512,8 @@ final class MockCredSSPServer {
     /// The TSRequest version of the CHALLENGE, and of the pubKeyAuth answer.
     private let version: Int
     private let bindingVersion: Int
+    private let legacyBindingOnly: Bool
+    private var clientStartedBelowVersion5 = false
     private let transcript: Locked<MockKRDPServerTranscript>
     private let subjectPublicKey: Data
     private let channelBindingsHash: Data
@@ -530,11 +536,13 @@ final class MockCredSSPServer {
         credentials: RDPCredentials,
         version: Int = 6,
         bindingVersion: Int = 6,
+        legacyBindingOnly: Bool = false,
         transcript: Locked<MockKRDPServerTranscript> = Locked(MockKRDPServerTranscript())
     ) throws {
         self.credentials = credentials
         self.version = version
         self.bindingVersion = bindingVersion
+        self.legacyBindingOnly = legacyBindingOnly
         self.transcript = transcript
         subjectPublicKey = try MockKRDPTLS.subjectPublicKey()
         channelBindingsHash = try MockKRDPTLS.ntlmChannelBindingsHash()
@@ -553,17 +561,21 @@ final class MockCredSSPServer {
         case .negotiate:
             record(message: "ntlm-negotiate")
             let negotiateToken = try request.negoTokens.last.map(RDPSPNEGO.mechanismToken(from:))
-            guard let nonce = request.clientNonce,
-                  nonce.count == 32,
-                  negotiateToken?.starts(with: Self.ntlmSignature) == true
-            else {
+            guard negotiateToken?.starts(with: Self.ntlmSignature) == true else {
                 throw MockKRDPServerError.invalidClientPDU
             }
             if request.negoTokens.last == negotiateToken {
                 record(gate: "raw-ntlm-negotiate-token")
             }
-            record(gate: "initial-client-nonce")
-            clientNonce = nonce
+            if legacyBindingOnly, request.version < 5, request.clientNonce == nil {
+                clientStartedBelowVersion5 = true
+            } else {
+                guard let nonce = request.clientNonce, nonce.count == 32 else {
+                    throw MockKRDPServerError.invalidClientPDU
+                }
+                record(gate: "initial-client-nonce")
+                clientNonce = nonce
+            }
             negotiateMessage = Data(negotiateToken ?? Data())
             challenge = challengeMessage()
             stage = .authenticate
@@ -596,6 +608,9 @@ final class MockCredSSPServer {
             guard let clientPubKeyAuth = request.pubKeyAuth else {
                 throw MockKRDPServerError.invalidClientPDU
             }
+            if legacyBindingOnly, !clientStartedBelowVersion5 || request.version >= 5 {
+                throw MockKRDPServerError.invalidClientPDU
+            }
             if request.version >= 5 {
                 guard try unwrap(clientPubKeyAuth) == RDPCredSSPPublicKeyBinding.clientServerHash(
                     subjectPublicKey: subjectPublicKey,
@@ -613,7 +628,7 @@ final class MockCredSSPServer {
             stage = .credentials
             return try RDPCredSSPTSRequest(
                 version: bindingVersion,
-                pubKeyAuth: wrap(bindingVersion >= 5
+                pubKeyAuth: wrap(bindingVersion >= 5 && !legacyBindingOnly
                     ? RDPCredSSPPublicKeyBinding.serverClientHash(subjectPublicKey: subjectPublicKey, nonce: clientNonce)
                     : RDPCredSSPPublicKeyBinding.legacyServerResponse(subjectPublicKey: subjectPublicKey))
             ).encoded()
@@ -1195,6 +1210,7 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
                 credentials: connectionCredentials(credentials),
                 version: options.credSSPVersion,
                 bindingVersion: options.credSSPBindingVersion ?? options.credSSPVersion,
+                legacyBindingOnly: options.credSSPLegacyBindingOnly,
                 transcript: transcript
             )
         case let .credSSPWithEarlyUserAuth(credentials, _):
@@ -1203,6 +1219,7 @@ private final class MockKRDPServerHandler: ChannelInboundHandler {
                 credentials: connectionCredentials(credentials),
                 version: options.credSSPVersion,
                 bindingVersion: options.credSSPBindingVersion ?? options.credSSPVersion,
+                legacyBindingOnly: options.credSSPLegacyBindingOnly,
                 transcript: transcript
             )
         case .rdSTLS:

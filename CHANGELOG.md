@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Additions
+
+- `RDPConnectionConfiguration.legacyCredSSPFromStart` speaks CredSSP version 3
+  from the first TSRequest on. A Windows Server 2008 answers with version 5
+  and completes only the pre-2018 public key binding, and only for a client
+  whose first message was below version 5: otherwise it drops the connection
+  after the AUTHENTICATE with no status, `credSSPClosedAfterCredentials`.
+
 ## 0.9.2
 
 ### Compatibility and fixes
