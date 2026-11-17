@@ -292,6 +292,48 @@ import Testing
     ])
 }
 
+/// RSA key exchange stays off unless asked for, as in RDPConnectionConfiguration, and every
+/// tool passes the choice on.
+@Test func connectionOptionsPassLegacyRSAKeyExchangeOn() throws {
+    let defaults = try FirstFrameCaptureOptions.parse(["RDPFirstFrameCapture", "--host", "server"])
+    #expect(try defaults.configuration(environment: [:]).legacyRSAKeyExchange == .never)
+
+    let capture = try FirstFrameCaptureOptions.parse([
+        "RDPFirstFrameCapture", "--host", "server", "--legacy-rsa-key-exchange", "fallback",
+    ])
+    #expect(try capture.configuration(environment: [:]).legacyRSAKeyExchange == .fallback)
+    let preflight = try parseArguments(["RDPPreflight", "--legacy-rsa-key-exchange", "always"])
+    #expect(preflight.connection.legacyRSAKeyExchange == .always)
+    let benchmark = try RDPFrameBenchmark.parseArguments(["RDPFrameBenchmark", "--legacy-rsa-key-exchange", "fallback"])
+    #expect(benchmark.connection.legacyRSAKeyExchange == .fallback)
+
+    #expect(throws: RDPCommandLineError.invalidValue(
+        option: "--legacy-rsa-key-exchange",
+        value: "yes",
+        expected: "never|fallback|always"
+    )) {
+        try parseArguments(["RDPPreflight", "--legacy-rsa-key-exchange", "yes"])
+    }
+}
+
+/// The text report says when the connection fell back to RSA key exchange, and only then.
+@Test func preflightPrintsRSAKeyExchangeOnlyWhenUsed() throws {
+    var report = RDPSessionClient().dryRun(configuration: RDPConnectionConfiguration(host: "server"))
+    report.tlsProtocol = "tlsv12"
+    func printedLines() throws -> [String] {
+        var lines: [String] = []
+        try printReport(report, json: false) { lines.append($0) }
+        return lines
+    }
+
+    report.usedLegacyRSAKeyExchange = false
+    #expect(try printedLines().contains("tls key exchange: RSA") == false)
+    report.usedLegacyRSAKeyExchange = true
+    let lines = try printedLines()
+    let tlsLine = try #require(lines.firstIndex(of: "tls protocol: tlsv12"))
+    #expect(lines[tlsLine + 1] == "tls key exchange: RSA")
+}
+
 @Test func connectionOptionsRejectPortZero() {
     #expect(throws: RDPCommandLineError.invalidValue(option: "--port", value: "0", expected: "1...65535")) {
         try FirstFrameCaptureOptions.parse(["RDPFirstFrameCapture", "--port", "0"])

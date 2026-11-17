@@ -19,6 +19,13 @@
   proved the TLS key the pre-2018 way that `legacyCredSSP` allows
   (CVE-2018-0886).
 
+### Examples
+
+- RDPPreflight, RDPFirstFrameCapture and RDPFrameBenchmark take
+  `--legacy-rsa-key-exchange never|fallback|always`, for a server whose
+  certificate allows only RSA key exchange, such as that Windows Server 2008.
+  RDPPreflight prints `tls key exchange: RSA` when it was used.
+
 ## 0.9.2
 
 ### Compatibility and fixes

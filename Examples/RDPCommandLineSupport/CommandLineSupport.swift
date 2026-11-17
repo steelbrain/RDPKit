@@ -105,6 +105,7 @@ public struct RDPCommandLineConnectionOptions: Equatable, Sendable {
     /// The desktop sizes RDPConnectionConfiguration keeps; it clamps any other.
     public static let desktopWidths: ClosedRange<UInt16> = 640 ... 8192
     public static let desktopHeights: ClosedRange<UInt16> = 480 ... 8192
+    static let legacyRSAKeyExchangeValues = "never|fallback|always"
 
     public var host: String?
     public var port: UInt16 = 3389
@@ -116,6 +117,9 @@ public struct RDPCommandLineConnectionOptions: Equatable, Sendable {
     public var desktopHeight: UInt16 = 720
     public var graphicsCapabilityProfiles: [RDPGraphicsCapabilityProfile] = []
     public var hideCertificateWarnings = false
+    /// `.never` by default, as in RDPConnectionConfiguration: RSA key exchange has no forward
+    /// secrecy.
+    public var legacyRSAKeyExchange: RDPLegacyRSAKeyExchange = .never
 
     public init(timeoutSeconds: Int = 10) {
         self.timeoutSeconds = timeoutSeconds
@@ -157,6 +161,10 @@ public struct RDPCommandLineConnectionOptions: Equatable, Sendable {
             )
         case "--hide-certificate-warnings":
             hideCertificateWarnings = true
+        case "--legacy-rsa-key-exchange":
+            legacyRSAKeyExchange = try arguments.value(for: option, expected: Self.legacyRSAKeyExchangeValues) {
+                RDPLegacyRSAKeyExchange(rawValue: $0)
+            }
         default:
             return false
         }
@@ -211,7 +219,8 @@ public struct RDPCommandLineConnectionOptions: Equatable, Sendable {
             clipboardEnabled: clipboardEnabled,
             audioPlaybackEnabled: audioPlaybackEnabled,
             earlyUserAuthorizationEnabled: earlyUserAuthorizationEnabled,
-            graphicsCapabilityProfile: graphicsCapabilityProfile ?? self.graphicsCapabilityProfile
+            graphicsCapabilityProfile: graphicsCapabilityProfile ?? self.graphicsCapabilityProfile,
+            legacyRSAKeyExchange: legacyRSAKeyExchange
         )
     }
 }

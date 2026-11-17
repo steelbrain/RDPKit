@@ -644,7 +644,7 @@ private func formatBytes(_ value: Int64) -> String {
 
 private func printUsage() {
     print("""
-    Usage: RDPFrameBenchmark --host <host> [--port 3389] [--username <name>] [--domain <domain>] [--password-env <env>] [--timeout-seconds 60] [--frames 10] [--desktop-size 1920x1080] [--display-resize 2768x1492] [--graphics-profile automatic|avcThinClient|avc420|legacy] [--hide-certificate-warnings] [--json]
+    Usage: RDPFrameBenchmark --host <host> [--port 3389] [--username <name>] [--domain <domain>] [--password-env <env>] [--timeout-seconds 60] [--frames 10] [--desktop-size 1920x1080] [--display-resize 2768x1492] [--graphics-profile automatic|avcThinClient|avc420|legacy] [--hide-certificate-warnings] [--legacy-rsa-key-exchange never|fallback|always] [--json]
 
     Captures live RDPGFX frames and replays them through pixelBuffer and cgImage decode strategies.
     Pass --graphics-profile multiple times to benchmark a subset; default is all profiles.

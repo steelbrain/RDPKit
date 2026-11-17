@@ -168,7 +168,7 @@ private enum FirstFrameCapture {
 
     private static func printUsage() {
         print("""
-        Usage: RDPFirstFrameCapture --host <host> --output <frame.png> [--port 3389] [--username <name>] [--domain <domain>] [--password-env <env>] [--timeout-seconds 30] [--settle-seconds 30] [--desktop-width 1280] [--desktop-height 720] [--graphics-profile automatic|avcThinClient|avc420|legacy] [--hide-certificate-warnings] [--capture-transcript <transcript.json>]
+        Usage: RDPFirstFrameCapture --host <host> --output <frame.png> [--port 3389] [--username <name>] [--domain <domain>] [--password-env <env>] [--timeout-seconds 30] [--settle-seconds 30] [--desktop-width 1280] [--desktop-height 720] [--graphics-profile automatic|avcThinClient|avc420|legacy] [--hide-certificate-warnings] [--legacy-rsa-key-exchange never|fallback|always] [--capture-transcript <transcript.json>]
 
         Connects to an RDP host, decodes RDPGFX frames for --settle-seconds,
         and writes the latest decoded frame as a PNG.

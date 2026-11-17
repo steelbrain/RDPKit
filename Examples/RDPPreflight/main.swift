@@ -305,12 +305,16 @@ func isValidWindowsClipboardProbeText(_ text: String) -> Bool {
 
 func printUsage() {
     print("""
-    Usage: RDPPreflight --host <host> [--port 3389] [--username <name>] [--domain <domain>] [--password-env <env>] [--timeout-seconds 10] [--graphics-frames 1] [--desktop-width 1280] [--desktop-height 720] [--graphics-profile automatic|avcThinClient|avc420|legacy] [--hide-certificate-warnings] [--early-user-authorization] [--audio] [--probe-clipboard-text <text>] [--probe-windows-key] [--probe-windows-paste-clipboard] [--probe-windows-clipboard-text <text>] [--probe-input-text <text>] [--probe-input-pointer] [--probe-windows-audio] [--dry-run] [--json]
+    Usage: RDPPreflight --host <host> [--port 3389] [--username <name>] [--domain <domain>] [--password-env <env>] [--timeout-seconds 10] [--graphics-frames 1] [--desktop-width 1280] [--desktop-height 720] [--graphics-profile automatic|avcThinClient|avc420|legacy] [--hide-certificate-warnings] [--legacy-rsa-key-exchange never|fallback|always] [--early-user-authorization] [--audio] [--probe-clipboard-text <text>] [--probe-windows-key] [--probe-windows-paste-clipboard] [--probe-windows-clipboard-text <text>] [--probe-input-text <text>] [--probe-input-pointer] [--probe-windows-audio] [--dry-run] [--json]
 
     Connects to an RDP host, runs the session until --graphics-frames graphics frames have
     arrived, and reports what every connection stage sent and received.
     --dry-run prints the negotiation request without connecting. The password is read from the
     environment variable named by --password-env and is never printed.
+
+    A server whose certificate allows only RSA key exchange fails the TLS handshake with
+    KEY_USAGE_BIT_INCORRECT. --legacy-rsa-key-exchange fallback then connects again offering
+    only RSA key exchange, which has no forward secrecy; always offers only it from the start.
 
     Input probes send real input after the first graphics frame; the session ends after
     --graphics-frames frames, so raise it to see what a probe changed. The --probe-windows-*
@@ -367,6 +371,9 @@ func printReport(
         }
         if let tlsProtocol = report.tlsProtocol {
             print("tls protocol: \(tlsProtocol)")
+        }
+        if report.usedLegacyRSAKeyExchange == true {
+            print("tls key exchange: RSA")
         }
         if let certificateTrusted = report.certificateTrusted {
             print("certificate trusted: \(certificateTrusted)")
