@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.9.3
+
 ### Compatibility and fixes
 
 - CredSSP TSRequests carry the client's version, 6, throughout, as FreeRDP's
