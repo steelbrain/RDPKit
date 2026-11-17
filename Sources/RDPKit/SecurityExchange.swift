@@ -177,7 +177,7 @@ extension RDPClientConnection {
     /// The version every TSRequest of the client's carries, as FreeRDP's do: a server's lower
     /// one picks only the binding. FreeRDP treats a peer whose version changes as an error, and
     /// a Windows Server 2008 that answers version 5 dropped the connection once the client's
-    /// AUTHENTICATE went from 6 to 5.
+    /// AUTHENTICATE went from 6 to 5, and signs in with 6 throughout (#10).
     private static let credSSPClientVersion = 6
 
     private func receiveTSRequest() throws -> RDPCredSSPTSRequest {

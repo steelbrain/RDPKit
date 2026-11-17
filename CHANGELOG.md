@@ -9,8 +9,9 @@
   only the public key binding. A server that answers 6 sees no change.
   FreeRDP treats a peer whose version changes as an error, and a Windows
   Server 2008 that answers version 5 dropped RDPKit's connection once its
-  AUTHENTICATE went from 6 to 5; whether that server signs in now is
-  untested. Thanks to @BrooklynBanana for reporting and measuring it (#10).
+  AUTHENTICATE went from 6 to 5. With 6 throughout it signs in, without
+  `legacyCredSSP`. Thanks to @BrooklynBanana for reporting, measuring and
+  testing it (#10).
 
 ### Additions
 
