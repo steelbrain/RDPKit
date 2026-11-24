@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Performance
+
+- AVC444 and AVC444v2 reconstruction on Metal draws into pooled BGRA pixel
+  buffers, reused once their frame is released, instead of creating an
+  IOSurface for every frame. On an M5 Pro, reconstructing one 2560 × 1600
+  AVC444v2 frame took 0.34 ms instead of 0.70 ms with one chroma region, and
+  0.79 ms instead of 1.27 ms with 64. Thanks to @cioxideru for the change and
+  its measurements (#11).
+
 ## 0.9.3
 
 ### Compatibility and fixes
