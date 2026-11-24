@@ -254,6 +254,23 @@ private let fullFrame = [RDPFrameRect(left: 0, top: 0, right: 16, bottom: 16)]
     }
 }
 
+@Test func MetalAVC444PreservesFramesStillInUse() throws {
+    let decoder = try #require(RDPAVC444MetalDecoder())
+    func reconstruct(luma: UInt8) throws -> CVPixelBuffer {
+        try decoder.reconstruct(
+            main: try flatNV12PixelBuffer(y: luma, u: 128, v: 128),
+            auxiliary: nil,
+            usesV2Layout: true,
+            chromaRegionRects: []
+        )
+    }
+
+    let dark = try reconstruct(luma: 32)
+    let light = try reconstruct(luma: 192)
+    #expect(try bgraPixel(atX: 0, y: 0, in: light) == [192, 192, 192, 255])
+    #expect(try bgraPixel(atX: 0, y: 0, in: dark) == [32, 32, 32, 255])
+}
+
 @Test func AVC444DecodesVideoToolboxStreamWithFullRangeConversion() throws {
     // Two pictures of one stream: the main view (luma 20, neutral chroma) and a neutral
     // auxiliary view. The coded luma must reach the BT.709 full-range conversion unscaled.
