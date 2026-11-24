@@ -15,6 +15,7 @@ final class RDPAVC444MetalDecoder {
 
     private let context: RDPAVC444MetalContext
     private let textureCache: CVMetalTextureCache
+    private let outputPool = RDPBGRAPixelBufferPool()
 
     /// Returns nil when the device has no usable Metal support.
     init?() {
@@ -42,7 +43,7 @@ final class RDPAVC444MetalDecoder {
         defer {
             CVMetalTextureCacheFlush(textureCache, 0)
         }
-        let output = try rdpMakeBGRAPixelBuffer(width: width, height: height)
+        let output = try rdpMakeBGRAPixelBuffer(width: width, height: height, pool: outputPool)
         // The CVMetalTexture wrappers must outlive the GPU work that reads their IOSurfaces.
         let mainTextures = try makeNV12Textures(main)
         let auxiliaryTextures = try auxiliary.map(makeNV12Textures) ?? mainTextures
