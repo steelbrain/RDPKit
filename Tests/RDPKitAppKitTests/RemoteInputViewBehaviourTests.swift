@@ -1557,6 +1557,63 @@ final class RemoteInputViewBehaviourTests: XCTestCase {
         ])
     }
 
+    func testMacLayoutTextFollowsSourceChangesWithEitherAnnouncedKeyboard() {
+        let harness = makeHarness()
+        harness.view.usesMacLayoutForText = true
+        let fKey = UInt16(kVK_ANSI_F)
+        let russian = RDPKeyboard(layout: RDPKeyboardLayout(rawValue: 0x0419))
+        for keyboard in [RDPKeyboard.unitedStates, russian] {
+            harness.view.keyboard = keyboard
+            for text in ["f", "а", "f"] {
+                harness.recorder.events.removeAll()
+                harness.view.keyDown(with: keyEvent(.keyDown, keyCode: fKey, characters: text))
+                harness.view.keyDown(with: keyEvent(.keyDown, keyCode: fKey, characters: text, isARepeat: true))
+                harness.view.keyUp(with: keyEvent(.keyUp, keyCode: fKey, characters: text))
+                let pair = RDPMacKeyboardMapping.unicodeEvents(for: text)
+                XCTAssertEqual(harness.recorder.events, pair + pair)
+            }
+        }
+
+        harness.recorder.events.removeAll()
+        harness.view.keyDown(with: keyEvent(.keyDown, keyCode: fKey, characters: "А", flags: .shift))
+        harness.view.keyUp(with: keyEvent(.keyUp, keyCode: fKey, characters: "А", flags: .shift))
+        let decimal = UInt16(kVK_ANSI_KeypadDecimal)
+        harness.view.keyDown(with: keyEvent(.keyDown, keyCode: decimal, characters: ",", flags: .numericPad))
+        harness.view.keyUp(with: keyEvent(.keyUp, keyCode: decimal, characters: ",", flags: .numericPad))
+        XCTAssertEqual(harness.recorder.events, RDPMacKeyboardMapping.unicodeEvents(for: "А,"))
+    }
+
+    func testMacLayoutTextPreservesShortcutNavigationAndScancodeOnlyInput() {
+        let harness = makeHarness()
+        harness.view.usesMacLayoutForText = true
+        let cKey = UInt16(kVK_ANSI_C)
+        let cScancode = RDPKeyboardScancode(code: 0x2E)
+        harness.view.flagsChanged(with: flagsEvent(keyCode: .leftControl, flags: .leftControlDown))
+        XCTAssertTrue(harness.view.performKeyEquivalent(
+            with: keyEvent(.keyDown, keyCode: cKey, characters: "с", flags: .leftControlDown)
+        ))
+        harness.view.keyUp(with: keyEvent(.keyUp, keyCode: cKey, flags: .leftControlDown))
+        harness.view.flagsChanged(with: flagsEvent(keyCode: .leftControl, flags: []))
+        XCTAssertEqual(harness.recorder.events, [
+            .keyboard(scancode: .leftControl, isReleased: false), .keyboard(scancode: cScancode, isReleased: false),
+            .keyboard(scancode: cScancode, isReleased: true), .keyboard(scancode: .leftControl, isReleased: true),
+        ])
+        for (key, text, scancode) in [
+            (kVK_LeftArrow, "\u{F702}", RDPKeyboardScancode(code: 0x4B, isExtended: true)),
+            (kVK_Space, " ", RDPKeyboardScancode(code: 0x39)),
+        ] {
+            harness.recorder.events.removeAll()
+            harness.view.keyDown(with: keyEvent(.keyDown, keyCode: UInt16(key), characters: text))
+            harness.view.keyUp(with: keyEvent(.keyUp, keyCode: UInt16(key)))
+            XCTAssertEqual(harness.recorder.events, [.keyboard(scancode: scancode, isReleased: false), .keyboard(scancode: scancode, isReleased: true)])
+        }
+        let legacy = makeHarness(supportsUnicodeInput: false)
+        legacy.view.usesMacLayoutForText = true
+        legacy.view.keyDown(with: keyEvent(.keyDown, keyCode: cKey, characters: "с"))
+        legacy.view.keyUp(with: keyEvent(.keyUp, keyCode: cKey))
+        XCTAssertEqual(legacy.recorder.events, [.keyboard(scancode: cScancode, isReleased: false), .keyboard(scancode: cScancode, isReleased: true)])
+    }
+
     func testTextTheLayoutTypesDifferentlyGoesAsUnicodePressReleasePairs() {
         let harness = makeHarness()
         // A character a dead key composed.

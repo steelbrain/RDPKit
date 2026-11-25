@@ -224,8 +224,32 @@ public enum RDPMacKeyboardMapping {
         isAltPressed: Bool,
         isDeadKey: () -> Bool
     ) -> Bool {
+        shouldSendScancode(
+            forKeyCode: keyCode,
+            characters: characters,
+            charactersIgnoringModifiers: charactersIgnoringModifiers,
+            modifierFlags: modifierFlags,
+            isHeldAsScancode: isHeldAsScancode,
+            isAltPressed: isAltPressed,
+            usesMacLayoutForText: false,
+            isDeadKey: isDeadKey
+        )
+    }
+
+    static func shouldSendScancode(
+        forKeyCode keyCode: UInt16,
+        characters: String?,
+        charactersIgnoringModifiers: String?,
+        modifierFlags: NSEvent.ModifierFlags,
+        isHeldAsScancode: Bool,
+        isAltPressed: Bool,
+        usesMacLayoutForText: Bool,
+        isDeadKey: () -> Bool
+    ) -> Bool {
+        // The keypad separator may type a comma on one machine and a period on the other.
+        let isLocalDecimal = usesMacLayoutForText && Int(keyCode) == kVK_ANSI_KeypadDecimal
         if isHeldAsScancode
-            || scancodeOnlyKeyCodes.contains(Int(keyCode))
+            || (scancodeOnlyKeyCodes.contains(Int(keyCode)) && !isLocalDecimal)
             || modifierFlags.isDisjoint(with: [.command, .control]) == false
         {
             return true

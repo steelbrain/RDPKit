@@ -54,6 +54,9 @@ public final class RDPRemoteInputView: NSView {
     public var pointMapping: (any RDPRemotePointMapping)?
     /// The keyboard the session announced; it decides which keys can go as scancodes.
     public var keyboard = RDPKeyboard.unitedStates
+    /// Send characters from the current Mac layout as Unicode even when the announced
+    /// keyboard could type them. The server can switch layouts after connection.
+    public var usesMacLayoutForText = false
     /// Whether ⌘ and ⌃ chords on keys with a scancode go to the server before the menu bar's
     /// key equivalents can take them, while the view is first responder with a session. Off,
     /// the menus get them first and the server gets those they leave.
@@ -283,14 +286,9 @@ public final class RDPRemoteInputView: NSView {
                modifierFlags: event.modifierFlags,
                isHeldAsScancode: inputState.isScancodePressed(scancode),
                isAltPressed: RDPMacModifierKey.altScancodes.contains(where: inputState.isScancodePressed),
+               usesMacLayoutForText: usesMacLayoutForText,
                isDeadKey: { isDeadKey(event.keyCode, event.modifierFlags) }
-           ) || RDPMacKeyboardMapping.windowsTypes(
-               characters,
-               charactersIgnoringModifiers: event.charactersIgnoringModifiers,
-               for: scancode,
-               modifierFlags: event.modifierFlags,
-               keyboard: keyboard
-           ) || isUnicodeInputSupported == false
+           ) || sendsTextAsScancode(characters, scancode: scancode, event: event)
         {
             // A dead key's accent ahead of Return or Tab, unless that dead key went as a chord;
             // a repeat types it no more, and text never goes with Command or Control.
@@ -318,6 +316,23 @@ public final class RDPRemoteInputView: NSView {
             return
         }
         sendInput(events)
+    }
+
+    private func sendsTextAsScancode(_ characters: String?, scancode: RDPKeyboardScancode, event: NSEvent) -> Bool {
+        guard isUnicodeInputSupported else {
+            return true
+        }
+        if usesMacLayoutForText {
+            // A plain Space also activates buttons and checkboxes in the remote UI.
+            return Int(event.keyCode) == kVK_Space && characters == " "
+        }
+        return RDPMacKeyboardMapping.windowsTypes(
+            characters,
+            charactersIgnoringModifiers: event.charactersIgnoringModifiers,
+            for: scancode,
+            modifierFlags: event.modifierFlags,
+            keyboard: keyboard
+        )
     }
 
     override public func keyUp(with event: NSEvent) {
