@@ -99,6 +99,7 @@ struct RDPSessionCommandState: Equatable {
     var controlsVisible: Bool
     var canSyncClipboard: Bool
     var canStartTemporaryClipboardSharing: Bool
+    var usesMacLayoutForText: Bool
 }
 
 /// Publishes the key session window's command state so the Session menu stays current.
@@ -158,6 +159,14 @@ private struct RDPSessionCommands: Commands {
                 center.controller?.startTemporaryClipboardSharing()
             }
             .disabled(center.state?.canStartTemporaryClipboardSharing != true)
+
+            Divider()
+
+            Toggle(MacLayoutTextOption.title, isOn: Binding(
+                get: { center.state?.usesMacLayoutForText == true },
+                set: { center.controller?.setUsesMacLayoutForText($0) }
+            ))
+            .disabled(center.state == nil)
 
             Divider()
 

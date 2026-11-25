@@ -14,6 +14,9 @@ struct ConnectionProfile: Codable, Equatable, Identifiable, Sendable {
     var graphicsCapabilityProfile: RDPGraphicsCapabilityProfile
     var clipboardSharingEnabled: Bool
     var audioPlaybackEnabled: Bool
+    /// Whether the session types text as the Mac's layout does
+    /// (`RDPRemoteInputView.usesMacLayoutForText`).
+    var usesMacLayoutForText: Bool
     var rememberPassword: Bool
     var updatedAt: Date
 
@@ -56,6 +59,7 @@ extension ConnectionProfile {
         graphicsCapabilityProfile = value(.graphicsCapabilityProfile, default: .automatic)
         clipboardSharingEnabled = value(.clipboardSharingEnabled, default: true)
         audioPlaybackEnabled = value(.audioPlaybackEnabled, default: false)
+        usesMacLayoutForText = value(.usesMacLayoutForText, default: false)
         rememberPassword = value(.rememberPassword, default: false)
         updatedAt = value(.updatedAt, default: .distantPast)
     }

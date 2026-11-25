@@ -40,6 +40,8 @@ private func profile(host: String) -> ConnectionProfile {
         graphicsCapabilityProfile: .avc420,
         clipboardSharingEnabled: true,
         audioPlaybackEnabled: false,
+        // Not the default, so that saving and loading show it kept.
+        usesMacLayoutForText: true,
         rememberPassword: true,
         updatedAt: Date(timeIntervalSinceReferenceDate: 1000)
     )
@@ -74,6 +76,7 @@ private func profile(host: String) -> ConnectionProfile {
     #expect(loaded.graphicsCapabilityProfile == .automatic)
     #expect(loaded.clipboardSharingEnabled)
     #expect(loaded.audioPlaybackEnabled == false)
+    #expect(loaded.usesMacLayoutForText == false)
     #expect(loaded.rememberPassword == false)
     #expect(loaded.updatedAt == .distantPast)
 }

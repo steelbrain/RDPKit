@@ -52,6 +52,7 @@ final class RemoteDesktopCanvasNSView: NSView {
         emptyMessage: String,
         inputSession: RDPInputSession?,
         keyboard: RDPKeyboard,
+        usesMacLayoutForText: Bool,
         isConnecting: Bool
     ) {
         let shouldShowDesktop = frame != nil && hasPresentedFrame
@@ -60,6 +61,7 @@ final class RemoteDesktopCanvasNSView: NSView {
         inputView.isHidden = !shouldShowDesktop
         inputView.rdpFrame = frame
         inputView.keyboard = keyboard
+        inputView.usesMacLayoutForText = usesMacLayoutForText
         inputView.inputSession = shouldShowDesktop ? inputSession : nil
         // Typing goes to a desktop that appears, unless the user is in another control.
         if shouldShowDesktop, !isShowingDesktop, let window, window.firstResponder === window {

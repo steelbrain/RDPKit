@@ -50,6 +50,8 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
     private let clipboard: RDPRemoteSessionClipboard
     private var graphicsCapabilityProfile: RDPGraphicsCapabilityProfile = .automatic
     private var audioPlaybackEnabled = false
+    /// Whether the input view types text as the Mac's layout does; it can change at any time.
+    private var usesMacLayoutForText = false
     private var audioMessage: String?
     private var remoteAudioPlayer = RDPAudioPlayer()
     private var report: RDPConnectionReport?
@@ -106,6 +108,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
     private let graphicsProfilePopup = NSPopUpButton()
     private let clipboardSharingButton = NSButton(checkboxWithTitle: "Share Clipboard", target: nil, action: nil)
     private let audioPlaybackButton = NSButton(checkboxWithTitle: "Request Remote Audio", target: nil, action: nil)
+    private let macLayoutTextButton = NSButton(checkboxWithTitle: MacLayoutTextOption.title, target: nil, action: nil)
     private let hideCertificateWarningsButton = NSButton(checkboxWithTitle: UntrustedCertificatesOption.title, target: nil, action: nil)
     private let timeoutStepper = NSStepper()
     private let timeoutLabel = NSTextField(labelWithString: "")
@@ -143,6 +146,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         graphicsCapabilityProfile = draft.graphicsCapabilityProfile
         clipboard = RDPRemoteSessionClipboard(isSharingEnabled: draft.clipboardSharingEnabled)
         audioPlaybackEnabled = draft.audioPlaybackEnabled
+        usesMacLayoutForText = draft.usesMacLayoutForText
         super.init(nibName: nil, bundle: nil)
         if let passwordAnswer = draft.passwordAnswer {
             passwordLookup.take(passwordAnswer)
@@ -201,7 +205,8 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
                 canCancel: isConnecting,
                 controlsVisible: controlsVisible,
                 canSyncClipboard: clipboard.canSync,
-                canStartTemporaryClipboardSharing: clipboard.canStartTemporarySharing
+                canStartTemporaryClipboardSharing: clipboard.canStartTemporarySharing,
+                usesMacLayoutForText: usesMacLayoutForText
             ),
             from: self
         )
@@ -330,6 +335,8 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         configureCheckbox(rememberPasswordButton, action: #selector(toggleRememberPassword(_:)))
         configureCheckbox(clipboardSharingButton, action: #selector(toggleClipboardSharing(_:)))
         configureCheckbox(audioPlaybackButton, action: #selector(toggleAudioPlayback(_:)))
+        configureCheckbox(macLayoutTextButton, action: #selector(toggleMacLayoutText(_:)))
+        macLayoutTextButton.toolTip = MacLayoutTextOption.help
         configureCheckbox(hideCertificateWarningsButton, action: #selector(toggleHideCertificateWarnings(_:)))
         hideCertificateWarningsButton.toolTip = UntrustedCertificatesOption.help
 
@@ -405,6 +412,9 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
             audioPlaybackButton,
             audioLabel,
         ]))
+        sidebarStack.addArrangedSubview(section("Keyboard", [
+            macLayoutTextButton,
+        ]))
         sidebarStack.addArrangedSubview(section("Security", [
             hideCertificateWarningsButton,
             timeoutRow(),
@@ -430,6 +440,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         rememberPasswordButton.isEnabled = username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
         clipboardSharingButton.state = clipboard.isSharingEnabled ? .on : .off
         audioPlaybackButton.state = audioPlaybackEnabled ? .on : .off
+        macLayoutTextButton.state = usesMacLayoutForText ? .on : .off
         hideCertificateWarningsButton.state = hideCertificateWarnings ? .on : .off
         graphicsProfilePopup.selectItem(withTitle: graphicsCapabilityProfile.displayName)
         graphicsProfilePopup.isEnabled = !isConnecting
@@ -475,6 +486,7 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
             graphicsPathSummary: graphicsPathSummary,
             inputSession: inputSession,
             keyboard: keyboard,
+            usesMacLayoutForText: usesMacLayoutForText,
             isConnecting: isConnecting,
             formError: formError,
             sessionEndReason: sessionEndReason,
@@ -1635,6 +1647,16 @@ final class RDPRemoteSessionViewController: NSViewController, NSTextFieldDelegat
         } else {
             audioMessage = nil
         }
+        render()
+    }
+
+    @objc private func toggleMacLayoutText(_ sender: NSButton) {
+        setUsesMacLayoutForText(sender.state == .on)
+    }
+
+    /// From the sidebar or the Session menu; the input view applies it from the next key pressed.
+    func setUsesMacLayoutForText(_ isOn: Bool) {
+        usesMacLayoutForText = isOn
         render()
     }
 

@@ -159,6 +159,7 @@ private let bitmapFrame = RDPGraphicsFrameSnapshot(
     #expect(profile.graphicsCapabilityProfile == .automatic)
     #expect(profile.clipboardSharingEnabled)
     #expect(profile.audioPlaybackEnabled == false)
+    #expect(profile.usesMacLayoutForText == false)
     #expect(try JSONDecoder().decode(ConnectionProfile.self, from: JSONEncoder().encode(profile)) == profile)
 }
 
@@ -352,6 +353,7 @@ private func passwordField(showing password: String) -> (window: NSWindow, field
             graphicsCapabilityProfile: .automatic,
             clipboardSharingEnabled: false,
             audioPlaybackEnabled: false,
+            usesMacLayoutForText: false,
             rememberPassword: false,
             passwordAnswer: nil
         ),

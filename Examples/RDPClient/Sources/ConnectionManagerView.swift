@@ -34,6 +34,7 @@ struct ConnectionManagerView: View {
     @State private var graphicsCapabilityProfile: RDPGraphicsCapabilityProfile = .automatic
     @State private var clipboardSharingEnabled = true
     @State private var audioPlaybackEnabled = false
+    @State private var usesMacLayoutForText = false
     @State private var formError: String?
 
     var body: some View {
@@ -108,6 +109,8 @@ struct ConnectionManagerView: View {
                     .pickerStyle(.menu)
                     Toggle("Share Clipboard", isOn: $clipboardSharingEnabled)
                     Toggle("Request Remote Audio", isOn: $audioPlaybackEnabled)
+                    Toggle(MacLayoutTextOption.title, isOn: $usesMacLayoutForText)
+                        .help(MacLayoutTextOption.help)
                     Toggle(UntrustedCertificatesOption.title, isOn: $hideCertificateWarnings)
                         .help(UntrustedCertificatesOption.help)
                     Stepper(
@@ -211,6 +214,7 @@ struct ConnectionManagerView: View {
         graphicsCapabilityProfile = .automatic
         clipboardSharingEnabled = true
         audioPlaybackEnabled = false
+        usesMacLayoutForText = false
     }
 
     /// Connects with the form. A connection reads Keychain once: it waits for the form's lookup
@@ -343,6 +347,7 @@ struct ConnectionManagerView: View {
         graphicsCapabilityProfile = profile.graphicsCapabilityProfile
         clipboardSharingEnabled = profile.clipboardSharingEnabled
         audioPlaybackEnabled = profile.audioPlaybackEnabled
+        usesMacLayoutForText = profile.usesMacLayoutForText
         profileMessage = nil
         formError = nil
         loadRememberedPasswordIfAvailable(after: .zero)
@@ -404,6 +409,7 @@ struct ConnectionManagerView: View {
             graphicsCapabilityProfile: graphicsCapabilityProfile,
             clipboardSharingEnabled: clipboardSharingEnabled,
             audioPlaybackEnabled: audioPlaybackEnabled,
+            usesMacLayoutForText: usesMacLayoutForText,
             rememberPassword: rememberPassword,
             updatedAt: Date()
         )

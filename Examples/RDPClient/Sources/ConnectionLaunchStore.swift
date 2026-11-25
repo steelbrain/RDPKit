@@ -2,6 +2,16 @@ import AppKit
 import Foundation
 import RDPKit
 
+/// The connection option that types text as the Mac's layout does
+/// (`RDPRemoteInputView.usesMacLayoutForText`), in the connection form and the session window.
+enum MacLayoutTextOption {
+    static let title = "Type with Mac Layout"
+    static let help = "Sends text as the Mac's current input source types it, rather than as keys the "
+        + "server's layout turns into text. Use it when the server keeps a layout of its own, as a "
+        + "reconnected Windows session does. Leave it off for an input method on the server, which "
+        + "needs the keys."
+}
+
 struct RDPConnectionDraft: Equatable, Sendable {
     var host: String
     var port: UInt16
@@ -15,6 +25,7 @@ struct RDPConnectionDraft: Equatable, Sendable {
     var graphicsCapabilityProfile: RDPGraphicsCapabilityProfile
     var clipboardSharingEnabled: Bool
     var audioPlaybackEnabled: Bool
+    var usesMacLayoutForText: Bool
     var rememberPassword: Bool
     /// Keychain's answer for the account, when the form that made the draft had it: the session
     /// window then takes it rather than asking Keychain again.
@@ -56,6 +67,7 @@ extension RDPConnectionDraft {
             graphicsCapabilityProfile: profile.graphicsCapabilityProfile,
             clipboardSharingEnabled: profile.clipboardSharingEnabled,
             audioPlaybackEnabled: profile.audioPlaybackEnabled,
+            usesMacLayoutForText: profile.usesMacLayoutForText,
             rememberPassword: choice.rememberPassword,
             passwordAnswer: answer
         )

@@ -185,6 +185,7 @@ private func profile(host: String) -> ConnectionProfile {
         graphicsCapabilityProfile: .automatic,
         clipboardSharingEnabled: true,
         audioPlaybackEnabled: false,
+        usesMacLayoutForText: false,
         rememberPassword: true,
         updatedAt: Date()
     )

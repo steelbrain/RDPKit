@@ -26,11 +26,30 @@ import Testing
         encodedVideoData: Data()
     ))
 
-    canvas.update(frame: nil, hasPresentedFrame: false, emptyMessage: "", inputSession: nil, keyboard: .unitedStates, isConnecting: true)
+    canvas.update(frame: nil, hasPresentedFrame: false, emptyMessage: "", inputSession: nil, keyboard: .unitedStates, usesMacLayoutForText: false, isConnecting: true)
     #expect(window.firstResponder === window)
-    canvas.update(frame: frame, hasPresentedFrame: true, emptyMessage: "", inputSession: nil, keyboard: .unitedStates, isConnecting: true)
+    canvas.update(frame: frame, hasPresentedFrame: true, emptyMessage: "", inputSession: nil, keyboard: .unitedStates, usesMacLayoutForText: false, isConnecting: true)
 
     #expect(window.firstResponder is RDPRemoteInputView)
+}
+
+/// The session window can switch typing with the Mac's layout at any time; each update passes it on.
+@MainActor
+@Test func theInputViewTypesWithTheMacLayoutAsTheSessionSwitchesIt() throws {
+    let canvas = RemoteDesktopCanvasNSView()
+    let inputView = try #require(canvas.subviews.lazy.compactMap { $0 as? RDPRemoteInputView }.first)
+    for isOn in [true, false] {
+        canvas.update(
+            frame: nil,
+            hasPresentedFrame: false,
+            emptyMessage: "",
+            inputSession: nil,
+            keyboard: .unitedStates,
+            usesMacLayoutForText: isOn,
+            isConnecting: true
+        )
+        #expect(inputView.usesMacLayoutForText == isOn)
+    }
 }
 
 private func graphicsFrame(width: UInt16, height: UInt16) -> RDPGraphicsFrameSnapshot {
@@ -73,7 +92,7 @@ private func placeOnePixelWiderThanTheDesktop(_ view: NSView) -> (window: NSWind
     let (window, scale) = placeOnePixelWiderThanTheDesktop(canvas)
     let frame = frameMetadata(width: 1000, height: 700)
 
-    canvas.update(frame: frame, hasPresentedFrame: true, emptyMessage: "", inputSession: nil, keyboard: .unitedStates, isConnecting: true)
+    canvas.update(frame: frame, hasPresentedFrame: true, emptyMessage: "", inputSession: nil, keyboard: .unitedStates, usesMacLayoutForText: false, isConnecting: true)
     canvas.layoutSubtreeIfNeeded()
 
     let viewport = RDPRemoteDisplayViewport(frame: frame, bounds: canvas.bounds, coordinateOrigin: .bottomLeft)

@@ -313,6 +313,7 @@ private func answer(
         graphicsCapabilityProfile: .automatic,
         clipboardSharingEnabled: true,
         audioPlaybackEnabled: false,
+        usesMacLayoutForText: false,
         rememberPassword: false,
         updatedAt: Date()
     )
