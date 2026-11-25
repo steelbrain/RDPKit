@@ -25,7 +25,7 @@ extension RDPInputSession: RDPInputEventSending {}
 /// desktop it lies on:
 /// - keys go as scancodes where the server's layout types what the Mac's does, and as Unicode
 ///   otherwise, with dead keys, Option's characters and Japanese input handled as `keyboard`
-///   needs;
+///   needs; with `usesMacLayoutForText`, text goes as Unicode even where the layout agrees;
 /// - Command goes as the Windows key, held back until another key, button or wheel event goes
 ///   with it, or sent as a tap when released alone; right Option is held back likewise;
 /// - modifiers are reconciled with each event's flags, pressed from their own side bits and
@@ -54,8 +54,18 @@ public final class RDPRemoteInputView: NSView {
     public var pointMapping: (any RDPRemotePointMapping)?
     /// The keyboard the session announced; it decides which keys can go as scancodes.
     public var keyboard = RDPKeyboard.unitedStates
-    /// Send characters from the current Mac layout as Unicode even when the announced
-    /// keyboard could type them. The server can switch layouts after connection.
+    /// Whether text goes as the Mac's layout types it, as Unicode, even where `keyboard` types
+    /// the same character with the key's scancode. Off, such a key goes as its scancode, which
+    /// types another character when the server types with a layout other than the one announced:
+    /// Windows keeps a reconnected session's layout, gnome-remote-desktop and KRdp keep their own
+    /// keymaps (see `RDPMacKeyboardLayout.current()`), and the user can switch layouts on the
+    /// server. On, the text is the Mac's, but its keys reach no remote IME, Windows applications
+    /// get them as VK_PACKET, and a held key repeats as text rather than staying down; a GNOME
+    /// session still drops characters its keymap has no key for (live, 2026-10-29). Space, the
+    /// keys that always go as scancodes (Return, Tab, the arrows, function keys and the keypad
+    /// except its decimal key) and chords with ⌘, ⌃ or Alt go as scancodes either way, and a
+    /// server without Unicode input gets every key as its scancode. A change applies from the
+    /// next key pressed; a key the server holds stays down until released.
     public var usesMacLayoutForText = false
     /// Whether ⌘ and ⌃ chords on keys with a scancode go to the server before the menu bar's
     /// key equivalents can take them, while the view is first responder with a session. Off,
@@ -318,12 +328,15 @@ public final class RDPRemoteInputView: NSView {
         sendInput(events)
     }
 
+    /// Whether a key that typed `characters` goes as its scancode rather than as the text: always
+    /// to a server without Unicode input, and otherwise where `keyboard` types the same character
+    /// with it, or, with `usesMacLayoutForText`, only for a Space that typed a space.
     private func sendsTextAsScancode(_ characters: String?, scancode: RDPKeyboardScancode, event: NSEvent) -> Bool {
         guard isUnicodeInputSupported else {
             return true
         }
         if usesMacLayoutForText {
-            // A plain Space also activates buttons and checkboxes in the remote UI.
+            // Windows presses buttons and checkboxes with VK_SPACE, which Unicode never is.
             return Int(event.keyCode) == kVK_Space && characters == " "
         }
         return RDPMacKeyboardMapping.windowsTypes(

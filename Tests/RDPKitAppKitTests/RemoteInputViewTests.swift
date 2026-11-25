@@ -213,6 +213,7 @@ private func sendsScancode(
     ignoringModifiers: String? = nil,
     isHeldAsScancode: Bool = false,
     isAltPressed: Bool = false,
+    usesMacLayoutForText: Bool = false,
     isDeadKey: Bool = true
 ) -> Bool {
     RDPMacKeyboardMapping.shouldSendScancode(
@@ -222,8 +223,29 @@ private func sendsScancode(
         modifierFlags: modifierFlags,
         isHeldAsScancode: isHeldAsScancode,
         isAltPressed: isAltPressed,
+        usesMacLayoutForText: usesMacLayoutForText,
         isDeadKey: { isDeadKey }
     )
+}
+
+/// Typing with the Mac's layout leaves the keypad's decimal key to the separator the Mac types
+/// with it, and no other key that always goes as its scancode; held, or in a chord, it still goes
+/// as its scancode.
+@Test func typingWithTheMacLayoutLeavesOnlyTheKeypadDecimalToItsText() {
+    #expect(sendsScancode(kVK_ANSI_KeypadDecimal, .numericPad, characters: ","))
+    #expect(sendsScancode(kVK_ANSI_KeypadDecimal, .numericPad, characters: ",", usesMacLayoutForText: true) == false)
+    #expect(sendsScancode(kVK_ANSI_KeypadDecimal, .numericPad, characters: ",", isHeldAsScancode: true, usesMacLayoutForText: true))
+    #expect(sendsScancode(
+        kVK_ANSI_KeypadDecimal,
+        [.numericPad, .control],
+        characters: ",",
+        usesMacLayoutForText: true
+    ))
+    #expect(sendsScancode(kVK_ANSI_Keypad1, .numericPad, characters: "1", usesMacLayoutForText: true))
+    #expect(sendsScancode(kVK_ANSI_KeypadPlus, .numericPad, characters: "+", usesMacLayoutForText: true))
+    #expect(sendsScancode(kVK_LeftArrow, .function, characters: "\u{F702}", usesMacLayoutForText: true))
+    #expect(sendsScancode(kVK_Return, [], characters: "\r", usesMacLayoutForText: true))
+    #expect(sendsScancode(kVK_ANSI_F, [], characters: "f", usesMacLayoutForText: true) == false)
 }
 
 /// Character keys without modifiers go as scancodes only when the layout check agrees.

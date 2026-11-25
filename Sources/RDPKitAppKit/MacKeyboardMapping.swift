@@ -214,7 +214,10 @@ public enum RDPMacKeyboardMapping {
     /// there is released; repeating it as text would type on top of the held key. With Option down
     /// but no Alt on the server, which is right Option held back (see RDPMacDeferredModifierKeys),
     /// a key Option types a character with goes as that character instead. `isDeadKey` (see
-    /// `optionTypes`) is asked only then, and only when Option typed nothing.
+    /// `optionTypes`) is asked only then, and only when Option typed nothing. A client that types
+    /// with the Mac's layout (`RDPRemoteInputView.usesMacLayoutForText`) passes
+    /// `usesMacLayoutForText`, which leaves the keypad's decimal key to the text it types as
+    /// well: Mac and Windows layouts each put a period or a comma there.
     public static func shouldSendScancode(
         forKeyCode keyCode: UInt16,
         characters: String?,
@@ -222,36 +225,12 @@ public enum RDPMacKeyboardMapping {
         modifierFlags: NSEvent.ModifierFlags,
         isHeldAsScancode: Bool,
         isAltPressed: Bool,
+        usesMacLayoutForText: Bool = false,
         isDeadKey: () -> Bool
     ) -> Bool {
-        shouldSendScancode(
-            forKeyCode: keyCode,
-            characters: characters,
-            charactersIgnoringModifiers: charactersIgnoringModifiers,
-            modifierFlags: modifierFlags,
-            isHeldAsScancode: isHeldAsScancode,
-            isAltPressed: isAltPressed,
-            usesMacLayoutForText: false,
-            isDeadKey: isDeadKey
-        )
-    }
-
-    static func shouldSendScancode(
-        forKeyCode keyCode: UInt16,
-        characters: String?,
-        charactersIgnoringModifiers: String?,
-        modifierFlags: NSEvent.ModifierFlags,
-        isHeldAsScancode: Bool,
-        isAltPressed: Bool,
-        usesMacLayoutForText: Bool,
-        isDeadKey: () -> Bool
-    ) -> Bool {
-        // The keypad separator may type a comma on one machine and a period on the other.
-        let isLocalDecimal = usesMacLayoutForText && Int(keyCode) == kVK_ANSI_KeypadDecimal
-        if isHeldAsScancode
-            || (scancodeOnlyKeyCodes.contains(Int(keyCode)) && !isLocalDecimal)
-            || modifierFlags.isDisjoint(with: [.command, .control]) == false
-        {
+        let isScancodeOnly = scancodeOnlyKeyCodes.contains(Int(keyCode))
+            && (usesMacLayoutForText && Int(keyCode) == kVK_ANSI_KeypadDecimal) == false
+        if isHeldAsScancode || isScancodeOnly || modifierFlags.isDisjoint(with: [.command, .control]) == false {
             return true
         }
         return modifierFlags.contains(.option) && (isAltPressed || optionTypes(

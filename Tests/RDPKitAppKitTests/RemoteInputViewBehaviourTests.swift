@@ -1614,6 +1614,34 @@ final class RemoteInputViewBehaviourTests: XCTestCase {
         XCTAssertEqual(legacy.recorder.events, [.keyboard(scancode: cScancode, isReleased: false), .keyboard(scancode: cScancode, isReleased: true)])
     }
 
+    func testSwitchingMacLayoutTextWhileAKeyIsDownLeavesNoKeyHeld() {
+        // A key the server holds repeats as its scancode until it goes up.
+        let harness = makeHarness()
+        let fKey = UInt16(kVK_ANSI_F)
+        let fScancode = RDPKeyboardScancode(code: 0x21)
+        harness.view.keyDown(with: keyEvent(.keyDown, keyCode: fKey, characters: "f"))
+        harness.view.usesMacLayoutForText = true
+        harness.view.keyDown(with: keyEvent(.keyDown, keyCode: fKey, characters: "f", isARepeat: true))
+        harness.view.keyUp(with: keyEvent(.keyUp, keyCode: fKey, characters: "f"))
+        XCTAssertEqual(harness.recorder.events, [
+            .keyboard(scancode: fScancode, isReleased: false),
+            .keyboard(scancode: fScancode, isReleased: false, wasDown: true),
+            .keyboard(scancode: fScancode, isReleased: true),
+        ])
+
+        // A key that went as text leaves nothing held; switched back while it is down, its next
+        // repeat goes as its scancode, which its key-up releases.
+        harness.recorder.events.removeAll()
+        harness.view.keyDown(with: keyEvent(.keyDown, keyCode: fKey, characters: "f"))
+        harness.view.usesMacLayoutForText = false
+        harness.view.keyDown(with: keyEvent(.keyDown, keyCode: fKey, characters: "f", isARepeat: true))
+        harness.view.keyUp(with: keyEvent(.keyUp, keyCode: fKey, characters: "f"))
+        XCTAssertEqual(harness.recorder.events, RDPMacKeyboardMapping.unicodeEvents(for: "f") + [
+            .keyboard(scancode: fScancode, isReleased: false),
+            .keyboard(scancode: fScancode, isReleased: true),
+        ])
+    }
+
     func testTextTheLayoutTypesDifferentlyGoesAsUnicodePressReleasePairs() {
         let harness = makeHarness()
         // A character a dead key composed.
