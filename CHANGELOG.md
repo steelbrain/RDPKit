@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Additions
+
+- `RDPRemoteInputView.usesMacLayoutForText` sends text as Unicode, as the
+  Mac's current layout types it, also where the announced layout would type
+  the same character with the key's scancode. This is for a server that types
+  with another layout than the one announced, such as a reconnected Windows
+  session, which keeps its own: with Russian announced to an English session,
+  the Mac's Russian letters go as scancodes and type English ones. It is off
+  by default, because a remote input method needs the keys as scancodes, and
+  it can change during a session. `RDPMacKeyboardMapping.shouldSendScancode`
+  takes it as `usesMacLayoutForText`. Thanks to @cioxideru for the change
+  (#12).
+
 ### Performance
 
 - AVC444 and AVC444v2 reconstruction on Metal draws into pooled BGRA pixel
@@ -10,6 +23,13 @@
   AVC444v2 frame took 0.34 ms instead of 0.70 ms with one chroma region, and
   0.79 ms instead of 1.27 ms with 64. Thanks to @cioxideru for the change and
   its measurements (#11).
+
+### Examples
+
+- RDPClient has a Type with Mac Layout option, which sets
+  `usesMacLayoutForText`: saved with each connection, and switchable during a
+  session from the Keyboard section of the session controls and from the
+  Session menu.
 
 ## 0.9.3
 

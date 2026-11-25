@@ -293,11 +293,15 @@ let report = client.run(
   dead keys, Option's characters and Japanese input; Command goes as the
   Windows key without tapping it for Mac shortcuts; modifiers, held keys and
   toggle keys stay in step with the Mac across focus changes and menus.
-  Set `inputView.usesMacLayoutForText = true` to type with the current Mac
-  layout when the server accepts Unicode input. Text then follows switches
-  between Mac layouts such as English and Russian even if the remote layout
-  stays fixed. Leave the option off when a remote input method needs the
-  letter keys as scancodes.
+  `inputView.usesMacLayoutForText = true` sends text as Unicode, as the Mac's
+  current layout types it, also where the announced layout would type the
+  same character with the key's scancode. Turn it on when the server types
+  with another layout than the one announced: a reconnected Windows session
+  keeps its own, gnome-remote-desktop and KRdp keep their own keymaps, and a
+  user can switch layouts on the server. Leave it off for a remote input
+  method, which needs the keys as scancodes, and for applications that read
+  key presses. It can change during a session, and does nothing on a server
+  without Unicode input.
   `RDPMacKeyboardLayout` maps Mac input sources to Windows layouts, and
   `RDPMacKeyboardMapping`, `RDPMacModifierKey`, `RDPMacDeferredModifierKeys` and
   `RDPMacDeadKeys` are the pieces the view is built from
@@ -452,8 +456,8 @@ swift run RDPFrameBenchmark --host <host> --username <name> --password-env RDP_P
 
 The included app lets you save connections, store credentials and issued RDP
 client licenses in Keychain, review certificate warnings, control a remote
-desktop, toggle clipboard and audio support, and open the Stats for Nerds window
-while a session is running.
+desktop, toggle clipboard and audio support and typing with the Mac's layout,
+and open the Stats for Nerds window while a session is running.
 
 ### Performance Measurement
 
