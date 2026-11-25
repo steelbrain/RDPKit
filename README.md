@@ -293,6 +293,11 @@ let report = client.run(
   dead keys, Option's characters and Japanese input; Command goes as the
   Windows key without tapping it for Mac shortcuts; modifiers, held keys and
   toggle keys stay in step with the Mac across focus changes and menus.
+  Set `inputView.usesMacLayoutForText = true` to type with the current Mac
+  layout when the server accepts Unicode input. Text then follows switches
+  between Mac layouts such as English and Russian even if the remote layout
+  stays fixed. Leave the option off when a remote input method needs the
+  letter keys as scancodes.
   `RDPMacKeyboardLayout` maps Mac input sources to Windows layouts, and
   `RDPMacKeyboardMapping`, `RDPMacModifierKey`, `RDPMacDeferredModifierKeys` and
   `RDPMacDeadKeys` are the pieces the view is built from
